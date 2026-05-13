@@ -138,8 +138,15 @@ where
         };
         let y_base = scale.to_y(baseline_value);
 
+        if !y_base.is_finite() {
+            return;
+        }
+
         datapoints.for_each_in(range, |x, y| {
             let center_x = ctx.interval_to_x(x);
+            if !center_x.is_finite() {
+                return;
+            }
             let left = center_x - (bar_width / 2.0);
 
             let total = (self.value)(y);
@@ -147,6 +154,9 @@ where
 
             let (top_y, h_total) = if rel > 0.0 {
                 let y_total = scale.to_y(total);
+                if !y_total.is_finite() {
+                    return;
+                }
                 let h = (y_base - y_total).max(0.0);
                 (y_total, h)
             } else {
@@ -180,6 +190,9 @@ where
                     let ov_abs = overlay.abs().max(0.0);
                     if ov_abs > 0.0 {
                         let y_overlay = scale.to_y(baseline_value + ov_abs);
+                        if !y_overlay.is_finite() {
+                            return;
+                        }
                         let h_overlay = (y_base - y_overlay).max(0.0);
                         if h_overlay > 0.0 {
                             frame.fill_rectangle(

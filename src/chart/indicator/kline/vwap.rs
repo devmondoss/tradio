@@ -18,8 +18,10 @@ use std::ops::RangeInclusive;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VwapPoint {
     pub vwap: f32,
-    pub cum_volume: f64,
-    pub cum_pv: f64,
+    pub upper_band1: f32,
+    pub lower_band1: f32,
+    pub upper_band2: f32,
+    pub lower_band2: f32,
 }
 
 pub struct VwapIndicator {
@@ -35,12 +37,36 @@ impl VwapIndicator {
         }
     }
 
+    pub fn visible_points(&self, earliest: u64, latest: u64) -> Vec<(u64, VwapPoint)> {
+        match &self.data {
+            BasisSeries::Time(map) => map
+                .range(exchange::UnixMs::new(earliest)..=exchange::UnixMs::new(latest))
+                .map(|(t, p)| (t.as_u64(), *p))
+                .collect(),
+            BasisSeries::Tick(map) => map
+                .range(earliest..=latest)
+                .map(|(t, p)| (*t, *p))
+                .collect(),
+        }
+    }
+
     fn compute_vwap_time(datapoints: &BTreeMap<exchange::UnixMs, KlineDataPoint>) -> BTreeMap<exchange::UnixMs, VwapPoint> {
         let mut result = BTreeMap::new();
         let mut cum_volume: f64 = 0.0;
         let mut cum_pv: f64 = 0.0;
+        let mut cum_pv2: f64 = 0.0;
+        let mut current_day: i64 = -1;
 
         for (&time, dp) in datapoints.iter() {
+            // Reset accumulators at each new UTC day (session VWAP)
+            let day = time.as_u64() as i64 / 86_400_000;
+            if day != current_day {
+                current_day = day;
+                cum_volume = 0.0;
+                cum_pv = 0.0;
+                cum_pv2 = 0.0;
+            }
+
             let typical_price = {
                 let h = f64::from(dp.kline.high.to_f32());
                 let l = f64::from(dp.kline.low.to_f32());
@@ -51,17 +77,23 @@ impl VwapIndicator {
             let vol = f64::from(f32::from(dp.kline.volume.total()));
             cum_volume += vol;
             cum_pv += typical_price * vol;
+            cum_pv2 += typical_price * typical_price * vol;
 
-            let vwap = if cum_volume > 0.0 {
-                (cum_pv / cum_volume) as f32
+            let (vwap, std_dev) = if cum_volume > 0.0 {
+                let v = cum_pv / cum_volume;
+                let variance = (cum_pv2 / cum_volume) - (v * v);
+                let sd = if variance > 0.0 { variance.sqrt() } else { 0.0 };
+                (v as f32, sd as f32)
             } else {
-                dp.kline.close.to_f32()
+                (dp.kline.close.to_f32(), 0.0)
             };
 
             result.insert(time, VwapPoint {
                 vwap,
-                cum_volume,
-                cum_pv,
+                upper_band1: vwap + std_dev,
+                lower_band1: vwap - std_dev,
+                upper_band2: vwap + 2.0 * std_dev,
+                lower_band2: vwap - 2.0 * std_dev,
             });
         }
 
@@ -72,6 +104,7 @@ impl VwapIndicator {
         let mut result = BTreeMap::new();
         let mut cum_volume: f64 = 0.0;
         let mut cum_pv: f64 = 0.0;
+        let mut cum_pv2: f64 = 0.0;
 
         for (idx, dp) in datapoints.iter().enumerate() {
             let typical_price = {
@@ -84,17 +117,23 @@ impl VwapIndicator {
             let vol = f64::from(f32::from(dp.kline.volume.total()));
             cum_volume += vol;
             cum_pv += typical_price * vol;
+            cum_pv2 += typical_price * typical_price * vol;
 
-            let vwap = if cum_volume > 0.0 {
-                (cum_pv / cum_volume) as f32
+            let (vwap, std_dev) = if cum_volume > 0.0 {
+                let v = cum_pv / cum_volume;
+                let variance = (cum_pv2 / cum_volume) - (v * v);
+                let sd = if variance > 0.0 { variance.sqrt() } else { 0.0 };
+                (v as f32, sd as f32)
             } else {
-                dp.kline.close.to_f32()
+                (dp.kline.close.to_f32(), 0.0)
             };
 
             result.insert(idx as u64, VwapPoint {
                 vwap,
-                cum_volume,
-                cum_pv,
+                upper_band1: vwap + std_dev,
+                lower_band1: vwap - std_dev,
+                upper_band2: vwap + 2.0 * std_dev,
+                lower_band2: vwap - 2.0 * std_dev,
             });
         }
 
@@ -143,6 +182,32 @@ impl KlineIndicatorImpl for VwapIndicator {
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         self.indicator_elem(chart, visible_range)
+    }
+
+    fn overlay_line_points(&self, earliest: u64, latest: u64) -> Vec<(u64, f32)> {
+        self.visible_points(earliest, latest)
+            .into_iter()
+            .map(|(t, p)| (t, p.vwap))
+            .collect()
+    }
+
+    fn overlay_bands(&self, earliest: u64, latest: u64) -> Vec<Vec<(u64, f32, f32)>> {
+        let points = self.visible_points(earliest, latest);
+        if points.len() < 2 {
+            return vec![];
+        }
+
+        let band1: Vec<_> = points.iter()
+            .filter(|(_, p)| p.upper_band1.is_finite() && p.lower_band1.is_finite())
+            .map(|(t, p)| (*t, p.upper_band1, p.lower_band1))
+            .collect();
+
+        let band2: Vec<_> = points.iter()
+            .filter(|(_, p)| p.upper_band2.is_finite() && p.lower_band2.is_finite())
+            .map(|(t, p)| (*t, p.upper_band2, p.lower_band2))
+            .collect();
+
+        vec![band2, band1]
     }
 
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {

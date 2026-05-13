@@ -11,6 +11,7 @@ use super::plot::AnySeries;
 
 pub mod atr;
 pub mod cumulative_delta;
+pub mod oi_delta;
 pub mod open_interest;
 pub mod volume;
 pub mod volume_profile;
@@ -76,6 +77,12 @@ impl IndicatorAvailability {
     }
 }
 
+/// Whether this indicator renders as an overlay on the main chart canvas
+/// rather than in its own separate panel below.
+pub fn is_overlay_indicator(indicator: KlineIndicator) -> bool {
+    matches!(indicator, KlineIndicator::Vwap | KlineIndicator::VolumeProfile)
+}
+
 pub trait KlineIndicatorImpl {
     /// Clear all caches for a full redraw
     fn clear_all_caches(&mut self);
@@ -89,6 +96,34 @@ pub trait KlineIndicatorImpl {
         chart: &'a ViewState,
         visible_range: std::ops::RangeInclusive<u64>,
     ) -> iced::Element<'a, Message>;
+
+    /// Return price-level points for overlay drawing on the main chart.
+    /// Each point is (interval_key, price_f32).
+    fn overlay_line_points(&self, _earliest: u64, _latest: u64) -> Vec<(u64, f32)> {
+        vec![]
+    }
+
+    /// Return horizontal price levels to draw on the main chart.
+    /// Each entry is (price_f32, color_rgba).
+    fn overlay_levels(&self) -> Vec<(f32, [f32; 4])> {
+        vec![]
+    }
+
+    /// Return band data for shaded region overlays.
+    /// Each entry is (interval_key, upper_f32, lower_f32).
+    fn overlay_bands(&self, _earliest: u64, _latest: u64) -> Vec<Vec<(u64, f32, f32)>> {
+        vec![]
+    }
+
+    /// Return pre-binned histogram bars for Volume Profile rendering.
+    fn overlay_volume_profile(&self) -> &[volume_profile::ProfileBar] {
+        &[]
+    }
+
+    /// Return the maximum volume bin value (for normalizing bar widths).
+    fn overlay_volume_profile_max(&self) -> f64 {
+        0.0
+    }
 
     fn availability(&self, _chart: &ViewState) -> IndicatorAvailability {
         IndicatorAvailability::Available
@@ -140,6 +175,9 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
         }
         KlineIndicator::OpenInterest => {
             Box::new(super::kline::open_interest::OpenInterestIndicator::new())
+        }
+        KlineIndicator::OiDelta => {
+            Box::new(super::kline::oi_delta::OiDeltaIndicator::new())
         }
         KlineIndicator::Vwap => Box::new(super::kline::vwap::VwapIndicator::new()),
         KlineIndicator::VolumeProfile => {

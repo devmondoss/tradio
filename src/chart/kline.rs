@@ -64,6 +64,9 @@ impl Chart for KlineChart {
             if !KlineIndicator::for_market(market).contains(selected_indicator) {
                 continue;
             }
+            if indicator::kline::is_overlay_indicator(*selected_indicator) {
+                continue;
+            }
             if let Some(indi) = self.indicators[*selected_indicator].as_ref() {
                 elements.push(indi.element(chart_state, earliest..=latest));
             }
@@ -446,6 +449,10 @@ impl KlineChart {
     pub fn reset_request_handler(&mut self) {
         self.request_handler = RequestHandler::default();
         self.fetching_trades = (false, None);
+    }
+
+    pub fn mark_request_failed(&mut self, req_id: uuid::Uuid, error: String) {
+        self.request_handler.mark_failed(req_id, error);
     }
 
     pub fn raw_trades(&self) -> Vec<Trade> {
@@ -965,6 +972,216 @@ impl KlineChart {
         }
     }
 
+    fn draw_indicator_overlays(
+        &self,
+        frame: &mut canvas::Frame,
+        region: &Rectangle,
+        earliest: u64,
+        latest: u64,
+        interval_to_x: impl Fn(u64) -> f32,
+        price_to_y: impl Fn(Price) -> f32,
+    ) {
+        let line_width = region.x + region.width;
+
+        for (kind, indicator) in self.indicators.iter() {
+            if !indicator::kline::is_overlay_indicator(kind) {
+                continue;
+            }
+            let Some(indi) = indicator.as_ref() else {
+                continue;
+            };
+
+            // Per-indicator band colors: VWAP uses blue, VolumeProfile uses purple
+            let band_colors: [Color; 2] = match kind {
+                data::chart::indicator::KlineIndicator::VolumeProfile => [
+                    Color::from_rgba(0.55, 0.36, 0.96, 0.05), // value area: subtle purple
+                    Color::from_rgba(0.55, 0.36, 0.96, 0.05),
+                ],
+                _ => [
+                    Color::from_rgba(0.0, 0.55, 1.0, 0.05),  // VWAP ±2σ: outer blue
+                    Color::from_rgba(0.0, 0.55, 1.0, 0.09),  // VWAP ±1σ: inner blue
+                ],
+            };
+
+            // Draw bands (shaded regions between upper/lower)
+            let bands = indi.overlay_bands(earliest, latest);
+            for (band_idx, band) in bands.iter().enumerate() {
+                if band.len() < 2 {
+                    continue;
+                }
+                let color = band_colors[band_idx % band_colors.len()];
+
+                let fill_path = Path::new(|builder| {
+                    let mut started = false;
+
+                    // Forward pass: upper edge
+                    for &(key, upper, _) in band.iter() {
+                        if !upper.is_finite() || upper <= 0.0 {
+                            continue;
+                        }
+                        let x = interval_to_x(key);
+                        let y = price_to_y(Price::from_f32(upper));
+                        if !x.is_finite() || !y.is_finite() {
+                            continue;
+                        }
+                        if !started {
+                            builder.move_to(Point::new(x, y));
+                            started = true;
+                        } else {
+                            builder.line_to(Point::new(x, y));
+                        }
+                    }
+
+                    if !started {
+                        return;
+                    }
+
+                    // Reverse pass: lower edge (closes the shape)
+                    for &(key, _, lower) in band.iter().rev() {
+                        if !lower.is_finite() || lower <= 0.0 {
+                            continue;
+                        }
+                        let x = interval_to_x(key);
+                        let y = price_to_y(Price::from_f32(lower));
+                        if !x.is_finite() || !y.is_finite() {
+                            continue;
+                        }
+                        builder.line_to(Point::new(x, y));
+                    }
+
+                    builder.close();
+                });
+
+                frame.fill(&fill_path, color);
+            }
+
+            // Draw main overlay line (VWAP center line)
+            let points: Vec<_> = indi.overlay_line_points(earliest, latest)
+                .into_iter()
+                .filter(|(_, price)| price.is_finite() && *price > 0.0)
+                .collect();
+            if points.len() >= 2 {
+                let path = Path::new(|builder| {
+                    let mut started = false;
+                    for &(key, price) in &points {
+                        let x = interval_to_x(key);
+                        let y = price_to_y(Price::from_f32(price));
+                        if !x.is_finite() || !y.is_finite() {
+                            continue;
+                        }
+                        if !started {
+                            builder.move_to(Point::new(x, y));
+                            started = true;
+                        } else {
+                            builder.line_to(Point::new(x, y));
+                        }
+                    }
+                });
+                let line_color = match kind {
+                    data::chart::indicator::KlineIndicator::Vwap =>
+                        Color::from_rgba(0.20, 0.75, 1.0, 0.95),
+                    _ => Color::from_rgba(0.0, 0.6, 1.0, 0.9),
+                };
+                frame.stroke(
+                    &path,
+                    Stroke::with_color(
+                        Stroke { width: 2.0, ..Default::default() },
+                        line_color,
+                    ),
+                );
+            }
+
+            // Draw overlay levels (Volume Profile POC/VAH/VAL)
+            let levels = indi.overlay_levels();
+            for (price, rgba) in &levels {
+                if *price <= 0.0 || !price.is_finite() {
+                    continue;
+                }
+                let y = price_to_y(Price::from_f32(*price));
+                if !y.is_finite() {
+                    continue;
+                }
+                let color = Color::from_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+                frame.stroke(
+                    &Path::line(Point::new(region.x, y), Point::new(line_width, y)),
+                    Stroke::with_color(
+                        Stroke {
+                            width: 1.0,
+                            line_dash: LineDash { segments: &[6.0, 4.0], offset: 0 },
+                            ..Default::default()
+                        },
+                        color,
+                    ),
+                );
+            }
+
+            // Draw Volume Profile horizontal histogram on the right side
+            let histogram = indi.overlay_volume_profile();
+            let max_vol = indi.overlay_volume_profile_max();
+            if !histogram.is_empty() && max_vol > 0.0 {
+                let poc_price = levels.first().map(|(p, _)| *p).unwrap_or(0.0);
+                let max_bar_width = region.width * 0.14;
+                let right_edge = region.x + region.width;
+                let n = histogram.len();
+
+                for i in 0..n {
+                    let bar = histogram[i];
+                    if !bar.price.is_finite() || bar.price <= 0.0 {
+                        continue;
+                    }
+
+                    let y_center = price_to_y(Price::from_f32(bar.price));
+                    if !y_center.is_finite() {
+                        continue;
+                    }
+
+                    // Bar height: half the gap to neighbors, minimum 1px
+                    let bar_height = {
+                        let y_next = if i + 1 < n {
+                            price_to_y(Price::from_f32(histogram[i + 1].price))
+                        } else {
+                            y_center
+                        };
+                        let y_prev = if i > 0 {
+                            price_to_y(Price::from_f32(histogram[i - 1].price))
+                        } else {
+                            y_center
+                        };
+                        let spacing = if i == 0 {
+                            (y_next - y_center).abs()
+                        } else if i == n - 1 {
+                            (y_center - y_prev).abs()
+                        } else {
+                            (y_next - y_prev).abs() / 2.0
+                        };
+                        spacing.max(1.0)
+                    };
+
+                    let vol_ratio = bar.volume / max_vol;
+                    let bar_width = vol_ratio as f32 * max_bar_width;
+                    let x = right_edge - bar_width;
+                    let is_poc = (bar.price - poc_price).abs() < poc_price * 0.0005;
+
+                    let color = if is_poc {
+                        Color::from_rgba(1.0, 0.78, 0.05, 0.90)   // gold — POC
+                    } else if vol_ratio > 0.65 {
+                        Color::from_rgba(0.55, 0.36, 0.96, 0.60)  // purple — HVN
+                    } else if vol_ratio < 0.12 {
+                        Color::from_rgba(0.3, 0.65, 1.0, 0.18)    // dim blue — LVN
+                    } else {
+                        Color::from_rgba(0.45, 0.65, 0.95, 0.35)  // blue — normal
+                    };
+
+                    frame.fill_rectangle(
+                        Point::new(x, y_center - bar_height / 2.0),
+                        Size::new(bar_width, bar_height),
+                        color,
+                    );
+                }
+            }
+        }
+    }
+
     fn draw_strategy_overlay(
         signals: &[StrategySignal],
         frame: &mut canvas::Frame,
@@ -994,6 +1211,10 @@ impl KlineChart {
             let entry_y = price_to_y(entry);
             let stop_y = price_to_y(stop);
             let target_y = price_to_y(target);
+
+            if !entry_y.is_finite() || !stop_y.is_finite() || !target_y.is_finite() {
+                continue;
+            }
 
             let line_width = region.x + region.width;
 
@@ -1212,6 +1433,8 @@ impl canvas::Program<Message> for KlineChart {
             }
 
             chart.draw_last_price_line(frame, palette, region);
+
+            self.draw_indicator_overlays(frame, &region, earliest, latest, interval_to_x, price_to_y);
 
             if self.strategy_overlay_enabled {
                 Self::draw_strategy_overlay(

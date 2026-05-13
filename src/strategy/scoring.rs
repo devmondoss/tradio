@@ -1,7 +1,7 @@
 use super::types::*;
 
 pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> StrategySignal {
-    let mut score = 0.0;
+    let mut score: f64 = 0.0;
 
     let has = |s: &str| signal.evidence.iter().any(|e| e == s);
 

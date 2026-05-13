@@ -406,6 +406,17 @@ impl State {
         streams
     }
 
+    pub fn mark_fetch_failed(&mut self, req_id: uuid::Uuid, error: String) {
+        match &mut self.content {
+            Content::Kline { chart, .. } => {
+                if let Some(chart) = chart {
+                    chart.mark_request_failed(req_id, error);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn insert_hist_oi(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
         match &mut self.content {
             Content::Kline { chart, .. } => {

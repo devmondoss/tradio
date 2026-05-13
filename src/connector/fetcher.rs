@@ -199,6 +199,7 @@ pub enum FetchUpdate {
     },
     Error {
         pane_id: Uuid,
+        req_id: Option<Uuid>,
         error: String,
     },
 }
@@ -310,6 +311,7 @@ pub fn request_fetch(
                                 log::error!("Trade fetch failed: {err}");
                                 FetchUpdate::Error {
                                     pane_id,
+                                    req_id: None,
                                     error: err.ui_message(),
                                 }
                             }
@@ -395,6 +397,7 @@ pub fn oi_fetch_task(
                     }
                     Err(err) => FetchUpdate::Error {
                         pane_id,
+                        req_id,
                         error: err,
                     },
                 },
@@ -446,6 +449,7 @@ pub fn kline_fetch_task(
                     }
                     Err(err) => FetchUpdate::Error {
                         pane_id,
+                        req_id,
                         error: err,
                     },
                 },

@@ -150,6 +150,10 @@ where
             let sx = x_for(x);
             let vy = (self.value)(y);
             let sy = scale.to_y(vy);
+            if !sx.is_finite() || !sy.is_finite() {
+                prev = None;
+                return;
+            }
             if let Some((px, py)) = prev {
                 frame.stroke(
                     &Path::line(iced::Point::new(px, py), iced::Point::new(sx, sy)),
@@ -164,6 +168,9 @@ where
             datapoints.for_each_in(range, |x, y| {
                 let sx = x_for(x);
                 let sy = scale.to_y((self.value)(y));
+                if !sx.is_finite() || !sy.is_finite() {
+                    return;
+                }
                 frame.fill(&Path::circle(iced::Point::new(sx, sy), radius), color);
             });
         }

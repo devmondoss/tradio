@@ -42,7 +42,7 @@ impl AtrIndicator {
         let mut atr_values: Vec<f32> = Vec::new();
         let mut current_atr: f32 = 0.0;
 
-        for (i, (&time, dp)) in entries.iter().enumerate() {
+        for (i, (time, dp)) in entries.iter().enumerate() {
             let high = dp.kline.high.to_f32();
             let low = dp.kline.low.to_f32();
 
@@ -66,7 +66,7 @@ impl AtrIndicator {
                 current_atr = (current_atr * (ATR_PERIOD - 1) as f32 + tr) / ATR_PERIOD as f32;
             }
 
-            result.insert(*time, current_atr);
+            result.insert(**time, current_atr);
             prev_close = dp.kline.close.to_f32();
         }
 

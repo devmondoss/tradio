@@ -53,6 +53,11 @@ pub enum Message {
         stream: StreamKind,
         data: FetchedData,
     },
+    FetchFailed {
+        pane_id: uuid::Uuid,
+        req_id: Option<uuid::Uuid>,
+        error: String,
+    },
     ResolveStreams(uuid::Uuid, Vec<PersistStreamKind>),
     RequestPalette,
 }
@@ -191,20 +196,45 @@ impl Dashboard {
                     }
                 }
             }
-            Message::ErrorOccurred(pane_id, err) => match pane_id {
-                Some(id) => {
-                    if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
-                        state.status = pane::Status::Ready;
-                        state.notifications.push(Toast::error(err.to_string()));
+            Message::ErrorOccurred(pane_id, err) => {
+                // Silently log benign fetch rejections (e.g. requesting data
+                // outside available history when scrolling/zooming).
+                let is_benign = matches!(&err, DashboardError::Fetch(msg)
+                    if msg.contains("rejected") || msg.contains("overlaps"));
+
+                if is_benign {
+                    log::debug!("Suppressed benign fetch error: {err}");
+                } else {
+                    match pane_id {
+                        Some(id) => {
+                            if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
+                                state.status = pane::Status::Ready;
+                                state.notifications.push(Toast::error(err.to_string()));
+                            }
+                        }
+                        _ => {
+                            return (
+                                Task::done(Message::Notification(Toast::error(err.to_string()))),
+                                None,
+                            );
+                        }
                     }
                 }
-                _ => {
-                    return (
-                        Task::done(Message::Notification(Toast::error(err.to_string()))),
-                        None,
-                    );
+            }
+            Message::FetchFailed { pane_id, req_id, error } => {
+                if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
+                    state.status = pane::Status::Ready;
+                    if let Some(id) = req_id {
+                        state.mark_fetch_failed(id, error.clone());
+                    }
+                    let is_benign = error.contains("rejected") || error.contains("overlaps");
+                    if !is_benign {
+                        state.notifications.push(Toast::error(error));
+                    } else {
+                        log::debug!("Suppressed benign fetch error: {error}");
+                    }
                 }
-            },
+            }
             Message::Pane(window, message) => match message {
                 pane::Message::PaneClicked(pane) => {
                     self.focus = Some((window, pane));
@@ -1335,8 +1365,8 @@ impl From<fetcher::FetchUpdate> for Message {
                 stream,
                 data,
             },
-            fetcher::FetchUpdate::Error { pane_id, error } => {
-                Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(error))
+            fetcher::FetchUpdate::Error { pane_id, req_id, error } => {
+                Message::FetchFailed { pane_id, req_id, error }
             }
         }
     }

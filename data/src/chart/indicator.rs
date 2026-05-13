@@ -15,6 +15,7 @@ pub enum KlineIndicator {
     Volume,
     CumulativeDelta,
     OpenInterest,
+    OiDelta,
     Vwap,
     VolumeProfile,
     Atr,
@@ -41,10 +42,11 @@ impl KlineIndicator {
         KlineIndicator::Atr,
     ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 6] = [
+    const FOR_PERPS: [KlineIndicator; 7] = [
         KlineIndicator::Volume,
         KlineIndicator::CumulativeDelta,
         KlineIndicator::OpenInterest,
+        KlineIndicator::OiDelta,
         KlineIndicator::Vwap,
         KlineIndicator::VolumeProfile,
         KlineIndicator::Atr,
@@ -57,6 +59,7 @@ impl Display for KlineIndicator {
             KlineIndicator::Volume => write!(f, "Volume"),
             KlineIndicator::CumulativeDelta => write!(f, "CVD"),
             KlineIndicator::OpenInterest => write!(f, "Open Interest"),
+            KlineIndicator::OiDelta => write!(f, "OI Delta"),
             KlineIndicator::Vwap => write!(f, "VWAP"),
             KlineIndicator::VolumeProfile => write!(f, "Vol Profile"),
             KlineIndicator::Atr => write!(f, "ATR"),
