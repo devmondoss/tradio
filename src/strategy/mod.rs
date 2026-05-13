@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod context;
 pub mod detectors;
 pub mod logger;

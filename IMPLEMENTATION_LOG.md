@@ -1,12 +1,18 @@
 # Implementation Log: Strategy Module + New Indicators
 
-## Estado: Fase 1 completada (estructura base)
+## Estado: Fase 2 completada (overlay + adapter)
 
 ---
 
 ## Archivos Creados
 
 ### Modulo Strategy (`src/strategy/`)
+
+| Archivo | Descripcion |
+|---------|-------------|
+| `src/strategy/adapter.rs` | Builds StrategyMarketContext from live Depth + indicator outputs |
+
+### Resto del modulo Strategy
 
 | Archivo | Descripcion |
 |---------|-------------|
@@ -90,12 +96,18 @@ cargo test --lib strategy
 
 ## Gaps y Pendientes
 
-### Fase 2: Wiring (conectar strategy al chart)
+### Fase 2: Wiring (conectar strategy al chart) - PARCIALMENTE COMPLETADA
 
-- [ ] **Adapter**: `build_strategy_context()` que mapee el estado actual de KlineChart + Depth + Indicators activos → `StrategyMarketContext`
+- [x] **Adapter**: `build_strategy_context()` components implementados:
+  - `build_orderbook_context(depth)` → OBI L5/L10/L20, microprice, spread_bps, walls, thin zones
+  - `build_flow_context(cvd, delta, buy_vol, sell_vol)` → taker_imbalance, quality
+  - `build_vwap_context(price, vwap_session)` → price relations
+  - `build_volume_profile_context(price, poc, vah, val)` → value_location, quality
+- [x] **Overlay rendering**: `draw_strategy_overlay()` dibuja entry (solid), stop (dashed red), target (dashed green), zone (semi-transparent)
+- [x] **Signal storage**: `KlineChart.strategy_signals` + `push_strategy_signal()` + `clear_expired_signals()`
 - [ ] **Execution point**: Decidir cuando se ejecuta `route_strategy()` (cada trade? cada vela nueva? timer?)
-- [ ] **Overlay rendering**: Dibujar entry/stop/target lines sobre el canvas del kline chart cuando hay signal activa
-- [ ] **UI toggle**: Agregar "Strategy Signals" como opcion en el dropdown de Indicators (o toggle separado)
+- [ ] **UI toggle**: Agregar "Strategy Signals" al dropdown o como toggle en settings
+- [ ] **Depth access**: El KlineChart no tiene acceso a Depth directamente — necesita que el Dashboard le pase la depth snapshot cuando hay update
 
 ### Fase 3: Features faltantes en los indicadores
 

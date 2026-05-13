@@ -4,6 +4,7 @@ use super::{
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::connector::fetcher::{FetchRange, RequestHandler, is_trade_fetch_enabled};
+use crate::strategy::types::{Side, StrategyAction, StrategySignal};
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
@@ -19,8 +20,8 @@ use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade, UnixMs};
 
 use iced::task::Handle;
 use iced::theme::palette::Extended;
-use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
-use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use iced::widget::canvas::{self, Event, Geometry, LineDash, Path, Stroke};
+use iced::{Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use enum_map::EnumMap;
 use std::time::Instant;
@@ -160,6 +161,8 @@ pub struct KlineChart {
     request_handler: RequestHandler,
     study_configurator: study::Configurator<FootprintStudy>,
     last_tick: Instant,
+    pub strategy_signals: Vec<StrategySignal>,
+    pub strategy_overlay_enabled: bool,
 }
 
 impl KlineChart {
@@ -252,6 +255,8 @@ impl KlineChart {
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
+                    strategy_signals: Vec::new(),
+                    strategy_overlay_enabled: false,
                 }
             }
             Basis::Tick(interval) => {
@@ -308,6 +313,8 @@ impl KlineChart {
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
+                    strategy_signals: Vec::new(),
+                    strategy_overlay_enabled: false,
                 }
             }
         }
@@ -872,6 +879,111 @@ impl KlineChart {
             );
         }
     }
+
+    pub fn push_strategy_signal(&mut self, signal: StrategySignal) {
+        const MAX_SIGNALS: usize = 50;
+        if self.strategy_signals.len() >= MAX_SIGNALS {
+            self.strategy_signals.remove(0);
+        }
+        self.strategy_signals.push(signal);
+        self.chart.cache.main.clear();
+    }
+
+    pub fn clear_expired_signals(&mut self, now_ms: i64) {
+        let before = self.strategy_signals.len();
+        self.strategy_signals.retain(|s| {
+            s.created_at_ms + s.ttl_ms > now_ms
+        });
+        if self.strategy_signals.len() != before {
+            self.chart.cache.main.clear();
+        }
+    }
+
+    fn draw_strategy_overlay(
+        signals: &[StrategySignal],
+        frame: &mut canvas::Frame,
+        price_to_y: impl Fn(f64) -> f32,
+        region: Rectangle,
+    ) {
+        for signal in signals {
+            if signal.action != StrategyAction::ShadowSignal {
+                continue;
+            }
+
+            let (entry, stop, target) = match (signal.entry_price, signal.stop_price, signal.target_price) {
+                (Some(e), Some(s), Some(t)) => (e, s, t),
+                _ => continue,
+            };
+
+            let is_long = signal.side == Some(Side::Long);
+
+            let entry_color = if is_long {
+                Color::from_rgba(0.2, 0.8, 0.4, 0.8)
+            } else {
+                Color::from_rgba(0.9, 0.3, 0.3, 0.8)
+            };
+            let stop_color = Color::from_rgba(0.9, 0.2, 0.2, 0.6);
+            let target_color = Color::from_rgba(0.2, 0.8, 0.4, 0.6);
+
+            let entry_y = price_to_y(entry);
+            let stop_y = price_to_y(stop);
+            let target_y = price_to_y(target);
+
+            let line_width = region.x + region.width;
+
+            // Entry line (solid)
+            let entry_stroke = Stroke::with_color(
+                Stroke { width: 1.5, ..Default::default() },
+                entry_color,
+            );
+            frame.stroke(
+                &Path::line(Point::new(0.0, entry_y), Point::new(line_width, entry_y)),
+                entry_stroke,
+            );
+
+            // Stop line (dashed)
+            let stop_stroke = Stroke::with_color(
+                Stroke {
+                    width: 1.0,
+                    line_dash: LineDash { segments: &[4.0, 3.0], offset: 0 },
+                    ..Default::default()
+                },
+                stop_color,
+            );
+            frame.stroke(
+                &Path::line(Point::new(0.0, stop_y), Point::new(line_width, stop_y)),
+                stop_stroke,
+            );
+
+            // Target line (dashed)
+            let target_stroke = Stroke::with_color(
+                Stroke {
+                    width: 1.0,
+                    line_dash: LineDash { segments: &[4.0, 3.0], offset: 0 },
+                    ..Default::default()
+                },
+                target_color,
+            );
+            frame.stroke(
+                &Path::line(Point::new(0.0, target_y), Point::new(line_width, target_y)),
+                target_stroke,
+            );
+
+            // Semi-transparent zone between entry and target
+            let zone_top = f32::min(entry_y, target_y);
+            let zone_height = (entry_y - target_y).abs();
+            let zone_color = if is_long {
+                Color::from_rgba(0.2, 0.8, 0.4, 0.05)
+            } else {
+                Color::from_rgba(0.9, 0.3, 0.3, 0.05)
+            };
+            frame.fill_rectangle(
+                Point::new(0.0, zone_top),
+                Size::new(line_width, zone_height),
+                zone_color,
+            );
+        }
+    }
 }
 
 impl canvas::Program<Message> for KlineChart {
@@ -1034,6 +1146,15 @@ impl canvas::Program<Message> for KlineChart {
             }
 
             chart.draw_last_price_line(frame, palette, region);
+
+            if self.strategy_overlay_enabled {
+                Self::draw_strategy_overlay(
+                    &self.strategy_signals,
+                    frame,
+                    |price| chart.price_to_y(Price::from_f32(price as f32)),
+                    region,
+                );
+            }
         });
 
         let crosshair = chart.cache.crosshair.draw(renderer, bounds_size, |frame| {
