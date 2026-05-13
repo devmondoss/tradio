@@ -163,6 +163,7 @@ pub struct KlineChart {
     last_tick: Instant,
     pub strategy_signals: Vec<StrategySignal>,
     pub strategy_overlay_enabled: bool,
+    pub last_depth: Option<exchange::depth::Depth>,
 }
 
 impl KlineChart {
@@ -257,6 +258,7 @@ impl KlineChart {
                     last_tick: Instant::now(),
                     strategy_signals: Vec::new(),
                     strategy_overlay_enabled: false,
+                    last_depth: None,
                 }
             }
             Basis::Tick(interval) => {
@@ -315,6 +317,7 @@ impl KlineChart {
                     last_tick: Instant::now(),
                     strategy_signals: Vec::new(),
                     strategy_overlay_enabled: false,
+                    last_depth: None,
                 }
             }
         }
@@ -877,6 +880,69 @@ impl KlineChart {
                 current_indi_count,
                 Some(prev_indi_count),
             );
+        }
+    }
+
+    pub fn update_depth(&mut self, depth: &exchange::depth::Depth) {
+        self.last_depth = Some(depth.clone());
+        if self.strategy_overlay_enabled {
+            self.run_strategy_detection();
+        }
+    }
+
+    fn run_strategy_detection(&mut self) {
+        use crate::strategy::{adapter, router, logger, types::*};
+
+        let Some(depth) = &self.last_depth else { return };
+
+        let price = match &self.data_source {
+            PlotData::TimeBased(ts) => ts.latest_kline().map(|k| k.close.to_f32() as f64),
+            PlotData::TickBased(ta) => ta.latest_dp().map(|(dp, _)| dp.kline.close.to_f32() as f64),
+        };
+        let Some(price) = price else { return };
+
+        let orderbook = adapter::build_orderbook_context(depth);
+
+        // Extract VWAP from indicator if active
+        let vwap_value = self.indicators[KlineIndicator::Vwap]
+            .as_ref()
+            .and_then(|_| None::<f64>); // TODO: expose VWAP value from indicator
+
+        let vwap = adapter::build_vwap_context(price, vwap_value);
+
+        // Extract Volume Profile from indicator if active
+        let (poc, vah, val) = (None, None, None); // TODO: expose from indicator
+        let volume_profile = adapter::build_volume_profile_context(price, poc, vah, val);
+
+        // Extract CVD/delta from indicator if active
+        let (cvd, delta, buy_vol, sell_vol) = (None, None, None, None); // TODO: expose from indicators
+        let flow = adapter::build_flow_context(cvd, delta, buy_vol, sell_vol);
+
+        // Extract ATR from indicator if active
+        let atr = None; // TODO: expose from indicator
+
+        let ctx = StrategyMarketContext {
+            symbol: self.chart.ticker_info.ticker.to_string(),
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            price,
+            regime: Regime::Unknown,
+            atr,
+            volume_profile,
+            vwap,
+            flow,
+            orderbook,
+        };
+
+        let cfg = StrategyConfig {
+            enabled: true,
+            ..Default::default()
+        };
+
+        let signal = router::route_strategy(&ctx, &cfg);
+        logger::log_signal(&ctx, &signal);
+
+        if signal.action == StrategyAction::ShadowSignal {
+            self.push_strategy_signal(signal);
         }
     }
 

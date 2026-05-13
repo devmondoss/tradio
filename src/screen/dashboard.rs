@@ -1034,9 +1034,12 @@ impl Dashboard {
                                 panel.insert_depth(depth, update_t);
                             }
                         }
-                        _ => {
-                            log::error!("No chart found for the stream: {stream:?}");
+                        pane::Content::Kline { chart, .. } => {
+                            if let Some(c) = chart {
+                                c.update_depth(depth);
+                            }
                         }
+                        _ => {}
                     }
                     found_match = true;
                 }
