@@ -8,6 +8,7 @@ mod logger;
 mod modal;
 mod notify;
 mod screen;
+mod strategy;
 mod style;
 mod version;
 mod widget;

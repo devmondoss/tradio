@@ -9,9 +9,12 @@ use exchange::{Kline, Timeframe, Trade, UnixMs};
 
 use super::plot::AnySeries;
 
+pub mod atr;
 pub mod cumulative_delta;
 pub mod open_interest;
 pub mod volume;
+pub mod volume_profile;
+pub mod vwap;
 
 /// UI adapter methods for converting domain `BasisSeries` into plot-ready series.
 trait BasisSeriesExt<T> {
@@ -138,5 +141,10 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
         KlineIndicator::OpenInterest => {
             Box::new(super::kline::open_interest::OpenInterestIndicator::new())
         }
+        KlineIndicator::Vwap => Box::new(super::kline::vwap::VwapIndicator::new()),
+        KlineIndicator::VolumeProfile => {
+            Box::new(super::kline::volume_profile::VolumeProfileIndicator::new())
+        }
+        KlineIndicator::Atr => Box::new(super::kline::atr::AtrIndicator::new()),
     }
 }
