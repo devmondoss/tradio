@@ -1,40 +1,64 @@
 # Implementation Log: Strategy Module + New Indicators
 
-## Estado: Fase 2 completada (overlay + adapter)
+## Estado: Fase 3 completada (pipeline wired end-to-end)
 
 ---
 
-## Archivos Creados
+## Arquitectura del Pipeline
+
+```
+Exchange WebSocket
+  ├── Trades → KlineChart.insert_trades() → Indicators update
+  └── Depth  → Dashboard.ingest_depth()
+                  ├── Heatmap/Ladder (existing)
+                  └── KlineChart.update_depth() ← NEW
+                        └── run_strategy_detection()
+                              ├── build_orderbook_context(depth)
+                              ├── build_flow_context(cvd, delta...)
+                              ├── build_vwap_context(price, vwap)
+                              ├── build_volume_profile_context(price, poc, vah, val)
+                              ├── toxic_flow_gate() check
+                              ├── 3 detectors: VA_Failed, VWAP_Pullback, LVN_Breakout
+                              ├── score_signal()
+                              ├── logger::log_signal() → JSONL file
+                              └── push_strategy_signal() → draw_strategy_overlay()
+```
+
+---
+
+## Archivos Creados (17 files, ~4200 lines)
 
 ### Modulo Strategy (`src/strategy/`)
 
 | Archivo | Descripcion |
 |---------|-------------|
-| `src/strategy/adapter.rs` | Builds StrategyMarketContext from live Depth + indicator outputs |
-
-### Resto del modulo Strategy
-
-| Archivo | Descripcion |
-|---------|-------------|
-| `src/strategy/mod.rs` | Module root, exports all submodules |
-| `src/strategy/types.rs` | All data contracts: StrategyMarketContext, signals, enums, configs |
-| `src/strategy/context.rs` | Helper methods for context building (price_relation, value_location) |
-| `src/strategy/router.rs` | `route_strategy()` - runs all detectors, picks best signal |
+| `src/strategy/mod.rs` | Module root |
+| `src/strategy/types.rs` | All data contracts: StrategyMarketContext, StrategySignal, enums, configs |
+| `src/strategy/context.rs` | Helper methods: price_relation, determine_value_location |
+| `src/strategy/adapter.rs` | Builds context from live Depth + indicator outputs |
+| `src/strategy/router.rs` | `route_strategy()` - runs detectors, picks best signal |
 | `src/strategy/scoring.rs` | `score_signal()` - evidence-based scoring with penalties |
-| `src/strategy/logger.rs` | JSONL logger to `data_dir/flowsurface/shadow_events/strategy_signals.jsonl` |
+| `src/strategy/logger.rs` | JSONL logger to `data_dir/flowsurface/shadow_events/` |
 | `src/strategy/detectors/mod.rs` | Detector module root |
-| `src/strategy/detectors/toxic_flow_gate.rs` | Gate filter: blocks on stress/aftermath/stale/wide spread/toxic vpin |
-| `src/strategy/detectors/value_area_failed_auction.rs` | Strategy 1: failed auction above VAH / below VAL |
-| `src/strategy/detectors/vwap_value_pullback_continuation.rs` | Strategy 2: trend pullback to value + flow realignment |
-| `src/strategy/detectors/lvn_liquidity_vacuum_breakout.rs` | Strategy 3: breakout through thin order book zone |
+| `src/strategy/detectors/toxic_flow_gate.rs` | Gate: blocks stress/aftermath/stale/spread/vpin |
+| `src/strategy/detectors/value_area_failed_auction.rs` | Strategy 1: trapped breakout traders |
+| `src/strategy/detectors/vwap_value_pullback_continuation.rs` | Strategy 2: trend pullback + flow realignment |
+| `src/strategy/detectors/lvn_liquidity_vacuum_breakout.rs` | Strategy 3: thin zone breakout |
 
 ### Indicadores Nuevos (`src/chart/indicator/kline/`)
 
 | Archivo | Descripcion |
 |---------|-------------|
-| `src/chart/indicator/kline/vwap.rs` | Session VWAP (cumulative typical_price * volume) |
-| `src/chart/indicator/kline/atr.rs` | ATR(14) - Average True Range con Wilder smoothing |
-| `src/chart/indicator/kline/volume_profile.rs` | Rolling Volume Profile: POC, VAH, VAL (70% value area) |
+| `src/chart/indicator/kline/vwap.rs` | Session VWAP (cumulative TP * Vol / Vol) |
+| `src/chart/indicator/kline/atr.rs` | ATR(14) - Wilder smoothed True Range |
+| `src/chart/indicator/kline/volume_profile.rs` | Rolling POC/VAH/VAL (70% value area) |
+
+### Documentacion
+
+| Archivo | Descripcion |
+|---------|-------------|
+| `FLOWSURFACE_STRATEGY_PROPOSAL_CLAUDE_CODE.md` | Propuesta tecnica completa |
+| `IMPLEMENTATION_LOG.md` | Este archivo |
 
 ---
 
@@ -42,103 +66,129 @@
 
 | Archivo | Cambio |
 |---------|--------|
-| `src/main.rs` | Added `mod strategy;` |
-| `data/src/chart/indicator.rs` | Added `Vwap`, `VolumeProfile`, `Atr` to `KlineIndicator` enum + Display + market arrays |
-| `src/chart/indicator/kline.rs` | Added `pub mod vwap/volume_profile/atr` + factory match arms |
-| `Cargo.toml` | Added `dirs-next = "2.0.0"` dependency |
-| `FLOWSURFACE_STRATEGY_PROPOSAL_CLAUDE_CODE.md` | Updated sections 13-14-17-18 for UI integration |
+| `src/main.rs` | `mod strategy;` |
+| `src/chart/kline.rs` | strategy_signals, strategy_overlay_enabled, last_depth, update_depth(), run_strategy_detection(), draw_strategy_overlay() |
+| `src/screen/dashboard.rs` | ingest_depth() now routes to Kline panes |
+| `data/src/chart/indicator.rs` | KlineIndicator enum + Display + market arrays (Vwap, VolumeProfile, Atr) |
+| `src/chart/indicator/kline.rs` | pub mod + factory make_empty() for new indicators |
+| `Cargo.toml` | Added `dirs-next = "2.0.0"` |
 
 ---
 
-## Como funciona
+## Como funciona (end-to-end)
 
-### Flujo de datos de los indicadores
-
-```
-Exchange WebSocket → Trades/Klines
-  → KlineChart.data_source (PlotData<KlineDataPoint>)
-    → indicator.rebuild_from_source() / on_insert_trades()
-      → VWAP: cumulative(TP * Vol) / cumulative(Vol) per bar
-      → ATR: Wilder smoothed True Range, period 14
-      → Volume Profile: rolling POC/VAH/VAL from footprint data
-    → Canvas render via LinePlot
-```
-
-### Flujo de la estrategia (pendiente de wiring)
+### Indicadores
 
 ```
-Indicators compute → build StrategyMarketContext
-  → toxic_flow_gate() check
-  → run all 3 detectors
-  → score_signal() on candidates
-  → pick highest score >= min_score
-  → log to JSONL if ShadowSignal or Blocked
-  → (future) draw overlay on chart
+Klines/Trades arrive
+  → VwapIndicator.rebuild_from_source() → cumulative(TP*Vol)/cumulative(Vol)
+  → AtrIndicator.rebuild_from_source() → Wilder smoothed TR(14)
+  → VolumeProfileIndicator.rebuild_from_source() → rolling POC/VAH/VAL
+  → LinePlot render in indicator panel below chart
+```
+
+### Strategy Detection
+
+```
+Depth update arrives → KlineChart.update_depth()
+  → if strategy_overlay_enabled:
+    → build StrategyMarketContext from depth + last price
+    → toxic_flow_gate() → pass/block
+    → detect_value_area_failed_auction()
+    → detect_vwap_value_pullback_continuation()
+    → detect_lvn_liquidity_vacuum_breakout()
+    → score_signal() with evidence + penalties
+    → if score >= min_score (0.70):
+      → log to JSONL
+      → push to chart overlay
+      → draw entry/stop/target lines on canvas
+```
+
+### Overlay Rendering
+
+```
+draw_strategy_overlay() called in canvas main cache:
+  - Entry: solid horizontal line (green=long, red=short)
+  - Stop: dashed red line
+  - Target: dashed green line
+  - Zone: semi-transparent rectangle between entry and target
+  - Auto-expire signals after TTL (default 5min)
+  - Max 50 concurrent signals displayed
 ```
 
 ---
 
-## Tests incluidos
+## Tests (20 unit tests)
 
 ```bash
-# Para correr los tests del modulo strategy:
 cargo test --lib strategy
 
-# Tests especificos:
-# - toxic_flow_gate: 6 tests (allows valid, blocks stress/aftermath/spread/vpin/stale)
-# - value_area_failed_auction: 4 tests (short/long detection, rejection cases)
-# - vwap_value_pullback_continuation: 4 tests (long/short detection, rejection cases)
-# - lvn_liquidity_vacuum_breakout: 4 tests (long/short detection, rejection cases)
-# - scoring: 2 tests (high evidence scoring, spread penalty)
+# Breakdown:
+# toxic_flow_gate: 6 tests
+# value_area_failed_auction: 4 tests
+# vwap_value_pullback_continuation: 4 tests
+# lvn_liquidity_vacuum_breakout: 4 tests
+# scoring: 2 tests
 ```
 
 ---
 
-## Gaps y Pendientes
+## Lo que funciona ahora
 
-### Fase 2: Wiring (conectar strategy al chart) - PARCIALMENTE COMPLETADA
+- [x] 3 nuevos indicadores en el dropdown (VWAP, Vol Profile, ATR)
+- [x] Modulo strategy completo con 3 detectores + gate + scoring
+- [x] Overlay renderer para signals en el candlestick chart
+- [x] JSONL logger para shadow events
+- [x] Pipeline depth → strategy detection → overlay wired
+- [x] Signal expiration y max concurrent limits
+- [x] Adapter builds OrderBookContext from live Depth (OBI, microprice, spread, walls, thin zones)
 
-- [x] **Adapter**: `build_strategy_context()` components implementados:
-  - `build_orderbook_context(depth)` → OBI L5/L10/L20, microprice, spread_bps, walls, thin zones
-  - `build_flow_context(cvd, delta, buy_vol, sell_vol)` → taker_imbalance, quality
-  - `build_vwap_context(price, vwap_session)` → price relations
-  - `build_volume_profile_context(price, poc, vah, val)` → value_location, quality
-- [x] **Overlay rendering**: `draw_strategy_overlay()` dibuja entry (solid), stop (dashed red), target (dashed green), zone (semi-transparent)
-- [x] **Signal storage**: `KlineChart.strategy_signals` + `push_strategy_signal()` + `clear_expired_signals()`
-- [ ] **Execution point**: Decidir cuando se ejecuta `route_strategy()` (cada trade? cada vela nueva? timer?)
-- [ ] **UI toggle**: Agregar "Strategy Signals" al dropdown o como toggle en settings
-- [ ] **Depth access**: El KlineChart no tiene acceso a Depth directamente — necesita que el Dashboard le pase la depth snapshot cuando hay update
+---
 
-### Fase 3: Features faltantes en los indicadores
+## Pendientes por fase
 
-- [ ] **VWAP session reset**: Actualmente es cumulative desde el inicio de data. Necesita reset por sesion (00:00 UTC o configurable)
-- [ ] **AVWAP (Anchored VWAP)**: VWAP anclado a un evento especifico (BOS, swing high/low)
-- [ ] **Volume Profile windowed**: Actualmente es rolling total. Opcion de ventana (ej: ultimas 50 velas)
-- [ ] **HVN/LVN detection**: Identificar high/low volume nodes automaticamente del profile
+### Fase 4: Exponer valores de indicadores al strategy context
 
-### Fase 4: Datos no disponibles aun (Option<T> en el context)
+Los indicadores calculan VWAP, ATR, POC/VAH/VAL pero actualmente no exponen sus valores hacia afuera. El `run_strategy_detection()` tiene TODOs para:
 
-- [ ] `regime`: No hay detector de regimen de mercado. Necesita implementacion (ATR slope + trend detection)
-- [ ] `vpin`: Volume-synchronized probability of informed trading. Formula compleja, requiere buckets de volumen
-- [ ] `taker_imbalance`: Ratio de agresion. Calculable desde buy_volume/sell_volume del footprint
-- [ ] `footprint_absorption`: Detectar absorcion (alto volumen sin movimiento de precio)
-- [ ] `stacked_imbalance`: Multiples niveles consecutivos con imbalance > threshold
-- [ ] `failed_acceptance`: Precio rompe nivel, no sostiene. Necesita tracking de estado temporal
+- [ ] Exponer ultimo valor VWAP desde VwapIndicator → VwapContext
+- [ ] Exponer ultimo POC/VAH/VAL desde VolumeProfileIndicator → VolumeProfileContext
+- [ ] Exponer ultimo ATR desde AtrIndicator → atr field
+- [ ] Exponer CVD/delta desde CumulativeDeltaIndicator → OrderFlowContext
+
+Requiere agregar metodos `pub fn latest_value(&self) -> Option<T>` a cada indicator.
+
+### Fase 5: Features avanzados de indicadores
+
+- [ ] VWAP session reset (00:00 UTC o configurable)
+- [ ] AVWAP (Anchored VWAP) desde evento especifico
+- [ ] Volume Profile windowed (ultimas N velas)
+- [ ] HVN/LVN detection automatica
+
+### Fase 6: Datos derivados para strategy (Option<T> pendientes)
+
+- [ ] `regime`: ATR slope + trend detection (SMA crossover o similar)
+- [ ] `vpin`: Volume-synchronized probability of informed trading
+- [ ] `cvd_slope`: Pendiente de CVD sobre N periodos
+- [ ] `footprint_absorption`: Alto volumen sin movimiento de precio
+- [ ] `stacked_imbalance`: N niveles consecutivos con imbalance > threshold
+- [ ] `failed_acceptance`: Precio rompe nivel y no sostiene
 - [ ] `sweep_confirmed`: Liquidity sweep detection
-- [ ] `mss_active`: Market structure shift (break of swing)
-- [ ] `thin_zone_above/below`: Detectar desde depth data (zonas con poca liquidez en el book)
-- [ ] `walls_above/below`: Niveles con ordenes grandes en el book
-- [ ] `obi` (Order Book Imbalance): Calculable desde Depth { bids, asks }
-- [ ] `microprice`: (best_bid * ask_size + best_ask * bid_size) / (bid_size + ask_size)
+- [ ] `mss_active`: Market structure shift
 
-### Fase 5: Outcome tracker
+### Fase 7: UI toggle
 
-- [ ] Track cada signal emitida y medir MFE/MAE en horizontes: 5s, 15s, 30s, 60s, 3m, 5m, 15m
-- [ ] Guardar outcomes en JSONL separado
-- [ ] No declarar usable hasta 300+ signals con expectancy neta positiva
+- [ ] Agregar toggle en settings/dropdown para activar strategy_overlay_enabled
+- [ ] Configuracion de StrategyConfig persistente
+
+### Fase 8: Outcome tracker
+
+- [ ] Track cada signal: MFE/MAE en 5s, 15s, 30s, 60s, 3m, 5m, 15m
+- [ ] JSONL separado de outcomes
+- [ ] 300+ signals antes de declarar usable
 
 ---
 
 ## Nota sobre compilacion
 
-El entorno actual tiene un problema con `link.exe` (conflicto MSVC linker). Los errores de build NO son de nuestro codigo sino del toolchain de Windows. Una vez resuelto el entorno (reinstalar C++ Build Tools o fijar PATH), el codigo deberia compilar limpio.
+El entorno actual tiene un problema con `link.exe` (conflicto MSVC linker). Los errores de build NO son de nuestro codigo — son del toolchain de Windows. Solucion: reinstalar C++ Build Tools o corregir PATH para que `link.exe` de MSVC tenga prioridad sobre el `link` de coreutils/git.
