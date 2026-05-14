@@ -184,6 +184,13 @@ impl KlineIndicatorImpl for VwapIndicator {
         self.indicator_elem(chart, visible_range)
     }
 
+    fn latest_vwap(&self) -> Option<f64> {
+        match &self.data {
+            data::chart::BasisSeries::Time(map) => map.values().last().map(|p| p.vwap as f64),
+            data::chart::BasisSeries::Tick(map) => map.values().last().map(|p| p.vwap as f64),
+        }
+    }
+
     fn overlay_line_points(&self, earliest: u64, latest: u64) -> Vec<(u64, f32)> {
         self.visible_points(earliest, latest)
             .into_iter()

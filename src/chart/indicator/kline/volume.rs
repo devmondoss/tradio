@@ -90,6 +90,15 @@ impl KlineIndicatorImpl for VolumeIndicator {
         self.indicator_elem(chart, visible_range)
     }
 
+    fn latest_volume(&self) -> Option<(f64, f64)> {
+        let vol = match &self.data {
+            data::chart::BasisSeries::Time(map) => map.values().last().copied(),
+            data::chart::BasisSeries::Tick(map) => map.values().last().copied(),
+        }?;
+        vol.buy_sell()
+            .map(|(b, s)| (f32::from(b) as f64, f32::from(s) as f64))
+    }
+
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
         self.data = source.map_basis_series(
             |timeseries| timeseries.volume_data(),

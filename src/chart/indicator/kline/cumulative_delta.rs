@@ -173,6 +173,17 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
         self.availability.clone()
     }
 
+    fn latest_cvd(&self) -> Option<(f64, f64)> {
+        match &self.data {
+            data::chart::BasisSeries::Time(map) => map.values().last().map(|p| {
+                (p.cumulative.to_f32_lossy() as f64, p.delta.to_f32_lossy() as f64)
+            }),
+            data::chart::BasisSeries::Tick(map) => map.values().last().map(|p| {
+                (p.cumulative.to_f32_lossy() as f64, p.delta.to_f32_lossy() as f64)
+            }),
+        }
+    }
+
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
         let deltas = source.map_basis_series(
             |timeseries| {

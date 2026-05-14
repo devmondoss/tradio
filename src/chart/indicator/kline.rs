@@ -133,6 +133,21 @@ pub trait KlineIndicatorImpl {
         self.availability(chart).unavailable_message(indicator)
     }
 
+    /// Latest VWAP value for the current session.
+    fn latest_vwap(&self) -> Option<f64> { None }
+
+    /// Latest Volume Profile levels: (poc, vah, val).
+    fn latest_vol_profile_levels(&self) -> Option<(f64, f64, f64)> { None }
+
+    /// Latest CVD values: (cumulative, candle_delta).
+    fn latest_cvd(&self) -> Option<(f64, f64)> { None }
+
+    /// Latest candle volume: (buy, sell). None when buy/sell split unavailable.
+    fn latest_volume(&self) -> Option<(f64, f64)> { None }
+
+    /// Latest ATR(14) value.
+    fn latest_atr(&self) -> Option<f64> { None }
+
     /// Expose existing OI data for bootstrapping dependent indicators.
     /// Only implemented by OpenInterestIndicator.
     fn oi_snapshot(&self) -> Option<Vec<exchange::OpenInterest>> {

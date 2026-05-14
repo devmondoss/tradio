@@ -923,23 +923,33 @@ impl KlineChart {
 
         let orderbook = adapter::build_orderbook_context(depth);
 
-        // Extract VWAP from indicator if active
         let vwap_value = self.indicators[KlineIndicator::Vwap]
             .as_ref()
-            .and_then(|_| None::<f64>); // TODO: expose VWAP value from indicator
-
+            .and_then(|i| i.latest_vwap());
         let vwap = adapter::build_vwap_context(price, vwap_value);
 
-        // Extract Volume Profile from indicator if active
-        let (poc, vah, val) = (None, None, None); // TODO: expose from indicator
+        let (poc, vah, val) = self.indicators[KlineIndicator::VolumeProfile]
+            .as_ref()
+            .and_then(|i| i.latest_vol_profile_levels())
+            .map(|(p, h, l)| (Some(p), Some(h), Some(l)))
+            .unwrap_or((None, None, None));
         let volume_profile = adapter::build_volume_profile_context(price, poc, vah, val);
 
-        // Extract CVD/delta from indicator if active
-        let (cvd, delta, buy_vol, sell_vol) = (None, None, None, None); // TODO: expose from indicators
+        let (cvd, delta) = self.indicators[KlineIndicator::CumulativeDelta]
+            .as_ref()
+            .and_then(|i| i.latest_cvd())
+            .map(|(c, d)| (Some(c), Some(d)))
+            .unwrap_or((None, None));
+        let (buy_vol, sell_vol) = self.indicators[KlineIndicator::Volume]
+            .as_ref()
+            .and_then(|i| i.latest_volume())
+            .map(|(b, s)| (Some(b), Some(s)))
+            .unwrap_or((None, None));
         let flow = adapter::build_flow_context(cvd, delta, buy_vol, sell_vol);
 
-        // Extract ATR from indicator if active
-        let atr = None; // TODO: expose from indicator
+        let atr = self.indicators[KlineIndicator::Atr]
+            .as_ref()
+            .and_then(|i| i.latest_atr());
 
         let ctx = StrategyMarketContext {
             symbol: self.chart.ticker_info.ticker.to_string(),

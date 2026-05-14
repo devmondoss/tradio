@@ -342,6 +342,11 @@ impl KlineIndicatorImpl for VolumeProfileIndicator {
         vec![band]
     }
 
+    fn latest_vol_profile_levels(&self) -> Option<(f64, f64, f64)> {
+        self.latest_levels()
+            .map(|p| (p.poc as f64, p.vah as f64, p.val as f64))
+    }
+
     fn overlay_volume_profile(&self) -> &[ProfileBar] {
         &self.histogram
     }

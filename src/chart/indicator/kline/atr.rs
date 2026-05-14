@@ -159,6 +159,13 @@ impl KlineIndicatorImpl for AtrIndicator {
         self.indicator_elem(chart, visible_range)
     }
 
+    fn latest_atr(&self) -> Option<f64> {
+        match &self.data {
+            data::chart::BasisSeries::Time(map) => map.values().last().map(|v| *v as f64),
+            data::chart::BasisSeries::Tick(map) => map.values().last().map(|v| *v as f64),
+        }
+    }
+
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
         self.data = source.map_basis_series(
             |timeseries| Self::compute_atr_time(&timeseries.datapoints),
