@@ -1,112 +1,124 @@
-# Flowsurface
+# Flowsurface — inkamaia19's fork
 
-[![Crates.io](https://img.shields.io/crates/v/flowsurface)](https://crates.io/crates/flowsurface)
-[![Lint](https://github.com/flowsurface-rs/flowsurface/actions/workflows/lint.yml/badge.svg)](https://github.com/flowsurface-rs/flowsurface/actions/workflows/lint.yml)
-[![Format](https://github.com/flowsurface-rs/flowsurface/actions/workflows/format.yml/badge.svg)](https://github.com/flowsurface-rs/flowsurface/actions/workflows/format.yml)
-[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white)](https://discord.gg/RN2XAF7ZuR)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/flowsurface-rs/flowsurface/blob/main/LICENSE)
 [![Made with iced](https://iced.rs/badge.svg)](https://github.com/iced-rs/iced)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
 
-An open-source native desktop charting application for crypto markets. Supports Binance, Bybit, Hyperliquid, OKX, and MEXC.
+A personal fork of [flowsurface-rs/flowsurface](https://github.com/flowsurface-rs/flowsurface) — a native desktop charting application for crypto markets built with Rust and iced.
 
-<div align="center">
-  <img
-    src="https://github.com/user-attachments/assets/baddc444-e079-48e5-82b2-4f97094eba07"
-    alt="Flowsurface screenshot"
-    style="max-width: 100%; height: auto;"
-  />
-</div>
+This fork extends the upstream project with a full suite of microstructural indicators and a shadow-only strategy detection engine for discretionary trade analysis.
 
-### Key Features
+---
 
--   Multiple chart/panel types:
-    -   **Heatmap (Historical DOM):** Uses live trades and L2 orderbook to create a time-series heatmap chart. Supports customizable price grouping, different time aggregations, fixed or visible range volume profiles.
-    -   **Candlestick:** Traditional kline chart supporting both time-based and custom tick-based intervals.
-    -   **Footprint:** Price grouped and interval aggregated views for trades on top of a candlestick chart. Supports different clustering methods, configurable imbalance and naked-POC studies.
-    -   **Time & Sales:** Scrollable list of live trades.
-    -   **DOM (Depth of Market) / Ladder:** Displays current L2 orderbook alongside recent trade volumes on grouped price levels.
-    -   **Comparison:** Line graph for comparing multiple data sources, normalized by kline `close` prices on a percentage scale
--   Real-time sound effects driven by trade streams
--   Multi window/monitor support
--   Pane linking for quickly switching tickers across multiple panes
--   Persistent layouts and customizable themes with editable color palettes
+## What this fork adds
 
-##### Market data is received directly from exchanges' public REST APIs and WebSockets
+### Indicators
 
-#
+| Indicator | Panel | Description |
+|-----------|-------|-------------|
+| VWAP | Overlay on kline | Session VWAP (UTC daily reset) with ±1σ / ±2σ bands |
+| Volume Profile | Overlay on kline | 150-bin histogram, POC / VAH / VAL / HVN / LVN coloring, 300-candle window |
+| CVD (Cumulative Volume Delta) | Sub-panel | Cumulative buy−sell delta; slope computed via OLS over last 20 candles |
+| ATR | Sub-panel | Average True Range, 14-period |
+| Open Interest | Sub-panel | Perpetuals OI fetched from exchange REST API |
+| OI Delta | Sub-panel | Candle-by-candle OI change (green = new longs/shorts, red = deleveraging) |
 
-#### Historical Trades on Footprint Charts:
+### Strategy detection engine (shadow-only)
 
--   By default, it captures and plots live trades in real time via WebSocket.
--   For Binance tickers, you can optionally backfill the visible time range by enabling trade fetching in the settings:
-    -   [data.binance.vision](https://data.binance.vision/): Fast daily bulk downloads (no intraday).
-    -   REST API (e.g., `/fapi/v1/aggTrades`): Slower, paginated intraday fetching (subject to rate limits).
-    -   The Binance connector can use either or both methods to retrieve historical data as needed.
--   Fetching trades for Bybit/Hyperliquid is not supported, as both lack a suitable REST API. OKX is WIP.
+An 8-phase microstructural analysis pipeline that detects high-probability setups and logs them for backreview — no orders are ever placed.
 
-## Installation
+**3 detectors:**
 
-### Method 1: Prebuilt Binaries
+| Detector | Logic summary |
+|----------|---------------|
+| `LvnLiquidityVacuumBreakout` | Price at LVN + aggressive CVD + trend regime → breakout continuation |
+| `AbsorptionReversal` | Failed acceptance at VAH/VAL + divergent delta + absorption side → reversal |
+| `TrendContinuationPullback` | Trend regime + pullback to VWAP/POC + CVD alignment → continuation entry |
 
-Standalone executables are available for Windows, macOS, and Linux on the [Releases page](https://github.com/flowsurface-rs/flowsurface/releases).
+**Pipeline per depth update:**
 
-<details>
-<summary><strong>Having trouble running the file? (Permission/Security warnings)</strong></summary>
- 
-Since these binaries are currently unsigned they might get flagged.
-
--   **Windows**: If you see a "Windows protected your PC" pop-up, click **More info** -> **Run anyway**.
--   **macOS**: If you see "Developer cannot be verified", control-click (right-click) the app and select **Open**, or go to _System Settings > Privacy & Security_ to allow it.
-</details>
-
-### Method 2: Build from Source
-
-#### Requirements
-
--   [Rust toolchain](https://www.rust-lang.org/tools/install)
--   [Git version control system](https://git-scm.com/)
--   System dependencies:
-    -   **Linux**:
-        -   Debian/Ubuntu: `sudo apt install build-essential pkg-config libasound2-dev`
-        -   Arch: `sudo pacman -S base-devel alsa-lib`
-        -   Fedora: `sudo dnf install gcc make alsa-lib-devel`
-    -   **macOS**: Install Xcode Command Line Tools: `xcode-select --install`
-    -   **Windows**: No additional dependencies required
-
-#### Option A: `cargo install`
-
-```bash
-# Install latest globally
-cargo install --git https://github.com/flowsurface-rs/flowsurface flowsurface
-
-# Run
-flowsurface
+```
+depth update
+  → build StrategyMarketContext
+      ├─ flow:    CVD slope, VPIN, stacked imbalance, absorption side
+      ├─ vwap:    latest VWAP, bands, AVWAP BOS anchor
+      ├─ vol_profile: POC, VAH, VAL, HVN list, LVN list
+      ├─ regime:  OLS regression on last 20 closes, normalized by ATR
+      └─ positioning: OI, OI delta, failed acceptance flag
+  → toxic flow gate (skip if data insufficient)
+  → run detectors → score signals (0.0–1.0)
+  → shadow signals: render overlay + log to JSONL
+  → OutcomeTracker: track MFE/MAE until target/stop/TTL
 ```
 
-#### Option B: Cloning the repo
+**Toggle:** the `⭐` button in any kline chart toolbar activates/deactivates the overlay.
 
-```bash
-# Clone the repository
-git clone https://github.com/flowsurface-rs/flowsurface
+### Outcome tracking
 
-cd flowsurface
+Every signal is tracked in real time until it closes. Results are written to:
 
-# Build and run
-cargo build --release
-cargo run --release
+```
+%APPDATA%\Roaming\flowsurface\shadow_events\
+├── strategy_signals.jsonl    — signal at detection time
+└── strategy_outcomes.jsonl   — MFE, MAE, outcome (target/stop/expired)
 ```
 
-## Credits and thanks to
+Fields tracked per outcome: `mfe`, `mae`, `mfe_r`, `mae_r` (in price units and R-multiples).
 
--   [Kraken Desktop](https://www.kraken.com/desktop) (formerly [Cryptowatch](https://blog.kraken.com/product/cryptowatch-to-sunset-kraken-pro-to-integrate-cryptowatch-features)), the main inspiration that sparked this project
--   [Halloy](https://github.com/squidowl/halloy), an excellent open-source reference for the foundational code design and the project architecture
--   And of course, [iced](https://github.com/iced-rs/iced), the GUI library that makes all of this possible
+---
 
-## Community
+## Original features (upstream)
 
-For feedback, questions, or for more casual conversations about the project, join our community on Discord:  
-https://discord.gg/RN2XAF7ZuR
+- **Heatmap (Historical DOM):** L2 orderbook + trades as a time-series heatmap with configurable price grouping
+- **Candlestick:** Time-based and tick-based kline charts
+- **Footprint:** Trade clustering over candlesticks with imbalance and naked-POC studies
+- **Time & Sales:** Scrollable live trade feed
+- **DOM / Ladder:** L2 orderbook with grouped price levels
+- **Comparison chart:** Normalized multi-asset line graph
+- Exchange support: Binance, Bybit, Hyperliquid, OKX, MEXC
+- Persistent layouts, customizable themes, pane linking, multi-monitor support
+
+---
+
+## Building on Windows
+
+This project requires the **GNU toolchain** (not MSVC) on Windows because Git ships its own `link.exe` which breaks MSVC builds.
+
+**Prerequisites:**
+
+```powershell
+# Install MinGW-w64
+winget install BrechtSanders.WinLibs.POSIX.UCRT
+
+# Set toolchain override (one-time, per project dir)
+rustup override set stable-x86_64-pc-windows-gnu
+```
+
+**Run:**
+
+```bat
+./run.bat
+```
+
+`run.bat` sets the MinGW PATH, enables `RUST_BACKTRACE=1`, and calls `cargo run`.
+
+See [`docs/BUILD.md`](docs/BUILD.md) for full details including the `cargo check` recipe.
+
+---
+
+## Documentation
+
+| File | Contents |
+|------|----------|
+| [`docs/BUILD.md`](docs/BUILD.md) | Build setup, toolchain, MinGW, PowerShell recipe |
+| [`docs/INDICATORS.md`](docs/INDICATORS.md) | All indicators: formulas, structs, constants, trait methods |
+| [`docs/STRATEGY.md`](docs/STRATEGY.md) | Full strategy pipeline: context, detectors, scoring, adapter, tracker |
+| [`docs/BUGS_Y_FIXES.md`](docs/BUGS_Y_FIXES.md) | All resolved bugs with root cause and fix |
+| [`docs/PENDIENTE.md`](docs/PENDIENTE.md) | Planned improvements and future indicators |
+
+---
 
 ## License
 
-Flowsurface is released under the [GPLv3](./LICENSE) license. Contributions to the project are shared under the same license.  
+GPL v3 — same as the upstream project.
+
+Upstream: [flowsurface-rs/flowsurface](https://github.com/flowsurface-rs/flowsurface)
