@@ -981,6 +981,9 @@ impl KlineChart {
         let cvd_slope = self.indicators[KlineIndicator::CumulativeDelta]
             .as_ref()
             .and_then(|i| i.latest_cvd_slope());
+        let vpin = self.indicators[KlineIndicator::CumulativeDelta]
+            .as_ref()
+            .and_then(|i| i.latest_vpin());
         let (buy_vol, sell_vol) = self.indicators[KlineIndicator::Volume]
             .as_ref()
             .and_then(|i| i.latest_volume())
@@ -1029,10 +1032,11 @@ impl KlineChart {
                 delta,
                 cvd_slope,
             );
+        let cvd_divergence = adapter::derive_cvd_divergence(&recent_highs, &recent_lows, cvd_slope);
 
         let flow = adapter::build_flow_context(
             cvd, cvd_slope, delta, buy_vol, sell_vol,
-            failed_acceptance, footprint_absorption,
+            vpin, failed_acceptance, footprint_absorption, cvd_divergence,
         );
 
         let ctx = StrategyMarketContext {
@@ -1544,6 +1548,10 @@ impl canvas::Program<Message> for KlineChart {
 
             chart.draw_last_price_line(frame, palette, region);
 
+            if let PlotData::TimeBased(ts) = &self.data_source {
+                draw_session_lines(frame, &region, earliest, latest, ts.interval.to_milliseconds(), interval_to_x);
+            }
+
             self.draw_indicator_overlays(frame, &region, earliest, latest, interval_to_x, price_to_y);
 
             if self.strategy_overlay_enabled {
@@ -1869,6 +1877,59 @@ fn draw_all_npocs(
                 })
                 .for_each(|(interval, poc)| draw_the_line(interval, poc));
         }
+    }
+}
+
+/// Draws subtle vertical dashed lines at UTC session open times for time-based charts.
+/// Sessions: Asia 00:00, London 08:00, New York 13:00.
+/// Only drawn when timeframe <= 4h so lines are meaningful.
+fn draw_session_lines(
+    frame: &mut canvas::Frame,
+    region: &Rectangle,
+    earliest: u64,
+    latest: u64,
+    timeframe_ms: u64,
+    interval_to_x: impl Fn(u64) -> f32,
+) {
+    if timeframe_ms > 4 * 3600 * 1000 {
+        return;
+    }
+
+    const DAY_MS: u64 = 86_400_000;
+    const SESSION_OFFSETS: &[(u64, Color)] = &[
+        (0,                      Color { r: 0.40, g: 0.70, b: 1.00, a: 0.20 }), // Asia
+        (8  * 3600 * 1000,       Color { r: 0.35, g: 0.90, b: 0.45, a: 0.20 }), // London
+        (13 * 3600 * 1000,       Color { r: 1.00, g: 0.60, b: 0.25, a: 0.20 }), // New York
+    ];
+
+    let first_day = (earliest / DAY_MS) * DAY_MS;
+    let last_day  = (latest  / DAY_MS) * DAY_MS + DAY_MS;
+
+    let mut day = first_day;
+    while day <= last_day {
+        for &(offset, color) in SESSION_OFFSETS {
+            let ts = day + offset;
+            if ts < earliest || ts > latest {
+                continue;
+            }
+            let x = interval_to_x(ts);
+            if !x.is_finite() {
+                continue;
+            }
+            let stroke = Stroke {
+                style: canvas::stroke::Style::Solid(color),
+                width: 1.0,
+                line_dash: LineDash { segments: &[5.0, 5.0], offset: 0 },
+                ..Stroke::default()
+            };
+            let top    = Point::new(x, region.y - region.height);
+            let bottom = Point::new(x, region.y + region.height * 2.0);
+            if !top.y.is_finite() || !bottom.y.is_finite() {
+                continue;
+            }
+            frame.stroke(&Path::line(top, bottom), stroke);
+        }
+        day += DAY_MS;
     }
 }
 

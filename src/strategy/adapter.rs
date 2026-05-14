@@ -104,8 +104,10 @@ pub fn build_flow_context(
     delta: Option<f64>,
     buy_volume: Option<f64>,
     sell_volume: Option<f64>,
+    vpin: Option<f64>,
     failed_acceptance: bool,
     footprint_absorption: AbsorptionSide,
+    cvd_divergence: Option<CvdDivergence>,
 ) -> OrderFlowContext {
     let taker_imbalance = match (buy_volume, sell_volume) {
         (Some(buy), Some(sell)) => {
@@ -126,7 +128,8 @@ pub fn build_flow_context(
         taker_imbalance,
         buy_volume,
         sell_volume,
-        vpin: None,
+        vpin,
+        cvd_divergence,
         footprint_absorption,
         stacked_imbalance: ImbalanceSide::Unknown,
         failed_acceptance,
@@ -138,6 +141,35 @@ pub fn build_flow_context(
             DataQuality::Missing
         },
     }
+}
+
+/// Detects CVD divergence against price action over the last N candles.
+/// Bearish: price made higher high but CVD slope is declining → absorption at highs.
+/// Bullish: price made lower low but CVD slope is rising → absorption at lows.
+pub fn derive_cvd_divergence(
+    recent_highs: &[f64],
+    recent_lows: &[f64],
+    cvd_slope: Option<f64>,
+) -> Option<CvdDivergence> {
+    const N: usize = 10;
+    if recent_highs.len() < N || recent_lows.len() < N {
+        return None;
+    }
+    let slope = cvd_slope?;
+    let highs = &recent_highs[recent_highs.len() - N..];
+    let lows = &recent_lows[recent_lows.len() - N..];
+    let mid = N / 2;
+    let first_max = highs[..mid].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let last_max = highs[mid..].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let first_min = lows[..mid].iter().copied().fold(f64::INFINITY, f64::min);
+    let last_min = lows[mid..].iter().copied().fold(f64::INFINITY, f64::min);
+    if last_max > first_max * 1.0001 && slope < -0.5 {
+        return Some(CvdDivergence::BearishAbsorption);
+    }
+    if last_min < first_min * 0.9999 && slope > 0.5 {
+        return Some(CvdDivergence::BullishAbsorption);
+    }
+    None
 }
 
 /// Derives market regime from recent close prices (oldest-first) and current ATR.

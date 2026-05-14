@@ -37,6 +37,8 @@ pub struct CumulativeDeltaIndicator {
     delta: BasisSeries<Qty>,
     data: BasisSeries<CumulativeDeltaPoint>,
     availability: IndicatorAvailability,
+    /// Candle-level approximation: mean(|delta_i| / vol_i) over last 50 candles.
+    vpin: f64,
 }
 
 impl CumulativeDeltaIndicator {
@@ -46,6 +48,7 @@ impl CumulativeDeltaIndicator {
             delta: BasisSeries::default(),
             data: BasisSeries::default(),
             availability: IndicatorAvailability::Unknown,
+            vpin: 0.0,
         }
     }
 
@@ -134,16 +137,83 @@ impl CumulativeDeltaIndicator {
     }
 
     fn rebuild_cumulative(&mut self) {
-        let mut cumulative = Qty::ZERO;
-        self.data = self.delta.map(|delta| {
-            cumulative += *delta;
-            CumulativeDeltaPoint {
-                delta: *delta,
-                cumulative,
+        let new_data = match &self.delta {
+            data::chart::BasisSeries::Time(deltas) => {
+                let mut cumulative = Qty::ZERO;
+                let mut current_day: i64 = -1;
+                let result: std::collections::BTreeMap<exchange::UnixMs, CumulativeDeltaPoint> =
+                    deltas
+                        .iter()
+                        .map(|(time, delta)| {
+                            let t = *time;
+                            let d = *delta;
+                            let day = t.as_u64() as i64 / 86_400_000;
+                            if day != current_day {
+                                current_day = day;
+                                cumulative = Qty::ZERO;
+                            }
+                            cumulative += d;
+                            (t, CumulativeDeltaPoint { delta: d, cumulative })
+                        })
+                        .collect();
+                data::chart::BasisSeries::Time(result)
             }
-        });
-
+            data::chart::BasisSeries::Tick(deltas) => {
+                let mut cumulative = Qty::ZERO;
+                let result: std::collections::BTreeMap<u64, CumulativeDeltaPoint> = deltas
+                    .iter()
+                    .map(|(idx, delta)| {
+                        let i = *idx;
+                        let d = *delta;
+                        cumulative += d;
+                        (i, CumulativeDeltaPoint { delta: d, cumulative })
+                    })
+                    .collect();
+                data::chart::BasisSeries::Tick(result)
+            }
+        };
+        self.data = new_data;
         self.clear_all_caches();
+    }
+
+    fn compute_vpin(source: &PlotData<KlineDataPoint>) -> f64 {
+        const N: usize = 50;
+        let ratios: Vec<f64> = match source {
+            PlotData::TimeBased(ts) => ts
+                .datapoints
+                .values()
+                .rev()
+                .take(N)
+                .filter_map(|dp| {
+                    let vol = f64::from(f32::from(dp.kline.volume.total()));
+                    if vol <= 0.0 {
+                        return None;
+                    }
+                    let delta = Self::datapoint_delta(dp).to_f32_lossy() as f64;
+                    Some(delta.abs() / vol)
+                })
+                .collect(),
+            PlotData::TickBased(ta) => ta
+                .datapoints
+                .iter()
+                .rev()
+                .take(N)
+                .filter_map(|dp| {
+                    let vol = f64::from(f32::from(dp.kline.volume.total()));
+                    if vol <= 0.0 {
+                        return None;
+                    }
+                    let delta =
+                        Self::delta_from_parts(&dp.footprint, dp.kline.volume).to_f32_lossy()
+                            as f64;
+                    Some(delta.abs() / vol)
+                })
+                .collect(),
+        };
+        if ratios.is_empty() {
+            return 0.0;
+        }
+        ratios.iter().sum::<f64>() / ratios.len() as f64
     }
 
     fn rebuild_from_deltas(&mut self, deltas: BasisSeries<Qty>) {
@@ -182,6 +252,10 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
                 (p.cumulative.to_f32_lossy() as f64, p.delta.to_f32_lossy() as f64)
             }),
         }
+    }
+
+    fn latest_vpin(&self) -> Option<f64> {
+        if self.vpin > 0.0 { Some(self.vpin) } else { None }
     }
 
     fn latest_cvd_slope(&self) -> Option<f64> {
@@ -263,7 +337,7 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
         };
 
         self.set_availability(has_points, has_directional);
-
+        self.vpin = Self::compute_vpin(source);
         self.rebuild_from_deltas(deltas);
     }
 

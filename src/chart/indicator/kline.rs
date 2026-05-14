@@ -13,6 +13,7 @@ pub mod atr;
 pub mod cumulative_delta;
 pub mod oi_delta;
 pub mod open_interest;
+pub mod relative_volume;
 pub mod volume;
 pub mod volume_profile;
 pub mod vwap;
@@ -151,6 +152,9 @@ pub trait KlineIndicatorImpl {
     /// CVD linear-regression slope over last N candles (positive = rising CVD).
     fn latest_cvd_slope(&self) -> Option<f64> { None }
 
+    /// Candle-level VPIN approximation: mean(|delta|/vol) over last 50 candles.
+    fn latest_vpin(&self) -> Option<f64> { None }
+
     /// HVN and LVN price levels within `atr`-scaled distance of `price`.
     /// Returns (hvn_nearby, lvn_nearby).
     fn latest_hvn_lvn_nearby(&self, _price: f64, _atr: f64) -> (Vec<f64>, Vec<f64>) { (vec![], vec![]) }
@@ -219,5 +223,8 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
             Box::new(super::kline::volume_profile::VolumeProfileIndicator::new())
         }
         KlineIndicator::Atr => Box::new(super::kline::atr::AtrIndicator::new()),
+        KlineIndicator::RelativeVolume => {
+            Box::new(super::kline::relative_volume::RelativeVolumeIndicator::new())
+        }
     }
 }

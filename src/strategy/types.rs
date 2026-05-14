@@ -66,6 +66,12 @@ pub enum AbsorptionSide {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CvdDivergence {
+    BearishAbsorption,
+    BullishAbsorption,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImbalanceSide {
     Bullish,
     Bearish,
@@ -104,6 +110,7 @@ pub struct OrderFlowContext {
     pub buy_volume: Option<f64>,
     pub sell_volume: Option<f64>,
     pub vpin: Option<f64>,
+    pub cvd_divergence: Option<CvdDivergence>,
     pub footprint_absorption: AbsorptionSide,
     pub stacked_imbalance: ImbalanceSide,
     pub failed_acceptance: bool,
