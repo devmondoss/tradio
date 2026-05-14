@@ -12,6 +12,7 @@ Renderizan en su propio panel debajo del chart principal usando `indicator_row` 
 | Open Interest | LinePlot | Solo Perps | Solo Tiempo |
 | OI Delta | BarPlot | Solo Perps | Solo Tiempo |
 | ATR(14) | LinePlot | Spot + Perps | Tiempo + Tick |
+| Relative Volume | BarPlot | Spot + Perps | Tiempo + Tick |
 
 ### Overlay indicators
 Renderizan directamente en el canvas de velas. No generan panel. La función
@@ -20,7 +21,9 @@ Renderizan directamente en el canvas de velas. No generan panel. La función
 | Indicador | Overlay | Mercado |
 |-----------|---------|---------|
 | VWAP | Línea + bandas σ | Spot + Perps |
-| Volume Profile | Histograma + niveles | Spot + Perps |
+| Volume Profile | Histograma VRVP + niveles | Spot + Perps |
+| Session lines | Verticales por sesión | Spot + Perps (≤4h) |
+| Key levels | PDH, PDL, Daily Open, Weekly Open | Spot + Perps (tiempo) |
 
 ---
 
@@ -50,7 +53,7 @@ fn overlay_volume_profile(&self) -> &[ProfileBar]
 fn overlay_volume_profile_max(&self) -> f64
 ```
 
-### Métodos de datos para strategy (Phase 4–5)
+### Métodos de datos para strategy
 
 ```rust
 fn latest_vwap(&self) -> Option<f64>
@@ -59,9 +62,11 @@ fn latest_vol_profile_levels(&self) -> Option<(f64, f64, f64)>   // (poc, vah, v
 fn latest_hvn_lvn_nearby(&self, price: f64, atr: f64) -> (Vec<f64>, Vec<f64>)
 fn latest_cvd(&self) -> Option<(f64, f64)>                        // (cumulative, delta)
 fn latest_cvd_slope(&self) -> Option<f64>
+fn latest_vpin(&self) -> Option<f64>                              // VPIN candle-level
 fn latest_volume(&self) -> Option<(f64, f64)>                     // (buy, sell)
 fn latest_atr(&self) -> Option<f64>
 fn oi_snapshot(&self) -> Option<Vec<exchange::OpenInterest>>
+fn update_visible_range(&mut self, earliest: u64, latest: u64, source: &PlotData<KlineDataPoint>)
 ```
 
 ### Métodos de disponibilidad
@@ -111,6 +116,8 @@ banda_inf_2  = VWAP − 2σ
 Reinicia los acumuladores en cada cambio de día UTC: `timestamp_ms / 86_400_000`.
 En charts de ticks no hay reset (sin referencia temporal fiable).
 
+El **CVD acumulado** también aplica este reset: cada vez que cambia el día UTC, `cumulative` vuelve a cero. El delta por vela (`CumulativeDeltaPoint.delta`) no se ve afectado.
+
 ### AVWAP BOS (Anchored VWAP)
 
 Ancla automática al swing-low más reciente en las últimas 50 velas.
@@ -153,8 +160,23 @@ pub struct VwapPoint {
 ```rust
 const VALUE_AREA_PCT: f64  = 0.70;   // 70% del volumen total = value area
 const HISTOGRAM_BINS: usize = 150;   // bins del histograma horizontal
-const WINDOW: usize = 300;           // velas en la ventana de cálculo
+const WINDOW: usize = 300;           // velas en la ventana base (no-VRVP)
 ```
+
+### VRVP (Visible Range Volume Profile)
+
+El histograma se recalcula automáticamente al rango visible en pantalla (scroll / zoom).
+Cada frame de rendering, `invalidate()` en `KlineChart` llama `update_visible_range(earliest, latest, source)`.
+
+El cálculo evita reconstruir el histograma si el rango no cambió:
+```rust
+if self.last_visible_range == Some((earliest, latest)) {
+    return; // sin cambio
+}
+```
+
+Para charts de tiempo: usa `ts.datapoints.range(UnixMs::new(earliest)..=UnixMs::new(latest))`.
+Para charts de tick: filtra por `dp.kline.time.as_u64()` dentro del rango.
 
 ### Distribución de volumen (sin footprint trades)
 
@@ -248,6 +270,16 @@ OLS (regresión lineal) sobre los últimos 20 valores de CVD acumulado:
 - `slope = (n·Σxy − Σx·Σy) / (n·Σx² − (Σx)²)`
 - Retorna `None` si hay menos de 3 datapoints
 - Positivo = CVD subiendo, negativo = CVD bajando
+
+### VPIN (para estrategia)
+
+```rust
+fn latest_vpin(&self) -> Option<f64>
+```
+
+Aproximación candle-level de VPIN: `mean(|delta_i| / vol_i)` sobre las últimas 50 velas.
+- `None` si `vpin == 0.0` (sin datos o todos cero)
+- Valores altos (>0.65) indican flujo tóxico — el toxic flow gate los bloquea
 
 ### Disponibilidad
 
@@ -349,6 +381,73 @@ const ATR_PERIOD: usize = 14;
 
 ---
 
+## Relative Volume
+
+**Archivo:** `src/chart/indicator/kline/relative_volume.rs`
+
+### Cálculo
+
+```
+mean[i] = media de volumen total de las últimas LOOKBACK (20) velas (excluyendo la actual)
+ratio[i] = volume[i] / mean[i]
+```
+
+Si la ventana está vacía (menos de 1 vela anterior), `mean = volume[i]` y `ratio = 1.0`.
+
+### RelativeVolumePoint struct
+
+```rust
+pub struct RelativeVolumePoint {
+    pub ratio: f32,      // volumen actual / media de los últimos 20 → 1.0 = promedio, 2.0 = doble
+    pub direction: f32,  // +1.0 si buy > sell, -1.0 si sell > buy, 0.0 si desconocido
+}
+```
+
+### Rendering
+
+`BarPlot` con `BarClass::Overlay { overlay: ratio × direction }`:
+- Barra principal: altura = ratio
+- Verde si buy > sell, rojo si sell > buy, neutro si dirección desconocida
+
+### Tooltip
+
+`"Rel Vol: 1.84x"` — muestra el ratio con 2 decimales.
+
+---
+
+## Session lines y key levels
+
+**Archivo:** `src/chart/kline.rs` (funciones libres)
+
+### Session lines
+
+Líneas verticales punteadas que marcan el inicio de cada sesión de trading. Solo se dibujan si `timeframe ≤ 4h`.
+
+| Sesión | Hora UTC | Color |
+|--------|----------|-------|
+| Asia | 00:00 | `rgba(0.2, 0.5, 1.0, 0.20)` — azul |
+| London | 08:00 | `rgba(0.2, 0.8, 0.3, 0.20)` — verde |
+| New York | 13:00 | `rgba(1.0, 0.6, 0.1, 0.20)` — naranja |
+
+`LineDash { segments: &[5.0, 5.0], offset: 0 }`
+
+### Key levels
+
+Líneas horizontales punteadas con etiqueta de texto. Solo para charts de tiempo (`PlotData::TimeBased`).
+
+| Nivel | Color | Cálculo |
+|-------|-------|---------|
+| PDH (Previous Day High) | `rgba(0.7, 0.7, 0.7, 0.55)` | Máximo de velas del día anterior UTC |
+| PDL (Previous Day Low) | `rgba(0.7, 0.7, 0.7, 0.55)` | Mínimo de velas del día anterior UTC |
+| Daily Open | `rgba(0.2, 0.8, 0.3, 0.60)` | Close de la primera vela del día UTC actual |
+| Weekly Open | `rgba(0.2, 0.5, 1.0, 0.60)` | Close de la primera vela desde el lunes UTC |
+
+`LineDash { segments: &[3.0, 6.0], offset: 0 }`
+
+**Cálculo del lunes:** `epoch_day_of_week = (current_day + 3) % 7` (día epoch 0 = jueves).
+
+---
+
 ## Registro de indicadores en el enum
 
 **Archivo:** `data/src/chart/indicator.rs`
@@ -359,9 +458,10 @@ pub enum KlineIndicator {
     CumulativeDelta,  // Spot + Perps
     OpenInterest,     // Solo Perps
     OiDelta,          // Solo Perps
-    Vwap,             // Spot + Perps
-    VolumeProfile,    // Spot + Perps
+    Vwap,             // Spot + Perps (overlay)
+    VolumeProfile,    // Spot + Perps (overlay)
     Atr,              // Spot + Perps
+    RelativeVolume,   // Spot + Perps
 }
 ```
 

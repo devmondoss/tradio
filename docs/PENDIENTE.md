@@ -4,130 +4,123 @@ Las fases 1–8 del strategy module están completadas. Lo que sigue es refinami
 
 ---
 
-## Mejoras a indicadores existentes
+## Completado (referencia histórica)
 
-### Volume Profile
-
-- **Visible Range Volume Profile (VRVP):** El perfil usa una ventana fija de 300 velas. Lo correcto es calcular el perfil del rango visible en pantalla, adaptándose al zoom. Requiere pasar `earliest/latest` al cálculo del histograma en lugar de pre-computarlo en `rebuild_from_source`.
-
-- **HVN/LVN markers en el eje de precio:** Marcar las zonas de alto/bajo volumen como líneas o marcadores en el scale lateral.
-
-- **Sesión completa vs ventana fija:** Opción para calcular el perfil desde el inicio de la sesión del día en lugar de las últimas 300 velas.
-
-### VWAP
-
-- **AVWAP manual:** VWAP anclado a un punto específico elegido por el usuario (requiere UI de selección en el chart con clic + drag).
-
-- **Sesiones:** VWAP separado por sesión Asia / London / NY.
-  | Sesión | Horario UTC |
-  |--------|-------------|
-  | Asia | 00:00–08:00 |
-  | London | 08:00–16:00 |
-  | New York | 13:00–21:00 |
-
-### CVD
-
-- **Divergencias automáticas:** Detectar cuando precio hace HH/LL pero CVD no confirma:
-  - Precio HH + CVD LH → absorción compradora (bearish)
-  - Precio LL + CVD HL → absorción vendedora (bullish)
-- **Session reset:** Resetear CVD acumulado en cada sesión diaria.
-
-### OI
-
-- **OI z-score:** Desviación del OI actual vs su media histórica (N velas).
-- **Large OI change markers:** Markers visuales en el chart cuando OI Delta supera N desviaciones estándar.
+| Feature | Commit | Descripción |
+|---------|--------|-------------|
+| VWAP overlay | fase 4 | Session reset UTC, ±1σ/±2σ, AVWAP BOS |
+| Volume Profile | fase 5 | 150-bin histogram, POC/VAH/VAL, HVN/LVN |
+| CVD session reset | f725ee1 | CVD acumulado reinicia en cada día UTC |
+| VPIN | f725ee1 | `mean(\|delta\|/vol)` sobre últimas 50 velas, alimenta toxic flow gate |
+| CVD divergencias | f725ee1 | Precio HH + CVD slope negativo = BearishAbsorption, y viceversa |
+| Relative Volume | f725ee1 | `current_vol / mean(últimas 20)`, barra verde/roja |
+| Session lines | f725ee1 | Verticales punteadas Asia/London/NY, solo ≤4h |
+| VRVP | ae5cee7 | Histograma de Volume Profile adapta al rango visible (scroll/zoom) |
+| Key levels | a6da6c7 | PDH, PDL, Daily Open, Weekly Open — líneas horizontales con etiqueta |
+| analyze_outcomes.py | 75b1f0c | Win rate, MFE/MAE, confianza por detector desde JSONL |
 
 ---
 
-## Nuevos indicadores
+## Pendiente — indicadores
 
-| Indicador | Descripción | Prioridad |
-|-----------|-------------|-----------|
-| Funding rate | Tasa de financiamiento cada 8h (solo perps) | Media |
-| Premium/basis | Precio perp vs spot | Media |
-| Relative volume | Volumen actual vs media del mismo periodo en días anteriores | Alta |
-| Liquidation zones | Estimación de niveles de stop-hunt y liquidaciones en cascada | Baja |
+### Funding rate panel
 
----
+**Qué es:** Tasa que pagan los longs a los shorts (o viceversa) cada 8h en contratos perp. Valor positivo = mercado sesgado long (longs sobrepagan). Valor negativo = mercado sesgado short.
 
-## Sesiones y niveles clave
+**Para qué sirve:** Indicador de sentimiento extremo. Funding muy positivo en máximos = posible reversión. Complementa el orderflow para evitar entrar con el mercado sobreextendido en la dirección equivocada.
 
-Dibujar separadores de sesión en el chart principal como líneas verticales opcionales.
-
-Niveles horizontales opcionales:
-- Previous Day High/Low
-- Previous Week High/Low
-- Weekly Open
-- Daily Open
-- Monthly Open
+**Implementación:** Requiere endpoint REST dedicado por exchange (Binance: `/fapi/v1/fundingRate`, Bybit: `/v5/market/funding/history`). Nuevo `KlineIndicator::FundingRate`, panel de línea con cero como referencia y colores verde/rojo.
 
 ---
 
-## Strategy module — refinamientos
+### OI z-score
 
-### VPIN (Volume-Synchronized Probability of Informed Trading)
+**Qué es:** Desviación del OI actual respecto a su media histórica de N velas: `(OI − mean) / std`.
 
-Cálculo bucket-based para rellenar `flow.vpin`. Actualmente siempre `None`.
+**Para qué sirve:** Normaliza el OI entre activos y épocas. Un z-score de +2 indica posicionamiento inusualmente alto — mercado cargado. Más útil que el delta crudo para comparar condiciones entre sesiones.
 
-**Fórmula simplificada:**
-- Dividir el volumen en buckets de tamaño fijo
-- En cada bucket: `VPIN = |buy_vol − sell_vol| / total_vol`
-- VPIN corriente = media móvil de los últimos 50 buckets
+**Implementación:** Puede calcularse dentro de `OpenInterestIndicator` añadiendo una ventana rolling. No requiere fetch adicional.
+
+---
+
+### Large OI change markers
+
+**Qué es:** Marcadores visuales (triángulos o puntos) en el chart de precios cuando el OI Delta supera N desviaciones estándar.
+
+**Para qué sirve:** Señala eventos de posicionamiento masivo — momento en que grandes participantes abren o cierran posiciones. Útil para identificar el inicio de movimientos impulsivos.
+
+**Implementación:** Derivado del OI Delta existente. Threshold configurable (p.ej. z-score > 2.0).
+
+---
+
+## Pendiente — VWAP
+
+### AVWAP con anchor manual
+
+**Qué es:** VWAP anclado a un punto específico elegido por el usuario en el chart (clic sobre una vela).
+
+**Para qué sirve:** Permite anclar desde eventos clave — mínimo del día anterior, ruptura de rango, suelo de corrección. Más preciso que el AVWAP BOS automático porque el trader elige el punto semánticamente relevante.
+
+**Implementación:** Requiere UI interactiva: capturar clic en el canvas, convertir coordenada X a timestamp o tick index, pasar el anchor al indicador VWAP. Es el cambio de mayor complejidad en UI de todos los pendientes.
+
+---
+
+### Session VWAPs
+
+**Qué es:** Un VWAP separado por sesión (Asia, London, NY) en lugar de solo el diario.
+
+**Para qué sirve:** Muestra dónde hizo valor cada sesión. Si el precio entra en NY por debajo del VWAP de London, es un contexto bajista para esa sesión. Permite razonar sobre quién está "ganando" entre sesiones.
+
+**Implementación:** Dividir la lógica de reset del VWAP actual en 3 ventanas: 00:00–08:00, 08:00–16:00, 13:00–21:00 UTC (con solapamiento London/NY). Tres líneas separadas en el overlay.
+
+---
+
+## Pendiente — strategy module
 
 ### Stacked imbalance
 
-Detectar columnas verticales de imbalance en el footprint (`flow.stacked_imbalance`).
-- Imbalance: ratio buy/sell en un nivel de precio supera un umbral (e.g., >3:1)
-- Stacked: N niveles consecutivos con imbalance del mismo lado
+**Qué es:** Detecta columnas verticales de imbalance en el footprint — N niveles consecutivos donde buy/sell supera un ratio umbral (p.ej. >3:1).
+
+**Para qué sirve:** Stacked imbalances son zonas donde el mercado fue absorbido agresivamente. Actúan como soporte/resistencia en retesteos. El campo `flow.stacked_imbalance` siempre es `Unknown` actualmente.
+
+**Implementación:** En `on_insert_trades` del `CumulativeDeltaIndicator` o en un indicador nuevo, iterar los levels del footprint buscando N imbalances consecutivos.
+
+---
 
 ### Regime mejorado
 
-El regime actual usa OLS sobre closes. Mejoras posibles:
-- Incorporar ATR histórico para Compression/Expansion más precisos
-- Usar EMAs cruzadas (21/55) como confirmación de TrendUp/TrendDown
-- `Stress`: volatilidad intradiaria muy alta relativa a ATR
+**Qué es:** El regime actual usa solo OLS slope sobre closes normalizados por ATR.
 
-### CVD divergencia en scoring
+**Mejoras:**
+- **EMA crosses (21/55):** confirmación de TrendUp/TrendDown con menos ruido que el OLS
+- **Volatility squeeze:** detectar Compression cuando ATR actual < ATR de las últimas 20 velas × 0.5
+- **Stress:** volatilidad intradía muy alta relativa al ATR histórico
 
-Añadir al scoring puntos por divergencias CVD/precio detectadas automáticamente.
-
----
-
-## Outcome tracker — análisis
-
-Los datos acumulados en `strategy_outcomes.jsonl` permiten:
-
-1. **Win rate por detector:** % de señales que alcanzaron target vs stop
-2. **MAE/MFE ratio:** distribución para optimizar el stop/target placement
-3. **Decay del score:** correlación entre score en el momento de la señal y outcome real
-4. **Filtros de sesión:** qué sesiones producen mejores resultados por detector
-
-Script de análisis pendiente: `scripts/analyze_outcomes.py` (no existe aún).
+**Para qué sirve:** Reducir falsos `TrendUp`/`TrendDown` en mercados choppy y detectar compresiones antes del breakout.
 
 ---
 
-## Layout sugerido
+## Pendiente — análisis de outcomes
 
-```
-[55%] Precio + VWAP + AVWAP + Volume Profile + niveles (PDH/PDL, sesiones)
-[10%] Volume + relative volume
-[13%] CVD + divergencias marcadas
-[13%] Open Interest + OI Delta
-[ 9%] ATR / volatilidad
-```
+Los datos en `strategy_outcomes.jsonl` permiten estos análisis (el script base existe en `scripts/analyze_outcomes.py`):
+
+| Análisis | Descripción |
+|----------|-------------|
+| Win rate por sesión | ¿Qué sesión (Asia/London/NY) produce mejor resultado por detector? |
+| Score decay | ¿Correlación entre score en el momento de la señal y el outcome real? |
+| MAE/MFE distribution | Histograma para optimizar el stop/target placement |
+| TTL optimization | ¿Cuántos TTL_EXPIRED habrían sido TARGET_HIT con más tiempo? |
+
+Requieren acumulación de suficientes señales (~100+) para ser estadísticamente significativos.
 
 ---
 
-## Capa de interpretación (objetivo)
-
-El módulo de estrategia actual detecta setups técnicos. La capa siguiente es interpretación semántica:
+## Layout objetivo
 
 ```
-Regime:      trend / range / chop / expansion / compression
-Flow:        buyers aggressive / sellers aggressive / absorption
-Positioning: new longs / new shorts / short covering / deleveraging
-Location:    above VWAP / below VWAP / at POC / at LVN / at VAH
-Risk:        ATR high / ATR low / high volatility / squeeze
+[55%] Precio + VWAP + AVWAP + Volume Profile VRVP + PDH/PDL/DO/WO + session lines
+[10%] Volume + Relative Volume
+[13%] CVD (con reset de sesión)
+[13%] Open Interest + OI Delta (+ funding rate cuando esté listo)
+[ 9%] ATR
 ```
-
-Esto permitiría un "market narrator" que genere texto descriptivo del estado del mercado en cada depth update.

@@ -15,10 +15,13 @@ This fork extends the upstream project with a full suite of microstructural indi
 
 | Indicator | Panel | Description |
 |-----------|-------|-------------|
-| VWAP | Overlay on kline | Session VWAP (UTC daily reset) with ±1σ / ±2σ bands |
-| Volume Profile | Overlay on kline | 150-bin histogram, POC / VAH / VAL / HVN / LVN coloring, 300-candle window |
-| CVD (Cumulative Volume Delta) | Sub-panel | Cumulative buy−sell delta; slope computed via OLS over last 20 candles |
-| ATR | Sub-panel | Average True Range, 14-period |
+| VWAP | Overlay on kline | Session VWAP (UTC daily reset) with ±1σ / ±2σ bands and auto AVWAP BOS |
+| Volume Profile (VRVP) | Overlay on kline | 150-bin histogram adapting to visible range; POC / VAH / VAL / HVN / LVN coloring |
+| Session lines | Overlay on kline | Dashed vertical lines at Asia / London / NY session opens (≤4h timeframes) |
+| Key levels | Overlay on kline | PDH, PDL, Daily Open, Weekly Open as labeled dashed horizontal lines |
+| CVD (Cumulative Volume Delta) | Sub-panel | Cumulative delta with UTC session reset; OLS slope, VPIN, divergence detection |
+| Relative Volume | Sub-panel | Current candle volume / mean of last 20 candles; directional coloring |
+| ATR | Sub-panel | Average True Range, 14-period Wilder smoothing |
 | Open Interest | Sub-panel | Perpetuals OI fetched from exchange REST API |
 | OI Delta | Sub-panel | Candle-by-candle OI change (green = new longs/shorts, red = deleveraging) |
 

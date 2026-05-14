@@ -118,9 +118,10 @@ pub struct OrderFlowContext {
     pub taker_imbalance: Option<f64>,  // (buy − sell) / (buy + sell), rango [−1, 1]
     pub buy_volume: Option<f64>,
     pub sell_volume: Option<f64>,
-    pub vpin: Option<f64>,             // no implementado, siempre None
+    pub vpin: Option<f64>,             // mean(|delta|/vol) sobre últimas 50 velas
+    pub cvd_divergence: Option<CvdDivergence>, // divergencia precio/CVD detectada
     pub footprint_absorption: AbsorptionSide,  // Ask | Bid | None | Unknown
-    pub stacked_imbalance: ImbalanceSide,       // siempre Unknown (Phase 6+)
+    pub stacked_imbalance: ImbalanceSide,       // siempre Unknown
     pub failed_acceptance: bool,
     pub sweep_confirmed: bool,
     pub mss_active: bool,
@@ -166,6 +167,11 @@ pub enum ValueLocation { AboveVah, BelowVal, InValue, Unknown }
 pub enum PriceRelation { Above, Below, At, Unknown }
 pub enum AbsorptionSide { Bid, Ask, None, Unknown }
 pub enum ImbalanceSide { Bullish, Bearish, None, Unknown }
+
+pub enum CvdDivergence {
+    BearishAbsorption,  // precio HH pero CVD slope bajando → absorción en máximos
+    BullishAbsorption,  // precio LL pero CVD slope subiendo → absorción en mínimos
+}
 ```
 
 ---
@@ -187,10 +193,17 @@ Calcula `price_vs_vwap` y `price_vs_avwap_bos` usando `price_relation()`:
 
 Calcula `value_location` y asigna `quality = Live` cuando poc/vah/val están disponibles.
 
-### build_flow_context(cvd, cvd_slope, delta, buy_vol, sell_vol, failed_acceptance, footprint_absorption) -> OrderFlowContext
+### build_flow_context(cvd, cvd_slope, delta, buy_vol, sell_vol, vpin, failed_acceptance, footprint_absorption, cvd_divergence) -> OrderFlowContext
 
 Calcula `taker_imbalance = (buy − sell) / (buy + sell)`.
 `quality = Live` si cvd o delta disponibles.
+
+### derive_cvd_divergence(recent_highs, recent_lows, cvd_slope) -> Option\<CvdDivergence\>
+
+Compara la primera mitad vs la segunda mitad de las últimas 10 velas:
+- Precio HH (`last_max > first_max × 1.0001`) + `slope < −0.5` → `BearishAbsorption`
+- Precio LL (`last_min < first_min × 0.9999`) + `slope > 0.5` → `BullishAbsorption`
+- Requiere al menos 10 highs/lows y CVD slope disponible
 
 ### derive_regime(recent_closes: &[f64], atr: f64) -> Regime
 
