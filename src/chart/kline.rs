@@ -167,6 +167,7 @@ pub struct KlineChart {
     pub strategy_signals: Vec<StrategySignal>,
     pub strategy_overlay_enabled: bool,
     pub last_depth: Option<exchange::depth::Depth>,
+    pub config: data::chart::kline::Config,
     outcome_tracker: crate::strategy::tracker::OutcomeTracker,
     paper_account: crate::strategy::paper::PaperAccount,
 }
@@ -264,6 +265,7 @@ impl KlineChart {
                     strategy_signals: Vec::new(),
                     strategy_overlay_enabled: false,
                     last_depth: None,
+                    config: data::chart::kline::Config::default(),
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
                 }
@@ -325,6 +327,7 @@ impl KlineChart {
                     strategy_signals: Vec::new(),
                     strategy_overlay_enabled: false,
                     last_depth: None,
+                    config: data::chart::kline::Config::default(),
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
                 }
@@ -1023,7 +1026,7 @@ impl KlineChart {
 
         // Extract recent candles for regime + failed-acceptance detection
         const REGIME_N: usize = 20;
-        const MICRO_N: usize = 20;
+        const FA_N: usize = 5;
         let (recent_closes, recent_highs, recent_lows): (Vec<f64>, Vec<f64>, Vec<f64>) =
             match &self.data_source {
                 PlotData::TimeBased(ts) => {
@@ -1041,7 +1044,7 @@ impl KlineChart {
                         .datapoints
                         .values()
                         .rev()
-                        .take(MICRO_N)
+                        .take(FA_N)
                         .map(|dp| dp.kline.high.to_f32() as f64)
                         .collect::<Vec<_>>()
                         .into_iter()
@@ -1051,7 +1054,7 @@ impl KlineChart {
                         .datapoints
                         .values()
                         .rev()
-                        .take(MICRO_N)
+                        .take(FA_N)
                         .map(|dp| dp.kline.low.to_f32() as f64)
                         .collect::<Vec<_>>()
                         .into_iter()
@@ -1074,7 +1077,7 @@ impl KlineChart {
                         .datapoints
                         .iter()
                         .rev()
-                        .take(MICRO_N)
+                        .take(FA_N)
                         .map(|dp| dp.kline.high.to_f32() as f64)
                         .collect::<Vec<_>>()
                         .into_iter()
@@ -1084,7 +1087,7 @@ impl KlineChart {
                         .datapoints
                         .iter()
                         .rev()
-                        .take(MICRO_N)
+                        .take(FA_N)
                         .map(|dp| dp.kline.low.to_f32() as f64)
                         .collect::<Vec<_>>()
                         .into_iter()
@@ -1098,7 +1101,7 @@ impl KlineChart {
         // Delta slice aligned index-for-index with recent_highs/recent_lows (oldest-first).
         let recent_deltas: Vec<f64> = self.indicators[KlineIndicator::CumulativeDelta]
             .as_ref()
-            .map(|i| i.recent_delta_slice(MICRO_N))
+            .map(|i| i.recent_delta_slice(FA_N))
             .unwrap_or_default();
         let (failed_acceptance, footprint_absorption) =
             adapter::derive_failed_acceptance_and_absorption(
@@ -1111,10 +1114,6 @@ impl KlineChart {
                 cvd_slope,
             );
         let cvd_divergence = adapter::derive_cvd_divergence(&recent_highs, &recent_lows, cvd_slope);
-        let stacked_imbalance = adapter::derive_stacked_imbalance(&recent_deltas);
-        let sweep_confirmed =
-            adapter::derive_sweep_confirmed(&recent_highs, &recent_lows, &recent_closes);
-        let mss_active = adapter::derive_mss_active(&recent_highs, &recent_lows);
 
         let flow = adapter::build_flow_context(
             cvd,
@@ -1126,9 +1125,6 @@ impl KlineChart {
             failed_acceptance,
             footprint_absorption,
             cvd_divergence,
-            stacked_imbalance,
-            sweep_confirmed,
-            mss_active,
         );
 
         let ctx = StrategyMarketContext {
@@ -1675,15 +1671,19 @@ impl canvas::Program<Message> for KlineChart {
             chart.draw_last_price_line(frame, palette, region);
 
             if let PlotData::TimeBased(ts) = &self.data_source {
-                draw_session_lines(
-                    frame,
-                    &region,
-                    earliest,
-                    latest,
-                    ts.interval.to_milliseconds(),
-                    interval_to_x,
-                );
-                draw_key_levels(frame, &region, &ts.datapoints, &price_to_y);
+                if self.config.show_session_lines {
+                    draw_session_lines(
+                        frame,
+                        &region,
+                        earliest,
+                        latest,
+                        ts.interval.to_milliseconds(),
+                        interval_to_x,
+                    );
+                }
+                if self.config.show_key_levels {
+                    draw_key_levels(frame, &region, &ts.datapoints, &price_to_y);
+                }
             }
 
             self.draw_indicator_overlays(
@@ -1717,6 +1717,19 @@ impl canvas::Program<Message> for KlineChart {
                     palette,
                     rounded_aggregation,
                 );
+
+                if self.config.show_key_levels {
+                    if let PlotData::TimeBased(ts) = &self.data_source {
+                        draw_key_level_tooltip(
+                            frame,
+                            palette,
+                            &ts.datapoints,
+                            cursor_position,
+                            bounds,
+                            |price| chart.price_to_y(price),
+                        );
+                    }
+                }
             }
         });
 
@@ -2131,6 +2144,103 @@ fn draw_key_levels(
     }
 }
 
+fn draw_key_level_tooltip(
+    frame: &mut canvas::Frame,
+    palette: &Extended,
+    datapoints: &std::collections::BTreeMap<UnixMs, data::chart::kline::KlineDataPoint>,
+    cursor: Point,
+    bounds: Rectangle,
+    price_to_y: impl Fn(Price) -> f32,
+) {
+    const DESCRIPTIONS: &[(&str, &str, &str)] = &[
+        ("PDH", "Previous Day High", "Highest price reached yesterday"),
+        ("PDL", "Previous Day Low", "Lowest price reached yesterday"),
+        ("DO", "Daily Open", "Opening price of today (00:00 UTC)"),
+        ("WO", "Weekly Open", "Opening price of this week (Mon 00:00 UTC)"),
+    ];
+
+    let kl = compute_key_levels(datapoints);
+    let prices: &[Option<f32>] = &[
+        kl.prev_day_high,
+        kl.prev_day_low,
+        kl.daily_open,
+        kl.weekly_open,
+    ];
+
+    // Only trigger when cursor is in the right 60px where labels are drawn
+    let label_zone_x = bounds.width - 60.0;
+    if cursor.x < label_zone_x {
+        return;
+    }
+
+    for (price_opt, (abbr, name, desc)) in prices.iter().zip(DESCRIPTIONS.iter()) {
+        let Some(price) = price_opt else { continue };
+        if !price.is_finite() || *price <= 0.0 {
+            continue;
+        }
+        let y = price_to_y(Price::from_f32(*price));
+        if !y.is_finite() {
+            continue;
+        }
+
+        // Map chart-space y to screen-space y
+        let screen_y = y + bounds.height / 2.0;
+
+        if (cursor.y - screen_y).abs() > 10.0 {
+            continue;
+        }
+
+        // Draw tooltip box
+        let pad = 6.0;
+        let line_h = 14.0;
+        let box_w = 200.0;
+        let box_h = pad * 2.0 + line_h * 2.0;
+
+        let mut box_x = cursor.x - box_w - 8.0;
+        if box_x < 4.0 {
+            box_x = cursor.x + 8.0;
+        }
+        let box_y = (cursor.y - box_h / 2.0).max(4.0).min(bounds.height - box_h - 4.0);
+
+        let bg = palette.background.weakest.color.scale_alpha(0.95);
+        frame.fill_rectangle(Point::new(box_x, box_y), Size::new(box_w, box_h), bg);
+
+        // Border
+        let border_color = palette.background.strong.color.scale_alpha(0.6);
+        let border = Path::rectangle(Point::new(box_x, box_y), Size::new(box_w, box_h));
+        frame.stroke(
+            &border,
+            Stroke::with_color(Stroke { width: 1.0, ..Stroke::default() }, border_color),
+        );
+
+        // Abbreviation + full name
+        frame.fill_text(canvas::Text {
+            content: format!("{abbr} — {name}"),
+            position: Point::new(box_x + pad, box_y + pad),
+            size: iced::Pixels(11.0),
+            color: palette.background.base.text,
+            align_x: iced::alignment::Horizontal::Left.into(),
+            align_y: iced::alignment::Vertical::Top,
+            font: style::AZERET_MONO,
+            ..canvas::Text::default()
+        });
+
+        // Description
+        frame.fill_text(canvas::Text {
+            content: desc.to_string(),
+            position: Point::new(box_x + pad, box_y + pad + line_h),
+            size: iced::Pixels(10.0),
+            color: palette.background.base.text.scale_alpha(0.65),
+            align_x: iced::alignment::Horizontal::Left.into(),
+            align_y: iced::alignment::Vertical::Top,
+            font: style::AZERET_MONO,
+            ..canvas::Text::default()
+        });
+
+        break; // Only show one tooltip at a time
+    }
+}
+
 /// Draws subtle vertical dashed lines at UTC session open times for time-based charts.
 /// Sessions: Asia 00:00, London 08:00, New York 13:00.
 /// Only drawn when timeframe <= 4h so lines are meaningful.
@@ -2147,65 +2257,92 @@ fn draw_session_lines(
     }
 
     const DAY_MS: u64 = 86_400_000;
-    const SESSION_OFFSETS: &[(u64, Color)] = &[
+    // (label, open_offset_ms, close_offset_ms, fill_color)
+    const SESSIONS: &[(&str, u64, u64, Color)] = &[
         (
+            "Asia",
             0,
-            Color {
-                r: 0.40,
-                g: 0.70,
-                b: 1.00,
-                a: 0.20,
-            },
-        ), // Asia
-        (
             8 * 3600 * 1000,
-            Color {
-                r: 0.35,
-                g: 0.90,
-                b: 0.45,
-                a: 0.20,
-            },
-        ), // London
+            Color { r: 0.72, g: 0.82, b: 1.00, a: 0.08 }, // pastel periwinkle
+        ),
         (
+            "London",
+            8 * 3600 * 1000,
             13 * 3600 * 1000,
-            Color {
-                r: 1.00,
-                g: 0.60,
-                b: 0.25,
-                a: 0.20,
-            },
-        ), // New York
+            Color { r: 1.00, g: 0.82, b: 0.68, a: 0.08 }, // pastel peach
+        ),
+        (
+            "New York",
+            13 * 3600 * 1000,
+            22 * 3600 * 1000,
+            Color { r: 0.68, g: 0.95, b: 0.78, a: 0.08 }, // pastel mint
+        ),
     ];
+
+    let chart_top = region.y - region.height;
+    let chart_bottom = region.y + region.height * 2.0;
+    let chart_h = chart_bottom - chart_top;
 
     let first_day = (earliest / DAY_MS) * DAY_MS;
     let last_day = (latest / DAY_MS) * DAY_MS + DAY_MS;
 
     let mut day = first_day;
     while day <= last_day {
-        for &(offset, color) in SESSION_OFFSETS {
-            let ts = day + offset;
-            if ts < earliest || ts > latest {
+        for &(label, open_off, close_off, fill) in SESSIONS {
+            let ts_open = day + open_off;
+            let ts_close = day + close_off;
+
+            // Skip entirely if session doesn't overlap visible range
+            if ts_close < earliest || ts_open > latest {
                 continue;
             }
-            let x = interval_to_x(ts);
-            if !x.is_finite() {
+
+            let x_open = interval_to_x(ts_open.max(earliest));
+            let x_close = interval_to_x(ts_close.min(latest));
+            if !x_open.is_finite() || !x_close.is_finite() {
                 continue;
             }
-            let stroke = Stroke {
-                style: canvas::stroke::Style::Solid(color),
-                width: 1.0,
-                line_dash: LineDash {
-                    segments: &[5.0, 5.0],
-                    offset: 0,
-                },
-                ..Stroke::default()
-            };
-            let top = Point::new(x, region.y - region.height);
-            let bottom = Point::new(x, region.y + region.height * 2.0);
-            if !top.y.is_finite() || !bottom.y.is_finite() {
+            let x_left = x_open.min(x_close);
+            let x_right = x_open.max(x_close);
+            let width = x_right - x_left;
+            if width <= 0.0 {
                 continue;
             }
-            frame.stroke(&Path::line(top, bottom), stroke);
+
+            // Filled background rectangle
+            let rect = Path::rectangle(Point::new(x_left, chart_top), Size::new(width, chart_h));
+            frame.fill(&rect, fill);
+
+            // Left border line at session open (only if open is visible)
+            if ts_open >= earliest && ts_open <= latest {
+                let border_color = Color { a: 0.35, ..fill };
+                let stroke = Stroke {
+                    style: canvas::stroke::Style::Solid(border_color),
+                    width: 1.0,
+                    ..Stroke::default()
+                };
+                frame.stroke(
+                    &Path::line(Point::new(x_open, chart_top), Point::new(x_open, chart_bottom)),
+                    stroke,
+                );
+            }
+
+            // Label in the top-left of the rectangle
+            let label_x = x_left + 4.0;
+            let label_y = chart_top + 4.0;
+            if label_y.is_finite() && label_x.is_finite() {
+                let label_color = Color { a: 0.65, ..fill };
+                frame.fill_text(canvas::Text {
+                    content: label.to_string(),
+                    position: Point::new(label_x, label_y),
+                    size: iced::Pixels(10.0),
+                    color: label_color,
+                    align_x: iced::alignment::Horizontal::Left.into(),
+                    align_y: iced::alignment::Vertical::Top,
+                    font: style::AZERET_MONO,
+                    ..canvas::Text::default()
+                });
+            }
         }
         day += DAY_MS;
     }

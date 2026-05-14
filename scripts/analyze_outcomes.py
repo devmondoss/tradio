@@ -11,6 +11,7 @@ Lee desde %%APPDATA%%/flowsurface/shadow_events/:
 Uso:
   python analyze_outcomes.py              # lee desde %%APPDATA%%
   python analyze_outcomes.py /ruta/dir   # lee desde directorio alternativo
+  python analyze_outcomes.py --test      # corre con datos sinteticos (verifica que el script funciona)
 
 Si algun archivo no existe o esta vacio, ese bloque reporta "sin datos" y continua.
 Las lineas JSONL malformadas se saltean y se contabiliza cuantas fueron.
@@ -19,6 +20,8 @@ Las lineas JSONL malformadas se saltean y se contabiliza cuantas fueron.
 import json
 import os
 import sys
+import tempfile
+import random
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
@@ -424,25 +427,498 @@ def block_legacy_outcomes(records):
     print("  {:<{}} {:>5}".format("TOTAL", COL, len(all_records)))
 
 
+# =========================================================================== #
+# D2 -- ANALISIS CONDICIONAL (Bloques 7-11)                                   #
+# =========================================================================== #
+
+def _safe_r(t):
+    """R-multiple de un trade. None si faltan campos."""
+    return r_multiple(
+        t.get("net_pnl", 0.0),
+        t.get("entry_price", 0.0),
+        t.get("stop_price"),
+        t.get("size", 0.0),
+    )
+
+
+def _small(n):
+    """Marca de muestra chica (N < 5)."""
+    return "  [muestra chica]" if n < 5 else ""
+
+
+def _win_rate_r_row(group):
+    """(n, win_rate, r_avg_or_None) para un grupo de trades."""
+    n = len(group)
+    wins = sum(1 for t in group if t.get("close_reason") == "TARGET_HIT")
+    wr = wins / n if n else 0.0
+    r_vals = [v for v in (_safe_r(t) for t in group) if v is not None]
+    r_avg = mean(r_vals) if r_vals else None
+    return n, wr, r_avg
+
+
+# --------------------------------------------------------------------------- #
+# BLOQUE 7 -- Detectores por regimen de mercado                               #
+# --------------------------------------------------------------------------- #
+
+def block7_regime(trades):
+    section("BLOQUE 7 -- Detectores por regimen de mercado")
+    if not trades:
+        no_data("sin trades cerrados")
+        return
+
+    trades_with_regime = [t for t in trades if t.get("regime")]
+    if not trades_with_regime:
+        no_data("campo 'regime' no encontrado en ningún trade")
+        return
+
+    by_det = defaultdict(lambda: defaultdict(list))
+    for t in trades_with_regime:
+        det = t.get("strategy_id") or "unknown"
+        regime = t.get("regime", "Unknown")
+        by_det[det][regime].append(t)
+
+    for det in sorted(by_det.keys()):
+        print("\n  [Detector: {}]".format(det))
+        print("  {:18} {:>5}  {:>9}  {:>12}".format("Regime", "N", "Win rate", "R-mult avg"))
+        print("  " + "-" * 50)
+        for regime in sorted(by_det[det].keys()):
+            group = by_det[det][regime]
+            n, wr, r_avg = _win_rate_r_row(group)
+            r_str = "{:+.2f}".format(r_avg) if r_avg is not None else "   n/a"
+            print("  {:18} {:>5}  {:>9.1%}  {:>12}{}".format(
+                regime, n, wr, r_str, _small(n)))
+
+    print("\n  Responde: que detectores funcionan en que regimen de mercado.")
+    print("  [muestra chica] = N < 5 -- no concluir nada estadistico.")
+
+
+# --------------------------------------------------------------------------- #
+# BLOQUE 8 -- Discriminacion por score (D2: buckets finos + Pearson)         #
+# --------------------------------------------------------------------------- #
+
+def block8_score_discrimination(trades):
+    section("BLOQUE 8 -- Discriminacion por score (analisis condicional D2)")
+    if not trades:
+        no_data("sin trades cerrados")
+        return
+
+    bucket_size = 0.05
+    # Buckets desde 0.60 (umbral minimo de ejecucion asumido)
+    edges = [i / 100 for i in range(60, 100, 5)]
+
+    bucket_trades = defaultdict(list)
+    score_pnl_pairs = []
+
+    for t in trades:
+        score = t.get("score")
+        if not isinstance(score, (int, float)):
+            continue
+        lo = round(int(score / bucket_size) * bucket_size, 2)
+        bucket_trades[lo].append(t)
+        pnl_pct = t.get("net_pnl_pct")
+        if isinstance(pnl_pct, (int, float)):
+            score_pnl_pairs.append((score, pnl_pct))
+
+    filled = {lo: g for lo, g in bucket_trades.items() if lo in edges}
+    if not filled:
+        no_data("trades sin campo 'score' o todos fuera del rango 0.60-1.00")
+        return
+
+    print("  {:15} {:>4}  {:>9}  {:>11}".format("Score bucket", "N", "Win rate", "R-mult avg"))
+    print("  " + "-" * 45)
+    for lo in edges:
+        group = bucket_trades.get(lo, [])
+        if not group:
+            continue
+        n, wr, r_avg = _win_rate_r_row(group)
+        r_str = "{:+.2f}".format(r_avg) if r_avg is not None else "    n/a"
+        print("  [{:.2f} - {:.2f})  {:>4}  {:>9.1%}  {:>11}{}".format(
+            lo, lo + bucket_size, n, wr, r_str, _small(n)))
+
+    # Pearson r (score vs net_pnl_pct) si hay suficientes datos
+    if len(score_pnl_pairs) >= 30:
+        xs = [p[0] for p in score_pnl_pairs]
+        ys = [p[1] for p in score_pnl_pairs]
+        mx, my = mean(xs), mean(ys)
+        num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        den = (sum((x - mx) ** 2 for x in xs) * sum((y - my) ** 2 for y in ys)) ** 0.5
+        r = num / den if den > 1e-10 else 0.0
+        print("\n  Correlacion de Pearson (score vs net_pnl_pct, N={}): r = {:.3f}".format(
+            len(score_pnl_pairs), r))
+        if r >= 0.3:
+            print("  -> Score alto predice mejor resultado (correlacion positiva moderada/fuerte).")
+        elif r > 0.05:
+            print("  -> Correlacion debil positiva -- score discrimina poco.")
+        elif r >= -0.05:
+            print("  -> Correlacion casi nula -- el score no discrimina.")
+        else:
+            print("  -> Correlacion negativa -- score alto NO predice mejor resultado.")
+    else:
+        print("\n  Pearson omitido (requiere >=30 trades con net_pnl_pct; disponibles: {}).".format(
+            len(score_pnl_pairs)))
+
+
+# --------------------------------------------------------------------------- #
+# BLOQUE 9 -- Condiciones de microestructura                                  #
+# --------------------------------------------------------------------------- #
+
+def block9_microstructure(trades):
+    section("BLOQUE 9 -- Condiciones de microestructura")
+
+    # --- 9A: VPIN ---
+    print("\n  9A) VPIN -- toxicidad del flujo en el momento de la senal")
+    vpin_trades = [t for t in trades if isinstance(t.get("vpin"), (int, float))]
+    if not vpin_trades:
+        no_data("campo 'vpin' no encontrado en trades")
+    else:
+        vpin_bands = [
+            ("Limpio  (VPIN < 0.30)",    lambda v: v < 0.30),
+            ("Neutro  (0.30 - 0.75)",    lambda v: 0.30 <= v <= 0.75),
+            ("Toxico  (VPIN > 0.75)",    lambda v: v > 0.75),
+        ]
+        print("  {:35} {:>4}  {:>9}  {:>11}".format("Banda VPIN", "N", "Win rate", "R-mult avg"))
+        print("  " + "-" * 64)
+        for label, pred in vpin_bands:
+            group = [t for t in vpin_trades if pred(t["vpin"])]
+            n = len(group)
+            if n == 0:
+                print("  {:35} {:>4}".format(label, 0))
+                continue
+            _, wr, r_avg = _win_rate_r_row(group)
+            r_str = "{:+.2f}".format(r_avg) if r_avg is not None else "    n/a"
+            extra = _small(n)
+            if "Toxico" in label and n > 0:
+                extra += "  <- gate fallo, revisar"
+            print("  {:35} {:>4}  {:>9.1%}  {:>11}{}".format(label, n, wr, r_str, extra))
+
+    # --- 9B: Spread ---
+    print("\n  9B) Spread -- costo de ejecucion en el momento de la senal")
+    spread_trades = [t for t in trades if isinstance(t.get("spread_bps"), (int, float))]
+    if not spread_trades:
+        no_data("campo 'spread_bps' no encontrado en trades")
+    else:
+        spread_bands = [
+            ("Tight  (< 1.0 bps)",       lambda s: s < 1.0),
+            ("Medio  (1.0 - 1.5 bps)",   lambda s: 1.0 <= s <= 1.5),
+            ("Wide   (> 1.5 bps)",        lambda s: s > 1.5),
+        ]
+        print("  {:28} {:>4}  {:>9}  {:>11}".format("Spread", "N", "Win rate", "R-mult avg"))
+        print("  " + "-" * 57)
+        for label, pred in spread_bands:
+            group = [t for t in spread_trades if pred(t["spread_bps"])]
+            n = len(group)
+            if n == 0:
+                print("  {:28} {:>4}".format(label, 0))
+                continue
+            _, wr, r_avg = _win_rate_r_row(group)
+            r_str = "{:+.2f}".format(r_avg) if r_avg is not None else "    n/a"
+            print("  {:28} {:>4}  {:>9.1%}  {:>11}{}".format(label, n, wr, r_str, _small(n)))
+
+    # --- 9C: Delta alineado ---
+    print("\n  9C) Alineacion de delta con la direccion de la senal")
+    delta_trades = [
+        t for t in trades
+        if isinstance(t.get("delta"), (int, float)) and isinstance(t.get("side"), str)
+    ]
+    if not delta_trades:
+        no_data("campo 'delta' no encontrado en trades")
+    else:
+        aligned, not_aligned = [], []
+        for t in delta_trades:
+            delta = t["delta"]
+            side = t["side"].lower()
+            if (side == "long" and delta > 0) or (side == "short" and delta < 0):
+                aligned.append(t)
+            else:
+                not_aligned.append(t)
+
+        print("  {:22} {:>4}  {:>9}  {:>11}".format("Alineacion", "N", "Win rate", "R-mult avg"))
+        print("  " + "-" * 51)
+        for label, group in [("Alineado (delta ok)", aligned),
+                              ("No alineado",         not_aligned)]:
+            n = len(group)
+            if n == 0:
+                print("  {:22} {:>4}".format(label, 0))
+                continue
+            _, wr, r_avg = _win_rate_r_row(group)
+            r_str = "{:+.2f}".format(r_avg) if r_avg is not None else "    n/a"
+            print("  {:22} {:>4}  {:>9.1%}  {:>11}{}".format(label, n, wr, r_str, _small(n)))
+
+        print()
+        print("  Alineado: delta>0 para Long, delta<0 para Short en el momento de la senal.")
+
+
+# --------------------------------------------------------------------------- #
+# BLOQUE 10 -- Interpretacion de razon de cierre por detector                 #
+# --------------------------------------------------------------------------- #
+
+def block10_close_reason_interpretation(trades):
+    section("BLOQUE 10 -- Interpretacion de razon de cierre por detector")
+    if not trades:
+        no_data("sin trades cerrados")
+        return
+
+    by_det = defaultdict(list)
+    for t in trades:
+        det = t.get("strategy_id") or "unknown"
+        by_det[det].append(t)
+
+    for det in sorted(by_det.keys()):
+        group = by_det[det]
+        n = len(group)
+        by_reason = defaultdict(int)
+        for t in group:
+            by_reason[t.get("close_reason", "?")] += 1
+
+        target = by_reason["TARGET_HIT"]
+        stop   = by_reason["STOP_HIT"]
+        ttl    = by_reason["TTL_EXPIRED"]
+        other  = n - target - stop - ttl
+
+        target_pct = target / n if n else 0.0
+        stop_pct   = stop   / n if n else 0.0
+        ttl_pct    = ttl    / n if n else 0.0
+
+        print("\n  {}  [N={}  TARGET={} ({:.0%})  STOP={} ({:.0%})  TTL={} ({:.0%})]{}".format(
+            det, n,
+            target, target_pct,
+            stop,   stop_pct,
+            ttl,    ttl_pct,
+            "  [muestra chica]" if n < 5 else ""))
+
+        if ttl_pct > 0.50:
+            print("  [!] Mayoria de trades expiran sin resolver (TTL {:.0%}).".format(ttl_pct))
+            print("      -> Targets probablemente muy ambiciosos o senales prematuras.")
+            print("         Considerar reducir target o agregar TTL mas corto.")
+        elif stop_pct > 0.60:
+            print("  [!] Mayoria cierra en stop (STOP {:.0%}).".format(stop_pct))
+            print("      -> Posible problema de deteccion o stops demasiado ajustados.")
+            print("         Revisar contexto de regimen y condicion de entrada.")
+        elif 0.38 <= target_pct <= 0.65 and stop_pct <= 0.50:
+            print("  [ok] Distribucion de cierres balanceada.")
+        else:
+            print("  [~] Patron mixto -- revisar manualmente si el N es suficiente.")
+
+        if other > 0:
+            print("     Nota: {} trades con close_reason desconocida.".format(other))
+
+
+# --------------------------------------------------------------------------- #
+# BLOQUE 11 -- MFE/MAE vs distancia target/stop por detector                 #
+# --------------------------------------------------------------------------- #
+
+def block11_mfe_mae_by_detector(trades):
+    section("BLOQUE 11 -- MFE/MAE vs distancia target/stop por detector")
+    if not trades:
+        no_data("sin trades cerrados")
+        return
+
+    by_det = defaultdict(list)
+    for t in trades:
+        det = t.get("strategy_id") or "unknown"
+        by_det[det].append(t)
+
+    COL = 24
+    print("  {:<{}} {:>4}  {:>7}  {:>7}  {:>9}  {:>14}".format(
+        "Detector", COL, "N", "MFE-R", "MAE-R", "Target-R", "MFE alcanza?"))
+    print("  " + "-" * (COL + 50))
+
+    all_notes = []
+
+    for det in sorted(by_det.keys()):
+        group = by_det[det]
+        n = len(group)
+
+        mfe_r_vals, mae_r_vals, target_r_vals = [], [], []
+
+        for t in group:
+            entry  = t.get("entry_price")
+            stop   = t.get("stop_price")
+            target = t.get("target_price")
+            mfe    = t.get("mfe")
+            mae    = t.get("mae")
+
+            if not isinstance(entry, (int, float)) or not isinstance(stop, (int, float)):
+                continue
+            risk_unit = abs(entry - stop)
+            if risk_unit < 1e-10:
+                continue
+
+            if isinstance(mfe, (int, float)):
+                mfe_r_vals.append(mfe / risk_unit)
+            if isinstance(mae, (int, float)):
+                # MAE puede ser negativo (excursion adversa); tomamos magnitud
+                mae_r_vals.append(abs(mae) / risk_unit)
+            if isinstance(target, (int, float)):
+                target_r_vals.append(abs(target - entry) / risk_unit)
+
+        mfe_avg    = mean(mfe_r_vals)    if mfe_r_vals    else None
+        mae_avg    = mean(mae_r_vals)    if mae_r_vals    else None
+        target_avg = mean(target_r_vals) if target_r_vals else None
+
+        mfe_str = "{:.2f}R".format(mfe_avg)    if mfe_avg    is not None else "   n/a"
+        mae_str = "{:.2f}R".format(mae_avg)    if mae_avg    is not None else "   n/a"
+        tgt_str = "{:.2f}R".format(target_avg) if target_avg is not None else "   n/a"
+
+        if mfe_avg is not None and target_avg is not None and target_avg > 1e-10:
+            reach_pct = mfe_avg / target_avg * 100
+            reach_str = "Si  (~{:.0f}%)".format(reach_pct) if reach_pct >= 90 else \
+                        "No  (~{:.0f}%)".format(reach_pct)
+            if reach_pct >= 80 and reach_pct < 90:
+                all_notes.append((det, reach_pct, mfe_avg, target_avg))
+        else:
+            reach_str = "n/a"
+
+        print("  {:<{}} {:>4}  {:>7}  {:>7}  {:>9}  {:>14}{}".format(
+            det, COL, n, mfe_str, mae_str, tgt_str, reach_str, _small(n)))
+
+    print()
+    print("  MFE-R    : excursion maxima favorable en R-multiples.")
+    print("  MAE-R    : excursion maxima adversa en R-multiples (magnitud).")
+    print("  Target-R : distancia del target desde entry en R-multiples.")
+    print("  Stop-R   : siempre 1.00R por definicion.")
+    print("  MFE alcanza target? : Si >= 90% del camino al target, No si menos.")
+
+    if all_notes:
+        print()
+        for det, pct, mfe_avg, tgt_avg in all_notes:
+            print("  ~ {}: MFE llega al {:.0f}% del target ({:.2f}R de {:.2f}R).".format(
+                det, pct, mfe_avg, tgt_avg))
+            print("    Candidato a trailing stop o reducir target ligeramente.")
+
+
+# =========================================================================== #
+# Datos sinteticos para verificacion (--test)                                 #
+# =========================================================================== #
+
+def generate_synthetic_trades(n=20, seed=42):
+    """Genera trades sinteticos con variedad de detectores, regimenes y outcomes."""
+    random.seed(seed)
+    detectors = ["LvnBreakout", "VwapPullback", "ValueAreaFailedAuction"]
+    regimes   = ["TrendUp", "Expansion", "Chop", "TrendDown"]
+    reasons   = ["TARGET_HIT", "STOP_HIT", "TTL_EXPIRED"]
+    # Pesos: TrendUp mas TARGET, Chop mas STOP/TTL
+    reason_weights = {
+        "TrendUp":   [0.60, 0.25, 0.15],
+        "Expansion": [0.50, 0.30, 0.20],
+        "Chop":      [0.25, 0.45, 0.30],
+        "TrendDown": [0.30, 0.50, 0.20],
+    }
+
+    trades = []
+    for i in range(n):
+        det    = random.choice(detectors)
+        regime = random.choice(regimes)
+        score  = round(random.uniform(0.60, 0.95), 3)
+        vpin   = round(random.uniform(0.10, 0.78), 3)
+        spread = round(random.uniform(0.4, 2.2), 2)
+        side   = random.choice(["Long", "Short"])
+        delta  = round(random.uniform(-500, 500), 1)
+
+        entry  = 50000.0
+        stop   = entry - 400 if side == "Long" else entry + 400
+        target = entry + 800 if side == "Long" else entry - 800
+
+        weights = reason_weights[regime]
+        reason  = random.choices(reasons, weights=weights)[0]
+
+        risk_unit = abs(entry - stop)   # 400
+        size      = 0.01
+
+        if reason == "TARGET_HIT":
+            net_pnl  = (target - entry) * size if side == "Long" else (entry - target) * size
+            net_pnl -= round(random.uniform(0.3, 0.8), 2)   # fees
+            mfe      = abs(target - entry) * random.uniform(1.0, 1.1)
+            mae      = abs(entry - stop)  * random.uniform(0.1, 0.4)
+        elif reason == "STOP_HIT":
+            net_pnl  = (stop - entry) * size if side == "Long" else (entry - stop) * size
+            net_pnl -= round(random.uniform(0.1, 0.4), 2)
+            mfe      = abs(target - entry) * random.uniform(0.1, 0.5)
+            mae      = abs(entry - stop)  * random.uniform(0.7, 1.0)
+        else:  # TTL_EXPIRED
+            net_pnl  = round(random.uniform(-2.5, 1.5), 2)
+            mfe      = abs(target - entry) * random.uniform(0.2, 0.7)
+            mae      = abs(entry - stop)  * random.uniform(0.2, 0.6)
+
+        net_pnl_pct = net_pnl / INITIAL_CAPITAL * 100
+
+        trades.append({
+            "strategy_id":    det,
+            "regime":         regime,
+            "score":          score,
+            "vpin":           vpin,
+            "spread_bps":     spread,
+            "side":           side,
+            "delta":          delta,
+            "close_reason":   reason,
+            "entry_price":    entry,
+            "stop_price":     stop,
+            "target_price":   target,
+            "size":           size,
+            "net_pnl":        round(net_pnl, 4),
+            "net_pnl_pct":    round(net_pnl_pct, 6),
+            "gross_pnl":      round(net_pnl + 0.5, 4),
+            "fees_paid":      0.5,
+            "funding_paid":   0.0,
+            "intended_entry": entry + random.uniform(-1, 1),
+            "mfe":            round(mfe, 2),
+            "mae":            round(mae, 2),
+            "closed_at_ms":   1_700_000_000_000 + i * 3_600_000,
+        })
+    return trades
+
+
+def generate_synthetic_signals(trades):
+    """Genera senales sinteticas consistentes con los trades."""
+    signals = []
+    for t in trades:
+        signals.append({"score": t["score"], "strategy_id": t["strategy_id"]})
+    # Agregar senales adicionales que no generaron trade
+    for _ in range(10):
+        signals.append({"score": round(random.uniform(0.55, 0.95), 3)})
+    return signals
+
+
+def run_test_mode():
+    """Crea datos sinteticos en un directorio temporal y corre el analisis completo."""
+    print("=" * 70)
+    print("  MODO TEST -- datos sinteticos (N=20 trades, seed=42)")
+    print("=" * 70)
+
+    trades  = generate_synthetic_trades(n=20, seed=42)
+    signals = generate_synthetic_signals(trades)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+
+        with open(tmp / "paper_trades.jsonl", "w") as f:
+            for t in trades:
+                f.write(json.dumps(t) + "\n")
+
+        with open(tmp / "strategy_signals.jsonl", "w") as f:
+            for s in signals:
+                f.write(json.dumps(s) + "\n")
+
+        # Archivos opcionales vacios
+        (tmp / "contradictions.jsonl").touch()
+        (tmp / "strategy_outcomes.jsonl").touch()
+
+        print("Directorio temporal: {}".format(tmp))
+        print()
+        print("  paper_trades.jsonl          {} registros".format(len(trades)))
+        print("  strategy_signals.jsonl      {} registros".format(len(signals)))
+        print("  contradictions.jsonl        vacio")
+        print("  strategy_outcomes.jsonl     vacio")
+
+        _run_all_blocks(tmp)
+
+
 # --------------------------------------------------------------------------- #
 # main                                                                         #
 # --------------------------------------------------------------------------- #
 
-def main():
-    if len(sys.argv) > 1:
-        shadow = Path(sys.argv[1])
-    else:
-        appdata = os.environ.get("APPDATA", "")
-        shadow = Path(appdata) / "flowsurface" / "shadow_events"
-
-    if not shadow.exists():
-        print("Directorio no encontrado: {}".format(shadow))
-        print("Ejecuta la app y genera algunas senales primero.")
-        sys.exit(1)
-
-    print("Directorio: {}".format(shadow))
-    print()
-
+def _run_all_blocks(shadow: Path):
+    """Carga archivos y ejecuta todos los bloques D1 + D2."""
     def load(name):
         records, skipped = load_jsonl(shadow / name)
         if not records and not (shadow / name).exists():
@@ -461,6 +937,7 @@ def main():
     signals        = load("strategy_signals.jsonl")
     outcomes       = load("strategy_outcomes.jsonl")
 
+    # D1
     block1_pnl(trades)
     block2_detectors(trades)
     block3_scoring(trades, signals)
@@ -469,8 +946,37 @@ def main():
     block6_contradictions(contradictions)
     block_legacy_outcomes(outcomes)
 
+    # D2
+    block7_regime(trades)
+    block8_score_discrimination(trades)
+    block9_microstructure(trades)
+    block10_close_reason_interpretation(trades)
+    block11_mfe_mae_by_detector(trades)
+
     print("\n" + "=" * 70)
     print()
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        run_test_mode()
+        return
+
+    if len(sys.argv) > 1:
+        shadow = Path(sys.argv[1])
+    else:
+        appdata = os.environ.get("APPDATA", "")
+        shadow = Path(appdata) / "flowsurface" / "shadow_events"
+
+    if not shadow.exists():
+        print("Directorio no encontrado: {}".format(shadow))
+        print("Ejecuta la app y genera algunas senales primero.")
+        print("O usa: python analyze_outcomes.py --test")
+        sys.exit(1)
+
+    print("Directorio: {}".format(shadow))
+    print()
+    _run_all_blocks(shadow)
 
 
 if __name__ == "__main__":

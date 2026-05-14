@@ -19,7 +19,7 @@ use std::{
 };
 use tokio_rustls::{
     TlsConnector,
-    rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
+    rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName},
 };
 use url::Url;
 
@@ -31,6 +31,8 @@ pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
     LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
 
 fn tls_connector() -> Result<TlsConnector, AdapterError> {
+    let _ = aws_lc_rs::default_provider().install_default();
+
     let root_store = RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };

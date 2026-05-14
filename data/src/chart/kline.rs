@@ -332,8 +332,17 @@ impl std::fmt::Display for ClusterKind {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Config {}
+#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Config {
+    pub show_key_levels: bool,
+    pub show_session_lines: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { show_key_levels: true, show_session_lines: true }
+    }
+}
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub enum ClusterScaling {

@@ -580,9 +580,21 @@ pub fn kline_cfg_view<'a>(
     basis: data::chart::Basis,
 ) -> Element<'a, Message> {
     let content = match kind {
-        KlineChartKind::Candles => column![text(
-            "This chart type doesn't have any configurations, WIP..."
-        )],
+        KlineChartKind::Candles => {
+            let key_levels = checkbox(cfg.show_key_levels)
+                .label("Key Levels (PDH/PDL/Daily Open/Weekly Open)")
+                .on_toggle(move |_| Message::PaneEvent(pane, Event::ToggleKeyLevels));
+
+            let session_lines = checkbox(cfg.show_session_lines)
+                .label("Session Lines (Asia / London / New York)")
+                .on_toggle(move |_| Message::PaneEvent(pane, Event::ToggleSessionLines));
+
+            column![
+                text("Display Options").size(14),
+                column![key_levels, session_lines].spacing(6),
+            ]
+            .spacing(8)
+        }
         KlineChartKind::Footprint {
             clusters,
             scaling,

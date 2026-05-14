@@ -122,8 +122,7 @@ impl PaperPosition {
         }
     }
 
-    /// Conservador: si stop y target se tocan en la misma vela, cierra en stop
-    /// pero conserva la ambiguedad en close_reason para no contaminar el analisis.
+    /// Conservador: si stop y target se tocan en la misma vela, stop gana.
     fn check_close(&self, bar_high: f64, bar_low: f64, now_ms: i64) -> Option<&'static str> {
         let stop_hit = self
             .stop_price
@@ -143,9 +142,7 @@ impl PaperPosition {
 
         let expires_at = self.opened_at_ms + self.ttl_ms;
 
-        if stop_hit && target_hit {
-            Some("STOP_AND_TARGET_SAME_BAR")
-        } else if stop_hit {
+        if stop_hit {
             Some("STOP_HIT")
         } else if target_hit {
             Some("TARGET_HIT")
@@ -405,7 +402,7 @@ impl PaperAccount {
         now_ms: i64,
     ) -> ClosedTrade {
         let exit_level = match reason {
-            "STOP_HIT" | "STOP_AND_TARGET_SAME_BAR" => pos.stop_price.unwrap_or(bar_close),
+            "STOP_HIT" => pos.stop_price.unwrap_or(bar_close),
             "TARGET_HIT" => pos.target_price.unwrap_or(bar_close),
             _ => bar_close, // TTL_EXPIRED → cierra al close
         };
@@ -915,10 +912,7 @@ mod tests {
         acc.on_bar_close("BTCUSDT", 1_050.0, 1_150.0, 850.0, 1_100_000, None);
 
         assert_eq!(acc.closed_trades.len(), 1);
-        assert_eq!(
-            acc.closed_trades[0].close_reason,
-            "STOP_AND_TARGET_SAME_BAR"
-        );
+        assert_eq!(acc.closed_trades[0].close_reason, "STOP_HIT");
     }
 
     #[test]

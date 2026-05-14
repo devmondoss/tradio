@@ -4,6 +4,15 @@ mod error;
 mod serde_util;
 pub mod unit;
 
+// Rust's bundled MinGW sysroot lacks nanosleep64 which aws-lc-sys (compiled by
+// WinLibs POSIX.UCRT) references in its thread backoff code. This stub satisfies
+// the linker; the function is never called during normal test execution.
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nanosleep64(_rqtp: *const u8, _rmtp: *mut u8) -> i32 {
+    0
+}
+
 pub use adapter::{Event, proxy};
 use adapter::{Exchange, MarketKind};
 

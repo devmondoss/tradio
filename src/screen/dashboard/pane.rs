@@ -100,6 +100,8 @@ pub enum Event {
     ReorderIndicator(column_drag::DragEvent),
     ClusterKindSelected(data::chart::kline::ClusterKind),
     ClusterScalingSelected(data::chart::kline::ClusterScaling),
+    ToggleKeyLevels,
+    ToggleSessionLines,
     StudyConfigurator(modal::pane::settings::study::StudyMessage),
     StreamModifierChanged(modal::stream::Message),
     ComparisonChartInteraction(super::chart::comparison::Message),
@@ -934,7 +936,7 @@ impl State {
                     let settings_modal = || {
                         kline_cfg_view(
                             chart.study_configurator(),
-                            data::chart::kline::Config {},
+                            chart.config,
                             chart_kind,
                             id,
                             chart.basis(),
@@ -1197,6 +1199,16 @@ impl State {
                 {
                     c.set_cluster_scaling(scaling);
                     *kind = c.kind.clone();
+                }
+            }
+            Event::ToggleKeyLevels => {
+                if let Content::Kline { chart: Some(c), .. } = &mut self.content {
+                    c.config.show_key_levels = !c.config.show_key_levels;
+                }
+            }
+            Event::ToggleSessionLines => {
+                if let Content::Kline { chart: Some(c), .. } = &mut self.content {
+                    c.config.show_session_lines = !c.config.show_session_lines;
                 }
             }
             Event::StudyConfigurator(study_msg) => match study_msg {

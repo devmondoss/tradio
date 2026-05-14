@@ -37,7 +37,7 @@ Estado actualizado tras la reparacion de placeholders criticos del modulo de est
 |------|---------|
 | Simulacion intrabar | El motor sigue siendo OHLC por vela. Cuando stop y target tocan en la misma vela cierra en stop y marca `STOP_AND_TARGET_SAME_BAR`; falta replay con trades/ticks para resolver orden real. |
 | Config persistida | La config de paper se lee desde env vars en cada arranque; cambiar env entre sesiones puede alterar la interpretacion de cuenta restaurada. |
-| Analisis de resultados | Usar `paper_trades.jsonl` para win rate por sesion, score decay, MAE/MFE y TTL optimization cuando haya 100+ trades. |
+| Analisis de resultados | `scripts/analyze_outcomes.py` implementado (D1 bloques 1-6 + D2 bloques 7-11). Necesita ~100+ senales reales para que los numeros sean significativos. |
 
 ## Pendiente - infraestructura
 

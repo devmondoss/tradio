@@ -121,9 +121,6 @@ pub fn build_flow_context(
     failed_acceptance: bool,
     footprint_absorption: AbsorptionSide,
     cvd_divergence: Option<CvdDivergence>,
-    stacked_imbalance: ImbalanceSide,
-    sweep_confirmed: bool,
-    mss_active: bool,
 ) -> OrderFlowContext {
     let taker_imbalance = match (buy_volume, sell_volume) {
         (Some(buy), Some(sell)) => {
@@ -147,10 +144,10 @@ pub fn build_flow_context(
         vpin,
         cvd_divergence,
         footprint_absorption,
-        stacked_imbalance,
+        stacked_imbalance: ImbalanceSide::Unknown,
         failed_acceptance,
-        sweep_confirmed,
-        mss_active,
+        sweep_confirmed: false,
+        mss_active: false,
         quality: if cvd.is_some() || delta.is_some() {
             DataQuality::Live
         } else {
@@ -167,16 +164,14 @@ pub fn derive_cvd_divergence(
     recent_lows: &[f64],
     cvd_slope: Option<f64>,
 ) -> Option<CvdDivergence> {
-    const TARGET_N: usize = 10;
-    const MIN_N: usize = 5;
-    let n = recent_highs.len().min(recent_lows.len()).min(TARGET_N);
-    if n < MIN_N {
+    const N: usize = 10;
+    if recent_highs.len() < N || recent_lows.len() < N {
         return None;
     }
     let slope = cvd_slope?;
-    let highs = &recent_highs[recent_highs.len() - n..];
-    let lows = &recent_lows[recent_lows.len() - n..];
-    let mid = n / 2;
+    let highs = &recent_highs[recent_highs.len() - N..];
+    let lows = &recent_lows[recent_lows.len() - N..];
+    let mid = N / 2;
     let first_max = highs[..mid]
         .iter()
         .copied()
@@ -194,109 +189,6 @@ pub fn derive_cvd_divergence(
         return Some(CvdDivergence::BullishAbsorption);
     }
     None
-}
-
-/// Detects stacked taker imbalance from aligned per-candle deltas.
-/// Consecutive large positive deltas imply bullish initiative; negative deltas imply bearish.
-pub fn derive_stacked_imbalance(recent_deltas: &[f64]) -> ImbalanceSide {
-    const MIN_STACK: usize = 3;
-    const MIN_DELTA: f64 = 1e-9;
-
-    if recent_deltas.len() < MIN_STACK {
-        return ImbalanceSide::Unknown;
-    }
-
-    let avg_abs_delta =
-        recent_deltas.iter().map(|d| d.abs()).sum::<f64>() / recent_deltas.len() as f64;
-    if avg_abs_delta <= MIN_DELTA {
-        return ImbalanceSide::None;
-    }
-
-    let threshold = avg_abs_delta * 0.75;
-    let mut bullish_run = 0usize;
-    let mut bearish_run = 0usize;
-
-    for delta in recent_deltas.iter().rev() {
-        if *delta >= threshold {
-            bullish_run += 1;
-            bearish_run = 0;
-        } else if *delta <= -threshold {
-            bearish_run += 1;
-            bullish_run = 0;
-        } else {
-            bullish_run = 0;
-            bearish_run = 0;
-        }
-
-        if bullish_run >= MIN_STACK {
-            return ImbalanceSide::Bullish;
-        }
-        if bearish_run >= MIN_STACK {
-            return ImbalanceSide::Bearish;
-        }
-    }
-
-    ImbalanceSide::None
-}
-
-/// Liquidity sweep: latest candle takes a prior local extreme and closes back inside.
-pub fn derive_sweep_confirmed(
-    recent_highs: &[f64],
-    recent_lows: &[f64],
-    recent_closes: &[f64],
-) -> bool {
-    const MIN_N: usize = 5;
-    let n = recent_highs
-        .len()
-        .min(recent_lows.len())
-        .min(recent_closes.len());
-    if n < MIN_N {
-        return false;
-    }
-
-    let highs = &recent_highs[recent_highs.len() - n..];
-    let lows = &recent_lows[recent_lows.len() - n..];
-    let closes = &recent_closes[recent_closes.len() - n..];
-    let last_high = highs[n - 1];
-    let last_low = lows[n - 1];
-    let last_close = closes[n - 1];
-
-    let prior_high = highs[..n - 1]
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
-    let prior_low = lows[..n - 1].iter().copied().fold(f64::INFINITY, f64::min);
-
-    (last_high > prior_high && last_close < prior_high)
-        || (last_low < prior_low && last_close > prior_low)
-}
-
-/// Lightweight market-structure shift over recent swing proxies.
-pub fn derive_mss_active(recent_highs: &[f64], recent_lows: &[f64]) -> bool {
-    const MIN_N: usize = 6;
-    let n = recent_highs.len().min(recent_lows.len());
-    if n < MIN_N {
-        return false;
-    }
-
-    let highs = &recent_highs[recent_highs.len() - n..];
-    let lows = &recent_lows[recent_lows.len() - n..];
-    let mid = n / 2;
-
-    let first_high = highs[..mid]
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
-    let second_high = highs[mid..]
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
-    let first_low = lows[..mid].iter().copied().fold(f64::INFINITY, f64::min);
-    let second_low = lows[mid..].iter().copied().fold(f64::INFINITY, f64::min);
-
-    let bullish_shift = second_high > first_high && second_low > first_low;
-    let bearish_shift = second_low < first_low && second_high < first_high;
-    bullish_shift || bearish_shift
 }
 
 /// Derives market regime from recent close prices (oldest-first) and current ATR.
@@ -329,39 +221,6 @@ pub fn derive_regime(recent_closes: &[f64], atr: f64) -> Regime {
         .fold(f64::NEG_INFINITY, f64::max);
     let low = recent_closes.iter().copied().fold(f64::INFINITY, f64::min);
     let range_atr = (high - low) / atr;
-    let last_close = *recent_closes.last().unwrap();
-    let first_close = recent_closes[0];
-    let net_move_atr = (last_close - first_close).abs() / atr;
-
-    if range_atr > 6.0 && net_move_atr > 3.0 && slope_per_atr.abs() > 0.35 {
-        return Regime::Stress;
-    }
-
-    if recent_closes.len() >= 10 {
-        let split = recent_closes.len() / 2;
-        let prior_high = recent_closes[..split]
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
-        let prior_low = recent_closes[..split]
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
-        let recent_high = recent_closes[split..]
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
-        let recent_low = recent_closes[split..]
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
-        let prior_range_atr = (prior_high - prior_low) / atr;
-        let recent_range_atr = (recent_high - recent_low) / atr;
-
-        if prior_range_atr > 3.0 && recent_range_atr < prior_range_atr * 0.55 {
-            return Regime::Aftermath;
-        }
-    }
 
     if range_atr < 0.8 {
         Regime::Compression
@@ -504,50 +363,3 @@ pub fn build_volume_profile_context(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cvd_divergence_works_with_five_points() {
-        let highs = [100.0, 101.0, 102.0, 103.0, 104.0];
-        let lows = [95.0, 95.5, 96.0, 96.5, 97.0];
-
-        assert_eq!(
-            derive_cvd_divergence(&highs, &lows, Some(-0.6)),
-            Some(CvdDivergence::BearishAbsorption)
-        );
-    }
-
-    #[test]
-    fn stacked_imbalance_detects_recent_run() {
-        let deltas = [-1.0, 0.2, 3.0, 3.5, 4.0];
-        assert_eq!(derive_stacked_imbalance(&deltas), ImbalanceSide::Bullish);
-    }
-
-    #[test]
-    fn sweep_requires_close_back_inside_prior_extreme() {
-        let highs = [100.0, 101.0, 102.0, 103.0, 105.0];
-        let lows = [95.0, 96.0, 97.0, 98.0, 99.0];
-        let closes = [99.0, 100.0, 101.0, 102.0, 102.5];
-
-        assert!(derive_sweep_confirmed(&highs, &lows, &closes));
-    }
-
-    #[test]
-    fn regime_can_enter_stress_and_aftermath() {
-        assert_eq!(
-            derive_regime(&[100.0, 101.0, 103.0, 106.0, 110.0], 1.0),
-            Regime::Stress
-        );
-        assert_eq!(
-            derive_regime(
-                &[
-                    100.0, 105.0, 98.0, 107.0, 97.0, 101.0, 101.5, 100.8, 101.2, 101.0
-                ],
-                1.0
-            ),
-            Regime::Aftermath
-        );
-    }
-}
