@@ -369,10 +369,11 @@ impl Proxy {
                 })?
                 .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
-                let server_name: tokio_rustls::rustls::ServerName =
-                    tokio_rustls::rustls::ServerName::try_from(self.host.as_str()).map_err(
-                        |_| AdapterError::ParseError("invalid proxy dnsname".to_string()),
-                    )?;
+                let server_name =
+                    tokio_rustls::rustls::pki_types::ServerName::try_from(self.host.clone())
+                        .map_err(|_| {
+                            AdapterError::ParseError("invalid proxy dnsname".to_string())
+                        })?;
 
                 let mut tls = super::connect::TLS_CONNECTOR
                     .connect(server_name, tcp)

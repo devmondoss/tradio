@@ -131,15 +131,17 @@ pub fn open_url(url: &str) -> Result<(), InternalError> {
 }
 
 pub fn data_path(path_name: Option<&str>) -> PathBuf {
-    if let Ok(path) = std::env::var("FLOWSURFACE_DATA_PATH") {
+    let base = if let Ok(path) = std::env::var("FLOWSURFACE_DATA_PATH") {
         PathBuf::from(path)
     } else {
         let data_dir = dirs_next::data_dir().unwrap_or_else(|| PathBuf::from("."));
-        if let Some(path_name) = path_name {
-            data_dir.join("flowsurface").join(path_name)
-        } else {
-            data_dir.join("flowsurface")
-        }
+        data_dir.join("flowsurface")
+    };
+
+    if let Some(path_name) = path_name {
+        base.join(path_name)
+    } else {
+        base
     }
 }
 

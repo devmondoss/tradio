@@ -61,7 +61,11 @@ impl RelativeVolumeIndicator {
             };
 
             let current = f64::from(f32::from(dp.kline.volume.total()));
-            let ratio = if mean > 0.0 { (current / mean) as f32 } else { 1.0 };
+            let ratio = if mean > 0.0 {
+                (current / mean) as f32
+            } else {
+                1.0
+            };
 
             let direction = dp
                 .kline
@@ -70,7 +74,13 @@ impl RelativeVolumeIndicator {
                 .map(|(buy, sell)| {
                     let b = f32::from(buy);
                     let s = f32::from(sell);
-                    if b > s { 1.0 } else if s > b { -1.0 } else { 0.0 }
+                    if b > s {
+                        1.0
+                    } else if s > b {
+                        -1.0
+                    } else {
+                        0.0
+                    }
                 })
                 .unwrap_or(0.0);
 
@@ -100,7 +110,11 @@ impl RelativeVolumeIndicator {
             };
 
             let current = f64::from(f32::from(dp.kline.volume.total()));
-            let ratio = if mean > 0.0 { (current / mean) as f32 } else { 1.0 };
+            let ratio = if mean > 0.0 {
+                (current / mean) as f32
+            } else {
+                1.0
+            };
 
             let direction = dp
                 .kline
@@ -109,7 +123,13 @@ impl RelativeVolumeIndicator {
                 .map(|(buy, sell)| {
                     let b = f32::from(buy);
                     let s = f32::from(sell);
-                    if b > s { 1.0 } else if s > b { -1.0 } else { 0.0 }
+                    if b > s {
+                        1.0
+                    } else if s > b {
+                        -1.0
+                    } else {
+                        0.0
+                    }
                 })
                 .unwrap_or(0.0);
 

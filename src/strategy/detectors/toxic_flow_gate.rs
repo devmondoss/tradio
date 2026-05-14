@@ -17,16 +17,16 @@ pub fn toxic_flow_gate(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Res
         return Err("ORDERBOOK_NOT_LIVE".to_string());
     }
 
-    if let Some(spread) = ctx.orderbook.spread_bps {
-        if spread > cfg.max_spread_bps {
-            return Err("SPREAD_TOO_WIDE".to_string());
-        }
+    if let Some(spread) = ctx.orderbook.spread_bps
+        && spread > cfg.max_spread_bps
+    {
+        return Err("SPREAD_TOO_WIDE".to_string());
     }
 
-    if let Some(vpin) = ctx.flow.vpin {
-        if vpin > cfg.max_vpin {
-            return Err("VPIN_TOXIC".to_string());
-        }
+    if let Some(vpin) = ctx.flow.vpin
+        && vpin > cfg.max_vpin
+    {
+        return Err("VPIN_TOXIC".to_string());
     }
 
     Ok(())
@@ -35,7 +35,6 @@ pub fn toxic_flow_gate(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::strategy::types::*;
 
     fn make_valid_ctx() -> StrategyMarketContext {
         StrategyMarketContext {
@@ -70,6 +69,7 @@ mod tests {
                 buy_volume: Some(5000.0),
                 sell_volume: Some(4800.0),
                 vpin: Some(0.45),
+                cvd_divergence: None,
                 footprint_absorption: AbsorptionSide::None,
                 stacked_imbalance: ImbalanceSide::None,
                 failed_acceptance: false,

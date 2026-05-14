@@ -1,6 +1,6 @@
 use super::detectors::{
-    lvn_liquidity_vacuum_breakout, toxic_flow_gate::toxic_flow_gate,
-    value_area_failed_auction, vwap_value_pullback_continuation,
+    lvn_liquidity_vacuum_breakout, toxic_flow_gate::toxic_flow_gate, value_area_failed_auction,
+    vwap_value_pullback_continuation,
 };
 use super::scoring::score_signal;
 use super::types::*;

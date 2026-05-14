@@ -41,19 +41,14 @@ impl VwapIndicator {
 
     /// Finds the most recent swing-low pivot in [start..n-1) and returns its index.
     /// A swing low is a candle whose low is strictly less than both its immediate neighbors.
-    fn find_swing_low_anchor<T: Copy>(
-        lows: &[(T, f32)],
-    ) -> Option<usize> {
+    fn find_swing_low_anchor<T: Copy>(lows: &[(T, f32)]) -> Option<usize> {
         let n = lows.len();
         if n < 3 {
             return None;
         }
-        for i in (1..n - 1).rev() {
-            if lows[i].1 < lows[i - 1].1 && lows[i].1 < lows[i + 1].1 {
-                return Some(i);
-            }
-        }
-        None
+        (1..n - 1)
+            .rev()
+            .find(|&i| lows[i].1 < lows[i - 1].1 && lows[i].1 < lows[i + 1].1)
     }
 
     fn compute_avwap_from_anchor(
@@ -78,9 +73,7 @@ impl VwapIndicator {
         }
     }
 
-    fn compute_avwap_time(
-        datapoints: &BTreeMap<exchange::UnixMs, KlineDataPoint>,
-    ) -> Option<f32> {
+    fn compute_avwap_time(datapoints: &BTreeMap<exchange::UnixMs, KlineDataPoint>) -> Option<f32> {
         const LOOKBACK: usize = 50;
         let entries: Vec<_> = datapoints.iter().collect();
         let n = entries.len();
@@ -89,7 +82,10 @@ impl VwapIndicator {
         }
         let start = n.saturating_sub(LOOKBACK);
         let window = &entries[start..];
-        let lows: Vec<_> = window.iter().map(|(_, dp)| ((), dp.kline.low.to_f32())).collect();
+        let lows: Vec<_> = window
+            .iter()
+            .map(|(_, dp)| ((), dp.kline.low.to_f32()))
+            .collect();
         let anchor_rel = Self::find_swing_low_anchor(&lows).unwrap_or(0);
         Self::compute_avwap_from_anchor(&entries, start + anchor_rel)
     }
@@ -102,7 +98,10 @@ impl VwapIndicator {
         }
         let start = n.saturating_sub(LOOKBACK);
         let window = &datapoints[start..];
-        let lows: Vec<_> = window.iter().map(|dp| ((), dp.kline.low.to_f32())).collect();
+        let lows: Vec<_> = window
+            .iter()
+            .map(|dp| ((), dp.kline.low.to_f32()))
+            .collect();
         let anchor_rel = Self::find_swing_low_anchor(&lows).unwrap_or(0);
         let anchor = start + anchor_rel;
 
@@ -137,7 +136,9 @@ impl VwapIndicator {
         }
     }
 
-    fn compute_vwap_time(datapoints: &BTreeMap<exchange::UnixMs, KlineDataPoint>) -> BTreeMap<exchange::UnixMs, VwapPoint> {
+    fn compute_vwap_time(
+        datapoints: &BTreeMap<exchange::UnixMs, KlineDataPoint>,
+    ) -> BTreeMap<exchange::UnixMs, VwapPoint> {
         let mut result = BTreeMap::new();
         let mut cum_volume: f64 = 0.0;
         let mut cum_pv: f64 = 0.0;
@@ -175,13 +176,16 @@ impl VwapIndicator {
                 (dp.kline.close.to_f32(), 0.0)
             };
 
-            result.insert(time, VwapPoint {
-                vwap,
-                upper_band1: vwap + std_dev,
-                lower_band1: vwap - std_dev,
-                upper_band2: vwap + 2.0 * std_dev,
-                lower_band2: vwap - 2.0 * std_dev,
-            });
+            result.insert(
+                time,
+                VwapPoint {
+                    vwap,
+                    upper_band1: vwap + std_dev,
+                    lower_band1: vwap - std_dev,
+                    upper_band2: vwap + 2.0 * std_dev,
+                    lower_band2: vwap - 2.0 * std_dev,
+                },
+            );
         }
 
         result
@@ -215,13 +219,16 @@ impl VwapIndicator {
                 (dp.kline.close.to_f32(), 0.0)
             };
 
-            result.insert(idx as u64, VwapPoint {
-                vwap,
-                upper_band1: vwap + std_dev,
-                lower_band1: vwap - std_dev,
-                upper_band2: vwap + 2.0 * std_dev,
-                lower_band2: vwap - 2.0 * std_dev,
-            });
+            result.insert(
+                idx as u64,
+                VwapPoint {
+                    vwap,
+                    upper_band1: vwap + std_dev,
+                    lower_band1: vwap - std_dev,
+                    upper_band2: vwap + 2.0 * std_dev,
+                    lower_band2: vwap - 2.0 * std_dev,
+                },
+            );
         }
 
         result
@@ -295,12 +302,14 @@ impl KlineIndicatorImpl for VwapIndicator {
             return vec![];
         }
 
-        let band1: Vec<_> = points.iter()
+        let band1: Vec<_> = points
+            .iter()
             .filter(|(_, p)| p.upper_band1.is_finite() && p.lower_band1.is_finite())
             .map(|(t, p)| (*t, p.upper_band1, p.lower_band1))
             .collect();
 
-        let band2: Vec<_> = points.iter()
+        let band2: Vec<_> = points
+            .iter()
             .filter(|(_, p)| p.upper_band2.is_finite() && p.lower_band2.is_finite())
             .map(|(t, p)| (*t, p.upper_band2, p.lower_band2))
             .collect();

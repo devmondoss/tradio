@@ -47,7 +47,7 @@ depth update
         ├── build_orderbook_context(depth)
         ├── build_vwap_context(price, vwap_session, avwap_bos)
         ├── build_volume_profile_context(price, poc, vah, val, hvn, lvn)
-        ├── build_flow_context(cvd, cvd_slope, delta, buy_vol, sell_vol, failed_acceptance, absorption)
+        ├── build_flow_context(cvd, cvd_slope, delta, buy_vol, sell_vol, failed_acceptance, absorption, imbalance, sweep, mss)
         ├── derive_regime(recent_closes, atr)
         ├── derive_failed_acceptance_and_absorption(highs, lows, closes, vah, val, delta, cvd_slope)
         ├── StrategyMarketContext { ... }
@@ -121,7 +121,7 @@ pub struct OrderFlowContext {
     pub vpin: Option<f64>,             // mean(|delta|/vol) sobre últimas 50 velas
     pub cvd_divergence: Option<CvdDivergence>, // divergencia precio/CVD detectada
     pub footprint_absorption: AbsorptionSide,  // Ask | Bid | None | Unknown
-    pub stacked_imbalance: ImbalanceSide,       // siempre Unknown
+    pub stacked_imbalance: ImbalanceSide,       // derivado desde runs recientes de delta
     pub failed_acceptance: bool,
     pub sweep_confirmed: bool,
     pub mss_active: bool,
@@ -157,8 +157,8 @@ pub enum Regime {
     Chop,         // slope bajo, rango normal
     Compression,  // rango < 0.8 ATR en 20 velas
     Expansion,    // rango > 4 ATR y slope fuerte
-    Stress,       // no usado actualmente
-    Aftermath,    // no usado actualmente
+    Stress,       // rango/movimiento extremos normalizados por ATR
+    Aftermath,    // contraccion posterior a expansion previa
     Unknown,      // insuficientes datos
 }
 
@@ -193,7 +193,7 @@ Calcula `price_vs_vwap` y `price_vs_avwap_bos` usando `price_relation()`:
 
 Calcula `value_location` y asigna `quality = Live` cuando poc/vah/val están disponibles.
 
-### build_flow_context(cvd, cvd_slope, delta, buy_vol, sell_vol, vpin, failed_acceptance, footprint_absorption, cvd_divergence) -> OrderFlowContext
+### build_flow_context(cvd, cvd_slope, delta, buy_vol, sell_vol, vpin, failed_acceptance, footprint_absorption, cvd_divergence, stacked_imbalance, sweep_confirmed, mss_active) -> OrderFlowContext
 
 Calcula `taker_imbalance = (buy − sell) / (buy + sell)`.
 `quality = Live` si cvd o delta disponibles.
@@ -203,7 +203,7 @@ Calcula `taker_imbalance = (buy − sell) / (buy + sell)`.
 Compara la primera mitad vs la segunda mitad de las últimas 10 velas:
 - Precio HH (`last_max > first_max × 1.0001`) + `slope < −0.5` → `BearishAbsorption`
 - Precio LL (`last_min < first_min × 0.9999`) + `slope > 0.5` → `BullishAbsorption`
-- Requiere al menos 10 highs/lows y CVD slope disponible
+- Requiere al menos 5 highs/lows y CVD slope disponible; usa hasta 10 puntos cuando existen
 
 ### derive_regime(recent_closes: &[f64], atr: f64) -> Regime
 

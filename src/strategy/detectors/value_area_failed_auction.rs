@@ -1,5 +1,5 @@
-use crate::strategy::types::*;
 use super::toxic_flow_gate::toxic_flow_gate;
+use crate::strategy::types::*;
 
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
     toxic_flow_gate(ctx, cfg).ok()?;
@@ -23,8 +23,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     let short_flow =
         flow.cvd_slope.unwrap_or(0.0) <= 0.0 && flow.taker_imbalance.unwrap_or(0.0) < 0.25;
 
-    let short_book =
-        ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_above;
+    let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_above;
 
     if short_location && short_flow && short_book {
         let entry = px;
@@ -66,8 +65,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     let long_flow =
         flow.cvd_slope.unwrap_or(0.0) >= 0.0 && flow.taker_imbalance.unwrap_or(0.0) > -0.25;
 
-    let long_book =
-        ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_below;
+    let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_below;
 
     if long_location && long_flow && long_book {
         let entry = px;
@@ -140,6 +138,7 @@ mod tests {
                 buy_volume: Some(5000.0),
                 sell_volume: Some(4800.0),
                 vpin: Some(0.45),
+                cvd_divergence: None,
                 footprint_absorption: AbsorptionSide::Ask,
                 stacked_imbalance: ImbalanceSide::None,
                 failed_acceptance: true,

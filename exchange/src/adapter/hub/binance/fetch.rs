@@ -295,12 +295,12 @@ pub(super) async fn fetch_ticker_stats(
         // Skip Binance COIN-M delivery contracts (e.g. BTCUSD_260626).
         // These have a 6-digit date suffix and are not perpetuals; their
         // contract sizes are not tracked, so they can't contribute to stats.
-        if market == MarketKind::InversePerps {
-            if let Some(pos) = symbol.rfind('_') {
-                let suffix = &symbol[pos + 1..];
-                if suffix.len() == 6 && suffix.bytes().all(|b| b.is_ascii_digit()) {
-                    continue;
-                }
+        if market == MarketKind::InversePerps
+            && let Some(pos) = symbol.rfind('_')
+        {
+            let suffix = &symbol[pos + 1..];
+            if suffix.len() == 6 && suffix.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
             }
         }
 

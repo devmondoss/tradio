@@ -408,13 +408,11 @@ impl State {
     }
 
     pub fn mark_fetch_failed(&mut self, req_id: uuid::Uuid, error: String) {
-        match &mut self.content {
-            Content::Kline { chart, .. } => {
-                if let Some(chart) = chart {
-                    chart.mark_request_failed(req_id, error);
-                }
-            }
-            _ => {}
+        if let Content::Kline {
+            chart: Some(chart), ..
+        } = &mut self.content
+        {
+            chart.mark_request_failed(req_id, error);
         }
     }
 
@@ -1589,9 +1587,7 @@ impl State {
             ));
         }
 
-        if !treat_as_starter
-            && matches!(&self.content, Content::Kline { .. })
-        {
+        if !treat_as_starter && matches!(&self.content, Content::Kline { .. }) {
             let strategy_active = matches!(
                 &self.content,
                 Content::Kline { chart: Some(c), .. } if c.strategy_overlay_enabled
@@ -1884,6 +1880,7 @@ impl Default for State {
 }
 
 #[derive(Default)]
+#[allow(clippy::large_enum_variant)]
 pub enum Content {
     #[default]
     Starter,

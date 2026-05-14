@@ -30,7 +30,9 @@ impl AtrIndicator {
         }
     }
 
-    fn compute_atr_time(datapoints: &BTreeMap<exchange::UnixMs, KlineDataPoint>) -> BTreeMap<exchange::UnixMs, f32> {
+    fn compute_atr_time(
+        datapoints: &BTreeMap<exchange::UnixMs, KlineDataPoint>,
+    ) -> BTreeMap<exchange::UnixMs, f32> {
         let entries: Vec<_> = datapoints.iter().collect();
         let mut result = BTreeMap::new();
 

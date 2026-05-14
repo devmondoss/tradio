@@ -81,7 +81,10 @@ impl IndicatorAvailability {
 /// Whether this indicator renders as an overlay on the main chart canvas
 /// rather than in its own separate panel below.
 pub fn is_overlay_indicator(indicator: KlineIndicator) -> bool {
-    matches!(indicator, KlineIndicator::Vwap | KlineIndicator::VolumeProfile)
+    matches!(
+        indicator,
+        KlineIndicator::Vwap | KlineIndicator::VolumeProfile
+    )
 }
 
 pub trait KlineIndicatorImpl {
@@ -135,32 +138,57 @@ pub trait KlineIndicatorImpl {
     }
 
     /// Latest VWAP value for the current session.
-    fn latest_vwap(&self) -> Option<f64> { None }
+    fn latest_vwap(&self) -> Option<f64> {
+        None
+    }
 
     /// Latest Volume Profile levels: (poc, vah, val).
-    fn latest_vol_profile_levels(&self) -> Option<(f64, f64, f64)> { None }
+    fn latest_vol_profile_levels(&self) -> Option<(f64, f64, f64)> {
+        None
+    }
 
     /// Latest CVD values: (cumulative, candle_delta).
-    fn latest_cvd(&self) -> Option<(f64, f64)> { None }
+    fn latest_cvd(&self) -> Option<(f64, f64)> {
+        None
+    }
 
     /// Latest candle volume: (buy, sell). None when buy/sell split unavailable.
-    fn latest_volume(&self) -> Option<(f64, f64)> { None }
+    fn latest_volume(&self) -> Option<(f64, f64)> {
+        None
+    }
 
     /// Latest ATR(14) value.
-    fn latest_atr(&self) -> Option<f64> { None }
+    fn latest_atr(&self) -> Option<f64> {
+        None
+    }
 
     /// CVD linear-regression slope over last N candles (positive = rising CVD).
-    fn latest_cvd_slope(&self) -> Option<f64> { None }
+    fn latest_cvd_slope(&self) -> Option<f64> {
+        None
+    }
 
     /// Candle-level VPIN approximation: mean(|delta|/vol) over last 50 candles.
-    fn latest_vpin(&self) -> Option<f64> { None }
+    fn latest_vpin(&self) -> Option<f64> {
+        None
+    }
 
     /// HVN and LVN price levels within `atr`-scaled distance of `price`.
     /// Returns (hvn_nearby, lvn_nearby).
-    fn latest_hvn_lvn_nearby(&self, _price: f64, _atr: f64) -> (Vec<f64>, Vec<f64>) { (vec![], vec![]) }
+    fn latest_hvn_lvn_nearby(&self, _price: f64, _atr: f64) -> (Vec<f64>, Vec<f64>) {
+        (vec![], vec![])
+    }
 
     /// Latest anchored-VWAP (BOS anchor = most recent swing pivot).
-    fn latest_avwap_bos(&self) -> Option<f64> { None }
+    fn latest_avwap_bos(&self) -> Option<f64> {
+        None
+    }
+
+    /// Per-candle delta for the last `n` candles, oldest-first.
+    /// Aligned with the same candle order used for recent_highs/recent_lows in kline.rs.
+    /// Returns empty vec for indicators that do not track per-candle delta.
+    fn recent_delta_slice(&self, _n: usize) -> Vec<f64> {
+        Vec::new()
+    }
 
     /// Expose existing OI data for bootstrapping dependent indicators.
     /// Only implemented by OpenInterestIndicator.
@@ -195,7 +223,13 @@ pub trait KlineIndicatorImpl {
 
     /// Called each frame with the current visible time/tick range.
     /// Override to rebuild view-dependent data (e.g. VRVP histogram).
-    fn update_visible_range(&mut self, _earliest: u64, _latest: u64, _source: &PlotData<KlineDataPoint>) {}
+    fn update_visible_range(
+        &mut self,
+        _earliest: u64,
+        _latest: u64,
+        _source: &PlotData<KlineDataPoint>,
+    ) {
+    }
 }
 
 pub struct FetchCtx<'a> {
@@ -215,9 +249,7 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
         KlineIndicator::OpenInterest => {
             Box::new(super::kline::open_interest::OpenInterestIndicator::new())
         }
-        KlineIndicator::OiDelta => {
-            Box::new(super::kline::oi_delta::OiDeltaIndicator::new())
-        }
+        KlineIndicator::OiDelta => Box::new(super::kline::oi_delta::OiDeltaIndicator::new()),
         KlineIndicator::Vwap => Box::new(super::kline::vwap::VwapIndicator::new()),
         KlineIndicator::VolumeProfile => {
             Box::new(super::kline::volume_profile::VolumeProfileIndicator::new())

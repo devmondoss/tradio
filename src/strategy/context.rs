@@ -17,7 +17,11 @@ impl StrategyMarketContext {
         }
     }
 
-    pub fn determine_value_location(price: f64, vah: Option<f64>, val: Option<f64>) -> ValueLocation {
+    pub fn determine_value_location(
+        price: f64,
+        vah: Option<f64>,
+        val: Option<f64>,
+    ) -> ValueLocation {
         match (vah, val) {
             (Some(vah), Some(val)) => {
                 if price > vah {

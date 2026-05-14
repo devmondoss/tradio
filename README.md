@@ -61,8 +61,11 @@ Every signal is tracked in real time until it closes. Results are written to:
 
 ```
 %APPDATA%\Roaming\flowsurface\shadow_events\
-├── strategy_signals.jsonl    — signal at detection time
-└── strategy_outcomes.jsonl   — MFE, MAE, outcome (target/stop/expired)
+├── strategy_signals.jsonl       — signal/block events at detection time
+├── strategy_outcomes.jsonl      — legacy MFE/MAE tracker outcomes
+├── paper_trades.jsonl           — closed paper-trading positions with PnL/costs
+├── contradictions.jsonl         — ignored opposite-side signals per symbol
+└── paper_account_state.json     — persisted paper account/open positions
 ```
 
 Fields tracked per outcome: `mfe`, `mae`, `mfe_r`, `mae_r` (in price units and R-multiples).
@@ -112,9 +115,14 @@ See [`docs/BUILD.md`](docs/BUILD.md) for full details including the `cargo check
 
 | File | Contents |
 |------|----------|
-| [`docs/BUILD.md`](docs/BUILD.md) | Build setup, toolchain, MinGW, PowerShell recipe |
+| [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md) | App architecture: Elm model, component hierarchy, message flow, persistence |
+| [`docs/DATOS.md`](docs/DATOS.md) | Data flow: exchange types, WebSocket → chart, HTTP fetch, aggregation |
+| [`docs/CHARTS.md`](docs/CHARTS.md) | All chart types: Kline, Heatmap, Footprint, DOM, Time&Sales, Comparison |
+| [`docs/RENDERING.md`](docs/RENDERING.md) | KlineChart rendering: coordinates, cache, scroll/zoom, overlays |
 | [`docs/INDICATORS.md`](docs/INDICATORS.md) | All indicators: formulas, structs, constants, trait methods |
 | [`docs/STRATEGY.md`](docs/STRATEGY.md) | Full strategy pipeline: context, detectors, scoring, adapter, tracker |
+| [`docs/STRATEGY_AUDIT.md`](docs/STRATEGY_AUDIT.md) | Current audit of strategy, paper trading, and remaining implementation gaps |
+| [`docs/BUILD.md`](docs/BUILD.md) | Build setup, toolchain, MinGW, PowerShell recipe |
 | [`docs/BUGS_Y_FIXES.md`](docs/BUGS_Y_FIXES.md) | All resolved bugs with root cause and fix |
 | [`docs/PENDIENTE.md`](docs/PENDIENTE.md) | Planned improvements and future indicators |
 

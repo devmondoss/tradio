@@ -19,7 +19,7 @@ use std::{
 };
 use tokio_rustls::{
     TlsConnector,
-    rustls::{ClientConfig, OwnedTrustAnchor},
+    rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
 };
 use url::Url;
 
@@ -31,18 +31,11 @@ pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
     LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
 
 fn tls_connector() -> Result<TlsConnector, AdapterError> {
-    let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-
-    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
-        OwnedTrustAnchor::from_subject_spki_name_constraints(
-            ta.subject,
-            ta.spki,
-            ta.name_constraints,
-        )
-    }));
+    let root_store = RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
 
     let config = ClientConfig::builder()
-        .with_safe_defaults()
         .with_root_certificates(root_store)
         .with_no_client_auth();
 
@@ -168,9 +161,8 @@ async fn upgrade_to_tls<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let domain: tokio_rustls::rustls::ServerName =
-        tokio_rustls::rustls::ServerName::try_from(domain)
-            .map_err(|_| AdapterError::ParseError("invalid dnsname".to_string()))?;
+    let domain = ServerName::try_from(domain.to_string())
+        .map_err(|_| AdapterError::ParseError("invalid dnsname".to_string()))?;
 
     TLS_CONNECTOR
         .connect(domain, stream)

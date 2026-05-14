@@ -333,10 +333,7 @@ where
                 let vx = snap_ratio * bounds.width;
                 if vx.is_finite() {
                     frame.stroke(
-                        &Path::line(
-                            Point::new(vx, 0.0),
-                            Point::new(vx, bounds.height),
-                        ),
+                        &Path::line(Point::new(vx, 0.0), Point::new(vx, bounds.height)),
                         dashed,
                     );
                 }
@@ -364,10 +361,7 @@ where
                     let hy = snap_ratio * bounds.height;
                     if hy.is_finite() {
                         frame.stroke(
-                            &Path::line(
-                                Point::new(0.0, hy),
-                                Point::new(bounds.width, hy),
-                            ),
+                            &Path::line(Point::new(0.0, hy), Point::new(bounds.width, hy)),
                             dashed,
                         );
                     }

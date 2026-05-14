@@ -207,7 +207,8 @@ impl Dashboard {
                 } else {
                     match pane_id {
                         Some(id) => {
-                            if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
+                            if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id)
+                            {
                                 state.status = pane::Status::Ready;
                                 state.notifications.push(Toast::error(err.to_string()));
                             }
@@ -221,7 +222,11 @@ impl Dashboard {
                     }
                 }
             }
-            Message::FetchFailed { pane_id, req_id, error } => {
+            Message::FetchFailed {
+                pane_id,
+                req_id,
+                error,
+            } => {
                 if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
                     state.status = pane::Status::Ready;
                     if let Some(id) = req_id {
@@ -1049,25 +1054,17 @@ impl Dashboard {
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
-                        pane::Content::Heatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_depth(depth, update_t);
-                            }
+                        pane::Content::Heatmap { chart: Some(c), .. } => {
+                            c.insert_depth(depth, update_t);
                         }
-                        pane::Content::ShaderHeatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_depth(depth, update_t);
-                            }
+                        pane::Content::ShaderHeatmap { chart: Some(c), .. } => {
+                            c.insert_depth(depth, update_t);
                         }
-                        pane::Content::Ladder(panel) => {
-                            if let Some(panel) = panel {
-                                panel.insert_depth(depth, update_t);
-                            }
+                        pane::Content::Ladder(Some(panel)) => {
+                            panel.insert_depth(depth, update_t);
                         }
-                        pane::Content::Kline { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.update_depth(depth);
-                            }
+                        pane::Content::Kline { chart: Some(c), .. } => {
+                            c.update_depth(depth);
                         }
                         _ => {}
                     }
@@ -1365,9 +1362,15 @@ impl From<fetcher::FetchUpdate> for Message {
                 stream,
                 data,
             },
-            fetcher::FetchUpdate::Error { pane_id, req_id, error } => {
-                Message::FetchFailed { pane_id, req_id, error }
-            }
+            fetcher::FetchUpdate::Error {
+                pane_id,
+                req_id,
+                error,
+            } => Message::FetchFailed {
+                pane_id,
+                req_id,
+                error,
+            },
         }
     }
 }

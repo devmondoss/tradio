@@ -153,7 +153,13 @@ impl CumulativeDeltaIndicator {
                                 cumulative = Qty::ZERO;
                             }
                             cumulative += d;
-                            (t, CumulativeDeltaPoint { delta: d, cumulative })
+                            (
+                                t,
+                                CumulativeDeltaPoint {
+                                    delta: d,
+                                    cumulative,
+                                },
+                            )
                         })
                         .collect();
                 data::chart::BasisSeries::Time(result)
@@ -166,7 +172,13 @@ impl CumulativeDeltaIndicator {
                         let i = *idx;
                         let d = *delta;
                         cumulative += d;
-                        (i, CumulativeDeltaPoint { delta: d, cumulative })
+                        (
+                            i,
+                            CumulativeDeltaPoint {
+                                delta: d,
+                                cumulative,
+                            },
+                        )
                     })
                     .collect();
                 data::chart::BasisSeries::Tick(result)
@@ -203,9 +215,8 @@ impl CumulativeDeltaIndicator {
                     if vol <= 0.0 {
                         return None;
                     }
-                    let delta =
-                        Self::delta_from_parts(&dp.footprint, dp.kline.volume).to_f32_lossy()
-                            as f64;
+                    let delta = Self::delta_from_parts(&dp.footprint, dp.kline.volume)
+                        .to_f32_lossy() as f64;
                     Some(delta.abs() / vol)
                 })
                 .collect(),
@@ -246,16 +257,26 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
     fn latest_cvd(&self) -> Option<(f64, f64)> {
         match &self.data {
             data::chart::BasisSeries::Time(map) => map.values().last().map(|p| {
-                (p.cumulative.to_f32_lossy() as f64, p.delta.to_f32_lossy() as f64)
+                (
+                    p.cumulative.to_f32_lossy() as f64,
+                    p.delta.to_f32_lossy() as f64,
+                )
             }),
             data::chart::BasisSeries::Tick(map) => map.values().last().map(|p| {
-                (p.cumulative.to_f32_lossy() as f64, p.delta.to_f32_lossy() as f64)
+                (
+                    p.cumulative.to_f32_lossy() as f64,
+                    p.delta.to_f32_lossy() as f64,
+                )
             }),
         }
     }
 
     fn latest_vpin(&self) -> Option<f64> {
-        if self.vpin > 0.0 { Some(self.vpin) } else { None }
+        if self.vpin > 0.0 {
+            Some(self.vpin)
+        } else {
+            None
+        }
     }
 
     fn latest_cvd_slope(&self) -> Option<f64> {
@@ -289,6 +310,29 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
             return None;
         }
         Some((n * sum_xy - sum_x * sum_y) / denom)
+    }
+
+    fn recent_delta_slice(&self, n: usize) -> Vec<f64> {
+        match &self.data {
+            data::chart::BasisSeries::Time(map) => {
+                let v: Vec<f64> = map
+                    .values()
+                    .rev()
+                    .take(n)
+                    .map(|p| p.delta.to_f32_lossy() as f64)
+                    .collect();
+                v.into_iter().rev().collect()
+            }
+            data::chart::BasisSeries::Tick(map) => {
+                let v: Vec<f64> = map
+                    .values()
+                    .rev()
+                    .take(n)
+                    .map(|p| p.delta.to_f32_lossy() as f64)
+                    .collect();
+                v.into_iter().rev().collect()
+            }
+        }
     }
 
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {

@@ -47,10 +47,10 @@ pub fn log_signal(ctx: &StrategyMarketContext, signal: &StrategySignal) {
 
     let path = shadow_events_dir().join("strategy_signals.jsonl");
 
-    if let Ok(json) = serde_json::to_string(&entry) {
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
-            let _ = writeln!(file, "{}", json);
-        }
+    if let Ok(json) = serde_json::to_string(&entry)
+        && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path)
+    {
+        let _ = writeln!(file, "{}", json);
     }
 }
 

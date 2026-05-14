@@ -131,6 +131,7 @@ impl FetchRequest {
             (FetchRange::OpenInterest(s1, e1), FetchRange::OpenInterest(s2, e2)) => {
                 e1 == e2 && s1 == s2
             }
+            (FetchRange::Trades(s1, e1), FetchRange::Trades(s2, e2)) => e1 == e2 && s1 == s2,
             _ => false,
         }
     }
@@ -481,9 +482,21 @@ pub fn fetch_trades_batched(
                         break;
                     }
 
-                    latest_trade_t = batch.last().map_or(latest_trade_t, |trade| trade.time);
+                    let request_start = latest_trade_t;
+                    let last_trade_t = batch.last().map_or(request_start, |trade| trade.time);
+                    let filtered = batch
+                        .into_iter()
+                        .filter(|trade| trade.time >= request_start && trade.time <= to_time)
+                        .collect::<Vec<_>>();
 
-                    let () = progress.send(batch).await;
+                    if !filtered.is_empty() {
+                        let () = progress.send(filtered).await;
+                    }
+
+                    if last_trade_t <= request_start {
+                        break;
+                    }
+                    latest_trade_t = last_trade_t.saturating_add(1);
                 }
                 Err(err) => return Err(err),
             }

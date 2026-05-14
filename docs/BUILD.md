@@ -91,11 +91,16 @@ O desde la terminal del IDE (que hereda el PATH de `run.bat`).
 ```
 %APPDATA%\Roaming\flowsurface\
 └── shadow_events\
-    ├── strategy_signals.jsonl    — cada señal al momento de detección
-    └── strategy_outcomes.jsonl   — cada señal cuando cierra (MFE/MAE/outcome)
+    ├── strategy_signals.jsonl       — señales/bloqueos al momento de detección
+    ├── strategy_outcomes.jsonl      — tracker legacy de MFE/MAE
+    ├── paper_trades.jsonl           — trades cerrados con PnL/costos
+    ├── contradictions.jsonl         — señales opuestas ignoradas por símbolo
+    └── paper_account_state.json     — estado persistido de paper trading
 ```
 
 En Windows: `%APPDATA%` = `C:\Users\<usuario>\AppData\Roaming\`
+
+Si `FLOWSURFACE_DATA_PATH` está definido, se usa como directorio base alternativo y la app crea los mismos subpaths debajo de esa carpeta.
 
 ---
 

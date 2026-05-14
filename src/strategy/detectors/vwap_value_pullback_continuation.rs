@@ -1,5 +1,5 @@
-use crate::strategy::types::*;
 use super::toxic_flow_gate::toxic_flow_gate;
+use crate::strategy::types::*;
 
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
     toxic_flow_gate(ctx, cfg).ok()?;
@@ -14,12 +14,41 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     let vah = vp.vah?;
     let val = vp.val?;
 
+    // Anchor fallback: use AVWAP-BOS if established, otherwise fall back to session VWAP.
+    // The label is stored in evidence so post-analysis can distinguish the two cases.
+    let (long_anchor_ok, long_anchor_label) = if vw.price_vs_avwap_bos != PriceRelation::Unknown {
+        (
+            matches!(
+                vw.price_vs_avwap_bos,
+                PriceRelation::Above | PriceRelation::At
+            ),
+            "anchor_avwap_bos",
+        )
+    } else {
+        (
+            matches!(vw.price_vs_vwap, PriceRelation::Above | PriceRelation::At),
+            "anchor_vwap_session",
+        )
+    };
+
+    let (short_anchor_ok, short_anchor_label) = if vw.price_vs_avwap_bos != PriceRelation::Unknown {
+        (
+            matches!(
+                vw.price_vs_avwap_bos,
+                PriceRelation::Below | PriceRelation::At
+            ),
+            "anchor_avwap_bos",
+        )
+    } else {
+        (
+            matches!(vw.price_vs_vwap, PriceRelation::Below | PriceRelation::At),
+            "anchor_vwap_session",
+        )
+    };
+
     // LONG: trend up, pullback into value, flow realigns
     let long_context = matches!(ctx.regime, Regime::TrendUp | Regime::Expansion)
-        && matches!(
-            vw.price_vs_avwap_bos,
-            PriceRelation::Above | PriceRelation::At
-        )
+        && long_anchor_ok
         && matches!(
             vp.value_location,
             ValueLocation::InValue | ValueLocation::BelowVal
@@ -49,7 +78,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 ttl_ms: cfg.default_ttl_ms,
                 evidence: vec![
                     "trend_up".into(),
-                    "above_or_at_avwap_bos".into(),
+                    long_anchor_label.into(),
                     "pullback_into_value".into(),
                     "positive_delta_reentry".into(),
                     "cvd_aligned".into(),
@@ -65,12 +94,11 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         }
     }
 
-    // SHORT: trend down, pullback into value, flow realigns
-    let short_context = matches!(ctx.regime, Regime::TrendDown)
-        && matches!(
-            vw.price_vs_avwap_bos,
-            PriceRelation::Below | PriceRelation::At
-        )
+    // SHORT: trend down, pullback into value, flow realigns.
+    // Expansion is accepted symmetrically with the long side; delta/cvd_slope/value_location
+    // already filter direction, so Expansion alone does not create false shorts.
+    let short_context = matches!(ctx.regime, Regime::TrendDown | Regime::Expansion)
+        && short_anchor_ok
         && matches!(
             vp.value_location,
             ValueLocation::InValue | ValueLocation::AboveVah
@@ -100,7 +128,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 ttl_ms: cfg.default_ttl_ms,
                 evidence: vec![
                     "trend_down".into(),
-                    "below_or_at_avwap_bos".into(),
+                    short_anchor_label.into(),
                     "pullback_into_value".into(),
                     "negative_delta_reentry".into(),
                     "cvd_aligned".into(),
@@ -156,6 +184,7 @@ mod tests {
                 buy_volume: Some(4200.0),
                 sell_volume: Some(4000.0),
                 vpin: Some(0.40),
+                cvd_divergence: None,
                 footprint_absorption: AbsorptionSide::None,
                 stacked_imbalance: ImbalanceSide::None,
                 failed_acceptance: false,

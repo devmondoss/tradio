@@ -177,7 +177,9 @@ impl Default for StrategyConfig {
             enabled: false,
             max_spread_bps: 2.0,
             max_vpin: 0.75,
-            min_score: 0.70,
+            // PLACEHOLDER — el umbral real se determina en Fase D analizando
+            // la distribución de scores reales. No optimizar este número antes de eso.
+            min_score: 0.60,
             default_ttl_ms: 5 * 60 * 1000,
         }
     }

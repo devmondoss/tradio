@@ -168,6 +168,7 @@ pub struct KlineChart {
     pub strategy_overlay_enabled: bool,
     pub last_depth: Option<exchange::depth::Depth>,
     outcome_tracker: crate::strategy::tracker::OutcomeTracker,
+    paper_account: crate::strategy::paper::PaperAccount,
 }
 
 impl KlineChart {
@@ -264,6 +265,7 @@ impl KlineChart {
                     strategy_overlay_enabled: false,
                     last_depth: None,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
+                    paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
                 }
             }
             Basis::Tick(interval) => {
@@ -324,12 +326,32 @@ impl KlineChart {
                     strategy_overlay_enabled: false,
                     last_depth: None,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
+                    paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
                 }
             }
         }
     }
 
     pub fn update_latest_kline(&mut self, kline: &Kline) {
+        let latest_x = self.chart.latest_x;
+        let is_new_bar = kline.time.as_u64() > latest_x && latest_x > 0;
+
+        // Read closed bar OHLC before inserting the new bar into the timeseries.
+        let closed_bar: Option<(f64, f64, f64)> = if is_new_bar {
+            match &self.data_source {
+                PlotData::TimeBased(ts) => ts.datapoints.values().last().map(|dp| {
+                    (
+                        dp.kline.close.to_f32() as f64,
+                        dp.kline.high.to_f32() as f64,
+                        dp.kline.low.to_f32() as f64,
+                    )
+                }),
+                PlotData::TickBased(_) => None,
+            }
+        } else {
+            None
+        };
+
         match self.data_source {
             PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(&[*kline]);
@@ -348,6 +370,13 @@ impl KlineChart {
                 chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
             }
             PlotData::TickBased(_) => {}
+        }
+
+        if is_new_bar
+            && self.strategy_overlay_enabled
+            && let Some((close, high, low)) = closed_bar
+        {
+            self.run_strategy_detection(close, high, low);
         }
     }
 
@@ -864,7 +893,11 @@ impl KlineChart {
         let visible_range_for_vrvp = {
             let region = chart.visible_region(chart.bounds.size());
             let (e, l) = chart.interval_range(&region);
-            if chart.bounds.width > 0.0 && e < l { Some((e, l)) } else { None }
+            if chart.bounds.width > 0.0 && e < l {
+                Some((e, l))
+            } else {
+                None
+            }
         };
 
         chart.cache.clear_all();
@@ -872,10 +905,10 @@ impl KlineChart {
             indi.clear_all_caches();
         }
 
-        if let Some((earliest, latest)) = visible_range_for_vrvp {
-            if let Some(indi) = self.indicators[KlineIndicator::VolumeProfile].as_mut() {
-                indi.update_visible_range(earliest, latest, &self.data_source);
-            }
+        if let Some((earliest, latest)) = visible_range_for_vrvp
+            && let Some(indi) = self.indicators[KlineIndicator::VolumeProfile].as_mut()
+        {
+            indi.update_visible_range(earliest, latest, &self.data_source);
         }
 
         if let Some(t) = now {
@@ -897,12 +930,11 @@ impl KlineChart {
 
             // Bootstrap OI-dependent indicators with data the OI indicator already has,
             // so they don't start empty when toggled on after OI data was already fetched.
-            if indicator == KlineIndicator::OiDelta {
-                if let Some(oi_indi) = self.indicators[KlineIndicator::OpenInterest].as_ref() {
-                    if let Some(existing) = oi_indi.oi_snapshot() {
-                        box_indi.on_open_interest(&existing);
-                    }
-                }
+            if indicator == KlineIndicator::OiDelta
+                && let Some(oi_indi) = self.indicators[KlineIndicator::OpenInterest].as_ref()
+                && let Some(existing) = oi_indi.oi_snapshot()
+            {
+                box_indi.on_open_interest(&existing);
             }
 
             self.indicators[indicator] = Some(box_indi);
@@ -920,32 +952,31 @@ impl KlineChart {
 
     pub fn toggle_strategy_overlay(&mut self) {
         self.strategy_overlay_enabled = !self.strategy_overlay_enabled;
-        if self.strategy_overlay_enabled {
-            if self.last_depth.is_some() {
-                self.run_strategy_detection();
-            }
-        } else {
+        if !self.strategy_overlay_enabled {
             self.strategy_signals.clear();
         }
     }
 
     pub fn update_depth(&mut self, depth: &exchange::depth::Depth) {
         self.last_depth = Some(depth.clone());
-        if self.strategy_overlay_enabled {
-            self.run_strategy_detection();
-        }
     }
 
-    fn run_strategy_detection(&mut self) {
-        use crate::strategy::{adapter, router, logger, types::*};
+    fn run_strategy_detection(&mut self, bar_close: f64, bar_high: f64, bar_low: f64) {
+        use crate::strategy::{adapter, logger, router, types::*};
 
-        let Some(depth) = &self.last_depth else { return };
-
-        let price = match &self.data_source {
-            PlotData::TimeBased(ts) => ts.latest_kline().map(|k| k.close.to_f32() as f64),
-            PlotData::TickBased(ta) => ta.latest_dp().map(|(dp, _)| dp.kline.close.to_f32() as f64),
+        let Some(depth) = &self.last_depth else {
+            return;
         };
-        let Some(price) = price else { return };
+
+        let price = bar_close;
+
+        // TTL in bars: VALOR DE ARRANQUE — se tunea en Fase D con datos reales.
+        const TTL_BARS: u64 = 12;
+        let interval_ms = match &self.data_source {
+            PlotData::TimeBased(ts) => ts.interval.to_milliseconds(),
+            PlotData::TickBased(_) => 60_000,
+        };
+        let ttl_ms = (TTL_BARS * interval_ms) as i64;
 
         let orderbook = adapter::build_orderbook_context(depth);
 
@@ -992,36 +1023,83 @@ impl KlineChart {
 
         // Extract recent candles for regime + failed-acceptance detection
         const REGIME_N: usize = 20;
-        const FA_N: usize = 5;
+        const MICRO_N: usize = 20;
         let (recent_closes, recent_highs, recent_lows): (Vec<f64>, Vec<f64>, Vec<f64>) =
             match &self.data_source {
                 PlotData::TimeBased(ts) => {
-                    let closes = ts.datapoints.values().rev().take(REGIME_N)
+                    let closes = ts
+                        .datapoints
+                        .values()
+                        .rev()
+                        .take(REGIME_N)
                         .map(|dp| dp.kline.close.to_f32() as f64)
-                        .collect::<Vec<_>>().into_iter().rev().collect();
-                    let highs = ts.datapoints.values().rev().take(FA_N)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    let highs = ts
+                        .datapoints
+                        .values()
+                        .rev()
+                        .take(MICRO_N)
                         .map(|dp| dp.kline.high.to_f32() as f64)
-                        .collect::<Vec<_>>().into_iter().rev().collect();
-                    let lows = ts.datapoints.values().rev().take(FA_N)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    let lows = ts
+                        .datapoints
+                        .values()
+                        .rev()
+                        .take(MICRO_N)
                         .map(|dp| dp.kline.low.to_f32() as f64)
-                        .collect::<Vec<_>>().into_iter().rev().collect();
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
                     (closes, highs, lows)
                 }
                 PlotData::TickBased(ta) => {
-                    let closes = ta.datapoints.iter().rev().take(REGIME_N)
+                    let closes = ta
+                        .datapoints
+                        .iter()
+                        .rev()
+                        .take(REGIME_N)
                         .map(|dp| dp.kline.close.to_f32() as f64)
-                        .collect::<Vec<_>>().into_iter().rev().collect();
-                    let highs = ta.datapoints.iter().rev().take(FA_N)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    let highs = ta
+                        .datapoints
+                        .iter()
+                        .rev()
+                        .take(MICRO_N)
                         .map(|dp| dp.kline.high.to_f32() as f64)
-                        .collect::<Vec<_>>().into_iter().rev().collect();
-                    let lows = ta.datapoints.iter().rev().take(FA_N)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    let lows = ta
+                        .datapoints
+                        .iter()
+                        .rev()
+                        .take(MICRO_N)
                         .map(|dp| dp.kline.low.to_f32() as f64)
-                        .collect::<Vec<_>>().into_iter().rev().collect();
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
                     (closes, highs, lows)
                 }
             };
 
         let regime = adapter::derive_regime(&recent_closes, atr.unwrap_or(0.0));
+        // Delta slice aligned index-for-index with recent_highs/recent_lows (oldest-first).
+        let recent_deltas: Vec<f64> = self.indicators[KlineIndicator::CumulativeDelta]
+            .as_ref()
+            .map(|i| i.recent_delta_slice(MICRO_N))
+            .unwrap_or_default();
         let (failed_acceptance, footprint_absorption) =
             adapter::derive_failed_acceptance_and_absorption(
                 &recent_highs,
@@ -1029,14 +1107,28 @@ impl KlineChart {
                 &recent_closes,
                 vah,
                 val,
-                delta,
+                &recent_deltas,
                 cvd_slope,
             );
         let cvd_divergence = adapter::derive_cvd_divergence(&recent_highs, &recent_lows, cvd_slope);
+        let stacked_imbalance = adapter::derive_stacked_imbalance(&recent_deltas);
+        let sweep_confirmed =
+            adapter::derive_sweep_confirmed(&recent_highs, &recent_lows, &recent_closes);
+        let mss_active = adapter::derive_mss_active(&recent_highs, &recent_lows);
 
         let flow = adapter::build_flow_context(
-            cvd, cvd_slope, delta, buy_vol, sell_vol,
-            vpin, failed_acceptance, footprint_absorption, cvd_divergence,
+            cvd,
+            cvd_slope,
+            delta,
+            buy_vol,
+            sell_vol,
+            vpin,
+            failed_acceptance,
+            footprint_absorption,
+            cvd_divergence,
+            stacked_imbalance,
+            sweep_confirmed,
+            mss_active,
         );
 
         let ctx = StrategyMarketContext {
@@ -1053,18 +1145,35 @@ impl KlineChart {
 
         let cfg = StrategyConfig {
             enabled: true,
+            default_ttl_ms: ttl_ms,
             ..Default::default()
         };
 
         let signal = router::route_strategy(&ctx, &cfg);
         logger::log_signal(&ctx, &signal);
 
+        let paper_sig = if signal.action == StrategyAction::ShadowSignal {
+            Some(&signal)
+        } else {
+            None
+        };
+        self.paper_account.on_bar_close(
+            &ctx.symbol,
+            bar_close,
+            bar_high,
+            bar_low,
+            ctx.timestamp_ms,
+            paper_sig,
+        );
+
         if signal.action == StrategyAction::ShadowSignal {
-            self.outcome_tracker.push_signal(&signal, price);
+            self.outcome_tracker
+                .push_signal(&ctx.symbol, &signal, bar_close);
             self.push_strategy_signal(signal);
         }
 
-        self.outcome_tracker.update(price, ctx.timestamp_ms);
+        self.outcome_tracker
+            .update(bar_high, bar_low, ctx.timestamp_ms);
     }
 
     pub fn push_strategy_signal(&mut self, signal: StrategySignal) {
@@ -1078,9 +1187,8 @@ impl KlineChart {
 
     pub fn clear_expired_signals(&mut self, now_ms: i64) {
         let before = self.strategy_signals.len();
-        self.strategy_signals.retain(|s| {
-            s.created_at_ms + s.ttl_ms > now_ms
-        });
+        self.strategy_signals
+            .retain(|s| s.created_at_ms + s.ttl_ms > now_ms);
         if self.strategy_signals.len() != before {
             self.chart.cache.main.clear();
         }
@@ -1112,8 +1220,8 @@ impl KlineChart {
                     Color::from_rgba(0.55, 0.36, 0.96, 0.05),
                 ],
                 _ => [
-                    Color::from_rgba(0.0, 0.55, 1.0, 0.05),  // VWAP ±2σ: outer blue
-                    Color::from_rgba(0.0, 0.55, 1.0, 0.09),  // VWAP ±1σ: inner blue
+                    Color::from_rgba(0.0, 0.55, 1.0, 0.05), // VWAP ±2σ: outer blue
+                    Color::from_rgba(0.0, 0.55, 1.0, 0.09), // VWAP ±1σ: inner blue
                 ],
             };
 
@@ -1170,7 +1278,8 @@ impl KlineChart {
             }
 
             // Draw main overlay line (VWAP center line)
-            let points: Vec<_> = indi.overlay_line_points(earliest, latest)
+            let points: Vec<_> = indi
+                .overlay_line_points(earliest, latest)
                 .into_iter()
                 .filter(|(_, price)| price.is_finite() && *price > 0.0)
                 .collect();
@@ -1192,14 +1301,18 @@ impl KlineChart {
                     }
                 });
                 let line_color = match kind {
-                    data::chart::indicator::KlineIndicator::Vwap =>
-                        Color::from_rgba(0.20, 0.75, 1.0, 0.95),
+                    data::chart::indicator::KlineIndicator::Vwap => {
+                        Color::from_rgba(0.20, 0.75, 1.0, 0.95)
+                    }
                     _ => Color::from_rgba(0.0, 0.6, 1.0, 0.9),
                 };
                 frame.stroke(
                     &path,
                     Stroke::with_color(
-                        Stroke { width: 2.0, ..Default::default() },
+                        Stroke {
+                            width: 2.0,
+                            ..Default::default()
+                        },
                         line_color,
                     ),
                 );
@@ -1221,7 +1334,10 @@ impl KlineChart {
                     Stroke::with_color(
                         Stroke {
                             width: 1.0,
-                            line_dash: LineDash { segments: &[6.0, 4.0], offset: 0 },
+                            line_dash: LineDash {
+                                segments: &[6.0, 4.0],
+                                offset: 0,
+                            },
                             ..Default::default()
                         },
                         color,
@@ -1277,13 +1393,13 @@ impl KlineChart {
                     let is_poc = (bar.price - poc_price).abs() < poc_price * 0.0005;
 
                     let color = if is_poc {
-                        Color::from_rgba(1.0, 0.78, 0.05, 0.90)   // gold — POC
+                        Color::from_rgba(1.0, 0.78, 0.05, 0.90) // gold — POC
                     } else if vol_ratio > 0.65 {
-                        Color::from_rgba(0.55, 0.36, 0.96, 0.60)  // purple — HVN
+                        Color::from_rgba(0.55, 0.36, 0.96, 0.60) // purple — HVN
                     } else if vol_ratio < 0.12 {
-                        Color::from_rgba(0.3, 0.65, 1.0, 0.18)    // dim blue — LVN
+                        Color::from_rgba(0.3, 0.65, 1.0, 0.18) // dim blue — LVN
                     } else {
-                        Color::from_rgba(0.45, 0.65, 0.95, 0.35)  // blue — normal
+                        Color::from_rgba(0.45, 0.65, 0.95, 0.35) // blue — normal
                     };
 
                     frame.fill_rectangle(
@@ -1307,10 +1423,11 @@ impl KlineChart {
                 continue;
             }
 
-            let (entry, stop, target) = match (signal.entry_price, signal.stop_price, signal.target_price) {
-                (Some(e), Some(s), Some(t)) => (e, s, t),
-                _ => continue,
-            };
+            let (entry, stop, target) =
+                match (signal.entry_price, signal.stop_price, signal.target_price) {
+                    (Some(e), Some(s), Some(t)) => (e, s, t),
+                    _ => continue,
+                };
 
             let is_long = signal.side == Some(Side::Long);
 
@@ -1334,7 +1451,10 @@ impl KlineChart {
 
             // Entry line (solid)
             let entry_stroke = Stroke::with_color(
-                Stroke { width: 1.5, ..Default::default() },
+                Stroke {
+                    width: 1.5,
+                    ..Default::default()
+                },
                 entry_color,
             );
             frame.stroke(
@@ -1346,7 +1466,10 @@ impl KlineChart {
             let stop_stroke = Stroke::with_color(
                 Stroke {
                     width: 1.0,
-                    line_dash: LineDash { segments: &[4.0, 3.0], offset: 0 },
+                    line_dash: LineDash {
+                        segments: &[4.0, 3.0],
+                        offset: 0,
+                    },
                     ..Default::default()
                 },
                 stop_color,
@@ -1360,7 +1483,10 @@ impl KlineChart {
             let target_stroke = Stroke::with_color(
                 Stroke {
                     width: 1.0,
-                    line_dash: LineDash { segments: &[4.0, 3.0], offset: 0 },
+                    line_dash: LineDash {
+                        segments: &[4.0, 3.0],
+                        offset: 0,
+                    },
                     ..Default::default()
                 },
                 target_color,
@@ -1549,11 +1675,25 @@ impl canvas::Program<Message> for KlineChart {
             chart.draw_last_price_line(frame, palette, region);
 
             if let PlotData::TimeBased(ts) = &self.data_source {
-                draw_session_lines(frame, &region, earliest, latest, ts.interval.to_milliseconds(), interval_to_x);
+                draw_session_lines(
+                    frame,
+                    &region,
+                    earliest,
+                    latest,
+                    ts.interval.to_milliseconds(),
+                    interval_to_x,
+                );
                 draw_key_levels(frame, &region, &ts.datapoints, &price_to_y);
             }
 
-            self.draw_indicator_overlays(frame, &region, earliest, latest, interval_to_x, price_to_y);
+            self.draw_indicator_overlays(
+                frame,
+                &region,
+                earliest,
+                latest,
+                interval_to_x,
+                price_to_y,
+            );
 
             if self.strategy_overlay_enabled {
                 Self::draw_strategy_overlay(
@@ -1882,29 +2022,34 @@ fn draw_all_npocs(
 }
 
 struct KeyLevels {
-    prev_day_high:  Option<f32>,
-    prev_day_low:   Option<f32>,
-    daily_open:     Option<f32>,
-    weekly_open:    Option<f32>,
+    prev_day_high: Option<f32>,
+    prev_day_low: Option<f32>,
+    daily_open: Option<f32>,
+    weekly_open: Option<f32>,
 }
 
 fn compute_key_levels(
     datapoints: &std::collections::BTreeMap<UnixMs, data::chart::kline::KlineDataPoint>,
 ) -> KeyLevels {
     let Some((&latest_ts, _)) = datapoints.iter().next_back() else {
-        return KeyLevels { prev_day_high: None, prev_day_low: None, daily_open: None, weekly_open: None };
+        return KeyLevels {
+            prev_day_high: None,
+            prev_day_low: None,
+            daily_open: None,
+            weekly_open: None,
+        };
     };
 
     const DAY_MS: u64 = 86_400_000;
     let current_day = latest_ts.as_u64() / DAY_MS;
-    let prev_day    = current_day.saturating_sub(1);
+    let prev_day = current_day.saturating_sub(1);
     // Day of week: epoch day 0 = Thursday; (day + 3) % 7 → 0 = Monday
     let day_of_week = (current_day + 3) % 7;
     let this_monday = current_day - day_of_week;
 
-    let mut prev_high:   Option<f32> = None;
-    let mut prev_low:    Option<f32> = None;
-    let mut daily_open:  Option<f32> = None;
+    let mut prev_high: Option<f32> = None;
+    let mut prev_low: Option<f32> = None;
+    let mut daily_open: Option<f32> = None;
     let mut weekly_open: Option<f32> = None;
 
     for (&ts, dp) in datapoints.iter() {
@@ -1920,13 +2065,13 @@ fn compute_key_levels(
             let h = dp.kline.high.to_f32();
             let l = dp.kline.low.to_f32();
             prev_high = Some(prev_high.map_or(h, |old: f32| old.max(h)));
-            prev_low  = Some(prev_low.map_or(l,  |old: f32| old.min(l)));
+            prev_low = Some(prev_low.map_or(l, |old: f32| old.min(l)));
         }
     }
 
     KeyLevels {
         prev_day_high: prev_high,
-        prev_day_low:  prev_low,
+        prev_day_low: prev_low,
         daily_open,
         weekly_open,
     }
@@ -1943,16 +2088,20 @@ fn draw_key_levels(
 
     let levels: &[(Option<f32>, &str, [f32; 4])] = &[
         (kl.prev_day_high, "PDH", [0.85, 0.85, 0.85, 0.55]),
-        (kl.prev_day_low,  "PDL", [0.85, 0.85, 0.85, 0.55]),
-        (kl.daily_open,    "DO",  [0.40, 0.90, 0.45, 0.60]),
-        (kl.weekly_open,   "WO",  [0.35, 0.65, 1.00, 0.60]),
+        (kl.prev_day_low, "PDL", [0.85, 0.85, 0.85, 0.55]),
+        (kl.daily_open, "DO", [0.40, 0.90, 0.45, 0.60]),
+        (kl.weekly_open, "WO", [0.35, 0.65, 1.00, 0.60]),
     ];
 
     for &(price_opt, label, rgba) in levels {
         let Some(price) = price_opt else { continue };
-        if !price.is_finite() || price <= 0.0 { continue; }
+        if !price.is_finite() || price <= 0.0 {
+            continue;
+        }
         let y = price_to_y(Price::from_f32(price));
-        if !y.is_finite() { continue; }
+        if !y.is_finite() {
+            continue;
+        }
 
         let color = Color::from_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
         frame.stroke(
@@ -1960,7 +2109,10 @@ fn draw_key_levels(
             Stroke::with_color(
                 Stroke {
                     width: 1.0,
-                    line_dash: LineDash { segments: &[3.0, 6.0], offset: 0 },
+                    line_dash: LineDash {
+                        segments: &[3.0, 6.0],
+                        offset: 0,
+                    },
                     ..Stroke::default()
                 },
                 color,
@@ -1972,7 +2124,7 @@ fn draw_key_levels(
             size: iced::Pixels(TEXT_SIZE * 0.82),
             color,
             align_x: iced::alignment::Horizontal::Right.into(),
-            align_y: iced::alignment::Vertical::Bottom.into(),
+            align_y: iced::alignment::Vertical::Bottom,
             font: style::AZERET_MONO,
             ..canvas::Text::default()
         });
@@ -1996,13 +2148,37 @@ fn draw_session_lines(
 
     const DAY_MS: u64 = 86_400_000;
     const SESSION_OFFSETS: &[(u64, Color)] = &[
-        (0,                      Color { r: 0.40, g: 0.70, b: 1.00, a: 0.20 }), // Asia
-        (8  * 3600 * 1000,       Color { r: 0.35, g: 0.90, b: 0.45, a: 0.20 }), // London
-        (13 * 3600 * 1000,       Color { r: 1.00, g: 0.60, b: 0.25, a: 0.20 }), // New York
+        (
+            0,
+            Color {
+                r: 0.40,
+                g: 0.70,
+                b: 1.00,
+                a: 0.20,
+            },
+        ), // Asia
+        (
+            8 * 3600 * 1000,
+            Color {
+                r: 0.35,
+                g: 0.90,
+                b: 0.45,
+                a: 0.20,
+            },
+        ), // London
+        (
+            13 * 3600 * 1000,
+            Color {
+                r: 1.00,
+                g: 0.60,
+                b: 0.25,
+                a: 0.20,
+            },
+        ), // New York
     ];
 
     let first_day = (earliest / DAY_MS) * DAY_MS;
-    let last_day  = (latest  / DAY_MS) * DAY_MS + DAY_MS;
+    let last_day = (latest / DAY_MS) * DAY_MS + DAY_MS;
 
     let mut day = first_day;
     while day <= last_day {
@@ -2018,10 +2194,13 @@ fn draw_session_lines(
             let stroke = Stroke {
                 style: canvas::stroke::Style::Solid(color),
                 width: 1.0,
-                line_dash: LineDash { segments: &[5.0, 5.0], offset: 0 },
+                line_dash: LineDash {
+                    segments: &[5.0, 5.0],
+                    offset: 0,
+                },
                 ..Stroke::default()
             };
-            let top    = Point::new(x, region.y - region.height);
+            let top = Point::new(x, region.y - region.height);
             let bottom = Point::new(x, region.y + region.height * 2.0);
             if !top.y.is_finite() || !bottom.y.is_finite() {
                 continue;

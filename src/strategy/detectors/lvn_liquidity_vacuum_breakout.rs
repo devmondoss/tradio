@@ -1,5 +1,8 @@
-use crate::strategy::types::*;
 use super::toxic_flow_gate::toxic_flow_gate;
+use crate::strategy::types::*;
+
+const MAX_STOP_ATR_MULT: f64 = 1.5;
+const MIN_RR: f64 = 1.0;
 
 fn nearest_above(levels: &[f64], price: f64) -> Option<f64> {
     levels
@@ -29,10 +32,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     // LONG: thin zone above, flow confirms
     let long_location = ob.thin_zone_above
-        && matches!(
-            vw.price_vs_vwap,
-            PriceRelation::Above | PriceRelation::At
-        )
+        && matches!(vw.price_vs_vwap, PriceRelation::Above | PriceRelation::At)
         && matches!(
             vp.value_location,
             ValueLocation::InValue | ValueLocation::AboveVah
@@ -58,9 +58,17 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         if let Some(target) = nearest_above(&targets, px) {
             let entry = px;
             let stop_anchor = vw.vwap_session.unwrap_or(px);
-            let stop = f64::min(stop_anchor, entry - 0.75 * atr);
+            let stop = f64::max(
+                f64::min(stop_anchor, entry - 0.75 * atr),
+                entry - MAX_STOP_ATR_MULT * atr,
+            );
 
             if target > entry && stop < entry {
+                let risk = entry - stop;
+                let reward = target - entry;
+                if reward / risk < MIN_RR {
+                    return None;
+                }
                 return Some(StrategySignal {
                     action: StrategyAction::ShadowSignal,
                     strategy_id: Some(StrategyId::LvnLiquidityVacuumBreakout),
@@ -91,10 +99,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     // SHORT: thin zone below, flow confirms
     let short_location = ob.thin_zone_below
-        && matches!(
-            vw.price_vs_vwap,
-            PriceRelation::Below | PriceRelation::At
-        )
+        && matches!(vw.price_vs_vwap, PriceRelation::Below | PriceRelation::At)
         && matches!(
             vp.value_location,
             ValueLocation::InValue | ValueLocation::BelowVal
@@ -120,9 +125,17 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         if let Some(target) = nearest_below(&targets, px) {
             let entry = px;
             let stop_anchor = vw.vwap_session.unwrap_or(px);
-            let stop = f64::max(stop_anchor, entry + 0.75 * atr);
+            let stop = f64::min(
+                f64::max(stop_anchor, entry + 0.75 * atr),
+                entry + MAX_STOP_ATR_MULT * atr,
+            );
 
             if target < entry && stop > entry {
+                let risk = stop - entry;
+                let reward = entry - target;
+                if reward / risk < MIN_RR {
+                    return None;
+                }
                 return Some(StrategySignal {
                     action: StrategyAction::ShadowSignal,
                     strategy_id: Some(StrategyId::LvnLiquidityVacuumBreakout),
@@ -191,6 +204,7 @@ mod tests {
                 buy_volume: Some(8000.0),
                 sell_volume: Some(7200.0),
                 vpin: Some(0.35),
+                cvd_divergence: None,
                 footprint_absorption: AbsorptionSide::None,
                 stacked_imbalance: ImbalanceSide::Bullish,
                 failed_acceptance: false,
@@ -233,7 +247,12 @@ mod tests {
         ctx.orderbook.thin_zone_below = true;
         ctx.orderbook.microprice = Some(3428.0);
         ctx.vwap.price_vs_vwap = PriceRelation::Below;
+        // Bring vwap_session closer so the capped stop gives risk ≈ 30 (=1 ATR).
+        // With vwap_session=3460 and atr=30: stop = min(max(3460, 3452.5), 3475) = 3460, risk=30.
+        ctx.vwap.vwap_session = Some(3460.0);
         ctx.volume_profile.value_location = ValueLocation::BelowVal;
+        // Set val below entry so target = 3390, reward = 40 → R:R = 40/30 = 1.33 ≥ 1.0.
+        ctx.volume_profile.val = Some(3390.0);
         ctx.flow.delta = Some(-250.0);
         ctx.flow.cvd_slope = Some(-0.5);
         ctx.flow.stacked_imbalance = ImbalanceSide::Bearish;

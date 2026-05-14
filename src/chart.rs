@@ -588,7 +588,8 @@ pub fn view<'a, T: Chart>(
                 .collect::<Vec<_>>();
 
             let expected_splits = panels.len() - 1;
-            let splits_slice = &state.layout.splits[..expected_splits.min(state.layout.splits.len())];
+            let splits_slice =
+                &state.layout.splits[..expected_splits.min(state.layout.splits.len())];
 
             MultiSplit::new(panels, splits_slice, |index, position| {
                 Message::SplitDragged(index, position)

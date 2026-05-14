@@ -343,6 +343,21 @@ impl AudioStream {
         trades_buffer: &[Trade],
     ) -> Option<String> {
         let cfg = self.should_play_sound(stream)?;
+        let play_one = |this: &mut Self, s: SoundType| -> Option<String> {
+            match this.play(s) {
+                Ok(()) => None,
+                Err(err) => {
+                    let msg = err.to_string();
+                    log::error!("Audio play error: {msg}");
+
+                    if this.disable_audio(err) {
+                        Some(format!("Audio disabled: {msg}"))
+                    } else {
+                        None
+                    }
+                }
+            }
+        };
 
         match cfg.threshold {
             data::audio::Threshold::Count(v) => {
@@ -373,22 +388,6 @@ impl AudioStream {
                     }
                 };
 
-                let play_one = |this: &mut Self, s: SoundType| -> Option<String> {
-                    match this.play(s) {
-                        Ok(()) => None,
-                        Err(err) => {
-                            let msg = err.to_string();
-                            log::error!("Audio play error: {msg}");
-
-                            if this.disable_audio(err) {
-                                Some(format!("Audio disabled: {msg}"))
-                            } else {
-                                None
-                            }
-                        }
-                    }
-                };
-
                 match buy_count.cmp(&sell_count) {
                     std::cmp::Ordering::Greater => play_one(self, sound(buy_count, false)),
                     std::cmp::Ordering::Less => play_one(self, sound(sell_count, true)),
@@ -396,7 +395,47 @@ impl AudioStream {
                         .or_else(|| play_one(self, sound(sell_count, true))),
                 }
             }
-            data::audio::Threshold::Qty(_) => todo!(),
+            data::audio::Threshold::Qty(v) => {
+                let mut max_buy = 0.0_f32;
+                let mut max_sell = 0.0_f32;
+
+                for trade in trades_buffer {
+                    let qty = trade.qty.to_f32_lossy();
+                    if trade.is_sell {
+                        max_sell = max_sell.max(qty);
+                    } else {
+                        max_buy = max_buy.max(qty);
+                    }
+                }
+
+                if max_buy < v && max_sell < v {
+                    return None;
+                }
+
+                let sound = |qty: f32, is_sell: bool| {
+                    if qty > v * HARD_THRESHOLD as f32 {
+                        if is_sell {
+                            SoundType::HardSell
+                        } else {
+                            SoundType::HardBuy
+                        }
+                    } else if is_sell {
+                        SoundType::Sell
+                    } else {
+                        SoundType::Buy
+                    }
+                };
+
+                match max_buy
+                    .partial_cmp(&max_sell)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                {
+                    std::cmp::Ordering::Greater => play_one(self, sound(max_buy, false)),
+                    std::cmp::Ordering::Less => play_one(self, sound(max_sell, true)),
+                    std::cmp::Ordering::Equal => play_one(self, sound(max_buy, false))
+                        .or_else(|| play_one(self, sound(max_sell, true))),
+                }
+            }
         }
     }
 

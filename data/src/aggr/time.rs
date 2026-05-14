@@ -480,7 +480,7 @@ impl TimeSeries<HeatmapDataPoint> {
     pub fn new(basis: Basis, tick_size: PriceStep) -> Self {
         let timeframe = match basis {
             Basis::Time(interval) => interval,
-            Basis::Tick(_) => unimplemented!(),
+            Basis::Tick(_) => Timeframe::MS500,
         };
 
         Self {

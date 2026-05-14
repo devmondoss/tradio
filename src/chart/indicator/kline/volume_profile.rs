@@ -138,10 +138,10 @@ impl VolumeProfileIndicator {
         let entries: Vec<_> = datapoints.iter().collect();
         let mut result = BTreeMap::new();
 
-        if let Some(point) = Self::compute_levels(&volume_by_price) {
-            if let Some(&(&time, _)) = entries.last() {
-                result.insert(time, point);
-            }
+        if let Some(point) = Self::compute_levels(&volume_by_price)
+            && let Some(&(&time, _)) = entries.last()
+        {
+            result.insert(time, point);
         }
 
         result
@@ -424,7 +424,10 @@ impl KlineIndicatorImpl for VolumeProfileIndicator {
         }
 
         let mean = nearby.iter().map(|b| b.volume).sum::<f64>() / nearby.len() as f64;
-        let variance = nearby.iter().map(|b| (b.volume - mean).powi(2)).sum::<f64>()
+        let variance = nearby
+            .iter()
+            .map(|b| (b.volume - mean).powi(2))
+            .sum::<f64>()
             / nearby.len() as f64;
         let std_dev = variance.sqrt();
 
@@ -484,7 +487,12 @@ impl KlineIndicatorImpl for VolumeProfileIndicator {
         self.rebuild_from_source(source);
     }
 
-    fn update_visible_range(&mut self, earliest: u64, latest: u64, source: &PlotData<KlineDataPoint>) {
+    fn update_visible_range(
+        &mut self,
+        earliest: u64,
+        latest: u64,
+        source: &PlotData<KlineDataPoint>,
+    ) {
         self.rebuild_histogram_for_visible_range(earliest, latest, source);
     }
 }

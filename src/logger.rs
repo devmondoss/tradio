@@ -1,8 +1,7 @@
 use std::{
     fs,
-    io::{self, Write},
+    io::{self, Seek, Write},
     path::PathBuf,
-    process,
     sync::mpsc,
     thread,
 };
@@ -151,6 +150,7 @@ impl Drop for BackgroundLogger {
 }
 
 struct Logger {
+    path: PathBuf,
     file: fs::File,
     current_size: u64,
 }
@@ -165,9 +165,24 @@ impl Logger {
         let size = file.metadata()?.len();
 
         Ok(Logger {
+            path: path.clone(),
             file,
             current_size: size,
         })
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        self.file.flush()?;
+
+        if let Some(dir) = self.path.parent() {
+            let previous_log_path = dir.join("flowsurface-previous.log");
+            let _ = fs::copy(&self.path, previous_log_path);
+        }
+
+        self.file.set_len(0)?;
+        self.file.rewind()?;
+        self.current_size = 0;
+        Ok(())
     }
 }
 
@@ -176,18 +191,7 @@ impl Write for Logger {
         let buf_len = buf.len() as u64;
 
         if self.current_size + buf_len > MAX_LOG_FILE_SIZE {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
-            let error_msg = format!(
-                "\n{}:FATAL -- Log file size would exceed the maximum allowed size of {} bytes\n",
-                timestamp, MAX_LOG_FILE_SIZE
-            );
-
-            eprintln!("{error_msg}");
-
-            let _ = self.file.write_all(error_msg.as_bytes());
-            let _ = self.file.flush();
-
-            process::abort();
+            self.rotate()?;
         }
 
         let bytes = self.file.write(buf)?;
