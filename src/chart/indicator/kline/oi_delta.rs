@@ -9,8 +9,6 @@ use crate::chart::{
         },
     },
 };
-use crate::connector::fetcher::FetchRange;
-
 use data::chart::{PlotData, kline::KlineDataPoint};
 use data::util::format_with_commas;
 use exchange::adapter::Exchange;
@@ -126,32 +124,6 @@ impl KlineIndicatorImpl for OiDeltaIndicator {
 
     fn availability(&self, chart: &ViewState) -> IndicatorAvailability {
         Self::availability_for(chart.basis, chart.ticker_info.exchange())
-    }
-
-    fn fetch_range(&mut self, ctx: &super::FetchCtx) -> Option<FetchRange> {
-        let availability = Self::availability_for(
-            Basis::Time(ctx.timeframe),
-            ctx.main_chart.ticker_info.exchange(),
-        );
-        if !matches!(availability, IndicatorAvailability::Available) {
-            return None;
-        }
-
-        let from_time = self.raw.keys().next().copied().unwrap_or(ctx.kline_latest);
-        let to_time = self.raw.keys().last().copied().unwrap_or(UnixMs::ZERO);
-
-        if ctx.visible_earliest < from_time {
-            return Some(FetchRange::OpenInterest(ctx.prefetch_earliest, from_time));
-        }
-
-        if to_time < ctx.kline_latest {
-            return Some(FetchRange::OpenInterest(
-                to_time.max(ctx.prefetch_earliest),
-                ctx.kline_latest,
-            ));
-        }
-
-        None
     }
 
     fn rebuild_from_source(&mut self, _source: &PlotData<KlineDataPoint>) {

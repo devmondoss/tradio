@@ -690,8 +690,10 @@ impl KlineChart {
             }
         }
 
-        if let Some(indi) = self.indicators[KlineIndicator::OpenInterest].as_mut() {
-            indi.on_open_interest(oi_data);
+        for key in [KlineIndicator::OpenInterest, KlineIndicator::OiDelta] {
+            if let Some(indi) = self.indicators[key].as_mut() {
+                indi.on_open_interest(oi_data);
+            }
         }
     }
 

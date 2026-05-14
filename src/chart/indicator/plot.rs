@@ -330,13 +330,16 @@ where
                     }
                 };
 
-                frame.stroke(
-                    &Path::line(
-                        Point::new(snap_ratio * bounds.width, 0.0),
-                        Point::new(snap_ratio * bounds.width, bounds.height),
-                    ),
-                    dashed,
-                );
+                let vx = snap_ratio * bounds.width;
+                if vx.is_finite() {
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(vx, 0.0),
+                            Point::new(vx, bounds.height),
+                        ),
+                        dashed,
+                    );
+                }
 
                 // tooltip text
                 if let Some(y) = self.series.at(rounded_x) {
@@ -355,15 +358,20 @@ where
                 let ratio = cursor_position.y / bounds.height;
                 let value = highest + ratio * (lowest - highest);
                 let rounded = round_to_tick(value, tick);
-                let snap_ratio = (rounded - highest) / (lowest - highest);
-
-                frame.stroke(
-                    &Path::line(
-                        Point::new(0.0, snap_ratio * bounds.height),
-                        Point::new(bounds.width, snap_ratio * bounds.height),
-                    ),
-                    dashed,
-                );
+                let range = lowest - highest;
+                if range.abs() > f32::EPSILON {
+                    let snap_ratio = (rounded - highest) / range;
+                    let hy = snap_ratio * bounds.height;
+                    if hy.is_finite() {
+                        frame.stroke(
+                            &Path::line(
+                                Point::new(0.0, hy),
+                                Point::new(bounds.width, hy),
+                            ),
+                            dashed,
+                        );
+                    }
+                }
             }
         });
 
