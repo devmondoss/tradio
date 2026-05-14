@@ -960,13 +960,60 @@ impl KlineChart {
             .and_then(|i| i.latest_volume())
             .map(|(b, s)| (Some(b), Some(s)))
             .unwrap_or((None, None));
-        let flow = adapter::build_flow_context(cvd, cvd_slope, delta, buy_vol, sell_vol);
+
+        // Extract recent candles for regime + failed-acceptance detection
+        const REGIME_N: usize = 20;
+        const FA_N: usize = 5;
+        let (recent_closes, recent_highs, recent_lows): (Vec<f64>, Vec<f64>, Vec<f64>) =
+            match &self.data_source {
+                PlotData::TimeBased(ts) => {
+                    let closes = ts.datapoints.values().rev().take(REGIME_N)
+                        .map(|dp| dp.kline.close.to_f32() as f64)
+                        .collect::<Vec<_>>().into_iter().rev().collect();
+                    let highs = ts.datapoints.values().rev().take(FA_N)
+                        .map(|dp| dp.kline.high.to_f32() as f64)
+                        .collect::<Vec<_>>().into_iter().rev().collect();
+                    let lows = ts.datapoints.values().rev().take(FA_N)
+                        .map(|dp| dp.kline.low.to_f32() as f64)
+                        .collect::<Vec<_>>().into_iter().rev().collect();
+                    (closes, highs, lows)
+                }
+                PlotData::TickBased(ta) => {
+                    let closes = ta.datapoints.iter().rev().take(REGIME_N)
+                        .map(|dp| dp.kline.close.to_f32() as f64)
+                        .collect::<Vec<_>>().into_iter().rev().collect();
+                    let highs = ta.datapoints.iter().rev().take(FA_N)
+                        .map(|dp| dp.kline.high.to_f32() as f64)
+                        .collect::<Vec<_>>().into_iter().rev().collect();
+                    let lows = ta.datapoints.iter().rev().take(FA_N)
+                        .map(|dp| dp.kline.low.to_f32() as f64)
+                        .collect::<Vec<_>>().into_iter().rev().collect();
+                    (closes, highs, lows)
+                }
+            };
+
+        let regime = adapter::derive_regime(&recent_closes, atr.unwrap_or(0.0));
+        let (failed_acceptance, footprint_absorption) =
+            adapter::derive_failed_acceptance_and_absorption(
+                &recent_highs,
+                &recent_lows,
+                &recent_closes,
+                vah,
+                val,
+                delta,
+                cvd_slope,
+            );
+
+        let flow = adapter::build_flow_context(
+            cvd, cvd_slope, delta, buy_vol, sell_vol,
+            failed_acceptance, footprint_absorption,
+        );
 
         let ctx = StrategyMarketContext {
             symbol: self.chart.ticker_info.ticker.to_string(),
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
             price,
-            regime: Regime::Unknown,
+            regime,
             atr,
             volume_profile,
             vwap,

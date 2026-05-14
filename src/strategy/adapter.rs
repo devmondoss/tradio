@@ -104,6 +104,8 @@ pub fn build_flow_context(
     delta: Option<f64>,
     buy_volume: Option<f64>,
     sell_volume: Option<f64>,
+    failed_acceptance: bool,
+    footprint_absorption: AbsorptionSide,
 ) -> OrderFlowContext {
     let taker_imbalance = match (buy_volume, sell_volume) {
         (Some(buy), Some(sell)) => {
@@ -124,10 +126,10 @@ pub fn build_flow_context(
         taker_imbalance,
         buy_volume,
         sell_volume,
-        vpin: None, // Requires bucket-based calculation, not yet implemented
-        footprint_absorption: AbsorptionSide::Unknown,
+        vpin: None,
+        footprint_absorption,
         stacked_imbalance: ImbalanceSide::Unknown,
-        failed_acceptance: false,
+        failed_acceptance,
         sweep_confirmed: false,
         mss_active: false,
         quality: if cvd.is_some() || delta.is_some() {
@@ -136,6 +138,104 @@ pub fn build_flow_context(
             DataQuality::Missing
         },
     }
+}
+
+/// Derives market regime from recent close prices (oldest-first) and current ATR.
+/// Uses OLS slope normalized by ATR to classify trend strength.
+pub fn derive_regime(recent_closes: &[f64], atr: f64) -> Regime {
+    if recent_closes.len() < 5 || atr <= 0.0 {
+        return Regime::Unknown;
+    }
+
+    let n = recent_closes.len() as f64;
+    let sum_x: f64 = (0..recent_closes.len()).map(|i| i as f64).sum();
+    let sum_y: f64 = recent_closes.iter().sum();
+    let sum_xy: f64 = recent_closes
+        .iter()
+        .enumerate()
+        .map(|(i, y)| i as f64 * y)
+        .sum();
+    let sum_x2: f64 = (0..recent_closes.len()).map(|i| (i * i) as f64).sum();
+    let denom = n * sum_x2 - sum_x * sum_x;
+    if denom.abs() < 1e-10 {
+        return Regime::Chop;
+    }
+
+    let slope = (n * sum_xy - sum_x * sum_y) / denom;
+    let slope_per_atr = slope / atr;
+
+    let high = recent_closes
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let low = recent_closes
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let range_atr = (high - low) / atr;
+
+    if range_atr < 0.8 {
+        Regime::Compression
+    } else if range_atr > 4.0 && slope_per_atr.abs() > 0.15 {
+        Regime::Expansion
+    } else if slope_per_atr > 0.15 {
+        Regime::TrendUp
+    } else if slope_per_atr < -0.15 {
+        Regime::TrendDown
+    } else {
+        Regime::Chop
+    }
+}
+
+/// Derives failed_acceptance and footprint_absorption from recent candle OHLC.
+///
+/// Failed acceptance: price briefly broke above VAH or below VAL within the
+/// last few candles but the most recent close returned inside value.
+///
+/// Absorption side: confirmed when flow (delta/CVD) diverges from price action
+/// at the key level (e.g., positive delta at VAH but price rejected → ask absorption).
+pub fn derive_failed_acceptance_and_absorption(
+    recent_highs: &[f64],
+    recent_lows: &[f64],
+    recent_closes: &[f64],
+    vah: Option<f64>,
+    val: Option<f64>,
+    delta: Option<f64>,
+    cvd_slope: Option<f64>,
+) -> (bool, AbsorptionSide) {
+    if recent_highs.is_empty() || recent_closes.is_empty() {
+        return (false, AbsorptionSide::Unknown);
+    }
+
+    let last_close = *recent_closes.last().unwrap();
+
+    // Failed auction above VAH: any candle spiked above VAH but last close returned below it
+    if let Some(vah) = vah {
+        if recent_highs.iter().any(|&h| h > vah) && last_close < vah {
+            // Ask absorption: buyers were active (delta > 0) but sellers rejected the breakout
+            let absorption = if delta.unwrap_or(0.0) > 0.0 && cvd_slope.unwrap_or(0.0) <= 0.0 {
+                AbsorptionSide::Ask
+            } else {
+                AbsorptionSide::None
+            };
+            return (true, absorption);
+        }
+    }
+
+    // Failed auction below VAL: any candle spiked below VAL but last close returned above it
+    if let Some(val) = val {
+        if recent_lows.iter().any(|&l| l < val) && last_close > val {
+            // Bid absorption: sellers were active (delta < 0) but buyers rejected the breakdown
+            let absorption = if delta.unwrap_or(0.0) < 0.0 && cvd_slope.unwrap_or(0.0) >= 0.0 {
+                AbsorptionSide::Bid
+            } else {
+                AbsorptionSide::None
+            };
+            return (true, absorption);
+        }
+    }
+
+    (false, AbsorptionSide::None)
 }
 
 pub fn build_vwap_context(
