@@ -15,9 +15,12 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     let poc = vp.poc?;
 
     // SHORT: failed auction above VAH
+    // Fix 2: price must still be near VAH (within 0.5 ATR), not already deep inside value area.
+    // Fix 3 (delta): require delta < 0 — momentum aligned with SHORT, consistent with scorer.
     let short_location = px < vah
+        && (atr <= 0.0 || px > vah - 0.5 * atr)  // fix 2: proximity to edge
         && flow.failed_acceptance
-        && flow.delta.unwrap_or(0.0) > 0.0
+        && flow.delta.unwrap_or(0.0) < 0.0         // fix 3: aligned delta for SHORT
         && flow.footprint_absorption == AbsorptionSide::Ask;
 
     let short_flow =
@@ -30,7 +33,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         let stop = f64::max(vah + 0.25 * atr, px + 0.5 * atr);
         let target = poc;
 
-        if target < entry && stop > entry {
+        // Fix 1 (R:R gate): require at least 1.5:1 reward/risk before emitting.
+        let risk   = (stop - entry).abs();
+        let reward = (target - entry).abs();
+        if target < entry && stop > entry && risk > 1e-10 && reward / risk >= 1.5 {
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::ValueAreaFailedAuction),
@@ -43,7 +49,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 evidence: vec![
                     "failed_acceptance_above_VAH".into(),
                     "ask_absorption".into(),
-                    "cvd_not_confirming_breakout".into(),
+                    "delta_aligned_short".into(),
                     "target_POC".into(),
                 ],
                 missing: vec![],
@@ -57,9 +63,12 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     }
 
     // LONG: failed auction below VAL
+    // Fix 2: price must still be near VAL (within 0.5 ATR).
+    // Fix 3 (delta): require delta > 0 — momentum aligned with LONG, consistent with scorer.
     let long_location = px > val
+        && (atr <= 0.0 || px < val + 0.5 * atr)   // fix 2: proximity to edge
         && flow.failed_acceptance
-        && flow.delta.unwrap_or(0.0) < 0.0
+        && flow.delta.unwrap_or(0.0) > 0.0          // fix 3: aligned delta for LONG
         && flow.footprint_absorption == AbsorptionSide::Bid;
 
     let long_flow =
@@ -72,7 +81,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         let stop = f64::min(val - 0.25 * atr, px - 0.5 * atr);
         let target = poc;
 
-        if target > entry && stop < entry {
+        // Fix 1 (R:R gate): require at least 1.5:1 reward/risk before emitting.
+        let risk   = (stop - entry).abs();
+        let reward = (target - entry).abs();
+        if target > entry && stop < entry && risk > 1e-10 && reward / risk >= 1.5 {
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::ValueAreaFailedAuction),
@@ -85,7 +97,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 evidence: vec![
                     "failed_acceptance_below_VAL".into(),
                     "bid_absorption".into(),
-                    "cvd_not_confirming_breakdown".into(),
+                    "delta_aligned_long".into(),
                     "target_POC".into(),
                 ],
                 missing: vec![],
@@ -106,6 +118,11 @@ mod tests {
     use super::*;
 
     fn base_ctx() -> StrategyMarketContext {
+        // SHORT setup: price at 100050, VAH=100100, POC=99200, ATR=250
+        // proximity: 100050 > 100100 - 0.5*250 = 99975 ✓
+        // delta < 0 (aligned SHORT) ✓
+        // R:R: reward = 100050-99200 = 850, risk = max(100100+62.5, 100050+125) = 100175 → 125
+        // R:R = 850/125 = 6.8 ✓  (>= 1.5)
         StrategyMarketContext {
             symbol: "BTCUSDT".to_string(),
             timestamp_ms: 1710000000000,
@@ -113,10 +130,10 @@ mod tests {
             regime: Regime::Chop,
             atr: Some(250.0),
             volume_profile: VolumeProfileContext {
-                poc: Some(99500.0),
+                poc: Some(99200.0),   // far enough for good R:R
                 vah: Some(100100.0),
                 val: Some(99000.0),
-                hvn_nearby: vec![99500.0],
+                hvn_nearby: vec![99200.0],
                 lvn_nearby: vec![],
                 value_location: ValueLocation::InValue,
                 quality: DataQuality::Live,
@@ -133,7 +150,7 @@ mod tests {
             flow: OrderFlowContext {
                 cvd: Some(1000.0),
                 cvd_slope: Some(-0.2),
-                delta: Some(120.0),
+                delta: Some(-80.0),          // aligned SHORT (negative)
                 taker_imbalance: Some(0.10),
                 buy_volume: Some(5000.0),
                 sell_volume: Some(4800.0),
@@ -166,27 +183,74 @@ mod tests {
         let ctx = base_ctx();
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &cfg);
-        assert!(signal.is_some());
+        assert!(signal.is_some(), "expected SHORT signal with valid R:R and aligned delta");
         let s = signal.unwrap();
         assert_eq!(s.side, Some(Side::Short));
         assert_eq!(s.strategy_id, Some(StrategyId::ValueAreaFailedAuction));
         assert!(s.target_price.unwrap() < s.entry_price.unwrap());
+        // R:R >= 1.5
+        let risk = (s.stop_price.unwrap() - s.entry_price.unwrap()).abs();
+        let reward = (s.target_price.unwrap() - s.entry_price.unwrap()).abs();
+        assert!(reward / risk >= 1.5, "R:R must be >= 1.5, got {:.2}", reward / risk);
     }
 
     #[test]
     fn detects_long_failed_auction_below_val() {
         let mut ctx = base_ctx();
-        ctx.price = 99050.0;
-        ctx.flow.delta = Some(-150.0);
+        // LONG setup: price just above VAL, POC above, delta positive (aligned LONG)
+        ctx.price = 99050.0;                            // close to VAL=99000, within 0.5*ATR=125
+        ctx.flow.delta = Some(80.0);                    // aligned LONG (positive)
         ctx.flow.footprint_absorption = AbsorptionSide::Bid;
-        ctx.flow.cvd_slope = Some(0.1);
+        ctx.flow.cvd_slope = Some(0.2);
+        ctx.volume_profile.poc = Some(99800.0);         // far enough: reward=750, risk≈125 → R:R=6
 
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &cfg);
-        assert!(signal.is_some());
+        assert!(signal.is_some(), "expected LONG signal with valid R:R and aligned delta");
         let s = signal.unwrap();
         assert_eq!(s.side, Some(Side::Long));
         assert!(s.target_price.unwrap() > s.entry_price.unwrap());
+        let risk = (s.stop_price.unwrap() - s.entry_price.unwrap()).abs();
+        let reward = (s.target_price.unwrap() - s.entry_price.unwrap()).abs();
+        assert!(reward / risk >= 1.5, "R:R must be >= 1.5, got {:.2}", reward / risk);
+    }
+
+    #[test]
+    fn rejects_misaligned_delta_short() {
+        let mut ctx = base_ctx();
+        ctx.flow.delta = Some(120.0); // positive delta = wrong direction for SHORT
+        let cfg = StrategyConfig::default();
+        assert!(detect(&ctx, &cfg).is_none(), "positive delta should reject SHORT signal");
+    }
+
+    #[test]
+    fn rejects_misaligned_delta_long() {
+        let mut ctx = base_ctx();
+        ctx.price = 99050.0;
+        ctx.flow.delta = Some(-80.0); // negative delta = wrong direction for LONG
+        ctx.flow.footprint_absorption = AbsorptionSide::Bid;
+        ctx.flow.cvd_slope = Some(0.2);
+        ctx.volume_profile.poc = Some(99800.0);
+        let cfg = StrategyConfig::default();
+        assert!(detect(&ctx, &cfg).is_none(), "negative delta should reject LONG signal");
+    }
+
+    #[test]
+    fn rejects_price_too_far_from_edge() {
+        let mut ctx = base_ctx();
+        // price already deep inside value area, > 0.5 ATR below VAH
+        ctx.price = 99800.0; // VAH=100100, ATR=250 → threshold = 100100-125 = 99975; 99800 < 99975
+        let cfg = StrategyConfig::default();
+        assert!(detect(&ctx, &cfg).is_none(), "stale entry too far from VAH should be rejected");
+    }
+
+    #[test]
+    fn rejects_poor_rr() {
+        let mut ctx = base_ctx();
+        // POC very close to entry → R:R < 1.5
+        ctx.volume_profile.poc = Some(100000.0); // only 50 points from entry=100050, stop≈100175
+        let cfg = StrategyConfig::default();
+        assert!(detect(&ctx, &cfg).is_none(), "R:R < 1.5 should be rejected");
     }
 
     #[test]

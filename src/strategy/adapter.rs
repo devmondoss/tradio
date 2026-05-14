@@ -288,9 +288,16 @@ pub fn derive_failed_acceptance_and_absorption(
 
     let last_close = *recent_closes.last().unwrap();
 
-    // Failed auction above VAH: find the candle that spiked above VAH, verify last close returned
+    let n = recent_highs.len();
+    // Fix: use rposition() to find the MOST RECENT breach, then require it to be
+    // within the last 3 candles. A stale breach (from 8+ candles ago) should not
+    // keep triggering failed_acceptance when price is already deep inside value area.
+    const MAX_BREACH_AGE: usize = 3;
+
+    // Failed auction above VAH: most recent candle that spiked above VAH, close returned
     if let Some(vah) = vah
-        && let Some(breach_idx) = recent_highs.iter().position(|&h| h > vah)
+        && let Some(breach_idx) = recent_highs.iter().rposition(|&h| h > vah)
+        && breach_idx >= n.saturating_sub(MAX_BREACH_AGE)
         && last_close < vah
     {
         return (
@@ -299,9 +306,10 @@ pub fn derive_failed_acceptance_and_absorption(
         );
     }
 
-    // Failed auction below VAL: find the candle that spiked below VAL, verify last close returned
+    // Failed auction below VAL: most recent candle that spiked below VAL, close returned
     if let Some(val) = val
-        && let Some(breach_idx) = recent_lows.iter().position(|&l| l < val)
+        && let Some(breach_idx) = recent_lows.iter().rposition(|&l| l < val)
+        && breach_idx >= n.saturating_sub(MAX_BREACH_AGE)
         && last_close > val
     {
         return (
