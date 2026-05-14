@@ -167,6 +167,7 @@ pub struct KlineChart {
     pub strategy_signals: Vec<StrategySignal>,
     pub strategy_overlay_enabled: bool,
     pub last_depth: Option<exchange::depth::Depth>,
+    outcome_tracker: crate::strategy::tracker::OutcomeTracker,
 }
 
 impl KlineChart {
@@ -262,6 +263,7 @@ impl KlineChart {
                     strategy_signals: Vec::new(),
                     strategy_overlay_enabled: false,
                     last_depth: None,
+                    outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                 }
             }
             Basis::Tick(interval) => {
@@ -321,6 +323,7 @@ impl KlineChart {
                     strategy_signals: Vec::new(),
                     strategy_overlay_enabled: false,
                     last_depth: None,
+                    outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                 }
             }
         }
@@ -1041,8 +1044,11 @@ impl KlineChart {
         logger::log_signal(&ctx, &signal);
 
         if signal.action == StrategyAction::ShadowSignal {
+            self.outcome_tracker.push_signal(&signal, price);
             self.push_strategy_signal(signal);
         }
+
+        self.outcome_tracker.update(price, ctx.timestamp_ms);
     }
 
     pub fn push_strategy_signal(&mut self, signal: StrategySignal) {
