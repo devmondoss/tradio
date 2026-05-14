@@ -1550,6 +1550,7 @@ impl canvas::Program<Message> for KlineChart {
 
             if let PlotData::TimeBased(ts) = &self.data_source {
                 draw_session_lines(frame, &region, earliest, latest, ts.interval.to_milliseconds(), interval_to_x);
+                draw_key_levels(frame, &region, &ts.datapoints, &price_to_y);
             }
 
             self.draw_indicator_overlays(frame, &region, earliest, latest, interval_to_x, price_to_y);
@@ -1877,6 +1878,104 @@ fn draw_all_npocs(
                 })
                 .for_each(|(interval, poc)| draw_the_line(interval, poc));
         }
+    }
+}
+
+struct KeyLevels {
+    prev_day_high:  Option<f32>,
+    prev_day_low:   Option<f32>,
+    daily_open:     Option<f32>,
+    weekly_open:    Option<f32>,
+}
+
+fn compute_key_levels(
+    datapoints: &std::collections::BTreeMap<UnixMs, data::chart::kline::KlineDataPoint>,
+) -> KeyLevels {
+    let Some((&latest_ts, _)) = datapoints.iter().next_back() else {
+        return KeyLevels { prev_day_high: None, prev_day_low: None, daily_open: None, weekly_open: None };
+    };
+
+    const DAY_MS: u64 = 86_400_000;
+    let current_day = latest_ts.as_u64() / DAY_MS;
+    let prev_day    = current_day.saturating_sub(1);
+    // Day of week: epoch day 0 = Thursday; (day + 3) % 7 → 0 = Monday
+    let day_of_week = (current_day + 3) % 7;
+    let this_monday = current_day - day_of_week;
+
+    let mut prev_high:   Option<f32> = None;
+    let mut prev_low:    Option<f32> = None;
+    let mut daily_open:  Option<f32> = None;
+    let mut weekly_open: Option<f32> = None;
+
+    for (&ts, dp) in datapoints.iter() {
+        let day = ts.as_u64() / DAY_MS;
+
+        if day == current_day && daily_open.is_none() {
+            daily_open = Some(dp.kline.open.to_f32());
+        }
+        if day >= this_monday && weekly_open.is_none() {
+            weekly_open = Some(dp.kline.open.to_f32());
+        }
+        if day == prev_day {
+            let h = dp.kline.high.to_f32();
+            let l = dp.kline.low.to_f32();
+            prev_high = Some(prev_high.map_or(h, |old: f32| old.max(h)));
+            prev_low  = Some(prev_low.map_or(l,  |old: f32| old.min(l)));
+        }
+    }
+
+    KeyLevels {
+        prev_day_high: prev_high,
+        prev_day_low:  prev_low,
+        daily_open,
+        weekly_open,
+    }
+}
+
+fn draw_key_levels(
+    frame: &mut canvas::Frame,
+    region: &Rectangle,
+    datapoints: &std::collections::BTreeMap<UnixMs, data::chart::kline::KlineDataPoint>,
+    price_to_y: &impl Fn(Price) -> f32,
+) {
+    let kl = compute_key_levels(datapoints);
+    let line_width = region.x + region.width;
+
+    let levels: &[(Option<f32>, &str, [f32; 4])] = &[
+        (kl.prev_day_high, "PDH", [0.85, 0.85, 0.85, 0.55]),
+        (kl.prev_day_low,  "PDL", [0.85, 0.85, 0.85, 0.55]),
+        (kl.daily_open,    "DO",  [0.40, 0.90, 0.45, 0.60]),
+        (kl.weekly_open,   "WO",  [0.35, 0.65, 1.00, 0.60]),
+    ];
+
+    for &(price_opt, label, rgba) in levels {
+        let Some(price) = price_opt else { continue };
+        if !price.is_finite() || price <= 0.0 { continue; }
+        let y = price_to_y(Price::from_f32(price));
+        if !y.is_finite() { continue; }
+
+        let color = Color::from_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+        frame.stroke(
+            &Path::line(Point::new(region.x, y), Point::new(line_width, y)),
+            Stroke::with_color(
+                Stroke {
+                    width: 1.0,
+                    line_dash: LineDash { segments: &[3.0, 6.0], offset: 0 },
+                    ..Stroke::default()
+                },
+                color,
+            ),
+        );
+        frame.fill_text(canvas::Text {
+            content: label.to_string(),
+            position: Point::new(line_width - 3.0, y - 2.0),
+            size: iced::Pixels(TEXT_SIZE * 0.82),
+            color,
+            align_x: iced::alignment::Horizontal::Right.into(),
+            align_y: iced::alignment::Vertical::Bottom.into(),
+            font: style::AZERET_MONO,
+            ..canvas::Text::default()
+        });
     }
 }
 
