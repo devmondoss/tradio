@@ -95,6 +95,7 @@ pub enum Event {
     ChartInteraction(super::chart::Message),
     PanelInteraction(super::panel::Message),
     ToggleIndicator(UiIndicator),
+    ToggleStrategyOverlay,
     DeleteNotification(usize),
     ReorderIndicator(column_drag::DragEvent),
     ClusterKindSelected(data::chart::kline::ClusterKind),
@@ -1169,6 +1170,11 @@ impl State {
             Event::ToggleIndicator(ind) => {
                 self.content.toggle_indicator(ind);
             }
+            Event::ToggleStrategyOverlay => {
+                if let Content::Kline { chart: Some(c), .. } = &mut self.content {
+                    c.toggle_strategy_overlay();
+                }
+            }
             Event::DeleteNotification(idx) => {
                 if idx < self.notifications.len() {
                     self.notifications.remove(idx);
@@ -1580,6 +1586,27 @@ impl State {
                 Some("Indicators"),
                 tooltip_pos,
                 modal_btn_style(Modal::Indicators),
+            ));
+        }
+
+        if !treat_as_starter
+            && matches!(&self.content, Content::Kline { .. })
+        {
+            let strategy_active = matches!(
+                &self.content,
+                Content::Kline { chart: Some(c), .. } if c.strategy_overlay_enabled
+            );
+            let icon = if strategy_active {
+                icon_text(Icon::StarFilled, 12)
+            } else {
+                icon_text(Icon::Star, 12)
+            };
+            buttons = buttons.push(button_with_tooltip(
+                icon,
+                Message::PaneEvent(pane, Event::ToggleStrategyOverlay),
+                Some("Strategy Overlay"),
+                tooltip_pos,
+                control_btn_style(strategy_active),
             ));
         }
 

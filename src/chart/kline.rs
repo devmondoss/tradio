@@ -903,6 +903,17 @@ impl KlineChart {
         }
     }
 
+    pub fn toggle_strategy_overlay(&mut self) {
+        self.strategy_overlay_enabled = !self.strategy_overlay_enabled;
+        if self.strategy_overlay_enabled {
+            if self.last_depth.is_some() {
+                self.run_strategy_detection();
+            }
+        } else {
+            self.strategy_signals.clear();
+        }
+    }
+
     pub fn update_depth(&mut self, depth: &exchange::depth::Depth) {
         self.last_depth = Some(depth.clone());
         if self.strategy_overlay_enabled {
