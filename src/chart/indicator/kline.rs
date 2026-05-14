@@ -133,6 +133,12 @@ pub trait KlineIndicatorImpl {
         self.availability(chart).unavailable_message(indicator)
     }
 
+    /// Expose existing OI data for bootstrapping dependent indicators.
+    /// Only implemented by OpenInterestIndicator.
+    fn oi_snapshot(&self) -> Option<Vec<exchange::OpenInterest>> {
+        None
+    }
+
     /// If the indicator needs data fetching, return the required range
     fn fetch_range(&mut self, _ctx: &FetchCtx) -> Option<FetchRange> {
         None

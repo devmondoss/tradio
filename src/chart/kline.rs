@@ -879,6 +879,17 @@ impl KlineChart {
         } else {
             let mut box_indi = indicator::kline::make_empty(indicator);
             box_indi.rebuild_from_source(&self.data_source);
+
+            // Bootstrap OI-dependent indicators with data the OI indicator already has,
+            // so they don't start empty when toggled on after OI data was already fetched.
+            if indicator == KlineIndicator::OiDelta {
+                if let Some(oi_indi) = self.indicators[KlineIndicator::OpenInterest].as_ref() {
+                    if let Some(existing) = oi_indi.oi_snapshot() {
+                        box_indi.on_open_interest(&existing);
+                    }
+                }
+            }
+
             self.indicators[indicator] = Some(box_indi);
         }
 

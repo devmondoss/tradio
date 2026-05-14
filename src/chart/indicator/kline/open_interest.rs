@@ -180,6 +180,19 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
 
     fn on_basis_change(&mut self, _source: &PlotData<KlineDataPoint>) {}
 
+    fn oi_snapshot(&self) -> Option<Vec<exchange::OpenInterest>> {
+        if self.data.is_empty() {
+            None
+        } else {
+            Some(
+                self.data
+                    .iter()
+                    .map(|(&time, &value)| exchange::OpenInterest { time, value })
+                    .collect(),
+            )
+        }
+    }
+
     fn on_open_interest(&mut self, data: &[exchange::OpenInterest]) {
         self.data.extend(data.iter().map(|oi| (oi.time, oi.value)));
         self.clear_all_caches();
