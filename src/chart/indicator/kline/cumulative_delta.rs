@@ -184,6 +184,39 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
         }
     }
 
+    fn latest_cvd_slope(&self) -> Option<f64> {
+        const N: usize = 20;
+        let values: Vec<f64> = match &self.data {
+            data::chart::BasisSeries::Time(map) => map
+                .values()
+                .rev()
+                .take(N)
+                .map(|p| p.cumulative.to_f32_lossy() as f64)
+                .collect(),
+            data::chart::BasisSeries::Tick(map) => map
+                .values()
+                .rev()
+                .take(N)
+                .map(|p| p.cumulative.to_f32_lossy() as f64)
+                .collect(),
+        };
+        if values.len() < 3 {
+            return None;
+        }
+        // Reverse so index 0 = oldest
+        let values: Vec<f64> = values.into_iter().rev().collect();
+        let n = values.len() as f64;
+        let sum_x: f64 = (0..values.len()).map(|i| i as f64).sum();
+        let sum_y: f64 = values.iter().sum();
+        let sum_xy: f64 = values.iter().enumerate().map(|(i, y)| i as f64 * y).sum();
+        let sum_x2: f64 = (0..values.len()).map(|i| (i * i) as f64).sum();
+        let denom = n * sum_x2 - sum_x * sum_x;
+        if denom.abs() < 1e-10 {
+            return None;
+        }
+        Some((n * sum_xy - sum_x * sum_y) / denom)
+    }
+
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
         let deltas = source.map_basis_series(
             |timeseries| {

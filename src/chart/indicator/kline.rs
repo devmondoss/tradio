@@ -148,6 +148,16 @@ pub trait KlineIndicatorImpl {
     /// Latest ATR(14) value.
     fn latest_atr(&self) -> Option<f64> { None }
 
+    /// CVD linear-regression slope over last N candles (positive = rising CVD).
+    fn latest_cvd_slope(&self) -> Option<f64> { None }
+
+    /// HVN and LVN price levels within `atr`-scaled distance of `price`.
+    /// Returns (hvn_nearby, lvn_nearby).
+    fn latest_hvn_lvn_nearby(&self, _price: f64, _atr: f64) -> (Vec<f64>, Vec<f64>) { (vec![], vec![]) }
+
+    /// Latest anchored-VWAP (BOS anchor = most recent swing pivot).
+    fn latest_avwap_bos(&self) -> Option<f64> { None }
+
     /// Expose existing OI data for bootstrapping dependent indicators.
     /// Only implemented by OpenInterestIndicator.
     fn oi_snapshot(&self) -> Option<Vec<exchange::OpenInterest>> {

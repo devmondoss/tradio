@@ -347,6 +347,48 @@ impl KlineIndicatorImpl for VolumeProfileIndicator {
             .map(|p| (p.poc as f64, p.vah as f64, p.val as f64))
     }
 
+    fn latest_hvn_lvn_nearby(&self, price: f64, atr: f64) -> (Vec<f64>, Vec<f64>) {
+        if self.histogram.is_empty() || atr <= 0.0 {
+            return (vec![], vec![]);
+        }
+
+        let window = atr * 3.0;
+        let lo = price - window;
+        let hi = price + window;
+
+        let nearby: Vec<_> = self
+            .histogram
+            .iter()
+            .filter(|b| b.price as f64 >= lo && b.price as f64 <= hi)
+            .collect();
+
+        if nearby.is_empty() {
+            return (vec![], vec![]);
+        }
+
+        let mean = nearby.iter().map(|b| b.volume).sum::<f64>() / nearby.len() as f64;
+        let variance = nearby.iter().map(|b| (b.volume - mean).powi(2)).sum::<f64>()
+            / nearby.len() as f64;
+        let std_dev = variance.sqrt();
+
+        let hvn_threshold = mean + 0.5 * std_dev;
+        let lvn_threshold = mean - 0.5 * std_dev;
+
+        let hvn: Vec<f64> = nearby
+            .iter()
+            .filter(|b| b.volume >= hvn_threshold)
+            .map(|b| b.price as f64)
+            .collect();
+
+        let lvn: Vec<f64> = nearby
+            .iter()
+            .filter(|b| b.volume <= lvn_threshold)
+            .map(|b| b.price as f64)
+            .collect();
+
+        (hvn, lvn)
+    }
+
     fn overlay_volume_profile(&self) -> &[ProfileBar] {
         &self.histogram
     }

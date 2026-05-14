@@ -27,6 +27,7 @@ pub struct VwapPoint {
 pub struct VwapIndicator {
     cache: Caches,
     data: BasisSeries<VwapPoint>,
+    avwap_bos: Option<f32>,
 }
 
 impl VwapIndicator {
@@ -34,6 +35,92 @@ impl VwapIndicator {
         Self {
             cache: Caches::default(),
             data: BasisSeries::default(),
+            avwap_bos: None,
+        }
+    }
+
+    /// Finds the most recent swing-low pivot in [start..n-1) and returns its index.
+    /// A swing low is a candle whose low is strictly less than both its immediate neighbors.
+    fn find_swing_low_anchor<T: Copy>(
+        lows: &[(T, f32)],
+    ) -> Option<usize> {
+        let n = lows.len();
+        if n < 3 {
+            return None;
+        }
+        for i in (1..n - 1).rev() {
+            if lows[i].1 < lows[i - 1].1 && lows[i].1 < lows[i + 1].1 {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    fn compute_avwap_from_anchor(
+        entries: &[(&exchange::UnixMs, &KlineDataPoint)],
+        anchor: usize,
+    ) -> Option<f32> {
+        let mut cum_vol = 0.0_f64;
+        let mut cum_pv = 0.0_f64;
+        for (_, dp) in &entries[anchor..] {
+            let tp = (dp.kline.high.to_f32() as f64
+                + dp.kline.low.to_f32() as f64
+                + dp.kline.close.to_f32() as f64)
+                / 3.0;
+            let vol = f32::from(dp.kline.volume.total()) as f64;
+            cum_vol += vol;
+            cum_pv += tp * vol;
+        }
+        if cum_vol > 0.0 {
+            Some((cum_pv / cum_vol) as f32)
+        } else {
+            None
+        }
+    }
+
+    fn compute_avwap_time(
+        datapoints: &BTreeMap<exchange::UnixMs, KlineDataPoint>,
+    ) -> Option<f32> {
+        const LOOKBACK: usize = 50;
+        let entries: Vec<_> = datapoints.iter().collect();
+        let n = entries.len();
+        if n < 3 {
+            return None;
+        }
+        let start = n.saturating_sub(LOOKBACK);
+        let window = &entries[start..];
+        let lows: Vec<_> = window.iter().map(|(_, dp)| ((), dp.kline.low.to_f32())).collect();
+        let anchor_rel = Self::find_swing_low_anchor(&lows).unwrap_or(0);
+        Self::compute_avwap_from_anchor(&entries, start + anchor_rel)
+    }
+
+    fn compute_avwap_tick(datapoints: &[TickAccumulation]) -> Option<f32> {
+        const LOOKBACK: usize = 50;
+        let n = datapoints.len();
+        if n < 3 {
+            return None;
+        }
+        let start = n.saturating_sub(LOOKBACK);
+        let window = &datapoints[start..];
+        let lows: Vec<_> = window.iter().map(|dp| ((), dp.kline.low.to_f32())).collect();
+        let anchor_rel = Self::find_swing_low_anchor(&lows).unwrap_or(0);
+        let anchor = start + anchor_rel;
+
+        let mut cum_vol = 0.0_f64;
+        let mut cum_pv = 0.0_f64;
+        for dp in &datapoints[anchor..] {
+            let tp = (dp.kline.high.to_f32() as f64
+                + dp.kline.low.to_f32() as f64
+                + dp.kline.close.to_f32() as f64)
+                / 3.0;
+            let vol = f32::from(dp.kline.volume.total()) as f64;
+            cum_vol += vol;
+            cum_pv += tp * vol;
+        }
+        if cum_vol > 0.0 {
+            Some((cum_pv / cum_vol) as f32)
+        } else {
+            None
         }
     }
 
@@ -191,6 +278,10 @@ impl KlineIndicatorImpl for VwapIndicator {
         }
     }
 
+    fn latest_avwap_bos(&self) -> Option<f64> {
+        self.avwap_bos.map(|v| v as f64)
+    }
+
     fn overlay_line_points(&self, earliest: u64, latest: u64) -> Vec<(u64, f32)> {
         self.visible_points(earliest, latest)
             .into_iter()
@@ -222,6 +313,10 @@ impl KlineIndicatorImpl for VwapIndicator {
             |timeseries| Self::compute_vwap_time(&timeseries.datapoints),
             |tickaggr| Self::compute_vwap_tick(&tickaggr.datapoints),
         );
+        self.avwap_bos = match source {
+            PlotData::TimeBased(ts) => Self::compute_avwap_time(&ts.datapoints),
+            PlotData::TickBased(ta) => Self::compute_avwap_tick(&ta.datapoints),
+        };
         self.clear_all_caches();
     }
 

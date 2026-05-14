@@ -100,11 +100,11 @@ pub fn build_orderbook_context(depth: &Depth) -> OrderBookContext {
 
 pub fn build_flow_context(
     cvd: Option<f64>,
+    cvd_slope: Option<f64>,
     delta: Option<f64>,
     buy_volume: Option<f64>,
     sell_volume: Option<f64>,
 ) -> OrderFlowContext {
-    let cvd_slope = None; // Needs multiple datapoints to compute slope
     let taker_imbalance = match (buy_volume, sell_volume) {
         (Some(buy), Some(sell)) => {
             let total = buy + sell;
@@ -141,15 +141,17 @@ pub fn build_flow_context(
 pub fn build_vwap_context(
     price: f64,
     vwap_session: Option<f64>,
+    avwap_bos: Option<f64>,
 ) -> VwapContext {
     let price_vs_vwap = StrategyMarketContext::price_relation(price, vwap_session);
+    let price_vs_avwap_bos = StrategyMarketContext::price_relation(price, avwap_bos);
 
     VwapContext {
         vwap_session,
-        avwap_bos: None,   // Not yet implemented
-        avwap_event: None, // Not yet implemented
+        avwap_bos,
+        avwap_event: None,
         price_vs_vwap,
-        price_vs_avwap_bos: PriceRelation::Unknown,
+        price_vs_avwap_bos,
         price_vs_avwap_event: PriceRelation::Unknown,
         quality: if vwap_session.is_some() {
             DataQuality::Live
@@ -164,6 +166,8 @@ pub fn build_volume_profile_context(
     poc: Option<f64>,
     vah: Option<f64>,
     val: Option<f64>,
+    hvn_nearby: Vec<f64>,
+    lvn_nearby: Vec<f64>,
 ) -> VolumeProfileContext {
     let value_location = StrategyMarketContext::determine_value_location(price, vah, val);
 
@@ -171,8 +175,8 @@ pub fn build_volume_profile_context(
         poc,
         vah,
         val,
-        hvn_nearby: vec![], // Requires HVN/LVN detection algorithm
-        lvn_nearby: vec![], // Requires HVN/LVN detection algorithm
+        hvn_nearby,
+        lvn_nearby,
         value_location,
         quality: if poc.is_some() && vah.is_some() && val.is_some() {
             DataQuality::Live

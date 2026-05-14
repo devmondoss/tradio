@@ -926,30 +926,41 @@ impl KlineChart {
         let vwap_value = self.indicators[KlineIndicator::Vwap]
             .as_ref()
             .and_then(|i| i.latest_vwap());
-        let vwap = adapter::build_vwap_context(price, vwap_value);
+        let avwap_bos = self.indicators[KlineIndicator::Vwap]
+            .as_ref()
+            .and_then(|i| i.latest_avwap_bos());
+        let vwap = adapter::build_vwap_context(price, vwap_value, avwap_bos);
+
+        let atr = self.indicators[KlineIndicator::Atr]
+            .as_ref()
+            .and_then(|i| i.latest_atr());
 
         let (poc, vah, val) = self.indicators[KlineIndicator::VolumeProfile]
             .as_ref()
             .and_then(|i| i.latest_vol_profile_levels())
             .map(|(p, h, l)| (Some(p), Some(h), Some(l)))
             .unwrap_or((None, None, None));
-        let volume_profile = adapter::build_volume_profile_context(price, poc, vah, val);
+        let (hvn_nearby, lvn_nearby) = self.indicators[KlineIndicator::VolumeProfile]
+            .as_ref()
+            .map(|i| i.latest_hvn_lvn_nearby(price, atr.unwrap_or(0.0)))
+            .unwrap_or_default();
+        let volume_profile =
+            adapter::build_volume_profile_context(price, poc, vah, val, hvn_nearby, lvn_nearby);
 
         let (cvd, delta) = self.indicators[KlineIndicator::CumulativeDelta]
             .as_ref()
             .and_then(|i| i.latest_cvd())
             .map(|(c, d)| (Some(c), Some(d)))
             .unwrap_or((None, None));
+        let cvd_slope = self.indicators[KlineIndicator::CumulativeDelta]
+            .as_ref()
+            .and_then(|i| i.latest_cvd_slope());
         let (buy_vol, sell_vol) = self.indicators[KlineIndicator::Volume]
             .as_ref()
             .and_then(|i| i.latest_volume())
             .map(|(b, s)| (Some(b), Some(s)))
             .unwrap_or((None, None));
-        let flow = adapter::build_flow_context(cvd, delta, buy_vol, sell_vol);
-
-        let atr = self.indicators[KlineIndicator::Atr]
-            .as_ref()
-            .and_then(|i| i.latest_atr());
+        let flow = adapter::build_flow_context(cvd, cvd_slope, delta, buy_vol, sell_vol);
 
         let ctx = StrategyMarketContext {
             symbol: self.chart.ticker_info.ticker.to_string(),
