@@ -39,6 +39,8 @@ pub struct VolumeProfileIndicator {
     pub histogram: Vec<ProfileBar>,
     /// Max volume across all bins (cached for rendering)
     pub histogram_max: f64,
+    /// Last visible range used to build the histogram (avoids redundant rebuilds)
+    last_visible_range: Option<(u64, u64)>,
 }
 
 impl VolumeProfileIndicator {
@@ -48,6 +50,7 @@ impl VolumeProfileIndicator {
             data: BasisSeries::default(),
             histogram: Vec::new(),
             histogram_max: 0.0,
+            last_visible_range: None,
         }
     }
 
@@ -263,6 +266,60 @@ impl VolumeProfileIndicator {
         let (bars, max_vol) = Self::build_histogram(&raw);
         self.histogram = bars;
         self.histogram_max = max_vol;
+        self.last_visible_range = None;
+    }
+
+    fn rebuild_histogram_for_visible_range(
+        &mut self,
+        earliest: u64,
+        latest: u64,
+        source: &PlotData<KlineDataPoint>,
+    ) {
+        if self.last_visible_range == Some((earliest, latest)) {
+            return;
+        }
+        self.last_visible_range = Some((earliest, latest));
+
+        let raw = match source {
+            PlotData::TimeBased(ts) => {
+                let mut vbp: BTreeMap<i64, f64> = BTreeMap::new();
+                for (_, dp) in ts
+                    .datapoints
+                    .range(exchange::UnixMs::new(earliest)..=exchange::UnixMs::new(latest))
+                {
+                    if dp.footprint.trades.is_empty() {
+                        Self::distribute_candle_volume(&mut vbp, &dp.kline);
+                    } else {
+                        for (price, group) in dp.footprint.trades.iter() {
+                            *vbp.entry(price.units).or_insert(0.0) +=
+                                f64::from(f32::from(group.total_qty()));
+                        }
+                    }
+                }
+                vbp
+            }
+            PlotData::TickBased(ta) => {
+                let mut vbp: BTreeMap<i64, f64> = BTreeMap::new();
+                for dp in ta.datapoints.iter().filter(|dp| {
+                    let t = dp.kline.time.as_u64();
+                    t >= earliest && t <= latest
+                }) {
+                    if dp.footprint.trades.is_empty() {
+                        Self::distribute_candle_volume(&mut vbp, &dp.kline);
+                    } else {
+                        for (price, group) in dp.footprint.trades.iter() {
+                            *vbp.entry(price.units).or_insert(0.0) +=
+                                f64::from(f32::from(group.total_qty()));
+                        }
+                    }
+                }
+                vbp
+            }
+        };
+
+        let (bars, max_vol) = Self::build_histogram(&raw);
+        self.histogram = bars;
+        self.histogram_max = max_vol;
     }
 
     fn indicator_elem<'a>(
@@ -425,5 +482,9 @@ impl KlineIndicatorImpl for VolumeProfileIndicator {
 
     fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
         self.rebuild_from_source(source);
+    }
+
+    fn update_visible_range(&mut self, earliest: u64, latest: u64, source: &PlotData<KlineDataPoint>) {
+        self.rebuild_histogram_for_visible_range(earliest, latest, source);
     }
 }

@@ -188,6 +188,10 @@ pub trait KlineIndicatorImpl {
     fn on_basis_change(&mut self, _source: &PlotData<KlineDataPoint>) {}
 
     fn on_open_interest(&mut self, _pairs: &[exchange::OpenInterest]) {}
+
+    /// Called each frame with the current visible time/tick range.
+    /// Override to rebuild view-dependent data (e.g. VRVP histogram).
+    fn update_visible_range(&mut self, _earliest: u64, _latest: u64, _source: &PlotData<KlineDataPoint>) {}
 }
 
 pub struct FetchCtx<'a> {

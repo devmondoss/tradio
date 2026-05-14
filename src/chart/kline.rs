@@ -861,9 +861,21 @@ impl KlineChart {
             }
         }
 
+        let visible_range_for_vrvp = {
+            let region = chart.visible_region(chart.bounds.size());
+            let (e, l) = chart.interval_range(&region);
+            if chart.bounds.width > 0.0 && e < l { Some((e, l)) } else { None }
+        };
+
         chart.cache.clear_all();
         for indi in self.indicators.values_mut().filter_map(Option::as_mut) {
             indi.clear_all_caches();
+        }
+
+        if let Some((earliest, latest)) = visible_range_for_vrvp {
+            if let Some(indi) = self.indicators[KlineIndicator::VolumeProfile].as_mut() {
+                indi.update_visible_range(earliest, latest, &self.data_source);
+            }
         }
 
         if let Some(t) = now {
