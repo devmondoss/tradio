@@ -7,6 +7,11 @@ pub mod unit;
 // Rust's bundled MinGW sysroot lacks nanosleep64 which aws-lc-sys (compiled by
 // WinLibs POSIX.UCRT) references in its thread backoff code. This stub satisfies
 // the linker; the function is never called during normal test execution.
+/// # Safety
+///
+/// This is a linker stub — it is never called at runtime. The function signature
+/// matches the POSIX `nanosleep64` ABI that aws-lc-sys references when compiled
+/// with WinLibs POSIX.UCRT; the body is intentionally a no-op.
 #[cfg(all(windows, target_arch = "x86_64"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nanosleep64(_rqtp: *const u8, _rmtp: *mut u8) -> i32 {

@@ -1163,11 +1163,7 @@ impl KlineChart {
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
         crate::strategy::intent_logger::log_near_misses(&ctx, &cfg, signal_fired);
 
-        let paper_sig = if signal_fired {
-            Some(&signal)
-        } else {
-            None
-        };
+        let paper_sig = if signal_fired { Some(&signal) } else { None };
         self.paper_account.on_bar_close(
             &ctx.symbol,
             bar_close,
@@ -1543,13 +1539,27 @@ impl KlineChart {
         let box_w = 200.0_f32;
 
         // Count wins/losses
-        let wins = paper.closed_trades.iter().filter(|t| t.net_pnl > 0.0).count();
-        let losses = paper.closed_trades.iter().filter(|t| t.net_pnl <= 0.0).count();
+        let wins = paper
+            .closed_trades
+            .iter()
+            .filter(|t| t.net_pnl > 0.0)
+            .count();
+        let losses = paper
+            .closed_trades
+            .iter()
+            .filter(|t| t.net_pnl <= 0.0)
+            .count();
         let total = wins + losses;
-        let win_rate = if total > 0 { wins as f64 / total as f64 * 100.0 } else { 0.0 };
+        let win_rate = if total > 0 {
+            wins as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        };
 
         // Active signal summary
-        let active_signal = signals.iter().find(|s| s.action == StrategyAction::ShadowSignal);
+        let active_signal = signals
+            .iter()
+            .find(|s| s.action == StrategyAction::ShadowSignal);
         let open_pos = paper.open_positions.first();
 
         // Count rows: header(1) + divider + account(3) + divider + signal(2) + divider + recent(up to 5)
@@ -1561,13 +1571,15 @@ impl KlineChart {
         let y0 = pad;
 
         // Background box
-        frame.fill_rectangle(
-            Point::new(x0, y0),
-            Size::new(box_w, box_h),
-            bg,
-        );
+        frame.fill_rectangle(Point::new(x0, y0), Size::new(box_w, box_h), bg);
         // Border
-        let border_stroke = Stroke::with_color(Stroke { width: 1.0, ..Default::default() }, border);
+        let border_stroke = Stroke::with_color(
+            Stroke {
+                width: 1.0,
+                ..Default::default()
+            },
+            border,
+        );
         frame.stroke(
             &Path::rectangle(Point::new(x0, y0), Size::new(box_w, box_h)),
             border_stroke,
@@ -1575,15 +1587,16 @@ impl KlineChart {
 
         let mut y = y0 + pad;
 
-        let draw_text = |frame: &mut canvas::Frame, s: &str, x: f32, y: f32, color: Color, size: f32| {
-            frame.fill_text(canvas::Text {
-                content: s.to_string(),
-                position: Point::new(x, y),
-                color,
-                size: iced::Pixels(size),
-                ..canvas::Text::default()
-            });
-        };
+        let draw_text =
+            |frame: &mut canvas::Frame, s: &str, x: f32, y: f32, color: Color, size: f32| {
+                frame.fill_text(canvas::Text {
+                    content: s.to_string(),
+                    position: Point::new(x, y),
+                    color,
+                    size: iced::Pixels(size),
+                    ..canvas::Text::default()
+                });
+            };
 
         // Header
         draw_text(frame, "STRATEGY MONITOR", x0 + pad, y, text_color, 10.0);
@@ -1592,7 +1605,13 @@ impl KlineChart {
         // Divider
         frame.stroke(
             &Path::line(Point::new(x0 + 2.0, y), Point::new(x0 + box_w - 2.0, y)),
-            Stroke::with_color(Stroke { width: 0.5, ..Default::default() }, border),
+            Stroke::with_color(
+                Stroke {
+                    width: 0.5,
+                    ..Default::default()
+                },
+                border,
+            ),
         );
         y += 4.0;
 
@@ -1604,36 +1623,107 @@ impl KlineChart {
         };
         let initial = paper.config.initial_capital;
         let pnl_pct = (display_equity - initial) / initial * 100.0;
-        let equity_color = if display_equity >= initial { green } else { red };
+        let equity_color = if display_equity >= initial {
+            green
+        } else {
+            red
+        };
         let pnl_sign = if pnl_pct >= 0.0 { "+" } else { "" };
-        draw_text(frame, &format!("Equity  ${display_equity:.0} ({pnl_sign}{pnl_pct:.1}%)"), x0 + pad, y, equity_color, 10.0);
+        draw_text(
+            frame,
+            &format!("Equity  ${display_equity:.0} ({pnl_sign}{pnl_pct:.1}%)"),
+            x0 + pad,
+            y,
+            equity_color,
+            10.0,
+        );
         y += row_h;
-        draw_text(frame, &format!("Trades  {total}  W:{wins} L:{losses}"), x0 + pad, y, dim, 10.0);
+        draw_text(
+            frame,
+            &format!("Trades  {total}  W:{wins} L:{losses}"),
+            x0 + pad,
+            y,
+            dim,
+            10.0,
+        );
         y += row_h;
-        draw_text(frame, &format!("Win %   {win_rate:.0}%"), x0 + pad, y, dim, 10.0);
+        draw_text(
+            frame,
+            &format!("Win %   {win_rate:.0}%"),
+            x0 + pad,
+            y,
+            dim,
+            10.0,
+        );
         y += row_h + 2.0;
 
         // Divider
         frame.stroke(
             &Path::line(Point::new(x0 + 2.0, y), Point::new(x0 + box_w - 2.0, y)),
-            Stroke::with_color(Stroke { width: 0.5, ..Default::default() }, border),
+            Stroke::with_color(
+                Stroke {
+                    width: 0.5,
+                    ..Default::default()
+                },
+                border,
+            ),
         );
         y += 4.0;
 
         // Active signal / open position
         if let Some(pos) = open_pos {
-            let side_color = if pos.side == crate::strategy::types::Side::Long { green } else { red };
-            let side_str = if pos.side == crate::strategy::types::Side::Long { "LONG" } else { "SHORT" };
-            draw_text(frame, &format!("Open  {side_str} @ {:.1}", pos.entry_price), x0 + pad, y, side_color, 10.0);
+            let side_color = if pos.side == crate::strategy::types::Side::Long {
+                green
+            } else {
+                red
+            };
+            let side_str = if pos.side == crate::strategy::types::Side::Long {
+                "LONG"
+            } else {
+                "SHORT"
+            };
+            draw_text(
+                frame,
+                &format!("Open  {side_str} @ {:.1}", pos.entry_price),
+                x0 + pad,
+                y,
+                side_color,
+                10.0,
+            );
             y += row_h;
-            draw_text(frame, &format!("Stop {:.1}  Tgt {:.1}",
-                pos.stop_price.unwrap_or(0.0),
-                pos.target_price.unwrap_or(0.0)),
-                x0 + pad, y, dim, 10.0);
+            draw_text(
+                frame,
+                &format!(
+                    "Stop {:.1}  Tgt {:.1}",
+                    pos.stop_price.unwrap_or(0.0),
+                    pos.target_price.unwrap_or(0.0)
+                ),
+                x0 + pad,
+                y,
+                dim,
+                10.0,
+            );
         } else if let Some(sig) = active_signal {
-            let side_color = if sig.side == Some(crate::strategy::types::Side::Long) { green } else { red };
-            let side_str = sig.side.map_or("?", |s| if s == crate::strategy::types::Side::Long { "LONG" } else { "SHORT" });
-            draw_text(frame, &format!("Signal {side_str} score {:.2}", sig.score), x0 + pad, y, side_color, 10.0);
+            let side_color = if sig.side == Some(crate::strategy::types::Side::Long) {
+                green
+            } else {
+                red
+            };
+            let side_str = sig.side.map_or("?", |s| {
+                if s == crate::strategy::types::Side::Long {
+                    "LONG"
+                } else {
+                    "SHORT"
+                }
+            });
+            draw_text(
+                frame,
+                &format!("Signal {side_str} score {:.2}", sig.score),
+                x0 + pad,
+                y,
+                side_color,
+                10.0,
+            );
             y += row_h;
             draw_text(frame, "Awaiting position open", x0 + pad, y, dim, 10.0);
         } else {
@@ -1646,7 +1736,13 @@ impl KlineChart {
         // Divider
         frame.stroke(
             &Path::line(Point::new(x0 + 2.0, y), Point::new(x0 + box_w - 2.0, y)),
-            Stroke::with_color(Stroke { width: 0.5, ..Default::default() }, border),
+            Stroke::with_color(
+                Stroke {
+                    width: 0.5,
+                    ..Default::default()
+                },
+                border,
+            ),
         );
         y += 4.0;
 
@@ -1657,15 +1753,24 @@ impl KlineChart {
             for trade in &recent {
                 let color = if trade.net_pnl > 0.0 { green } else { red };
                 let side_char = if trade.side == "Long" { "L" } else { "S" };
-                let reason_short = if trade.close_reason.contains("TARGET") { "TGT" }
-                    else if trade.close_reason.contains("STOP") { "STP" }
-                    else { "TTL" };
+                let reason_short = if trade.close_reason.contains("TARGET") {
+                    "TGT"
+                } else if trade.close_reason.contains("STOP") {
+                    "STP"
+                } else {
+                    "TTL"
+                };
                 draw_text(
                     frame,
-                    &format!("{side_char} {reason_short} {}{:.1}%",
+                    &format!(
+                        "{side_char} {reason_short} {}{:.1}%",
                         if trade.net_pnl_pct >= 0.0 { "+" } else { "" },
-                        trade.net_pnl_pct * 100.0),
-                    x0 + pad, y, color, 10.0,
+                        trade.net_pnl_pct * 100.0
+                    ),
+                    x0 + pad,
+                    y,
+                    color,
+                    10.0,
                 );
                 y += row_h;
             }
@@ -1706,7 +1811,12 @@ impl canvas::Program<Message> for KlineChart {
         let klines = chart.cache.main.draw(renderer, bounds_size, |frame| {
             // Strategy info panel drawn first, in screen space (before chart transforms).
             if self.strategy_overlay_enabled {
-                Self::draw_strategy_panel(&self.paper_account, &self.strategy_signals, frame, palette);
+                Self::draw_strategy_panel(
+                    &self.paper_account,
+                    &self.strategy_signals,
+                    frame,
+                    palette,
+                );
             }
 
             let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
@@ -1888,17 +1998,17 @@ impl canvas::Program<Message> for KlineChart {
                     rounded_aggregation,
                 );
 
-                if self.config.show_key_levels {
-                    if let PlotData::TimeBased(ts) = &self.data_source {
-                        draw_key_level_tooltip(
-                            frame,
-                            palette,
-                            &ts.datapoints,
-                            cursor_position,
-                            bounds,
-                            |price| chart.price_to_y(price),
-                        );
-                    }
+                if self.config.show_key_levels
+                    && let PlotData::TimeBased(ts) = &self.data_source
+                {
+                    draw_key_level_tooltip(
+                        frame,
+                        palette,
+                        &ts.datapoints,
+                        cursor_position,
+                        bounds,
+                        |price| chart.price_to_y(price),
+                    );
                 }
             }
         });
@@ -2323,10 +2433,18 @@ fn draw_key_level_tooltip(
     price_to_y: impl Fn(Price) -> f32,
 ) {
     const DESCRIPTIONS: &[(&str, &str, &str)] = &[
-        ("PDH", "Previous Day High", "Highest price reached yesterday"),
+        (
+            "PDH",
+            "Previous Day High",
+            "Highest price reached yesterday",
+        ),
         ("PDL", "Previous Day Low", "Lowest price reached yesterday"),
         ("DO", "Daily Open", "Opening price of today (00:00 UTC)"),
-        ("WO", "Weekly Open", "Opening price of this week (Mon 00:00 UTC)"),
+        (
+            "WO",
+            "Weekly Open",
+            "Opening price of this week (Mon 00:00 UTC)",
+        ),
     ];
 
     let kl = compute_key_levels(datapoints);
@@ -2370,7 +2488,9 @@ fn draw_key_level_tooltip(
         if box_x < 4.0 {
             box_x = cursor.x + 8.0;
         }
-        let box_y = (cursor.y - box_h / 2.0).max(4.0).min(bounds.height - box_h - 4.0);
+        let box_y = (cursor.y - box_h / 2.0)
+            .max(4.0)
+            .min(bounds.height - box_h - 4.0);
 
         let bg = palette.background.weakest.color.scale_alpha(0.95);
         frame.fill_rectangle(Point::new(box_x, box_y), Size::new(box_w, box_h), bg);
@@ -2380,7 +2500,13 @@ fn draw_key_level_tooltip(
         let border = Path::rectangle(Point::new(box_x, box_y), Size::new(box_w, box_h));
         frame.stroke(
             &border,
-            Stroke::with_color(Stroke { width: 1.0, ..Stroke::default() }, border_color),
+            Stroke::with_color(
+                Stroke {
+                    width: 1.0,
+                    ..Stroke::default()
+                },
+                border_color,
+            ),
         );
 
         // Abbreviation + full name
@@ -2433,19 +2559,34 @@ fn draw_session_lines(
             "Asia",
             0,
             8 * 3600 * 1000,
-            Color { r: 0.72, g: 0.82, b: 1.00, a: 0.08 },
+            Color {
+                r: 0.72,
+                g: 0.82,
+                b: 1.00,
+                a: 0.08,
+            },
         ),
         (
             "London",
             8 * 3600 * 1000,
             13 * 3600 * 1000,
-            Color { r: 1.00, g: 0.82, b: 0.68, a: 0.08 },
+            Color {
+                r: 1.00,
+                g: 0.82,
+                b: 0.68,
+                a: 0.08,
+            },
         ),
         (
             "New York",
             13 * 3600 * 1000,
             22 * 3600 * 1000,
-            Color { r: 0.68, g: 0.95, b: 0.78, a: 0.08 },
+            Color {
+                r: 0.68,
+                g: 0.95,
+                b: 0.78,
+                a: 0.08,
+            },
         ),
     ];
 
@@ -2494,7 +2635,10 @@ fn draw_session_lines(
             }
 
             // Filled background rectangle sized to session's actual price range
-            frame.fill(&Path::rectangle(Point::new(x_left, y_top), Size::new(width, rect_h)), fill);
+            frame.fill(
+                &Path::rectangle(Point::new(x_left, y_top), Size::new(width, rect_h)),
+                fill,
+            );
 
             // Left border line at session open
             if ts_open >= earliest && ts_open <= latest {

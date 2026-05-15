@@ -224,6 +224,12 @@ pub struct PaperAccount {
     next_id: i64,
 }
 
+impl Default for PaperAccount {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PaperAccount {
     pub fn new() -> Self {
         let config = PaperConfig::from_env();

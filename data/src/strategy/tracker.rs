@@ -106,6 +106,12 @@ pub struct OutcomeTracker {
     active: Vec<TrackedSignal>,
 }
 
+impl Default for OutcomeTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OutcomeTracker {
     pub fn new() -> Self {
         Self { active: Vec::new() }
