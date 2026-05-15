@@ -1,8 +1,8 @@
 //! Layer 2: headless strategy monitor for cloud deployment (Railway).
 //!
 //! Connects to Binance LinearPerps WebSocket streams, accumulates kline/depth/trade
-//! data, runs strategy detection on every bar close, and writes all output to
-//! ./logs/ — the same directory the GUI layer reads from.
+//! data, runs strategy detection on every bar close, and emits JSON to stdout
+//! (captured by Railway deploy logs).
 //!
 //! Environment variables (all optional):
 //!   SYMBOL           — ticker to monitor (default: BTCUSDT)
@@ -41,8 +41,6 @@ const REGIME_WINDOW: usize = 20;
 const CVD_WINDOW: usize = 50;
 const ATR_WINDOW: usize = 14;
 
-// ── state ────────────────────────────────────────────────────────────────────
-
 // ── pipeline metrics ──────────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -52,7 +50,6 @@ struct PipelineMetrics {
     trade_count: u64,
     depth_updates: u64,
     bars_processed: u64,
-    // latency from theoretical bar_close_ms to actual processing wall-clock
     latencies_ms: Vec<i64>,
     last_depth_at: Option<Instant>,
     last_trade_at: Option<Instant>,
@@ -88,7 +85,6 @@ impl PipelineMetrics {
             avg_lat,
         );
 
-        // Health checks
         if depth_age_ms > 5_000 {
             eprintln!("[WARN] depth stream stale — last update {depth_age_ms}ms ago");
         }
@@ -161,7 +157,6 @@ impl BarState {
         let bar_ms = bar.time.as_u64() as i64;
         self.metrics.bars_processed += 1;
 
-        // Measure latency: wall-clock now vs theoretical bar close time
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -187,26 +182,22 @@ impl BarState {
             self.vwap_session = Some(self.vwap_cum_pv / self.vwap_cum_vol);
         }
 
-        // Flush bar trade delta
         let bar_buy = self.bar_buy_vol;
         let bar_sell = self.bar_sell_vol;
         let bar_delta = bar_buy - bar_sell;
         self.bar_buy_vol = 0.0;
         self.bar_sell_vol = 0.0;
 
-        // Push bar to history
         self.bars.push_back(bar);
         if self.bars.len() > VP_WINDOW {
             self.bars.pop_front();
         }
 
-        // CVD snapshot
         self.cvd_history.push_back(self.cvd);
         if self.cvd_history.len() > CVD_WINDOW {
             self.cvd_history.pop_front();
         }
 
-        // Derive indicators
         let closes: Vec<f64> = self.bars.iter().map(|b| b.close.to_f32() as f64).collect();
         let highs: Vec<f64> = self.bars.iter().map(|b| b.high.to_f32() as f64).collect();
         let lows: Vec<f64> = self.bars.iter().map(|b| b.low.to_f32() as f64).collect();
@@ -270,21 +261,18 @@ impl BarState {
         let signal = route_strategy(&ctx, cfg);
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
 
-        // near misses → stdout JSON (captured by Railway logs)
         for nm in collect_near_misses(&ctx, cfg, signal_fired) {
             if let Ok(json) = serde_json::to_string(&nm) {
                 println!("{{\"event\":\"near_miss\",\"data\":{json}}}");
             }
         }
 
-        // signal → stdout JSON
         if signal_fired {
             if let Ok(json) = serde_json::to_string(&signal) {
                 println!("{{\"event\":\"signal\",\"data\":{json}}}");
             }
         }
 
-        // paper account — print any trades that close this bar
         let prev_closed = self.paper.closed_trades.len();
         let paper_signal = if signal_fired { Some(&signal) } else { None };
         self.paper
@@ -296,20 +284,17 @@ impl BarState {
             }
         }
 
-        // bar summary → stderr (human-readable in Railway deploy logs)
         eprintln!(
             "[bar] ts={bar_ms} close={c:.2} regime={regime:?} vwap={:.2} cvd={:.1} \
-             ob={} near_misses={} action={:?} score={:.3} latency={latency_ms}ms equity={:.2}",
+             ob={} action={:?} score={:.3} latency={latency_ms}ms equity={:.2}",
             self.vwap_session.unwrap_or(0.0),
             self.cvd,
             if self.depth.is_some() { "live" } else { "miss" },
-            0, // near_misses count already emitted above
             signal.action,
             signal.score,
             self.paper.equity,
         );
 
-        // metrics every 10 bars
         if self.metrics.bars_processed % 10 == 0 {
             self.metrics.report();
         }
@@ -550,13 +535,8 @@ async fn main() {
     };
 
     let tf_ms = timeframe.to_milliseconds();
+    let mut pending: Option<(u64, Kline)> = None;
 
-    // We keep the last kline seen per bar open_time.
-    // A bar closes when a kline with a NEWER open_time arrives — that guarantees
-    // Binance has finalised the previous bar. We never process the same bar twice.
-    let mut pending: Option<(u64, Kline)> = None; // (open_ms, latest kline for that bar)
-
-    // Emit a metrics summary every minute
     let metrics_interval = Duration::from_secs(60);
     let mut last_metrics_print = Instant::now();
 
@@ -571,24 +551,18 @@ async fn main() {
 
                         match pending {
                             None => {
-                                // First kline ever — start accumulating
                                 pending = Some((open_ms, kline));
                             }
                             Some((prev_open, _)) if open_ms > prev_open => {
-                                // New bar started → the pending bar is definitively closed
                                 let (closed_open_ms, closed_kline) = pending.take().unwrap();
                                 let bar_close_ms = closed_open_ms + tf_ms;
                                 state.on_bar_close(closed_kline, bar_close_ms, &symbol_str, &cfg);
-                                // Start accumulating new bar
                                 pending = Some((open_ms, kline));
                             }
                             Some((prev_open, _)) if open_ms == prev_open => {
-                                // Same bar updated — replace with latest (more accurate H/L/C/volume)
                                 pending = Some((open_ms, kline));
                             }
-                            _ => {
-                                // Stale/reordered update — ignore
-                            }
+                            _ => {}
                         }
                     }
                     Event::Connected(ex) => eprintln!("[kline] connected ({ex:?})"),

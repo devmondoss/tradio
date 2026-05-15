@@ -1,0 +1,15 @@
+[package]
+name = "monitor"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "monitor"
+path = "src/main.rs"
+
+[dependencies]
+data.workspace = true
+exchange.workspace = true
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+serde_json.workspace = true

@@ -1177,7 +1177,6 @@ dependencies = [
  "fern",
  "flowsurface-data",
  "flowsurface-exchange",
- "futures",
  "iced",
  "iced_core",
  "iced_wgpu",
@@ -1190,7 +1189,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
- "tokio",
  "url",
  "uuid",
 ]
@@ -2510,6 +2508,17 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "monitor"
+version = "0.8.8"
+dependencies = [
+ "flowsurface-data",
+ "flowsurface-exchange",
+ "futures",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
