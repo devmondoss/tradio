@@ -15,8 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use data::strategy::{
     adapter::{
-        build_flow_context, build_orderbook_context, build_vwap_context,
-        build_volume_profile_context, derive_cvd_divergence, derive_failed_acceptance_and_absorption,
+        build_flow_context, build_orderbook_context, build_volume_profile_context,
+        build_vwap_context, derive_cvd_divergence, derive_failed_acceptance_and_absorption,
         derive_regime,
     },
     intent_logger::log_near_misses,
@@ -25,7 +25,7 @@ use data::strategy::{
     types::{DataQuality, OrderBookContext, StrategyAction, StrategyConfig, StrategyMarketContext},
 };
 use exchange::{
-    Kline, PushFrequency, TickerInfo, Timeframe, Ticker,
+    Kline, PushFrequency, Ticker, TickerInfo, Timeframe,
     adapter::{
         AdapterHandles, AdapterNetworkConfig, Event, Exchange, MarketKind, StreamConfig, Venue,
     },
@@ -67,8 +67,14 @@ impl PipelineMetrics {
         };
         let max_lat = self.latencies_ms.iter().max().copied().unwrap_or(0);
 
-        let depth_age_ms = self.last_depth_at.map(|t| t.elapsed().as_millis()).unwrap_or(999_999);
-        let trade_age_ms = self.last_trade_at.map(|t| t.elapsed().as_millis()).unwrap_or(999_999);
+        let depth_age_ms = self
+            .last_depth_at
+            .map(|t| t.elapsed().as_millis())
+            .unwrap_or(999_999);
+        let trade_age_ms = self
+            .last_trade_at
+            .map(|t| t.elapsed().as_millis())
+            .unwrap_or(999_999);
 
         eprintln!(
             "[metrics] bars={} kline_ticks={} trade_batches={} trades={} depth_updates={} \
@@ -206,10 +212,7 @@ impl BarState {
         let lows: Vec<f64> = self.bars.iter().map(|b| b.low.to_f32() as f64).collect();
 
         let atr = compute_atr(&highs, &lows, &closes, ATR_WINDOW);
-        let regime = derive_regime(
-            &closes[closes.len().saturating_sub(REGIME_WINDOW)..],
-            atr,
-        );
+        let regime = derive_regime(&closes[closes.len().saturating_sub(REGIME_WINDOW)..], atr);
 
         let cvd_slope = compute_cvd_slope(&self.cvd_history);
         let cvd_divergence = derive_cvd_divergence(&highs, &lows, cvd_slope);
@@ -218,16 +221,9 @@ impl BarState {
             compute_volume_profile(&self.bars, VP_BINS, c);
 
         let deltas = [bar_delta];
-        let (failed_acceptance, footprint_absorption) =
-            derive_failed_acceptance_and_absorption(
-                &highs,
-                &lows,
-                &closes,
-                vah,
-                val,
-                &deltas,
-                cvd_slope,
-            );
+        let (failed_acceptance, footprint_absorption) = derive_failed_acceptance_and_absorption(
+            &highs, &lows, &closes, vah, val, &deltas, cvd_slope,
+        );
 
         let flow = build_flow_context(
             Some(self.cvd),
@@ -277,7 +273,8 @@ impl BarState {
         log_near_misses(&ctx, cfg, signal_fired);
 
         let paper_signal = if signal_fired { Some(&signal) } else { None };
-        self.paper.on_bar_close(symbol, c, h, l, bar_ms, paper_signal);
+        self.paper
+            .on_bar_close(symbol, c, h, l, bar_ms, paper_signal);
 
         eprintln!(
             "[bar] ts={bar_ms} close={c:.2} regime={regime:?} vwap={:.2} cvd={:.1} \
@@ -356,7 +353,11 @@ fn compute_volume_profile(
     let mut lo = poc_bin;
     let mut hi = poc_bin;
     while va_vol < value_target && (lo > 0 || hi + 1 < n_bins) {
-        let add_above = if hi + 1 < n_bins { histogram[hi + 1] } else { 0.0 };
+        let add_above = if hi + 1 < n_bins {
+            histogram[hi + 1]
+        } else {
+            0.0
+        };
         let add_below = if lo > 0 { histogram[lo - 1] } else { 0.0 };
         if add_above >= add_below && hi + 1 < n_bins {
             hi += 1;
@@ -469,11 +470,8 @@ async fn main() {
         }
     };
 
-    let handles = AdapterHandles::spawn_selected(
-        AdapterNetworkConfig::default(),
-        [Venue::Binance],
-    )
-    .expect("monitor: failed to spawn Binance adapter");
+    let handles = AdapterHandles::spawn_selected(AdapterNetworkConfig::default(), [Venue::Binance])
+        .expect("monitor: failed to spawn Binance adapter");
 
     eprintln!("monitor: fetching {symbol_str} LinearPerps metadata…");
     let metadata = handles

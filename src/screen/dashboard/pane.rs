@@ -1174,7 +1174,12 @@ impl State {
                 self.content.toggle_indicator(ind);
             }
             Event::ToggleStrategyOverlay => {
-                if let Content::Kline { chart: Some(c), indicators, .. } = &mut self.content {
+                if let Content::Kline {
+                    chart: Some(c),
+                    indicators,
+                    ..
+                } = &mut self.content
+                {
                     let added = c.toggle_strategy_overlay();
                     for ind in added {
                         if !indicators.contains(&ind) {

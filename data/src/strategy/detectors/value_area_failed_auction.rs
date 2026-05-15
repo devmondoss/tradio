@@ -34,7 +34,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         let target = poc;
 
         // Fix 1 (R:R gate): require at least 1.5:1 reward/risk before emitting.
-        let risk   = (stop - entry).abs();
+        let risk = (stop - entry).abs();
         let reward = (target - entry).abs();
         if target < entry && stop > entry && risk > 1e-10 && reward / risk >= 1.5 {
             return Some(StrategySignal {
@@ -82,7 +82,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         let target = poc;
 
         // Fix 1 (R:R gate): require at least 1.5:1 reward/risk before emitting.
-        let risk   = (stop - entry).abs();
+        let risk = (stop - entry).abs();
         let reward = (target - entry).abs();
         if target > entry && stop < entry && risk > 1e-10 && reward / risk >= 1.5 {
             return Some(StrategySignal {
@@ -130,7 +130,7 @@ mod tests {
             regime: Regime::Chop,
             atr: Some(250.0),
             volume_profile: VolumeProfileContext {
-                poc: Some(99200.0),   // far enough for good R:R
+                poc: Some(99200.0), // far enough for good R:R
                 vah: Some(100100.0),
                 val: Some(99000.0),
                 hvn_nearby: vec![99200.0],
@@ -150,7 +150,7 @@ mod tests {
             flow: OrderFlowContext {
                 cvd: Some(1000.0),
                 cvd_slope: Some(-0.2),
-                delta: Some(-80.0),          // aligned SHORT (negative)
+                delta: Some(-80.0), // aligned SHORT (negative)
                 taker_imbalance: Some(0.10),
                 buy_volume: Some(5000.0),
                 sell_volume: Some(4800.0),
@@ -183,7 +183,10 @@ mod tests {
         let ctx = base_ctx();
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &cfg);
-        assert!(signal.is_some(), "expected SHORT signal with valid R:R and aligned delta");
+        assert!(
+            signal.is_some(),
+            "expected SHORT signal with valid R:R and aligned delta"
+        );
         let s = signal.unwrap();
         assert_eq!(s.side, Some(Side::Short));
         assert_eq!(s.strategy_id, Some(StrategyId::ValueAreaFailedAuction));
@@ -191,28 +194,39 @@ mod tests {
         // R:R >= 1.5
         let risk = (s.stop_price.unwrap() - s.entry_price.unwrap()).abs();
         let reward = (s.target_price.unwrap() - s.entry_price.unwrap()).abs();
-        assert!(reward / risk >= 1.5, "R:R must be >= 1.5, got {:.2}", reward / risk);
+        assert!(
+            reward / risk >= 1.5,
+            "R:R must be >= 1.5, got {:.2}",
+            reward / risk
+        );
     }
 
     #[test]
     fn detects_long_failed_auction_below_val() {
         let mut ctx = base_ctx();
         // LONG setup: price just above VAL, POC above, delta positive (aligned LONG)
-        ctx.price = 99050.0;                            // close to VAL=99000, within 0.5*ATR=125
-        ctx.flow.delta = Some(80.0);                    // aligned LONG (positive)
+        ctx.price = 99050.0; // close to VAL=99000, within 0.5*ATR=125
+        ctx.flow.delta = Some(80.0); // aligned LONG (positive)
         ctx.flow.footprint_absorption = AbsorptionSide::Bid;
         ctx.flow.cvd_slope = Some(0.2);
-        ctx.volume_profile.poc = Some(99800.0);         // far enough: reward=750, risk≈125 → R:R=6
+        ctx.volume_profile.poc = Some(99800.0); // far enough: reward=750, risk≈125 → R:R=6
 
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &cfg);
-        assert!(signal.is_some(), "expected LONG signal with valid R:R and aligned delta");
+        assert!(
+            signal.is_some(),
+            "expected LONG signal with valid R:R and aligned delta"
+        );
         let s = signal.unwrap();
         assert_eq!(s.side, Some(Side::Long));
         assert!(s.target_price.unwrap() > s.entry_price.unwrap());
         let risk = (s.stop_price.unwrap() - s.entry_price.unwrap()).abs();
         let reward = (s.target_price.unwrap() - s.entry_price.unwrap()).abs();
-        assert!(reward / risk >= 1.5, "R:R must be >= 1.5, got {:.2}", reward / risk);
+        assert!(
+            reward / risk >= 1.5,
+            "R:R must be >= 1.5, got {:.2}",
+            reward / risk
+        );
     }
 
     #[test]
@@ -220,7 +234,10 @@ mod tests {
         let mut ctx = base_ctx();
         ctx.flow.delta = Some(120.0); // positive delta = wrong direction for SHORT
         let cfg = StrategyConfig::default();
-        assert!(detect(&ctx, &cfg).is_none(), "positive delta should reject SHORT signal");
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "positive delta should reject SHORT signal"
+        );
     }
 
     #[test]
@@ -232,7 +249,10 @@ mod tests {
         ctx.flow.cvd_slope = Some(0.2);
         ctx.volume_profile.poc = Some(99800.0);
         let cfg = StrategyConfig::default();
-        assert!(detect(&ctx, &cfg).is_none(), "negative delta should reject LONG signal");
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "negative delta should reject LONG signal"
+        );
     }
 
     #[test]
@@ -241,7 +261,10 @@ mod tests {
         // price already deep inside value area, > 0.5 ATR below VAH
         ctx.price = 99800.0; // VAH=100100, ATR=250 → threshold = 100100-125 = 99975; 99800 < 99975
         let cfg = StrategyConfig::default();
-        assert!(detect(&ctx, &cfg).is_none(), "stale entry too far from VAH should be rejected");
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "stale entry too far from VAH should be rejected"
+        );
     }
 
     #[test]
