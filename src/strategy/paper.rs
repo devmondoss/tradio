@@ -387,6 +387,9 @@ impl PaperAccount {
                 let trade = self.build_closed_trade(pos, reason, bar_close, now_ms);
                 log_paper_trade(&trade);
                 self.closed_trades.push(trade);
+                // update equity with actual bar_close before saving so the persisted
+                // equity reflects the post-close balance (not the stale pre-close value)
+                self.update_equity(bar_close);
                 self.save_state();
             } else {
                 i += 1;

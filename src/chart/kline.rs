@@ -1603,9 +1603,17 @@ impl KlineChart {
         );
         y += 4.0;
 
-        // Account row
-        let equity_color = if paper.equity >= paper.config.initial_capital { green } else { red };
-        draw_text(frame, &format!("Equity  ${:.0}", paper.equity), x0 + pad, y, equity_color, 10.0);
+        // Account row — use equity (open+closed) if positions open, balance otherwise
+        let display_equity = if paper.open_positions.is_empty() {
+            paper.balance
+        } else {
+            paper.equity
+        };
+        let initial = paper.config.initial_capital;
+        let pnl_pct = (display_equity - initial) / initial * 100.0;
+        let equity_color = if display_equity >= initial { green } else { red };
+        let pnl_sign = if pnl_pct >= 0.0 { "+" } else { "" };
+        draw_text(frame, &format!("Equity  ${display_equity:.0} ({pnl_sign}{pnl_pct:.1}%)"), x0 + pad, y, equity_color, 10.0);
         y += row_h;
         draw_text(frame, &format!("Trades  {total}  W:{wins} L:{losses}"), x0 + pad, y, dim, 10.0);
         y += row_h;
