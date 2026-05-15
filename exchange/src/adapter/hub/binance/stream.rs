@@ -277,6 +277,9 @@ struct SonicKline {
     taker_buy_base_asset_volume: f32,
     #[serde(rename = "i")]
     interval: String,
+    /// Binance "x" field: true when this is the final (closed) tick for the bar.
+    #[serde(rename = "x", default)]
+    is_closed: bool,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -628,7 +631,7 @@ pub fn connect_kline_stream(
 
                                         let volume = Volume::BuySell(buy_volume, sell_volume);
 
-                                        let kline = Kline::new(
+                                        let mut kline = Kline::new(
                                             de_kline.time,
                                             de_kline.open,
                                             de_kline.high,
@@ -637,6 +640,7 @@ pub fn connect_kline_stream(
                                             volume,
                                             ticker_info.min_ticksize,
                                         );
+                                        kline.is_closed = de_kline.is_closed;
 
                                         let _ = output
                                             .send(Event::KlineReceived(

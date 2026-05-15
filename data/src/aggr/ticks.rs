@@ -25,6 +25,7 @@ impl TickAccumulation {
             low: trade.price,
             close: trade.price,
             volume: Volume::empty_buy_sell().add_trade_qty(trade.is_sell, trade.qty),
+            is_closed: false,
         };
 
         Self {

@@ -37,7 +37,7 @@ use futures::StreamExt;
 
 const VP_WINDOW: usize = 300;
 const VP_BINS: usize = 150;
-const REGIME_WINDOW: usize = 20;
+const REGIME_WINDOW: usize = 14;
 const CVD_WINDOW: usize = 50;
 const ATR_WINDOW: usize = 14;
 
@@ -284,9 +284,23 @@ impl BarState {
             }
         }
 
+        let missing_str = signal
+            .missing
+            .iter()
+            .map(|m| format!("{m:?}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let evidence_str = signal
+            .evidence
+            .iter()
+            .map(|e| format!("{e:?}"))
+            .collect::<Vec<_>>()
+            .join(",");
+
         eprintln!(
             "[bar] ts={bar_ms} close={c:.2} regime={regime:?} vwap={:.2} cvd={:.1} \
-             ob={} action={:?} score={:.3} latency={latency_ms}ms equity={:.2}",
+             ob={} action={:?} score={:.3} latency={latency_ms}ms equity={:.2} \
+             missing=[{missing_str}] evidence=[{evidence_str}]",
             self.vwap_session.unwrap_or(0.0),
             self.cvd,
             if self.depth.is_some() { "live" } else { "miss" },
@@ -551,16 +565,26 @@ async fn main() {
 
                         match pending {
                             None => {
+                                // First kline ever — start accumulating
                                 pending = Some((open_ms, kline));
                             }
                             Some((prev_open, _)) if open_ms > prev_open => {
+                                // New bar arrived → flush previous (fallback path)
                                 let (closed_open_ms, closed_kline) = pending.take().unwrap();
                                 let bar_close_ms = closed_open_ms + tf_ms;
                                 state.on_bar_close(closed_kline, bar_close_ms, &symbol_str, &cfg);
                                 pending = Some((open_ms, kline));
                             }
                             Some((prev_open, _)) if open_ms == prev_open => {
-                                pending = Some((open_ms, kline));
+                                // Same bar: update with latest OHLCV
+                                if kline.is_closed {
+                                    // Binance confirmed this bar is done — flush immediately
+                                    pending = None;
+                                    let bar_close_ms = open_ms + tf_ms;
+                                    state.on_bar_close(kline, bar_close_ms, &symbol_str, &cfg);
+                                } else {
+                                    pending = Some((open_ms, kline));
+                                }
                             }
                             _ => {}
                         }

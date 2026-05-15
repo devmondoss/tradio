@@ -282,6 +282,7 @@ impl TimeSeries<KlineDataPoint> {
                         low: trade.price,
                         close: trade.price,
                         volume: Volume::empty_buy_sell(),
+                        is_closed: false,
                     },
                     footprint: KlineTrades::new(),
                 });

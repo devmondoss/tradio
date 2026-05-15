@@ -589,6 +589,10 @@ pub struct Kline {
     pub low: Price,
     pub close: Price,
     pub volume: Volume,
+    /// True when this kline is definitively closed (no more updates).
+    /// Historical/REST klines are always closed. Live WebSocket klines may be
+    /// partial (is_closed=false) until the final tick (is_closed=true).
+    pub is_closed: bool,
 }
 
 impl Kline {
@@ -610,6 +614,7 @@ impl Kline {
             low: Price::from_f32(low).round_to_min_tick(min_ticksize),
             close: Price::from_f32(close).round_to_min_tick(min_ticksize),
             volume,
+            is_closed: true,
         }
     }
 }

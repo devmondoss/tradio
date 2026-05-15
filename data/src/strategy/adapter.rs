@@ -224,11 +224,11 @@ pub fn derive_regime(recent_closes: &[f64], atr: f64) -> Regime {
 
     if range_atr < 0.8 {
         Regime::Compression
-    } else if range_atr > 4.0 && slope_per_atr.abs() > 0.15 {
+    } else if range_atr > 4.0 && slope_per_atr.abs() > 0.10 {
         Regime::Expansion
-    } else if slope_per_atr > 0.15 {
+    } else if slope_per_atr > 0.10 {
         Regime::TrendUp
-    } else if slope_per_atr < -0.15 {
+    } else if slope_per_atr < -0.10 {
         Regime::TrendDown
     } else {
         Regime::Chop
