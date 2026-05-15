@@ -493,3 +493,141 @@ Para que **ValueAreaFailedAuction** dispare:
 - [x] VolumeProfile activo
 - [x] CVD activo (para `failed_acceptance` y `absorption`)
 - [x] El precio debe haber roto brevemente fuera del value area
+
+---
+
+## Intent Logger / Near-Miss System
+
+**Archivo:** `src/strategy/intent_logger.rs`
+
+### ¿Qué es?
+
+Un logger paralelo al sistema de señales que registra **setups que estaban formando pero no llegaron a disparar**. Permite revisar con qué frecuencia aparece cada setup y qué condición específica lo bloqueó.
+
+### ¿Cuándo se ejecuta?
+
+En cada bar close, en `src/chart/kline.rs`, justo después de `route_strategy()`:
+
+```rust
+crate::strategy::intent_logger::log_near_misses(&ctx, &cfg, signal_fired);
+```
+
+### Flujo completo
+
+```
+Bar close
+    │
+    ├─► route_strategy() ──► si dispara ──► paper_trades.jsonl
+    │                                     strategy_signals.jsonl
+    │
+    └─► log_near_misses()
+            ├─► evaluate_vafa(ctx, cfg)   → Vec<NearMiss>
+            ├─► evaluate_lvn(ctx, cfg)    → Vec<NearMiss>
+            └─► evaluate_vwap(ctx, cfg)   → Vec<NearMiss>
+                        │
+                        └─► filtro: score_pct > 0 || failed_acceptance
+                                    y no es señal completa (sin duplicar)
+                                    │
+                                    └─► logs/near_misses.jsonl
+```
+
+### Condición de entrada al radar (por detector)
+
+Cada evaluador solo genera una entrada si hay algo que valga la pena loguear:
+
+| Detector | Trigger de entrada |
+|---|---|
+| VAFA | `precio dentro de 0.5×ATR del VAH o VAL` |
+| LVN  | `thin_zone_above == true` (Long) o `thin_zone_below == true` (Short) |
+| VWAP | `régimen TrendUp/Expansion + (anchor ok o location ok)` (Long), o `TrendDown/Expansion + (anchor ok o location ok)` (Short) |
+
+Si el trigger no está presente, no se genera ninguna entrada — no hay nada formando.
+
+### Condiciones evaluadas por detector
+
+#### VAFA — ValueAreaFailedAuction
+
+| Condición | Label si pasa | Label si falla |
+|---|---|---|
+| precio cerca de VAH (±0.5 ATR) | `price_near_vah` | `price_far_from_vah` |
+| `failed_acceptance` activo | `failed_acceptance` | `no_failed_acceptance` |
+| delta alineado con dirección | `delta_aligned_short/long` | `delta_not_aligned` |
+| footprint absorption correcto | `ask_absorption` / `bid_absorption` | `no_ask/bid_absorption` |
+| `cvd_slope` alineado | `cvd_slope_ok` | `cvd_slope_bullish/bearish` |
+| `taker_imbalance < 0.25` | `taker_imbalance_ok` | `taker_imbalance_high/low` |
+| spread dentro del límite | `spread_ok` | `spread_too_wide` |
+| no thin zone en dirección contraria | `no_thin_zone_above/below` | `thin_zone_above/below` |
+| `vpin <= max_vpin` | `vpin_ok` | `vpin_toxic` |
+| R:R >= 1.5 (solo si las core pasan) | `rr_ok` | `rr_insufficient` |
+
+#### LVN — LvnLiquidityVacuumBreakout
+
+| Condición | Label si pasa | Label si falla |
+|---|---|---|
+| thin zone presente | `thin_zone_above/below` | `no_thin_zone_above/below` |
+| precio vs VWAP alineado | `vwap_above_or_at` / `vwap_below_or_at` | `below_vwap` / `above_vwap` |
+| `value_location` correcta | `value_location_ok` | `value_location_low/high` |
+| delta alineado | `delta_positive/negative` | `delta_not_positive/negative` |
+| cvd_slope alineado | `cvd_slope_positive/negative` | `cvd_slope_not_pos/neg` |
+| stacked_imbalance no opuesto | `imbalance_ok` | `imbalance_bearish/bullish` |
+| `taker_imbalance.abs() < 0.90` | `taker_imbalance_ok` | `taker_extreme` |
+| spread dentro del límite | `spread_ok` | `spread_too_wide` |
+| microprice alineado | `microprice_bullish/bearish` | `microprice_bearish/bullish` |
+
+#### VWAP — VwapValuePullbackContinuation
+
+| Condición | Label si pasa | Label si falla |
+|---|---|---|
+| régimen alineado | `regime_bullish/bearish` | `regime_not_bullish/bearish` |
+| anchor ok (avwap_bos o vwap_session) | `anchor_avwap_bos` / `anchor_vwap_session` | `anchor_not_ok` |
+| pullback al value area | `pullback_into_value` | `not_in_value` |
+| cvd_slope alineado | `cvd_slope_ok` | `cvd_slope_bearish/bullish` |
+| delta alineado | `delta_positive/negative` | `delta_not_positive/negative` |
+| no failed_acceptance | `no_failed_acceptance` | `failed_acceptance` |
+| spread dentro del límite | `spread_ok` | `spread_too_wide` |
+| microprice alineado | `microprice_bullish/bearish` | `microprice_bearish/bullish` |
+| R:R >= 1.0 | `rr_ok` | `rr_insufficient` |
+
+### Filtro de escritura
+
+```rust
+// No escribe si nada está formando
+if nm.score_pct == 0 && !nm.failed_acceptance { continue; }
+// No duplica señales que sí dispararon (esas van a strategy_signals.jsonl)
+if signal_fired && nm.score_pct == 100 { continue; }
+```
+
+### Formato de salida (logs/near_misses.jsonl)
+
+```json
+{
+  "timestamp_ms": 1715700000000,
+  "symbol": "BTCUSDT",
+  "detector": "VwapValuePullbackContinuation",
+  "side": "Long",
+  "price": 102340.5,
+  "regime": "TrendUp",
+  "atr": 280.0,
+  "score_pct": 67,
+  "met": ["regime_bullish", "anchor_avwap_bos", "cvd_slope_ok", "delta_positive", "spread_ok", "microprice_bullish"],
+  "blocked": ["pullback_into_value", "no_failed_acceptance", "rr_insufficient"],
+  "vah": 103100.0,
+  "val": 101800.0,
+  "poc": 102500.0,
+  "delta": 1240.0,
+  "cvd_slope": 0.4,
+  "vpin": 0.38,
+  "spread_bps": 0.6,
+  "failed_acceptance": false
+}
+```
+
+### Diferencia entre archivos de salida
+
+| Archivo | Contenido |
+|---|---|
+| `logs/near_misses.jsonl` | Setups formando parcialmente (score_pct 1–99) |
+| `logs/strategy_signals.jsonl` | Señales completas que pasaron todos los filtros (score >= min_score) |
+| `logs/paper_trades.jsonl` | Trades ejecutados en paper (entrada + salida + PnL) |
+| `logs/paper_account_state.json` | Estado completo de la cuenta paper (balance, equity, posiciones abiertas) |
+| `logs/contradictions.jsonl` | Señales contradictorias detectadas por el paper account |

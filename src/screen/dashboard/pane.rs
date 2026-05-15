@@ -2075,19 +2075,6 @@ impl Content {
             .and_then(|vc| vc.kline())
             .unwrap_or_default();
 
-        // Ensure strategy indicators are included when overlay was persisted as active.
-        let mut enabled_indicators = enabled_indicators;
-        if kline_config.strategy_overlay_enabled {
-            for &ind in KlineChart::STRATEGY_INDICATORS {
-                if !enabled_indicators.contains(&ind) {
-                    let available = KlineIndicator::for_market(ticker_info.market_type());
-                    if available.contains(&ind) {
-                        enabled_indicators.push(ind);
-                    }
-                }
-            }
-        }
-
         let chart = KlineChart::new(
             layout.clone(),
             basis,

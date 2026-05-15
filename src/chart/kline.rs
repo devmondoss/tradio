@@ -968,18 +968,8 @@ impl KlineChart {
         self.config.strategy_overlay_enabled = self.strategy_overlay_enabled;
         if !self.strategy_overlay_enabled {
             self.strategy_signals.clear();
-            return vec![];
         }
-
-        // Auto-add required indicators that aren't already active.
-        let mut added = Vec::new();
-        for &ind in Self::STRATEGY_INDICATORS {
-            if self.indicators[ind].is_none() {
-                self.toggle_indicator(ind);
-                added.push(ind);
-            }
-        }
-        added
+        vec![]
     }
 
     pub fn update_depth(&mut self, depth: &exchange::depth::Depth) {
@@ -1853,11 +1843,12 @@ impl canvas::Program<Message> for KlineChart {
                 if self.config.show_session_lines {
                     draw_session_lines(
                         frame,
-                        &region,
+                        &ts.datapoints,
                         earliest,
                         latest,
                         ts.interval.to_milliseconds(),
                         interval_to_x,
+                        price_to_y,
                     );
                 }
                 if self.config.show_key_levels {
@@ -2420,47 +2411,43 @@ fn draw_key_level_tooltip(
     }
 }
 
-/// Draws subtle vertical dashed lines at UTC session open times for time-based charts.
-/// Sessions: Asia 00:00, London 08:00, New York 13:00.
-/// Only drawn when timeframe <= 4h so lines are meaningful.
+/// Draws session background rectangles sized to the actual high/low of each session's candles.
+/// Sessions: Asia 00:00–08:00, London 08:00–13:00, New York 13:00–22:00 UTC.
+/// Only drawn when timeframe <= 4h.
 fn draw_session_lines(
     frame: &mut canvas::Frame,
-    region: &Rectangle,
+    datapoints: &std::collections::BTreeMap<UnixMs, data::chart::kline::KlineDataPoint>,
     earliest: u64,
     latest: u64,
     timeframe_ms: u64,
     interval_to_x: impl Fn(u64) -> f32,
+    price_to_y: impl Fn(Price) -> f32,
 ) {
     if timeframe_ms > 4 * 3600 * 1000 {
         return;
     }
 
     const DAY_MS: u64 = 86_400_000;
-    // (label, open_offset_ms, close_offset_ms, fill_color)
     const SESSIONS: &[(&str, u64, u64, Color)] = &[
         (
             "Asia",
             0,
             8 * 3600 * 1000,
-            Color { r: 0.72, g: 0.82, b: 1.00, a: 0.08 }, // pastel periwinkle
+            Color { r: 0.72, g: 0.82, b: 1.00, a: 0.08 },
         ),
         (
             "London",
             8 * 3600 * 1000,
             13 * 3600 * 1000,
-            Color { r: 1.00, g: 0.82, b: 0.68, a: 0.08 }, // pastel peach
+            Color { r: 1.00, g: 0.82, b: 0.68, a: 0.08 },
         ),
         (
             "New York",
             13 * 3600 * 1000,
             22 * 3600 * 1000,
-            Color { r: 0.68, g: 0.95, b: 0.78, a: 0.08 }, // pastel mint
+            Color { r: 0.68, g: 0.95, b: 0.78, a: 0.08 },
         ),
     ];
-
-    let chart_top = region.y - region.height;
-    let chart_bottom = region.y + region.height * 2.0;
-    let chart_h = chart_bottom - chart_top;
 
     let first_day = (earliest / DAY_MS) * DAY_MS;
     let last_day = (latest / DAY_MS) * DAY_MS + DAY_MS;
@@ -2471,7 +2458,6 @@ fn draw_session_lines(
             let ts_open = day + open_off;
             let ts_close = day + close_off;
 
-            // Skip entirely if session doesn't overlap visible range
             if ts_close < earliest || ts_open > latest {
                 continue;
             }
@@ -2488,34 +2474,50 @@ fn draw_session_lines(
                 continue;
             }
 
-            // Filled background rectangle
-            let rect = Path::rectangle(Point::new(x_left, chart_top), Size::new(width, chart_h));
-            frame.fill(&rect, fill);
+            // High/low of candles within this session's time window
+            let (ses_high, ses_low) = datapoints
+                .range(UnixMs::new(ts_open)..UnixMs::new(ts_close))
+                .fold((f32::NEG_INFINITY, f32::INFINITY), |(h, l), (_, dp)| {
+                    (h.max(dp.kline.high.to_f32()), l.min(dp.kline.low.to_f32()))
+                });
 
-            // Left border line at session open (only if open is visible)
+            if !ses_high.is_finite() || !ses_low.is_finite() {
+                continue;
+            }
+
+            let y_top = price_to_y(Price::from_f32(ses_high));
+            let y_bottom = price_to_y(Price::from_f32(ses_low));
+            let rect_h = y_bottom - y_top;
+
+            if rect_h <= 0.0 {
+                continue;
+            }
+
+            // Filled background rectangle sized to session's actual price range
+            frame.fill(&Path::rectangle(Point::new(x_left, y_top), Size::new(width, rect_h)), fill);
+
+            // Left border line at session open
             if ts_open >= earliest && ts_open <= latest {
                 let border_color = Color { a: 0.35, ..fill };
-                let stroke = Stroke {
-                    style: canvas::stroke::Style::Solid(border_color),
-                    width: 1.0,
-                    ..Stroke::default()
-                };
                 frame.stroke(
-                    &Path::line(Point::new(x_open, chart_top), Point::new(x_open, chart_bottom)),
-                    stroke,
+                    &Path::line(Point::new(x_open, y_top), Point::new(x_open, y_bottom)),
+                    Stroke {
+                        style: canvas::stroke::Style::Solid(border_color),
+                        width: 1.0,
+                        ..Stroke::default()
+                    },
                 );
             }
 
-            // Label in the top-left of the rectangle
+            // Label at top-left of the rectangle
             let label_x = x_left + 4.0;
-            let label_y = chart_top + 4.0;
+            let label_y = y_top + 4.0;
             if label_y.is_finite() && label_x.is_finite() {
-                let label_color = Color { a: 0.65, ..fill };
                 frame.fill_text(canvas::Text {
                     content: label.to_string(),
                     position: Point::new(label_x, label_y),
                     size: iced::Pixels(10.0),
-                    color: label_color,
+                    color: Color { a: 0.65, ..fill },
                     align_x: iced::alignment::Horizontal::Left.into(),
                     align_y: iced::alignment::Vertical::Top,
                     font: style::AZERET_MONO,
