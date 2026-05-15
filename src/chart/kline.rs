@@ -1170,7 +1170,10 @@ impl KlineChart {
         let signal = router::route_strategy(&ctx, &cfg);
         logger::log_signal(&ctx, &signal);
 
-        let paper_sig = if signal.action == StrategyAction::ShadowSignal {
+        let signal_fired = signal.action == StrategyAction::ShadowSignal;
+        crate::strategy::intent_logger::log_near_misses(&ctx, &cfg, signal_fired);
+
+        let paper_sig = if signal_fired {
             Some(&signal)
         } else {
             None
