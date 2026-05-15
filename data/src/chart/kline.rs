@@ -336,11 +336,17 @@ impl std::fmt::Display for ClusterKind {
 pub struct Config {
     pub show_key_levels: bool,
     pub show_session_lines: bool,
+    #[serde(default)]
+    pub strategy_overlay_enabled: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { show_key_levels: true, show_session_lines: true }
+        Self {
+            show_key_levels: true,
+            show_session_lines: true,
+            strategy_overlay_enabled: false,
+        }
     }
 }
 

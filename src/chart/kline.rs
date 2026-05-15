@@ -182,6 +182,7 @@ impl KlineChart {
         enabled_indicators: &[KlineIndicator],
         ticker_info: TickerInfo,
         kind: &KlineChartKind,
+        config: data::chart::kline::Config,
     ) -> Self {
         match basis {
             Basis::Time(interval) => {
@@ -263,9 +264,9 @@ impl KlineChart {
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
                     strategy_signals: Vec::new(),
-                    strategy_overlay_enabled: false,
+                    strategy_overlay_enabled: config.strategy_overlay_enabled,
                     last_depth: None,
-                    config: data::chart::kline::Config::default(),
+                    config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
                 }
@@ -325,9 +326,9 @@ impl KlineChart {
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
                     strategy_signals: Vec::new(),
-                    strategy_overlay_enabled: false,
+                    strategy_overlay_enabled: config.strategy_overlay_enabled,
                     last_depth: None,
-                    config: data::chart::kline::Config::default(),
+                    config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
                 }
@@ -953,11 +954,32 @@ impl KlineChart {
         }
     }
 
-    pub fn toggle_strategy_overlay(&mut self) {
+    /// Indicators required for strategy detection to have full context.
+    pub const STRATEGY_INDICATORS: &'static [KlineIndicator] = &[
+        KlineIndicator::Vwap,
+        KlineIndicator::VolumeProfile,
+        KlineIndicator::CumulativeDelta,
+        KlineIndicator::Volume,
+        KlineIndicator::Atr,
+    ];
+
+    pub fn toggle_strategy_overlay(&mut self) -> Vec<KlineIndicator> {
         self.strategy_overlay_enabled = !self.strategy_overlay_enabled;
+        self.config.strategy_overlay_enabled = self.strategy_overlay_enabled;
         if !self.strategy_overlay_enabled {
             self.strategy_signals.clear();
+            return vec![];
         }
+
+        // Auto-add required indicators that aren't already active.
+        let mut added = Vec::new();
+        for &ind in Self::STRATEGY_INDICATORS {
+            if self.indicators[ind].is_none() {
+                self.toggle_indicator(ind);
+                added.push(ind);
+            }
+        }
+        added
     }
 
     pub fn update_depth(&mut self, depth: &exchange::depth::Depth) {
@@ -1507,6 +1529,147 @@ impl KlineChart {
             );
         }
     }
+
+    fn draw_strategy_panel(
+        paper: &crate::strategy::paper::PaperAccount,
+        signals: &[StrategySignal],
+        frame: &mut canvas::Frame,
+        palette: &iced::theme::palette::Extended,
+    ) {
+        use crate::strategy::paper::ClosedTrade;
+
+        let bg = Color::from_rgba(0.06, 0.06, 0.10, 0.82);
+        let border = Color::from_rgba(0.35, 0.35, 0.55, 0.8);
+        let text_color = palette.background.strong.text;
+        let green = Color::from_rgba(0.2, 0.85, 0.45, 1.0);
+        let red = Color::from_rgba(0.9, 0.3, 0.3, 1.0);
+        let dim = Color::from_rgba(0.65, 0.65, 0.75, 0.9);
+
+        let pad = 8.0_f32;
+        let row_h = 13.0_f32;
+        let box_w = 200.0_f32;
+
+        // Count wins/losses
+        let wins = paper.closed_trades.iter().filter(|t| t.net_pnl > 0.0).count();
+        let losses = paper.closed_trades.iter().filter(|t| t.net_pnl <= 0.0).count();
+        let total = wins + losses;
+        let win_rate = if total > 0 { wins as f64 / total as f64 * 100.0 } else { 0.0 };
+
+        // Active signal summary
+        let active_signal = signals.iter().find(|s| s.action == StrategyAction::ShadowSignal);
+        let open_pos = paper.open_positions.first();
+
+        // Count rows: header(1) + divider + account(3) + divider + signal(2) + divider + recent(up to 5)
+        let recent: Vec<&ClosedTrade> = paper.closed_trades.iter().rev().take(5).collect();
+        let num_rows = 1 + 1 + 3 + 1 + 2 + 1 + recent.len().max(1);
+        let box_h = pad * 2.0 + num_rows as f32 * row_h + 4.0;
+
+        let x0 = pad;
+        let y0 = pad;
+
+        // Background box
+        frame.fill_rectangle(
+            Point::new(x0, y0),
+            Size::new(box_w, box_h),
+            bg,
+        );
+        // Border
+        let border_stroke = Stroke::with_color(Stroke { width: 1.0, ..Default::default() }, border);
+        frame.stroke(
+            &Path::rectangle(Point::new(x0, y0), Size::new(box_w, box_h)),
+            border_stroke,
+        );
+
+        let mut y = y0 + pad;
+
+        let draw_text = |frame: &mut canvas::Frame, s: &str, x: f32, y: f32, color: Color, size: f32| {
+            frame.fill_text(canvas::Text {
+                content: s.to_string(),
+                position: Point::new(x, y),
+                color,
+                size: iced::Pixels(size),
+                ..canvas::Text::default()
+            });
+        };
+
+        // Header
+        draw_text(frame, "STRATEGY MONITOR", x0 + pad, y, text_color, 10.0);
+        y += row_h + 2.0;
+
+        // Divider
+        frame.stroke(
+            &Path::line(Point::new(x0 + 2.0, y), Point::new(x0 + box_w - 2.0, y)),
+            Stroke::with_color(Stroke { width: 0.5, ..Default::default() }, border),
+        );
+        y += 4.0;
+
+        // Account row
+        let equity_color = if paper.equity >= paper.config.initial_capital { green } else { red };
+        draw_text(frame, &format!("Equity  ${:.0}", paper.equity), x0 + pad, y, equity_color, 10.0);
+        y += row_h;
+        draw_text(frame, &format!("Trades  {total}  W:{wins} L:{losses}"), x0 + pad, y, dim, 10.0);
+        y += row_h;
+        draw_text(frame, &format!("Win %   {win_rate:.0}%"), x0 + pad, y, dim, 10.0);
+        y += row_h + 2.0;
+
+        // Divider
+        frame.stroke(
+            &Path::line(Point::new(x0 + 2.0, y), Point::new(x0 + box_w - 2.0, y)),
+            Stroke::with_color(Stroke { width: 0.5, ..Default::default() }, border),
+        );
+        y += 4.0;
+
+        // Active signal / open position
+        if let Some(pos) = open_pos {
+            let side_color = if pos.side == crate::strategy::types::Side::Long { green } else { red };
+            let side_str = if pos.side == crate::strategy::types::Side::Long { "LONG" } else { "SHORT" };
+            draw_text(frame, &format!("Open  {side_str} @ {:.1}", pos.entry_price), x0 + pad, y, side_color, 10.0);
+            y += row_h;
+            draw_text(frame, &format!("Stop {:.1}  Tgt {:.1}",
+                pos.stop_price.unwrap_or(0.0),
+                pos.target_price.unwrap_or(0.0)),
+                x0 + pad, y, dim, 10.0);
+        } else if let Some(sig) = active_signal {
+            let side_color = if sig.side == Some(crate::strategy::types::Side::Long) { green } else { red };
+            let side_str = sig.side.map_or("?", |s| if s == crate::strategy::types::Side::Long { "LONG" } else { "SHORT" });
+            draw_text(frame, &format!("Signal {side_str} score {:.2}", sig.score), x0 + pad, y, side_color, 10.0);
+            y += row_h;
+            draw_text(frame, "Awaiting position open", x0 + pad, y, dim, 10.0);
+        } else {
+            draw_text(frame, "Scanning...", x0 + pad, y, dim, 10.0);
+            y += row_h;
+            draw_text(frame, "No active signal", x0 + pad, y, dim, 10.0);
+        }
+        y += row_h + 2.0;
+
+        // Divider
+        frame.stroke(
+            &Path::line(Point::new(x0 + 2.0, y), Point::new(x0 + box_w - 2.0, y)),
+            Stroke::with_color(Stroke { width: 0.5, ..Default::default() }, border),
+        );
+        y += 4.0;
+
+        // Recent trades
+        if recent.is_empty() {
+            draw_text(frame, "No trades yet", x0 + pad, y, dim, 10.0);
+        } else {
+            for trade in &recent {
+                let color = if trade.net_pnl > 0.0 { green } else { red };
+                let side_char = if trade.side == "Long" { "L" } else { "S" };
+                let reason_short = if trade.close_reason.contains("TARGET") { "TGT" }
+                    else if trade.close_reason.contains("STOP") { "STP" }
+                    else { "TTL" };
+                draw_text(
+                    frame,
+                    &format!("{side_char} {reason_short} {}{:.1}%",
+                        if trade.net_pnl_pct >= 0.0 { "+" } else { "" },
+                        trade.net_pnl_pct * 100.0),
+                    x0 + pad, y, color, 10.0,
+                );
+                y += row_h;
+            }
+        }
+    }
 }
 
 impl canvas::Program<Message> for KlineChart {
@@ -1540,6 +1703,11 @@ impl canvas::Program<Message> for KlineChart {
         let palette = theme.extended_palette();
 
         let klines = chart.cache.main.draw(renderer, bounds_size, |frame| {
+            // Strategy info panel drawn first, in screen space (before chart transforms).
+            if self.strategy_overlay_enabled {
+                Self::draw_strategy_panel(&self.paper_account, &self.strategy_signals, frame, palette);
+            }
+
             let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
 
             frame.translate(center);

@@ -442,6 +442,10 @@ impl Dashboard {
                             pane::Effect::FocusWidget(id) => {
                                 return (iced::widget::operation::focus(id), None);
                             }
+                            pane::Effect::PersistVisualConfig(cfg) => {
+                                state.settings.visual_config = Some(cfg);
+                                return (Task::none(), None);
+                            }
                         };
                         return (task, None);
                     }

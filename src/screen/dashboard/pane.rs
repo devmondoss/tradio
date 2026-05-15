@@ -53,6 +53,7 @@ pub enum Effect {
     RequestFetch(Vec<FetchSpec>),
     SwitchTickersInGroup(TickerInfo),
     FocusWidget(iced::widget::Id),
+    PersistVisualConfig(VisualConfig),
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -460,6 +461,7 @@ impl State {
                 } else {
                     let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
                     let layout = chart.chart_layout();
+                    let preserved_config = chart.config;
 
                     *chart = KlineChart::new(
                         layout,
@@ -470,6 +472,7 @@ impl State {
                         indicators,
                         ticker_info,
                         chart.kind(),
+                        preserved_config,
                     );
                 }
             }
@@ -1171,8 +1174,14 @@ impl State {
                 self.content.toggle_indicator(ind);
             }
             Event::ToggleStrategyOverlay => {
-                if let Content::Kline { chart: Some(c), .. } = &mut self.content {
-                    c.toggle_strategy_overlay();
+                if let Content::Kline { chart: Some(c), indicators, .. } = &mut self.content {
+                    let added = c.toggle_strategy_overlay();
+                    for ind in added {
+                        if !indicators.contains(&ind) {
+                            indicators.push(ind);
+                        }
+                    }
+                    return Some(Effect::PersistVisualConfig(VisualConfig::Kline(c.config)));
                 }
             }
             Event::DeleteNotification(idx) => {
@@ -1204,11 +1213,13 @@ impl State {
             Event::ToggleKeyLevels => {
                 if let Content::Kline { chart: Some(c), .. } = &mut self.content {
                     c.config.show_key_levels = !c.config.show_key_levels;
+                    return Some(Effect::PersistVisualConfig(VisualConfig::Kline(c.config)));
                 }
             }
             Event::ToggleSessionLines => {
                 if let Content::Kline { chart: Some(c), .. } = &mut self.content {
                     c.config.show_session_lines = !c.config.show_session_lines;
+                    return Some(Effect::PersistVisualConfig(VisualConfig::Kline(c.config)));
                 }
             }
             Event::StudyConfigurator(study_msg) => match study_msg {
@@ -2058,6 +2069,25 @@ impl Content {
                 autoscale: Some(data::chart::Autoscale::FitToVisible),
             });
 
+        let kline_config = settings
+            .visual_config
+            .as_ref()
+            .and_then(|vc| vc.kline())
+            .unwrap_or_default();
+
+        // Ensure strategy indicators are included when overlay was persisted as active.
+        let mut enabled_indicators = enabled_indicators;
+        if kline_config.strategy_overlay_enabled {
+            for &ind in KlineChart::STRATEGY_INDICATORS {
+                if !enabled_indicators.contains(&ind) {
+                    let available = KlineIndicator::for_market(ticker_info.market_type());
+                    if available.contains(&ind) {
+                        enabled_indicators.push(ind);
+                    }
+                }
+            }
+        }
+
         let chart = KlineChart::new(
             layout.clone(),
             basis,
@@ -2067,6 +2097,7 @@ impl Content {
             &enabled_indicators,
             ticker_info,
             &determined_chart_kind,
+            kline_config,
         );
 
         Content::Kline {
