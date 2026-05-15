@@ -19,7 +19,7 @@ use data::strategy::{
         build_vwap_context, derive_cvd_divergence, derive_failed_acceptance_and_absorption,
         derive_regime,
     },
-    intent_logger::log_near_misses,
+    intent_logger::collect_near_misses,
     paper::PaperAccount,
     router::route_strategy,
     types::{DataQuality, OrderBookContext, StrategyAction, StrategyConfig, StrategyMarketContext},
@@ -270,24 +270,46 @@ impl BarState {
         let signal = route_strategy(&ctx, cfg);
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
 
-        log_near_misses(&ctx, cfg, signal_fired);
+        // near misses → stdout JSON (captured by Railway logs)
+        for nm in collect_near_misses(&ctx, cfg, signal_fired) {
+            if let Ok(json) = serde_json::to_string(&nm) {
+                println!("{{\"event\":\"near_miss\",\"data\":{json}}}");
+            }
+        }
 
+        // signal → stdout JSON
+        if signal_fired {
+            if let Ok(json) = serde_json::to_string(&signal) {
+                println!("{{\"event\":\"signal\",\"data\":{json}}}");
+            }
+        }
+
+        // paper account — print any trades that close this bar
+        let prev_closed = self.paper.closed_trades.len();
         let paper_signal = if signal_fired { Some(&signal) } else { None };
         self.paper
             .on_bar_close(symbol, c, h, l, bar_ms, paper_signal);
 
+        for trade in self.paper.closed_trades[prev_closed..].iter() {
+            if let Ok(json) = serde_json::to_string(trade) {
+                println!("{{\"event\":\"trade_closed\",\"data\":{json}}}");
+            }
+        }
+
+        // bar summary → stderr (human-readable in Railway deploy logs)
         eprintln!(
             "[bar] ts={bar_ms} close={c:.2} regime={regime:?} vwap={:.2} cvd={:.1} \
-             ob={} action={:?} score={:.3} latency={latency_ms}ms equity={:.2}",
+             ob={} near_misses={} action={:?} score={:.3} latency={latency_ms}ms equity={:.2}",
             self.vwap_session.unwrap_or(0.0),
             self.cvd,
             if self.depth.is_some() { "live" } else { "miss" },
+            0, // near_misses count already emitted above
             signal.action,
             signal.score,
             self.paper.equity,
         );
 
-        // Print metrics every 10 bars
+        // metrics every 10 bars
         if self.metrics.bars_processed % 10 == 0 {
             self.metrics.report();
         }

@@ -822,10 +822,35 @@ pub fn evaluate_vwap(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<N
 /// Logs all near-misses for this bar to logs/near_misses.jsonl.
 /// Only writes entries where at least one core condition is met (score_pct > 0)
 /// and the setup is NOT a full signal (to avoid duplicate noise).
-pub fn log_near_misses(ctx: &StrategyMarketContext, cfg: &StrategyConfig, signal_fired: bool) {
+/// Evaluates all detectors and returns the filtered near-miss candidates.
+/// Callers decide how to persist them (file or stdout).
+pub fn collect_near_misses(
+    ctx: &StrategyMarketContext,
+    cfg: &StrategyConfig,
+    signal_fired: bool,
+) -> Vec<NearMiss> {
     let mut candidates = evaluate_vafa(ctx, cfg);
     candidates.extend(evaluate_lvn(ctx, cfg));
     candidates.extend(evaluate_vwap(ctx, cfg));
+    candidates
+        .into_iter()
+        .filter(|nm| {
+            // Skip full signals (already logged in strategy_signals.jsonl)
+            if signal_fired && nm.score_pct == 100 {
+                return false;
+            }
+            // Skip if nothing is forming at all
+            if nm.score_pct == 0 && !nm.failed_acceptance {
+                return false;
+            }
+            true
+        })
+        .collect()
+}
+
+/// Writes near-miss candidates to `logs/near_misses.jsonl` (GUI / local use).
+pub fn log_near_misses(ctx: &StrategyMarketContext, cfg: &StrategyConfig, signal_fired: bool) {
+    let candidates = collect_near_misses(ctx, cfg, signal_fired);
     if candidates.is_empty() {
         return;
     }
@@ -836,14 +861,6 @@ pub fn log_near_misses(ctx: &StrategyMarketContext, cfg: &StrategyConfig, signal
     };
 
     for nm in candidates {
-        // Skip full signals (already logged in strategy_signals.jsonl)
-        if signal_fired && nm.score_pct == 100 {
-            continue;
-        }
-        // Skip if nothing is forming at all
-        if nm.score_pct == 0 && !nm.failed_acceptance {
-            continue;
-        }
         if let Ok(json) = serde_json::to_string(&nm) {
             let _ = writeln!(file, "{json}");
         }

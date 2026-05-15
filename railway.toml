@@ -6,6 +6,3 @@ dockerfilePath = "Dockerfile"
 startCommand = "monitor"
 restartPolicyType = "always"
 region = "asia-southeast1"
-
-[[volumes]]
-mountPath = "/app/logs"
