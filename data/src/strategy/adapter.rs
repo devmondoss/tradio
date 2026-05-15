@@ -191,30 +191,49 @@ pub fn derive_cvd_divergence(
     None
 }
 
-/// Derives market regime from recent close prices (oldest-first) and current ATR.
-/// Uses OLS slope normalized by ATR to classify trend strength.
+/// OLS slope of `closes` normalised by `atr`. Returns 0.0 on degenerate input.
+fn ols_slope_per_atr(closes: &[f64], atr: f64) -> f64 {
+    if closes.len() < 2 || atr <= 0.0 {
+        return 0.0;
+    }
+    let n = closes.len() as f64;
+    let sum_x: f64 = (0..closes.len()).map(|i| i as f64).sum();
+    let sum_y: f64 = closes.iter().sum();
+    let sum_xy: f64 = closes
+        .iter()
+        .enumerate()
+        .map(|(i, y)| i as f64 * y)
+        .sum();
+    let sum_x2: f64 = (0..closes.len()).map(|i| (i * i) as f64).sum();
+    let denom = n * sum_x2 - sum_x * sum_x;
+    if denom.abs() < 1e-10 {
+        return 0.0;
+    }
+    (n * sum_xy - sum_x * sum_y) / denom / atr
+}
+
+/// Derives market regime using a two-layer OLS approach:
+///
+/// * **Slow layer** — full `recent_closes` window (typically 14 bars, threshold ±0.10).
+///   Confirms trends that have been developing for multiple bars.
+/// * **Fast layer** — last 5 bars only (threshold ±0.25). Detects impulse moves that
+///   have just started and would otherwise stay invisible until the slow window fills.
+///
+/// Either layer can trigger TrendUp/TrendDown; the slow layer also drives
+/// Compression/Expansion classification.
 pub fn derive_regime(recent_closes: &[f64], atr: f64) -> Regime {
     if recent_closes.len() < 5 || atr <= 0.0 {
         return Regime::Unknown;
     }
 
-    let n = recent_closes.len() as f64;
-    let sum_x: f64 = (0..recent_closes.len()).map(|i| i as f64).sum();
-    let sum_y: f64 = recent_closes.iter().sum();
-    let sum_xy: f64 = recent_closes
-        .iter()
-        .enumerate()
-        .map(|(i, y)| i as f64 * y)
-        .sum();
-    let sum_x2: f64 = (0..recent_closes.len()).map(|i| (i * i) as f64).sum();
-    let denom = n * sum_x2 - sum_x * sum_x;
-    if denom.abs() < 1e-10 {
-        return Regime::Chop;
-    }
+    // Slow signal: full window
+    let slow = ols_slope_per_atr(recent_closes, atr);
 
-    let slope = (n * sum_xy - sum_x * sum_y) / denom;
-    let slope_per_atr = slope / atr;
+    // Fast signal: last 5 bars — catches impulse moves before they fill the slow window
+    let fast_window = &recent_closes[recent_closes.len().saturating_sub(5)..];
+    let fast = ols_slope_per_atr(fast_window, atr);
 
+    // Range check uses the full window for stability
     let high = recent_closes
         .iter()
         .copied()
@@ -224,11 +243,11 @@ pub fn derive_regime(recent_closes: &[f64], atr: f64) -> Regime {
 
     if range_atr < 0.8 {
         Regime::Compression
-    } else if range_atr > 4.0 && slope_per_atr.abs() > 0.10 {
+    } else if range_atr > 4.0 && slow.abs() > 0.10 {
         Regime::Expansion
-    } else if slope_per_atr > 0.10 {
+    } else if slow > 0.10 || fast > 0.25 {
         Regime::TrendUp
-    } else if slope_per_atr < -0.10 {
+    } else if slow < -0.10 || fast < -0.25 {
         Regime::TrendDown
     } else {
         Regime::Chop

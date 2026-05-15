@@ -203,7 +203,14 @@ impl BarState {
         let lows: Vec<f64> = self.bars.iter().map(|b| b.low.to_f32() as f64).collect();
 
         let atr = compute_atr(&highs, &lows, &closes, ATR_WINDOW);
-        let regime = derive_regime(&closes[closes.len().saturating_sub(REGIME_WINDOW)..], atr);
+        let regime_window = &closes[closes.len().saturating_sub(REGIME_WINDOW)..];
+        let regime = derive_regime(regime_window, atr);
+        // Compute slow/fast slopes for diagnostics (mirrors derive_regime internals)
+        let slow_slope = compute_ols_slope(regime_window, atr);
+        let fast_slope = compute_ols_slope(
+            &regime_window[regime_window.len().saturating_sub(5)..],
+            atr,
+        );
 
         let cvd_slope = compute_cvd_slope(&self.cvd_history);
         let cvd_divergence = derive_cvd_divergence(&highs, &lows, cvd_slope);
@@ -298,8 +305,10 @@ impl BarState {
             .join(",");
 
         eprintln!(
-            "[bar] ts={bar_ms} close={c:.2} regime={regime:?} vwap={:.2} cvd={:.1} \
-             ob={} action={:?} score={:.3} latency={latency_ms}ms equity={:.2} \
+            "[bar] ts={bar_ms} close={c:.2} regime={regime:?} \
+             slow={slow_slope:.3} fast={fast_slope:.3} \
+             vwap={:.2} cvd={:.1} ob={} \
+             action={:?} score={:.3} latency={latency_ms}ms equity={:.2} \
              missing=[{missing_str}] evidence=[{evidence_str}]",
             self.vwap_session.unwrap_or(0.0),
             self.cvd,
@@ -412,6 +421,28 @@ fn compute_volume_profile(
     }
 
     (poc, vah, val, hvn_nearby, lvn_nearby)
+}
+
+// ── OLS slope / ATR (mirrors adapter::ols_slope_per_atr for diagnostics) ─────
+
+fn compute_ols_slope(closes: &[f64], atr: f64) -> f64 {
+    if closes.len() < 2 || atr <= 0.0 {
+        return 0.0;
+    }
+    let n = closes.len() as f64;
+    let sum_x: f64 = (0..closes.len()).map(|i| i as f64).sum();
+    let sum_y: f64 = closes.iter().sum();
+    let sum_xy: f64 = closes
+        .iter()
+        .enumerate()
+        .map(|(i, y)| i as f64 * y)
+        .sum();
+    let sum_x2: f64 = (0..closes.len()).map(|i| (i * i) as f64).sum();
+    let denom = n * sum_x2 - sum_x * sum_x;
+    if denom.abs() < 1e-10 {
+        return 0.0;
+    }
+    (n * sum_xy - sum_x * sum_y) / denom / atr
 }
 
 // ── ATR ───────────────────────────────────────────────────────────────────────
