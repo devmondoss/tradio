@@ -22,7 +22,7 @@ use data::strategy::{
         derive_failed_acceptance_and_absorption, derive_regime, wall_nearby,
     },
     intent_logger::collect_near_misses,
-    paper::PaperAccount,
+    paper::{ClosedTrade, PaperAccount},
     router::route_strategy,
     types::{DataQuality, OrderBookContext, StrategyAction, StrategyConfig, StrategyMarketContext},
 };
@@ -116,10 +116,12 @@ struct BarState {
     funding_rate: Option<f64>,
     spot_price: Option<f64>,
     oi_history: VecDeque<f64>,
+    // MongoDB writer channel (None if MONGODB_URI not set)
+    mongo_tx: Option<tokio::sync::mpsc::Sender<ClosedTrade>>,
 }
 
 impl BarState {
-    fn new() -> Self {
+    fn new(mongo_tx: Option<tokio::sync::mpsc::Sender<ClosedTrade>>) -> Self {
         Self {
             bars: VecDeque::with_capacity(VP_WINDOW + 1),
             cvd: 0.0,
@@ -136,6 +138,7 @@ impl BarState {
             funding_rate: None,
             spot_price: None,
             oi_history: VecDeque::with_capacity(7),
+            mongo_tx,
         }
     }
 
@@ -339,6 +342,11 @@ impl BarState {
         for trade in self.paper.closed_trades[prev_closed..].iter() {
             if let Ok(json) = serde_json::to_string(trade) {
                 println!("{{\"event\":\"trade_closed\",\"data\":{json}}}");
+            }
+            if let Some(tx) = &self.mongo_tx {
+                if tx.try_send(trade.clone()).is_err() {
+                    eprintln!("[mongodb] channel full — trade {} not queued", trade.id);
+                }
             }
         }
 
@@ -684,7 +692,31 @@ async fn main() {
     let mut depth_stream = Box::pin(depth_stream);
     let mut trade_stream = Box::pin(trade_stream);
 
-    let mut state = BarState::new();
+    // ── MongoDB Atlas writer (optional) ──────────────────────────────────────
+    let mongo_tx = if let Ok(uri) = std::env::var("MONGODB_URI") {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ClosedTrade>(64);
+        tokio::spawn(async move {
+            match mongodb::Client::with_uri_str(&uri).await {
+                Ok(client) => {
+                    eprintln!("[mongodb] Connected to Atlas");
+                    let col: mongodb::Collection<ClosedTrade> =
+                        client.database("flowsurface").collection("trades");
+                    while let Some(trade) = rx.recv().await {
+                        if let Err(e) = col.insert_one(&trade).await {
+                            eprintln!("[mongodb] insert error: {e}");
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[mongodb] connection failed: {e}"),
+            }
+        });
+        Some(tx)
+    } else {
+        eprintln!("[mongodb] MONGODB_URI not set — trades logged to stdout only");
+        None
+    };
+
+    let mut state = BarState::new(mongo_tx);
     let cfg = StrategyConfig {
         enabled: true,
         ..StrategyConfig::default()

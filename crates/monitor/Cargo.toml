@@ -14,3 +14,4 @@ tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "time"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 serde_json.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+mongodb = { version = "3", default-features = false, features = ["bson-2", "rustls-tls", "dns-resolver", "compat-3-3-0"] }
