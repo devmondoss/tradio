@@ -3,3 +3,8 @@
 /.vscode
 *.log
 /logs/
+data/logs/
+.env
+calibration/.env
+**/__pycache__/
+*.pyc

@@ -1,8 +1,7 @@
-use super::toxic_flow_gate::toxic_flow_gate;
 use crate::strategy::{adapter, types::*};
 
+// Note: toxic_flow_gate is evaluated once in the router before calling any detector.
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
-    toxic_flow_gate(ctx, cfg).ok()?;
 
     let px = ctx.price;
     let atr = ctx.atr.unwrap_or(0.0);
@@ -46,13 +45,11 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         )
     };
 
-    // LONG: trend up, pullback into value, flow realigns
+    // LONG: trend up, pullback into value, flow realigns.
+    // BelowVal is excluded: price below VAL is a breakdown of support, not a pullback.
     let long_context = matches!(ctx.regime, Regime::TrendUp | Regime::Expansion)
         && long_anchor_ok
-        && matches!(
-            vp.value_location,
-            ValueLocation::InValue | ValueLocation::BelowVal
-        );
+        && vp.value_location == ValueLocation::InValue;
 
     // CVD level gate: a single bar of positive delta cannot override strongly adverse
     // cumulative flow. Threshold -200 was chosen after observing CVD=-471 triggering
@@ -75,6 +72,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::VwapValuePullbackContinuation),
                 side: Some(Side::Long),
+                regime: ctx.regime,
                 entry_price: Some(entry),
                 stop_price: Some(stop),
                 target_price: Some(target),
@@ -101,12 +99,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     // SHORT: trend down, pullback into value, flow realigns.
     // Expansion is accepted symmetrically with the long side; delta/cvd_slope/value_location
     // already filter direction, so Expansion alone does not create false shorts.
+    // AboveVah is excluded: price above VAH is a breakout above value, not a pullback into it.
     let short_context = matches!(ctx.regime, Regime::TrendDown | Regime::Expansion)
         && short_anchor_ok
-        && matches!(
-            vp.value_location,
-            ValueLocation::InValue | ValueLocation::AboveVah
-        );
+        && vp.value_location == ValueLocation::InValue;
 
     let short_flow = flow.cvd_slope.unwrap_or(0.0) <= 0.0
         && flow.delta.unwrap_or(0.0) < 0.0
@@ -126,6 +122,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::VwapValuePullbackContinuation),
                 side: Some(Side::Short),
+                regime: ctx.regime,
                 entry_price: Some(entry),
                 stop_price: Some(stop),
                 target_price: Some(target),
@@ -216,6 +213,7 @@ mod tests {
                 thin_zone_below: false,
                 quality: DataQuality::Live,
             },
+            institutional: None,
         }
     }
 
@@ -237,12 +235,15 @@ mod tests {
     fn detects_short_continuation_in_trend_down() {
         let mut ctx = base_long_ctx();
         ctx.regime = Regime::TrendDown;
-        ctx.price = 100050.0;
-        ctx.volume_profile.value_location = ValueLocation::AboveVah;
+        // Price inside the value area (pullback into value on the short side).
+        // AboveVah would be a breakout above value, not a pullback — excluded since the fix.
+        ctx.price = 99800.0; // inside value (val=99000, vah=100100)
+        ctx.volume_profile.value_location = ValueLocation::InValue;
         ctx.vwap.price_vs_avwap_bos = PriceRelation::Below;
+        ctx.flow.cvd = Some(-300.0); // cumulative CVD must be < 200 for the short gate
         ctx.flow.cvd_slope = Some(-0.4);
         ctx.flow.delta = Some(-80.0);
-        ctx.orderbook.microprice = Some(100040.0);
+        ctx.orderbook.microprice = Some(99790.0);
 
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &cfg);

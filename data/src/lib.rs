@@ -211,4 +211,5 @@ pub fn cleanup_old_market_data() -> usize {
     info!("File cleanup completed. Deleted {} files", total_deleted);
     total_deleted
 }
+pub mod institutional;
 pub mod strategy;

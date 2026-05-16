@@ -17,12 +17,6 @@ pub struct Config {
     pub order_size_filter: f32,
     pub trade_size_scale: Option<i32>,
     pub coalescing: Option<CoalesceKind>,
-    #[serde(default = "default_true")]
-    pub show_session_lines: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 impl Default for Config {
@@ -32,7 +26,6 @@ impl Default for Config {
             order_size_filter: 0.0,
             trade_size_scale: Some(100),
             coalescing: Some(CoalesceKind::Average(0.15)),
-            show_session_lines: true,
         }
     }
 }

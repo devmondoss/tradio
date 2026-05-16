@@ -1165,6 +1165,7 @@ impl KlineChart {
             vwap,
             flow,
             orderbook,
+            institutional: None,
         };
 
         let cfg = StrategyConfig {
@@ -1766,7 +1767,9 @@ impl canvas::Program<Message> for KlineChart {
 
             chart.draw_last_price_line(frame, palette, region);
 
-            if let PlotData::TimeBased(ts) = &self.data_source {
+            if let (PlotData::TimeBased(ts), KlineChartKind::Candles) =
+                (&self.data_source, &self.kind)
+            {
                 if self.config.show_session_lines {
                     draw_session_lines(
                         frame,
@@ -1816,6 +1819,7 @@ impl canvas::Program<Message> for KlineChart {
                 );
 
                 if self.config.show_key_levels
+                    && matches!(self.kind, KlineChartKind::Candles)
                     && let PlotData::TimeBased(ts) = &self.data_source
                 {
                     draw_key_level_tooltip(

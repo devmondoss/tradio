@@ -168,11 +168,16 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
         score = score.min(VETO_SCORE_CAP);
     }
 
-    // Ajustes aditivos crypto-nativos (se aplican post-producto para no interferir con el veto)
+    // Ajustes aditivos crypto-nativos (post-producto para no amplificar multiplicadores)
     score += adapter::funding_score_penalty(ctx.flow.funding_rate, is_long);
     score += adapter::oi_score_bonus(ctx.flow.oi_momentum_aligned);
     score += adapter::wall_score_bonus(ctx.flow.bid_wall_nearby, ctx.flow.ask_wall_nearby, is_long);
     score += adapter::clean_action_score_bonus(ctx.flow.price_action_clean);
+
+    // Re-apply veto cap: additive adjustments must not escape the toxic VPIN ceiling.
+    if vpin_is_toxic {
+        score = score.min(VETO_SCORE_CAP);
+    }
 
     signal.score = score.clamp(0.0, 1.0);
     signal
@@ -242,6 +247,7 @@ mod tests {
                 thin_zone_below: false,
                 quality: DataQuality::Live,
             },
+            institutional: None,
         }
     }
 
@@ -262,6 +268,7 @@ mod tests {
             action: StrategyAction::ShadowSignal,
             strategy_id: Some(StrategyId::ValueAreaFailedAuction),
             side: Some(Side::Short),
+            regime: ctx.regime,
             entry_price: Some(100050.0),
             stop_price: Some(100300.0),  // risk = 250 = 1 ATR
             target_price: Some(99000.0), // reward = 1050, R:R ≈ 4.2
@@ -297,6 +304,7 @@ mod tests {
             action: StrategyAction::ShadowSignal,
             strategy_id: Some(StrategyId::LvnLiquidityVacuumBreakout),
             side: Some(Side::Long),
+            regime: ctx.regime,
             entry_price: Some(100000.0),
             stop_price: Some(99750.0),    // risk = 250 = 1 ATR
             target_price: Some(100750.0), // reward = 750 = 3 ATR, R:R = 3.0
@@ -342,6 +350,7 @@ mod tests {
             action: StrategyAction::ShadowSignal,
             strategy_id: Some(StrategyId::LvnLiquidityVacuumBreakout),
             side: Some(Side::Long),
+            regime: ctx.regime,
             entry_price: Some(100000.0),
             stop_price: Some(99750.0),
             target_price: Some(100750.0),

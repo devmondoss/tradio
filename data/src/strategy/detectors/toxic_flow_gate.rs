@@ -96,6 +96,7 @@ mod tests {
                 thin_zone_below: false,
                 quality: DataQuality::Live,
             },
+            institutional: None,
         }
     }
 

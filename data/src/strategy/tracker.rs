@@ -204,6 +204,7 @@ mod tests {
             action: StrategyAction::ShadowSignal,
             strategy_id: Some(StrategyId::ValueAreaFailedAuction),
             side: Some(side),
+            regime: Regime::Unknown,
             entry_price: Some(entry),
             stop_price: Some(stop),
             target_price: Some(target),

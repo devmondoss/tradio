@@ -11,6 +11,9 @@ pub enum StrategyId {
     ValueAreaFailedAuction,
     VwapValuePullbackContinuation,
     LvnLiquidityVacuumBreakout,
+    LiquidationHunt,
+    FundingExhaustionReversal,
+    SmartMoneyDivergence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +161,9 @@ pub struct StrategyMarketContext {
     pub vwap: VwapContext,
     pub flow: OrderFlowContext,
     pub orderbook: OrderBookContext,
+    /// Institutional data (liquidations, L/S ratios, OI trend, funding).
+    /// None until at least one REST fetch cycle completes.
+    pub institutional: Option<crate::institutional::InstitutionalContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +171,7 @@ pub struct StrategySignal {
     pub action: StrategyAction,
     pub strategy_id: Option<StrategyId>,
     pub side: Option<Side>,
+    pub regime: Regime,
     pub entry_price: Option<f64>,
     pub stop_price: Option<f64>,
     pub target_price: Option<f64>,
@@ -183,6 +190,27 @@ pub struct StrategyConfig {
     pub max_vpin: f64,
     pub min_score: f64,
     pub default_ttl_ms: i64,
+
+    // LiquidationHunt
+    /// Minimum USD liquidated in 5 min to confirm hunt is in progress.
+    pub liq_hunt_min_usd: f64,
+    /// USD in 60s that constitutes a cascade (too late to enter).
+    pub liq_cascade_threshold: f64,
+    pub liq_ttl_ms: i64,
+
+    // FundingExhaustionReversal
+    /// Absolute funding rate that triggers extreme regime (0.0006 = 0.06%).
+    pub funding_extreme_threshold: f64,
+    pub funding_ttl_ms: i64,
+
+    // SmartMoneyDivergence
+    /// Top traders long pct below this → smart money predominantly short.
+    pub smart_short_threshold: f64,
+    /// Retail long pct above this → retail predominantly long.
+    pub retail_long_threshold: f64,
+    /// Minimum divergence (retail_long - top_traders_long) to trigger.
+    pub min_divergence: f64,
+    pub smd_ttl_ms: i64,
 }
 
 impl Default for StrategyConfig {
@@ -195,6 +223,15 @@ impl Default for StrategyConfig {
             // la distribución de scores reales. No optimizar este número antes de eso.
             min_score: 0.60,
             default_ttl_ms: 5 * 60 * 1000,
+            liq_hunt_min_usd: 500_000.0,
+            liq_cascade_threshold: 5_000_000.0,
+            liq_ttl_ms: 10 * 60 * 1000,
+            funding_extreme_threshold: 0.0006,
+            funding_ttl_ms: 30 * 60 * 1000,
+            smart_short_threshold: 0.45,
+            retail_long_threshold: 0.60,
+            min_divergence: 0.18,
+            smd_ttl_ms: 20 * 60 * 1000,
         }
     }
 }

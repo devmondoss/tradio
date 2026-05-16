@@ -10,11 +10,16 @@
 //!   PAPER_INITIAL_CAPITAL, PAPER_LEVERAGE, PAPER_MAX_POSITIONS,
 //!   PAPER_RISK_PCT, PAPER_SLIPPAGE_BPS, PAPER_TAKER_FEE, PAPER_FUNDING_RATE
 
+mod config_loader;
+mod supabase_writer;
+
 use std::collections::VecDeque;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reqwest;
 
+use config_loader::ConfigLoader;
+use supabase_writer::SupabaseWriter;
 use data::strategy::{
     adapter::{
         build_flow_context, build_orderbook_context, build_volume_profile_context,
@@ -116,12 +121,17 @@ struct BarState {
     funding_rate: Option<f64>,
     spot_price: Option<f64>,
     oi_history: VecDeque<f64>,
-    // MongoDB writer channel (None if MONGODB_URI not set)
-    mongo_tx: Option<tokio::sync::mpsc::Sender<ClosedTrade>>,
+    // Supabase writer (None if SUPABASE_URL not set)
+    supabase: Option<SupabaseWriter>,
+    // Dynamic config loaded from Supabase
+    cfg: StrategyConfig,
+    config_loader: ConfigLoader,
+    // Sends detected regime string to the async loop for config reloading
+    regime_tx: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl BarState {
-    fn new(mongo_tx: Option<tokio::sync::mpsc::Sender<ClosedTrade>>) -> Self {
+    fn new(supabase: Option<SupabaseWriter>) -> Self {
         Self {
             bars: VecDeque::with_capacity(VP_WINDOW + 1),
             cvd: 0.0,
@@ -138,7 +148,23 @@ impl BarState {
             funding_rate: None,
             spot_price: None,
             oi_history: VecDeque::with_capacity(7),
-            mongo_tx,
+            supabase,
+            cfg: StrategyConfig { enabled: true, ..StrategyConfig::default() },
+            config_loader: ConfigLoader::new(),
+            regime_tx: None,
+        }
+    }
+
+    /// Reloads StrategyConfig from Supabase if regime changed or config is stale.
+    async fn maybe_reload_config(&mut self, regime: &str) {
+        if self.config_loader.should_reload(regime) {
+            self.cfg = self.config_loader.load_for_regime(regime).await;
+        }
+    }
+
+    fn notify_regime(&self, regime: &str) {
+        if let Some(tx) = &self.regime_tx {
+            let _ = tx.try_send(regime.to_string());
         }
     }
 
@@ -165,7 +191,8 @@ impl BarState {
         self.metrics.last_depth_at = Some(Instant::now());
     }
 
-    fn on_bar_close(&mut self, bar: Kline, bar_close_ms: u64, symbol: &str, cfg: &StrategyConfig) {
+    fn on_bar_close(&mut self, bar: Kline, bar_close_ms: u64, symbol: &str) {
+        let cfg = self.cfg.clone();
         let bar_ms = bar.time.as_u64() as i64;
         self.metrics.bars_processed += 1;
 
@@ -217,6 +244,7 @@ impl BarState {
         let atr = compute_atr(&highs, &lows, &closes, ATR_WINDOW);
         let regime_window = &closes[closes.len().saturating_sub(REGIME_WINDOW)..];
         let regime = derive_regime(regime_window, atr);
+        self.notify_regime(&format!("{regime:?}"));
         // Compute slow/fast slopes for diagnostics (mirrors derive_regime internals)
         let slow_slope = compute_ols_slope(regime_window, atr);
         let fast_slope = compute_ols_slope(
@@ -317,12 +345,13 @@ impl BarState {
             vwap: vwap_ctx,
             flow,
             orderbook: ob_ctx,
+            institutional: None,
         };
 
-        let signal = route_strategy(&ctx, cfg);
+        let signal = route_strategy(&ctx, &cfg);
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
 
-        for nm in collect_near_misses(&ctx, cfg, signal_fired) {
+        for nm in collect_near_misses(&ctx, &cfg, signal_fired) {
             if let Ok(json) = serde_json::to_string(&nm) {
                 println!("{{\"event\":\"near_miss\",\"data\":{json}}}");
             }
@@ -331,6 +360,9 @@ impl BarState {
         if signal_fired {
             if let Ok(json) = serde_json::to_string(&signal) {
                 println!("{{\"event\":\"signal\",\"data\":{json}}}");
+            }
+            if let Some(sb) = &self.supabase {
+                sb.write_signal(&signal, &ctx);
             }
         }
 
@@ -343,10 +375,8 @@ impl BarState {
             if let Ok(json) = serde_json::to_string(trade) {
                 println!("{{\"event\":\"trade_closed\",\"data\":{json}}}");
             }
-            if let Some(tx) = &self.mongo_tx {
-                if tx.try_send(trade.clone()).is_err() {
-                    eprintln!("[mongodb] channel full — trade {} not queued", trade.id);
-                }
+            if let Some(sb) = &self.supabase {
+                sb.write_trade(trade);
             }
         }
 
@@ -692,35 +722,13 @@ async fn main() {
     let mut depth_stream = Box::pin(depth_stream);
     let mut trade_stream = Box::pin(trade_stream);
 
-    // ── MongoDB Atlas writer (optional) ──────────────────────────────────────
-    let mongo_tx = if let Ok(uri) = std::env::var("MONGODB_URI") {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<ClosedTrade>(64);
-        tokio::spawn(async move {
-            match mongodb::Client::with_uri_str(&uri).await {
-                Ok(client) => {
-                    eprintln!("[mongodb] Connected to Atlas");
-                    let col: mongodb::Collection<ClosedTrade> =
-                        client.database("flowsurface").collection("trades");
-                    while let Some(trade) = rx.recv().await {
-                        if let Err(e) = col.insert_one(&trade).await {
-                            eprintln!("[mongodb] insert error: {e}");
-                        }
-                    }
-                }
-                Err(e) => eprintln!("[mongodb] connection failed: {e}"),
-            }
-        });
-        Some(tx)
-    } else {
-        eprintln!("[mongodb] MONGODB_URI not set — trades logged to stdout only");
-        None
-    };
+    // ── Supabase writer (replaces MongoDB) ───────────────────────────────────
+    let supabase = SupabaseWriter::from_env();
+    if supabase.is_none() {
+        eprintln!("[supabase] SUPABASE_URL not set — signals/trades logged to stdout only");
+    }
 
-    let mut state = BarState::new(mongo_tx);
-    let cfg = StrategyConfig {
-        enabled: true,
-        ..StrategyConfig::default()
-    };
+    let mut state = BarState::new(supabase);
 
     let tf_ms = timeframe.to_milliseconds();
     let mut pending: Option<(u64, Kline)> = None;
@@ -766,6 +774,10 @@ async fn main() {
         }
     });
 
+    // Trigger config reloads whenever the regime changes (sent from on_bar_close).
+    let (regime_tx, mut regime_rx) = tokio::sync::mpsc::channel::<String>(8);
+    state.regime_tx = Some(regime_tx);
+
     loop {
         tokio::select! {
             Some(event) = kline_stream.next() => {
@@ -784,7 +796,7 @@ async fn main() {
                                 // New bar arrived → flush previous (fallback path)
                                 let (closed_open_ms, closed_kline) = pending.take().unwrap();
                                 let bar_close_ms = closed_open_ms + tf_ms;
-                                state.on_bar_close(closed_kline, bar_close_ms, &symbol_str, &cfg);
+                                state.on_bar_close(closed_kline, bar_close_ms, &symbol_str);
                                 pending = Some((open_ms, kline));
                             }
                             Some((prev_open, _)) if open_ms == prev_open => {
@@ -793,7 +805,7 @@ async fn main() {
                                     // Binance confirmed this bar is done — flush immediately
                                     pending = None;
                                     let bar_close_ms = open_ms + tf_ms;
-                                    state.on_bar_close(kline, bar_close_ms, &symbol_str, &cfg);
+                                    state.on_bar_close(kline, bar_close_ms, &symbol_str);
                                 } else {
                                     pending = Some((open_ms, kline));
                                 }
@@ -845,6 +857,12 @@ async fn main() {
                         state.oi_history.pop_front();
                     }
                 }
+            }
+
+            Some(regime) = regime_rx.recv() => {
+                // Drain duplicates (bar-close fires this every bar)
+                // should_reload() gates the actual Supabase HTTP call.
+                state.maybe_reload_config(&regime).await;
             }
         }
 

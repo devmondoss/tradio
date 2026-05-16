@@ -11,16 +11,24 @@ fn shadow_events_dir() -> PathBuf {
     base
 }
 
+/// Log every signal action to its corresponding JSONL file.
+///
+/// - `strategy_signals.jsonl`  — ShadowSignal (active paper trades)
+/// - `strategy_rejected.jsonl` — Wait with LOW_SCORE (for threshold calibration)
+/// - `strategy_blocked.jsonl`  — Blocked by gate (for gate calibration)
 pub fn log_signal(ctx: &StrategyMarketContext, signal: &StrategySignal) {
-    if signal.action == StrategyAction::Wait {
-        return;
-    }
+    let filename = match signal.action {
+        StrategyAction::ShadowSignal => "strategy_signals.jsonl",
+        StrategyAction::Wait => "strategy_rejected.jsonl",
+        StrategyAction::Blocked => "strategy_blocked.jsonl",
+    };
 
     let entry = SignalLogEntry {
         symbol: ctx.symbol.clone(),
         timestamp_ms: ctx.timestamp_ms,
         strategy: signal.strategy_id.map(|id| format!("{:?}", id)),
         side: signal.side.map(|s| format!("{:?}", s)),
+        regime: format!("{:?}", signal.regime),
         action: format!("{:?}", signal.action),
         entry_price: signal.entry_price,
         stop_price: signal.stop_price,
@@ -44,7 +52,7 @@ pub fn log_signal(ctx: &StrategyMarketContext, signal: &StrategySignal) {
         },
     };
 
-    let path = shadow_events_dir().join("strategy_signals.jsonl");
+    let path = shadow_events_dir().join(filename);
 
     if let Ok(json) = serde_json::to_string(&entry)
         && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path)
@@ -59,6 +67,7 @@ struct SignalLogEntry {
     timestamp_ms: i64,
     strategy: Option<String>,
     side: Option<String>,
+    regime: String,
     action: String,
     entry_price: Option<f64>,
     stop_price: Option<f64>,

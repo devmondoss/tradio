@@ -1,4 +1,3 @@
-use super::toxic_flow_gate::toxic_flow_gate;
 use crate::strategy::{adapter, types::*};
 
 const MAX_STOP_ATR_MULT: f64 = 1.5;
@@ -8,20 +7,20 @@ fn nearest_above(levels: &[f64], price: f64) -> Option<f64> {
     levels
         .iter()
         .copied()
-        .filter(|x| *x > price)
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .filter(|x| x.is_finite() && *x > price)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }
 
 fn nearest_below(levels: &[f64], price: f64) -> Option<f64> {
     levels
         .iter()
         .copied()
-        .filter(|x| *x < price)
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .filter(|x| x.is_finite() && *x < price)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }
 
+// Note: toxic_flow_gate is evaluated once in the router before calling any detector.
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
-    toxic_flow_gate(ctx, cfg).ok()?;
 
     let px = ctx.price;
     let atr = ctx.atr.unwrap_or(0.0);
@@ -75,6 +74,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                     action: StrategyAction::ShadowSignal,
                     strategy_id: Some(StrategyId::LvnLiquidityVacuumBreakout),
                     side: Some(Side::Long),
+                    regime: ctx.regime,
                     entry_price: Some(entry),
                     stop_price: Some(stop),
                     target_price: Some(target),
@@ -144,6 +144,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                     action: StrategyAction::ShadowSignal,
                     strategy_id: Some(StrategyId::LvnLiquidityVacuumBreakout),
                     side: Some(Side::Short),
+                    regime: ctx.regime,
                     entry_price: Some(entry),
                     stop_price: Some(stop),
                     target_price: Some(target),
@@ -235,6 +236,7 @@ mod tests {
                 thin_zone_below: false,
                 quality: DataQuality::Live,
             },
+            institutional: None,
         }
     }
 

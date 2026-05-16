@@ -1,8 +1,7 @@
-use super::toxic_flow_gate::toxic_flow_gate;
 use crate::strategy::{adapter, types::*};
 
+// Note: toxic_flow_gate is evaluated once in the router before calling any detector.
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
-    toxic_flow_gate(ctx, cfg).ok()?;
 
     let px = ctx.price;
     let atr = ctx.atr.unwrap_or(0.0);
@@ -23,8 +22,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && flow.delta.unwrap_or(0.0) < 0.0         // fix 3: aligned delta for SHORT
         && flow.footprint_absorption == AbsorptionSide::Ask;
 
+    // taker_imbalance < 0.10: requires neutral-to-bearish flow, not merely "not very bullish".
+    // The old 0.25 threshold passed ~90% of market time and filtered nothing useful.
     let short_flow =
-        flow.cvd_slope.unwrap_or(0.0) <= 0.0 && flow.taker_imbalance.unwrap_or(0.0) < 0.25;
+        flow.cvd_slope.unwrap_or(0.0) <= 0.0 && flow.taker_imbalance.unwrap_or(0.0) < 0.10;
 
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_above;
 
@@ -41,6 +42,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::ValueAreaFailedAuction),
                 side: Some(Side::Short),
+                regime: ctx.regime,
                 entry_price: Some(entry),
                 stop_price: Some(stop),
                 target_price: Some(target),
@@ -71,8 +73,9 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && flow.delta.unwrap_or(0.0) > 0.0          // fix 3: aligned delta for LONG
         && flow.footprint_absorption == AbsorptionSide::Bid;
 
+    // taker_imbalance > -0.10: requires neutral-to-bullish flow.
     let long_flow =
-        flow.cvd_slope.unwrap_or(0.0) >= 0.0 && flow.taker_imbalance.unwrap_or(0.0) > -0.25;
+        flow.cvd_slope.unwrap_or(0.0) >= 0.0 && flow.taker_imbalance.unwrap_or(0.0) > -0.10;
 
     let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_below;
 
@@ -89,6 +92,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::ValueAreaFailedAuction),
                 side: Some(Side::Long),
+                regime: ctx.regime,
                 entry_price: Some(entry),
                 stop_price: Some(stop),
                 target_price: Some(target),
@@ -151,7 +155,7 @@ mod tests {
                 cvd: Some(1000.0),
                 cvd_slope: Some(-0.2),
                 delta: Some(-80.0), // aligned SHORT (negative)
-                taker_imbalance: Some(0.10),
+                taker_imbalance: Some(0.05), // < 0.10 threshold (neutral-to-bearish for SHORT)
                 buy_volume: Some(5000.0),
                 sell_volume: Some(4800.0),
                 vpin: Some(0.45),
@@ -182,6 +186,7 @@ mod tests {
                 thin_zone_below: false,
                 quality: DataQuality::Live,
             },
+            institutional: None,
         }
     }
 

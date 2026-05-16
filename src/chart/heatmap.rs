@@ -25,7 +25,7 @@ use exchange::{
     unit::{Price, PriceStep},
 };
 
-use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
+use iced::widget::canvas::{self, Event, Geometry, Path};
 use iced::{
     Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse,
     theme::palette::Extended,
@@ -725,19 +725,6 @@ impl canvas::Program<Message> for HeatmapChart {
                 );
             }
 
-            if self.visual_config().show_session_lines {
-                let y_top = chart.price_to_y(highest);
-                let y_bottom = chart.price_to_y(lowest);
-                draw_session_bands(
-                    frame,
-                    earliest,
-                    latest,
-                    |ts| chart.interval_to_x(ts),
-                    y_top,
-                    y_bottom,
-                );
-            }
-
             let is_paused = chart.translation.x * chart.scaling > chart.bounds.width / 2.0;
             if is_paused {
                 let bar_width = 8.0 / chart.scaling;
@@ -1043,124 +1030,5 @@ fn draw_volume_profile(
             font: style::AZERET_MONO,
             ..canvas::Text::default()
         });
-    }
-}
-
-/// Draws full-height session background bands (no OHLC sizing — spans the visible price range).
-fn draw_session_bands(
-    frame: &mut canvas::Frame,
-    earliest: u64,
-    latest: u64,
-    interval_to_x: impl Fn(u64) -> f32,
-    y_top: f32,
-    y_bottom: f32,
-) {
-    const DAY_MS: u64 = 86_400_000;
-    // (label, open_offset_ms: i64, close_offset_ms: i64, fill, label_bottom)
-    // Asia has negative open_offset: starts at 23:00 of the previous calendar day.
-    const SESSIONS: &[(&str, i64, i64, Color, bool)] = &[
-        (
-            "Asia",
-            -(1 * 3600 * 1000),
-            8 * 3600 * 1000,
-            Color { r: 0.1, g: 0.22, b: 0.36, a: 0.2 },
-            false,
-        ),
-        (
-            "London",
-            7 * 3600 * 1000,
-            16 * 3600 * 1000,
-            Color { r: 0.1, g: 0.24, b: 0.17, a: 0.2 },
-            false,
-        ),
-        (
-            "New York",
-            13 * 3600 * 1000,
-            21 * 3600 * 1000,
-            Color { r: 0.24, g: 0.16, b: 0.1, a: 0.2 },
-            false,
-        ),
-        (
-            "LON+NY",
-            13 * 3600 * 1000,
-            16 * 3600 * 1000,
-            Color { r: 0.24, g: 0.23, b: 0.1, a: 0.25 },
-            true,
-        ),
-        (
-            "Dead zone",
-            21 * 3600 * 1000,
-            23 * 3600 * 1000,
-            Color { r: 0.24, g: 0.1, b: 0.1, a: 0.15 },
-            false,
-        ),
-    ];
-
-    let rect_h = y_bottom - y_top;
-    if rect_h <= 0.0 {
-        return;
-    }
-
-    let first_day = (earliest / DAY_MS) * DAY_MS;
-    let last_day = (latest / DAY_MS) * DAY_MS + DAY_MS;
-
-    let mut day = first_day;
-    while day <= last_day {
-        for &(label, open_off, close_off, fill, label_bottom) in SESSIONS {
-            let ts_open = (day as i64 + open_off) as u64;
-            let ts_close = (day as i64 + close_off) as u64;
-
-            if ts_close < earliest || ts_open > latest {
-                continue;
-            }
-
-            let x_open = interval_to_x(ts_open.max(earliest));
-            let x_close = interval_to_x(ts_close.min(latest));
-            if !x_open.is_finite() || !x_close.is_finite() {
-                continue;
-            }
-            let x_left = x_open.min(x_close);
-            let x_right = x_open.max(x_close);
-            let width = x_right - x_left;
-            if width <= 0.0 {
-                continue;
-            }
-
-            frame.fill(
-                &Path::rectangle(Point::new(x_left, y_top), Size::new(width, rect_h)),
-                fill,
-            );
-
-            if !label_bottom && ts_open >= earliest && ts_open <= latest {
-                let border_color = Color { a: 0.35, ..fill };
-                frame.stroke(
-                    &Path::line(Point::new(x_open, y_top), Point::new(x_open, y_bottom)),
-                    Stroke {
-                        style: canvas::stroke::Style::Solid(border_color),
-                        width: 1.0,
-                        ..Stroke::default()
-                    },
-                );
-            }
-
-            let (label_x, label_y, align_y) = if label_bottom {
-                (x_left + 4.0, y_bottom - 4.0, iced::alignment::Vertical::Bottom)
-            } else {
-                (x_left + 4.0, y_top + 4.0, iced::alignment::Vertical::Top)
-            };
-            if label_y.is_finite() && label_x.is_finite() {
-                frame.fill_text(canvas::Text {
-                    content: label.to_string(),
-                    position: Point::new(label_x, label_y),
-                    size: iced::Pixels(10.0),
-                    color: Color { r: 0.9, g: 0.9, b: 0.9, a: 0.9 },
-                    align_x: iced::alignment::Horizontal::Left.into(),
-                    align_y,
-                    font: style::AZERET_MONO,
-                    ..canvas::Text::default()
-                });
-            }
-        }
-        day += DAY_MS;
     }
 }
