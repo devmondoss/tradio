@@ -2355,7 +2355,8 @@ fn draw_key_level_tooltip(
 }
 
 /// Draws session background rectangles sized to the actual high/low of each session's candles.
-/// Sessions: Asia 00:00–08:00, London 08:00–13:00, New York 13:00–22:00 UTC.
+/// Sessions use real market hours (UTC): Asia 23:00–08:00, London 07:00–16:00, NY 13:00–21:00.
+/// Asia crosses midnight so its open_offset is negative (relative to current day start).
 /// Only drawn when timeframe <= 4h.
 fn draw_session_lines(
     frame: &mut canvas::Frame,
@@ -2371,39 +2372,44 @@ fn draw_session_lines(
     }
 
     const DAY_MS: u64 = 86_400_000;
-    const SESSIONS: &[(&str, u64, u64, Color)] = &[
+    // (label, open_offset_ms: i64, close_offset_ms: i64, fill, label_bottom)
+    // Asia has negative open_offset: starts at 23:00 of the previous calendar day.
+    // label_bottom=true: draw label at bottom of rect and skip left border (avoids overlap with NY).
+    const SESSIONS: &[(&str, i64, i64, Color, bool)] = &[
         (
             "Asia",
-            0,
-            8 * 3600 * 1000,
-            Color {
-                r: 0.72,
-                g: 0.82,
-                b: 1.00,
-                a: 0.08,
-            },
+            -(1 * 3600 * 1000),  // 23:00 prev day
+            8 * 3600 * 1000,     // 08:00 current day
+            Color { r: 0.1, g: 0.22, b: 0.36, a: 0.2 },
+            false,
         ),
         (
             "London",
-            8 * 3600 * 1000,
-            13 * 3600 * 1000,
-            Color {
-                r: 1.00,
-                g: 0.82,
-                b: 0.68,
-                a: 0.08,
-            },
+            7 * 3600 * 1000,
+            16 * 3600 * 1000,
+            Color { r: 0.1, g: 0.24, b: 0.17, a: 0.2 },
+            false,
         ),
         (
             "New York",
             13 * 3600 * 1000,
-            22 * 3600 * 1000,
-            Color {
-                r: 0.68,
-                g: 0.95,
-                b: 0.78,
-                a: 0.08,
-            },
+            21 * 3600 * 1000,
+            Color { r: 0.24, g: 0.16, b: 0.1, a: 0.2 },
+            false,
+        ),
+        (
+            "LON+NY",
+            13 * 3600 * 1000,
+            16 * 3600 * 1000,
+            Color { r: 0.24, g: 0.23, b: 0.1, a: 0.25 },
+            true,  // same open as NY — put label at bottom, skip border
+        ),
+        (
+            "Dead zone",
+            21 * 3600 * 1000,
+            23 * 3600 * 1000,
+            Color { r: 0.24, g: 0.1, b: 0.1, a: 0.15 },
+            false,
         ),
     ];
 
@@ -2412,9 +2418,9 @@ fn draw_session_lines(
 
     let mut day = first_day;
     while day <= last_day {
-        for &(label, open_off, close_off, fill) in SESSIONS {
-            let ts_open = day + open_off;
-            let ts_close = day + close_off;
+        for &(label, open_off, close_off, fill, label_bottom) in SESSIONS {
+            let ts_open = (day as i64 + open_off) as u64;
+            let ts_close = (day as i64 + close_off) as u64;
 
             if ts_close < earliest || ts_open > latest {
                 continue;
@@ -2457,8 +2463,8 @@ fn draw_session_lines(
                 fill,
             );
 
-            // Left border line at session open
-            if ts_open >= earliest && ts_open <= latest {
+            // Left border — skipped for sessions that share their open with another (e.g. LON+NY)
+            if !label_bottom && ts_open >= earliest && ts_open <= latest {
                 let border_color = Color { a: 0.35, ..fill };
                 frame.stroke(
                     &Path::line(Point::new(x_open, y_top), Point::new(x_open, y_bottom)),
@@ -2470,17 +2476,28 @@ fn draw_session_lines(
                 );
             }
 
-            // Label at top-left of the rectangle
-            let label_x = x_left + 4.0;
-            let label_y = y_top + 4.0;
+            // Label: top-left for normal sessions, bottom-left for overlapping ones
+            let (label_x, label_y, align_y) = if label_bottom {
+                (
+                    x_left + 4.0,
+                    y_bottom - 4.0,
+                    iced::alignment::Vertical::Bottom,
+                )
+            } else {
+                (
+                    x_left + 4.0,
+                    y_top + 4.0,
+                    iced::alignment::Vertical::Top,
+                )
+            };
             if label_y.is_finite() && label_x.is_finite() {
                 frame.fill_text(canvas::Text {
                     content: label.to_string(),
                     position: Point::new(label_x, label_y),
                     size: iced::Pixels(10.0),
-                    color: Color { a: 0.65, ..fill },
+                    color: Color { r: 0.9, g: 0.9, b: 0.9, a: 0.9 },
                     align_x: iced::alignment::Horizontal::Left.into(),
-                    align_y: iced::alignment::Vertical::Top,
+                    align_y,
                     font: style::AZERET_MONO,
                     ..canvas::Text::default()
                 });

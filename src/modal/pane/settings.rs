@@ -255,7 +255,27 @@ pub fn heatmap_cfg_view<'a>(
         )
     });
 
+    let session_lines_checkbox = checkbox(cfg.show_session_lines)
+        .label("Session Lines (Asia / London / New York)")
+        .on_toggle(move |value| {
+            Message::VisualConfigChanged(
+                pane,
+                VisualConfig::Heatmap(heatmap::Config {
+                    show_session_lines: value,
+                    ..cfg
+                }),
+                false,
+            )
+        });
+
+    let display_options_column = column![
+        text("Display Options").size(14),
+        session_lines_checkbox,
+    ]
+    .spacing(8);
+
     let content = split_column![
+        display_options_column,
         size_filters_column,
         noise_filters_column,
         trade_viz_column,
@@ -372,7 +392,27 @@ pub fn heatmap_shader_cfg_view<'a>(
         )
     });
 
+    let session_lines_checkbox = checkbox(cfg.show_session_lines)
+        .label("Session Lines (Asia / London / New York)")
+        .on_toggle(move |value| {
+            Message::VisualConfigChanged(
+                pane,
+                VisualConfig::Heatmap(heatmap::Config {
+                    show_session_lines: value,
+                    ..cfg
+                }),
+                false,
+            )
+        });
+
+    let display_options_column = column![
+        text("Display Options").size(14),
+        session_lines_checkbox,
+    ]
+    .spacing(8);
+
     let content = split_column![
+        display_options_column,
         size_filters_column,
         trade_viz_column,
         column![text("Studies").size(14), study_cfg].spacing(8),
