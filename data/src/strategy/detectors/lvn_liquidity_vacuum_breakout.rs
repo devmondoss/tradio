@@ -46,8 +46,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         )
         && flow.taker_imbalance.unwrap_or(0.0).abs() < 0.90;
 
+    // ask_wall_nearby = resistance immediately above → blocks the breakout path
     let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps
-        && ob.microprice.map(|m| m >= px).unwrap_or(true);
+        && ob.microprice.map(|m| m >= px).unwrap_or(true)
+        && !flow.ask_wall_nearby;
 
     if long_location && long_flow && long_book && adapter::basis_ok(flow.basis, true) {
         let mut targets = vp.hvn_nearby.clone();
@@ -113,8 +115,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         )
         && flow.taker_imbalance.unwrap_or(0.0).abs() < 0.90;
 
+    // bid_wall_nearby = support immediately below → blocks the breakdown path
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps
-        && ob.microprice.map(|m| m <= px).unwrap_or(true);
+        && ob.microprice.map(|m| m <= px).unwrap_or(true)
+        && !flow.bid_wall_nearby;
 
     if short_location && short_flow && short_book && adapter::basis_ok(flow.basis, false) {
         let mut targets = vp.hvn_nearby.clone();
@@ -285,5 +289,32 @@ mod tests {
         ctx.flow.cvd_slope = Some(-0.3);
         let cfg = StrategyConfig::default();
         assert!(detect(&ctx, &cfg).is_none());
+    }
+
+    #[test]
+    fn rejects_long_if_ask_wall_blocks_path() {
+        let mut ctx = base_long_ctx();
+        ctx.flow.ask_wall_nearby = true;
+        let cfg = StrategyConfig::default();
+        assert!(detect(&ctx, &cfg).is_none(), "ask wall above = resistance, long blocked");
+    }
+
+    #[test]
+    fn rejects_short_if_bid_wall_blocks_path() {
+        let mut ctx = base_long_ctx();
+        ctx.price = 3430.0;
+        ctx.orderbook.thin_zone_above = false;
+        ctx.orderbook.thin_zone_below = true;
+        ctx.orderbook.microprice = Some(3428.0);
+        ctx.vwap.price_vs_vwap = PriceRelation::Below;
+        ctx.vwap.vwap_session = Some(3460.0);
+        ctx.volume_profile.value_location = ValueLocation::BelowVal;
+        ctx.volume_profile.val = Some(3390.0);
+        ctx.flow.delta = Some(-250.0);
+        ctx.flow.cvd_slope = Some(-0.5);
+        ctx.flow.stacked_imbalance = ImbalanceSide::Bearish;
+        ctx.flow.bid_wall_nearby = true; // bid wall below = support = blocks breakdown
+        let cfg = StrategyConfig::default();
+        assert!(detect(&ctx, &cfg).is_none(), "bid wall below = support, short blocked");
     }
 }
