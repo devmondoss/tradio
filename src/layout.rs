@@ -180,6 +180,9 @@ impl From<&pane::State> for data::Pane {
                     link_group: pane.link_group,
                 }
             }
+            pane::Content::StrategyMonitor(_) => data::Pane::StrategyMonitor {
+                link_group: pane.link_group,
+            },
         }
     }
 }
@@ -304,6 +307,14 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
                 content,
                 stream_type,
                 settings,
+                link_group,
+            ))
+        }
+        data::Pane::StrategyMonitor { link_group } => {
+            Configuration::Pane(pane::State::from_config(
+                pane::Content::StrategyMonitor(None),
+                vec![],
+                data::layout::pane::Settings::default(),
                 link_group,
             ))
         }

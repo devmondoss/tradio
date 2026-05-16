@@ -43,7 +43,7 @@ use exchange::{
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme, padding,
-    widget::{button, center, column, container, pane_grid, pick_list, row, text, tooltip},
+    widget::{button, center, column, container, pane_grid, pick_list, row, scrollable, text, tooltip},
 };
 use std::time::Instant;
 
@@ -400,7 +400,7 @@ impl State {
 
                     (content, streams)
                 }
-                ContentKind::Starter => unreachable!(),
+                ContentKind::Starter | ContentKind::StrategyMonitor => unreachable!(),
             }
         };
 
@@ -574,7 +574,9 @@ impl State {
                 .height(widget::PANE_CONTROL_BTN_HEIGHT);
 
             top_left_buttons = top_left_buttons.push(tickers_list_btn);
-        } else if !matches!(self.content, Content::Starter) && !self.has_stream() {
+        } else if !matches!(self.content, Content::Starter | Content::StrategyMonitor(_))
+            && !self.has_stream()
+        {
             let content = row![
                 text("Choose a ticker")
                     .size(13)
@@ -1071,6 +1073,18 @@ impl State {
                     )
                 }
             }
+            Content::StrategyMonitor(snapshot) => {
+                let base = strategy_monitor_view(snapshot.as_ref());
+                self.compose_stack_view(
+                    base,
+                    id,
+                    None,
+                    compact_controls,
+                    || column![].into(),
+                    None,
+                    tickers_table,
+                )
+            }
         };
 
         match &self.status {
@@ -1147,7 +1161,7 @@ impl State {
             Event::ContentSelected(kind) => {
                 self.content = Content::placeholder(kind);
 
-                if !matches!(kind, ContentKind::Starter) {
+                if !matches!(kind, ContentKind::Starter | ContentKind::StrategyMonitor) {
                     self.streams = ResolvedStream::waiting(vec![]);
                     let modal = Modal::MiniTickersList(MiniPanel::new());
 
@@ -1816,7 +1830,7 @@ impl State {
             Content::Ladder(panel) => panel
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
-            Content::Starter => None,
+            Content::Starter | Content::StrategyMonitor(_) => None,
             Content::Comparison(chart) => chart
                 .as_mut()
                 .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
@@ -1833,6 +1847,15 @@ impl State {
         }
     }
 
+    pub fn push_strategy_snapshot(
+        &mut self,
+        snapshot: crate::strategy::snapshot::StrategySnapshot,
+    ) {
+        if let Content::StrategyMonitor(ref mut snap) = self.content {
+            *snap = Some(snapshot);
+        }
+    }
+
     pub fn update_interval(&self) -> Option<u64> {
         match &self.content {
             Content::Kline { .. } | Content::Comparison(_) => Some(1000),
@@ -1844,8 +1867,7 @@ impl State {
                 }
             }
             Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
-            Content::ShaderHeatmap { .. } => None,
-            Content::Starter => None,
+            Content::ShaderHeatmap { .. } | Content::Starter | Content::StrategyMonitor(_) => None,
         }
     }
 
@@ -1932,6 +1954,7 @@ pub enum Content {
     TimeAndSales(Option<TimeAndSales>),
     Ladder(Option<Ladder>),
     Comparison(Option<ComparisonChart>),
+    StrategyMonitor(Option<crate::strategy::snapshot::StrategySnapshot>),
 }
 
 impl Content {
@@ -2144,6 +2167,7 @@ impl Content {
             ContentKind::ComparisonChart => Content::Comparison(None),
             ContentKind::TimeAndSales => Content::TimeAndSales(None),
             ContentKind::Ladder => Content::Ladder(None),
+            ContentKind::StrategyMonitor => Content::StrategyMonitor(None),
         }
     }
 
@@ -2154,7 +2178,7 @@ impl Content {
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
             Content::Comparison(chart) => Some(chart.as_ref()?.last_update()),
-            Content::Starter => None,
+            Content::Starter | Content::StrategyMonitor(_) => None,
             Content::ShaderHeatmap { chart, .. } => Some(chart.as_ref()?.last_tick?),
         }
     }
@@ -2219,7 +2243,7 @@ impl Content {
                 }
                 chart.toggle_indicator(ind);
             }
-            _ => panic!("indicator toggle on {indicator:?} pane",),
+            _ => {}
         }
     }
 
@@ -2231,9 +2255,8 @@ impl Content {
             | Content::Ladder(_)
             | Content::Starter
             | Content::Comparison(_)
-            | Content::ShaderHeatmap { .. } => {
-                panic!("indicator reorder on {} pane", self)
-            }
+            | Content::ShaderHeatmap { .. }
+            | Content::StrategyMonitor(_) => {}
         }
     }
 
@@ -2274,7 +2297,8 @@ impl Content {
             Content::TimeAndSales(_)
             | Content::Ladder(_)
             | Content::Starter
-            | Content::Comparison(_) => None,
+            | Content::Comparison(_)
+            | Content::StrategyMonitor(_) => None,
         }
     }
 
@@ -2336,6 +2360,7 @@ impl Content {
             Content::Comparison(_) => ContentKind::ComparisonChart,
             Content::Starter => ContentKind::Starter,
             Content::ShaderHeatmap { .. } => ContentKind::ShaderHeatmap,
+            Content::StrategyMonitor(_) => ContentKind::StrategyMonitor,
         }
     }
 
@@ -2353,7 +2378,7 @@ impl Content {
             Content::TimeAndSales(panel) => panel.is_some(),
             Content::Ladder(panel) => panel.is_some(),
             Content::Comparison(chart) => chart.is_some(),
-            Content::Starter => true,
+            Content::Starter | Content::StrategyMonitor(_) => true,
         }
     }
 }
@@ -2373,6 +2398,7 @@ impl PartialEq for Content {
                 | (Content::Kline { .. }, Content::Kline { .. })
                 | (Content::TimeAndSales(_), Content::TimeAndSales(_))
                 | (Content::Ladder(_), Content::Ladder(_))
+                | (Content::StrategyMonitor(_), Content::StrategyMonitor(_))
         )
     }
 }
@@ -2480,4 +2506,128 @@ fn by_basis_default<T>(
         Basis::Time(tf) => on_time(tf),
         Basis::Tick(_) => on_tick(),
     }
+}
+
+fn strategy_monitor_view(
+    snapshot: Option<&crate::strategy::snapshot::StrategySnapshot>,
+) -> Element<'_, Message> {
+
+    let Some(snap) = snapshot else {
+        return center(
+            column![
+                text("Strategy Monitor").size(14),
+                text("Link to a Candlestick Chart pane").size(12),
+                text("using the same link group").size(12),
+            ]
+            .spacing(6)
+            .align_x(Alignment::Center),
+        )
+        .into();
+    };
+
+    let initial = snap.initial_capital;
+    let display_equity = if snap.open_positions.is_empty() {
+        snap.balance
+    } else {
+        snap.equity
+    };
+    let pnl_pct = (display_equity - initial) / initial * 100.0;
+    let pnl_sign = if pnl_pct >= 0.0 { "+" } else { "" };
+
+    let total_trades = snap.wins + snap.losses;
+    let win_rate = if total_trades > 0 {
+        snap.wins as f64 / total_trades as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    // Header: symbol + equity
+    let equity_row = row![
+        text(&snap.symbol).size(13),
+        text(format!(
+            "  ${display_equity:.0}  {pnl_sign}{pnl_pct:.1}%"
+        ))
+        .size(13),
+    ]
+    .spacing(4);
+
+    let stats_row = text(format!(
+        "Trades {total_trades}  W:{} L:{}  WR:{win_rate:.0}%",
+        snap.wins, snap.losses
+    ))
+    .size(11);
+
+    let mut col = column![equity_row, stats_row,].spacing(4).padding(8);
+
+    // Open positions
+    if !snap.open_positions.is_empty() {
+        col = col.push(text("── Open ──").size(10));
+        for pos in &snap.open_positions {
+            let side_label = pos.side.to_uppercase();
+            let stop_str = pos
+                .stop_price
+                .map_or("—".into(), |v| format!("{v:.1}"));
+            let tgt_str = pos
+                .target_price
+                .map_or("—".into(), |v| format!("{v:.1}"));
+            col = col.push(
+                text(format!(
+                    "{side_label} @ {:.1}  stop {stop_str}  tgt {tgt_str}",
+                    pos.entry_price
+                ))
+                .size(11),
+            );
+        }
+    }
+
+    // Active signal
+    if let Some(sig) = &snap.active_signal {
+        col = col.push(text("── Signal ──").size(10));
+        col = col.push(
+            text(format!(
+                "{} score {:.2}",
+                sig.side.to_uppercase(),
+                sig.score
+            ))
+            .size(11),
+        );
+        if !sig.evidence.is_empty() {
+            col = col.push(text(format!("+ {}", sig.evidence.join(", "))).size(10));
+        }
+        if !sig.missing.is_empty() {
+            col = col.push(text(format!("✗ {}", sig.missing.join(", "))).size(10));
+        }
+    } else if snap.open_positions.is_empty() {
+        col = col.push(text("Scanning...").size(11));
+    }
+
+    // Recent trades
+    if !snap.recent_trades.is_empty() {
+        col = col.push(text("── Recent ──").size(10));
+        for trade in &snap.recent_trades {
+            let side_char = if trade.side == "Long" { "L" } else { "S" };
+            let reason_short = if trade.close_reason.contains("TARGET") {
+                "TGT"
+            } else if trade.close_reason.contains("STOP") {
+                "STP"
+            } else if trade.close_reason.contains("INVALIDATED") {
+                "INV"
+            } else {
+                "TTL"
+            };
+            let pnl_sign = if trade.net_pnl_pct >= 0.0 { "+" } else { "" };
+            col = col.push(
+                text(format!(
+                    "{side_char} {reason_short}  {pnl_sign}{:.1}%",
+                    trade.net_pnl_pct * 100.0
+                ))
+                .size(11),
+            );
+        }
+    }
+
+    container(scrollable(col))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }

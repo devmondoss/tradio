@@ -369,6 +369,7 @@ impl Dashboard {
 
                         if let Some(ticker_info) = maybe_ticker_info
                             && state.stream_pair() != Some(ticker_info)
+                            && state.content.kind() != ContentKind::StrategyMonitor
                         {
                             let pane_id = state.unique_id();
                             let content_kind = state.content.kind();
@@ -853,7 +854,9 @@ impl Dashboard {
             let pane_infos: Vec<(window::Id, pane_grid::Pane, ContentKind)> = self
                 .iter_all_panes_mut(main_window)
                 .filter_map(|(window, pane, state)| {
-                    if state.link_group == Some(group) {
+                    if state.link_group == Some(group)
+                        && state.content.kind() != ContentKind::StrategyMonitor
+                    {
                         Some((window, pane, state.content.kind()))
                     } else {
                         None
@@ -1021,12 +1024,18 @@ impl Dashboard {
     ) -> Task<Message> {
         let mut found_match = false;
 
+        // Pass 1: update KlineChart/Comparison panes; collect strategy snapshots from KlineCharts.
+        let mut snapshots: Vec<(Option<data::layout::pane::LinkGroup>, crate::strategy::snapshot::StrategySnapshot)> = vec![];
+
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
                         pane::Content::Kline { chart: Some(c), .. } => {
                             c.update_latest_kline(kline);
+                            if c.strategy_overlay_enabled {
+                                snapshots.push((pane_state.link_group, c.strategy_snapshot()));
+                            }
                         }
                         pane::Content::Comparison(Some(c)) => {
                             c.update_latest_kline(&stream.ticker_info(), kline);
@@ -1036,6 +1045,21 @@ impl Dashboard {
                     found_match = true;
                 }
             });
+
+        // Pass 2: push snapshots to linked StrategyMonitor panes.
+        if !snapshots.is_empty() {
+            self.iter_all_panes_mut(main_window)
+                .for_each(|(_, _, pane_state)| {
+                    if matches!(pane_state.content, pane::Content::StrategyMonitor(_)) {
+                        for (link_group, snapshot) in &snapshots {
+                            if link_group.is_some() && pane_state.link_group == *link_group {
+                                pane_state.push_strategy_snapshot(snapshot.clone());
+                                break;
+                            }
+                        }
+                    }
+                });
+        }
 
         if found_match {
             Task::none()
