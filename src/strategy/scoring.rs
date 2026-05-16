@@ -1,4 +1,4 @@
-use super::types::*;
+use super::{adapter, types::*};
 
 // VALORES DE ARRANQUE — se tunean en Fase D con datos reales
 
@@ -168,6 +168,11 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
         score = score.min(VETO_SCORE_CAP);
     }
 
+    score += adapter::funding_score_penalty(ctx.flow.funding_rate, is_long);
+    score += adapter::oi_score_bonus(ctx.flow.oi_momentum_aligned);
+    score += adapter::wall_score_bonus(ctx.flow.bid_wall_nearby, ctx.flow.ask_wall_nearby, is_long);
+    score += adapter::clean_action_score_bonus(ctx.flow.price_action_clean);
+
     signal.score = score.clamp(0.0, 1.0);
     signal
 }
@@ -216,6 +221,13 @@ mod tests {
                 sweep_confirmed: false,
                 mss_active: false,
                 quality: DataQuality::Live,
+                funding_rate: None,
+                basis: None,
+                oi_delta: None,
+                oi_momentum_aligned: None,
+                bid_wall_nearby: false,
+                ask_wall_nearby: false,
+                price_action_clean: true,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.05),

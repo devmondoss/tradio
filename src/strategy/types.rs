@@ -117,6 +117,13 @@ pub struct OrderFlowContext {
     pub sweep_confirmed: bool,
     pub mss_active: bool,
     pub quality: DataQuality,
+    pub funding_rate: Option<f64>,
+    pub basis: Option<f64>,
+    pub oi_delta: Option<f64>,
+    pub oi_momentum_aligned: Option<bool>,
+    pub bid_wall_nearby: bool,
+    pub ask_wall_nearby: bool,
+    pub price_action_clean: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 data.workspace = true
 exchange.workspace = true
-tokio = { version = "1.43", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "time"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 serde_json.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

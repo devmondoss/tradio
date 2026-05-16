@@ -13,11 +13,13 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use reqwest;
+
 use data::strategy::{
     adapter::{
         build_flow_context, build_orderbook_context, build_volume_profile_context,
-        build_vwap_context, derive_cvd_divergence, derive_failed_acceptance_and_absorption,
-        derive_regime,
+        build_vwap_context, count_price_reversals, derive_cvd_divergence,
+        derive_failed_acceptance_and_absorption, derive_regime, wall_nearby,
     },
     intent_logger::collect_near_misses,
     paper::PaperAccount,
@@ -110,6 +112,10 @@ struct BarState {
     depth: Option<Depth>,
     paper: PaperAccount,
     metrics: PipelineMetrics,
+    // Crypto-native context
+    funding_rate: Option<f64>,
+    spot_price: Option<f64>,
+    oi_history: VecDeque<f64>,
 }
 
 impl BarState {
@@ -127,6 +133,9 @@ impl BarState {
             depth: None,
             paper: PaperAccount::load_or_new(),
             metrics: PipelineMetrics::default(),
+            funding_rate: None,
+            spot_price: None,
+            oi_history: VecDeque::with_capacity(7),
         }
     }
 
@@ -223,17 +232,33 @@ impl BarState {
             &highs, &lows, &closes, vah, val, &deltas, cvd_slope,
         );
 
-        let flow = build_flow_context(
-            Some(self.cvd),
-            cvd_slope,
-            Some(bar_delta),
-            Some(bar_buy),
-            Some(bar_sell),
-            None,
-            failed_acceptance,
-            footprint_absorption,
-            cvd_divergence,
-        );
+        // Basis: (perp / spot - 1) * 100 in %
+        let basis = self.spot_price.and_then(|spot| {
+            if spot > 0.0 {
+                Some((c / spot - 1.0) * 100.0)
+            } else {
+                None
+            }
+        });
+
+        // OI delta: most recent minus oldest in history window
+        let oi_delta = if self.oi_history.len() >= 2 {
+            let recent = self.oi_history.back().copied().unwrap_or(0.0);
+            let old = self.oi_history.front().copied().unwrap_or(0.0);
+            Some(recent - old)
+        } else {
+            None
+        };
+
+        // OI momentum alignment: price direction matches OI delta direction
+        let oi_momentum_aligned = oi_delta.map(|delta| {
+            let bars_back = self.bars.len().saturating_sub(6);
+            let px_5bars_ago = self.bars.get(bars_back).map(|b| b.close.to_f32() as f64).unwrap_or(c);
+            let price_rising = c > px_5bars_ago;
+            // Aligned for long if price rising AND oi growing (new longs)
+            // We'll store raw — scoring layer interprets per direction
+            price_rising == (delta > 0.0)
+        });
 
         let vwap_ctx = build_vwap_context(c, self.vwap_session, None);
         let vp_ctx = build_volume_profile_context(c, poc, vah, val, hvn_nearby, lvn_nearby);
@@ -252,6 +277,32 @@ impl BarState {
                 quality: DataQuality::Missing,
             },
         };
+
+        let bid_wall_nearby = wall_nearby(&ob_ctx.walls_below, c, atr);
+        let ask_wall_nearby = wall_nearby(&ob_ctx.walls_above, c, atr);
+        let price_action_clean = {
+            let recent_5 = &closes[closes.len().saturating_sub(5)..];
+            count_price_reversals(recent_5) <= 2
+        };
+
+        let flow = build_flow_context(
+            Some(self.cvd),
+            cvd_slope,
+            Some(bar_delta),
+            Some(bar_buy),
+            Some(bar_sell),
+            None,
+            failed_acceptance,
+            footprint_absorption,
+            cvd_divergence,
+            self.funding_rate,
+            basis,
+            oi_delta,
+            oi_momentum_aligned,
+            bid_wall_nearby,
+            ask_wall_nearby,
+            price_action_clean,
+        );
 
         let ctx = StrategyMarketContext {
             symbol: symbol.to_string(),
@@ -283,7 +334,7 @@ impl BarState {
         let prev_closed = self.paper.closed_trades.len();
         let paper_signal = if signal_fired { Some(&signal) } else { None };
         self.paper
-            .on_bar_close(symbol, c, h, l, bar_ms, paper_signal);
+            .on_bar_close(symbol, c, h, l, bar_ms, paper_signal, Some(&ctx));
 
         for trade in self.paper.closed_trades[prev_closed..].iter() {
             if let Ok(json) = serde_json::to_string(trade) {
@@ -307,9 +358,13 @@ impl BarState {
         eprintln!(
             "[bar] ts={bar_ms} close={c:.2} regime={regime:?} \
              slow={slow_slope:.3} fast={fast_slope:.3} \
+             funding={:.4} basis={:.3}% oi_delta={:.0} \
              vwap={:.2} cvd={:.1} ob={} \
              action={:?} score={:.3} latency={latency_ms}ms equity={:.2} \
              missing=[{missing_str}] evidence=[{evidence_str}]",
+            self.funding_rate.unwrap_or(0.0) * 10_000.0,
+            basis.unwrap_or(0.0),
+            oi_delta.unwrap_or(0.0),
             self.vwap_session.unwrap_or(0.0),
             self.cvd,
             if self.depth.is_some() { "live" } else { "miss" },
@@ -497,6 +552,62 @@ fn compute_cvd_slope(history: &VecDeque<f64>) -> Option<f64> {
     Some((n_f * sum_xy - sum_x * sum_y) / denom)
 }
 
+// ── REST fetch helpers ────────────────────────────────────────────────────────
+
+/// Fetches funding rate and mark price from Binance FAPI premiumIndex.
+/// Returns (funding_rate, mark_price). Both are None on failure.
+async fn fetch_premium_index(symbol: &str) -> (Option<f64>, Option<f64>) {
+    let url = format!(
+        "https://fapi.binance.com/fapi/v1/premiumIndex?symbol={}",
+        symbol
+    );
+    let resp = match reqwest::get(&url).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[fetch] premiumIndex failed: {e}");
+            return (None, None);
+        }
+    };
+    let json: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[fetch] premiumIndex parse failed: {e}");
+            return (None, None);
+        }
+    };
+    let funding = json
+        .get("lastFundingRate")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok());
+    let mark = json
+        .get("markPrice")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok());
+    (funding, mark)
+}
+
+/// Fetches spot price from Binance REST API.
+async fn fetch_spot_price(symbol: &str) -> Option<f64> {
+    let url = format!(
+        "https://api.binance.com/api/v3/ticker/price?symbol={}",
+        symbol
+    );
+    let resp = reqwest::get(&url).await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    json.get("price")?.as_str()?.parse::<f64>().ok()
+}
+
+/// Fetches open interest (in contracts) from Binance FAPI.
+async fn fetch_open_interest(symbol: &str) -> Option<f64> {
+    let url = format!(
+        "https://fapi.binance.com/fapi/v1/openInterest?symbol={}",
+        symbol
+    );
+    let resp = reqwest::get(&url).await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    json.get("openInterest")?.as_str()?.parse::<f64>().ok()
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -585,6 +696,44 @@ async fn main() {
     let metrics_interval = Duration::from_secs(60);
     let mut last_metrics_print = Instant::now();
 
+    // ── Periodic REST fetch tasks ─────────────────────────────────────────────
+
+    // funding + spot: every 60s (funding only changes every ~8h; spot for basis)
+    let (funding_tx, mut funding_rx) = tokio::sync::mpsc::channel::<(Option<f64>, Option<f64>)>(4);
+    let funding_symbol = symbol_str.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let result = fetch_premium_index(&funding_symbol).await;
+            let _ = funding_tx.send(result).await;
+        }
+    });
+
+    // spot price: every 30s (for accurate basis calculation)
+    let (spot_tx, mut spot_rx) = tokio::sync::mpsc::channel::<Option<f64>>(4);
+    let spot_symbol = symbol_str.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            let price = fetch_spot_price(&spot_symbol).await;
+            let _ = spot_tx.send(price).await;
+        }
+    });
+
+    // open interest: every 5 min
+    let (oi_tx, mut oi_rx) = tokio::sync::mpsc::channel::<Option<f64>>(4);
+    let oi_symbol = symbol_str.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            let oi = fetch_open_interest(&oi_symbol).await;
+            let _ = oi_tx.send(oi).await;
+        }
+    });
+
     loop {
         tokio::select! {
             Some(event) = kline_stream.next() => {
@@ -639,6 +788,29 @@ async fn main() {
                     state.on_trade_batch();
                     for trade in trades.iter() {
                         state.on_trade(trade.is_sell, trade.qty.to_f32_lossy());
+                    }
+                }
+            }
+
+            Some((funding, mark_price)) = funding_rx.recv() => {
+                if let Some(r) = funding {
+                    state.funding_rate = Some(r);
+                }
+                // mark_price is not currently used (we use the kline close for perp price)
+                let _ = mark_price;
+            }
+
+            Some(spot) = spot_rx.recv() => {
+                if let Some(p) = spot {
+                    state.spot_price = Some(p);
+                }
+            }
+
+            Some(oi) = oi_rx.recv() => {
+                if let Some(o) = oi {
+                    state.oi_history.push_back(o);
+                    if state.oi_history.len() > 6 {
+                        state.oi_history.pop_front();
                     }
                 }
             }

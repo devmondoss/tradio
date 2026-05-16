@@ -121,6 +121,13 @@ pub fn build_flow_context(
     failed_acceptance: bool,
     footprint_absorption: AbsorptionSide,
     cvd_divergence: Option<CvdDivergence>,
+    funding_rate: Option<f64>,
+    basis: Option<f64>,
+    oi_delta: Option<f64>,
+    oi_momentum_aligned: Option<bool>,
+    bid_wall_nearby: bool,
+    ask_wall_nearby: bool,
+    price_action_clean: bool,
 ) -> OrderFlowContext {
     let taker_imbalance = match (buy_volume, sell_volume) {
         (Some(buy), Some(sell)) => {
@@ -153,6 +160,96 @@ pub fn build_flow_context(
         } else {
             DataQuality::Missing
         },
+        funding_rate,
+        basis,
+        oi_delta,
+        oi_momentum_aligned,
+        bid_wall_nearby,
+        ask_wall_nearby,
+        price_action_clean,
+    }
+}
+
+/// Returns true if any wall in `walls` is within `atr` distance of `price`.
+pub fn wall_nearby(walls: &[f64], price: f64, atr: f64) -> bool {
+    if atr <= 0.0 {
+        return false;
+    }
+    walls.iter().any(|&w| (w - price).abs() <= atr)
+}
+
+/// Additive score bonus when a protective wall is within 1×ATR on the correct side.
+/// Long: bid wall below entry (support). Short: ask wall above entry (resistance).
+pub fn wall_score_bonus(bid_wall_nearby: bool, ask_wall_nearby: bool, is_long: bool) -> f64 {
+    if is_long && bid_wall_nearby {
+        0.08
+    } else if !is_long && ask_wall_nearby {
+        0.08
+    } else {
+        0.0
+    }
+}
+
+/// Counts directional reversals in a price series (sign changes in consecutive moves).
+pub fn count_price_reversals(closes: &[f64]) -> usize {
+    if closes.len() < 3 {
+        return 0;
+    }
+    closes
+        .windows(3)
+        .filter(|w| (w[1] - w[0]) * (w[2] - w[1]) < 0.0)
+        .count()
+}
+
+/// Additive score bonus when recent price action is clean (≤2 reversals in last 5 bars).
+pub fn clean_action_score_bonus(price_action_clean: bool) -> f64 {
+    if price_action_clean { 0.05 } else { 0.0 }
+}
+
+/// Penalización aditiva al score por funding extremo en dirección contraria.
+///
+/// Funding > 6 bps → longs sobrecargados → -0.20 en Long.
+/// Funding 3–6 bps → longs cargados → -0.10 en Long. Simétrico para shorts.
+pub fn funding_score_penalty(funding: Option<f64>, is_long: bool) -> f64 {
+    let rate = match funding {
+        Some(r) => r,
+        None => return 0.0,
+    };
+    if is_long {
+        if rate > 0.0006 {
+            -0.20
+        } else if rate > 0.0003 {
+            -0.10
+        } else {
+            0.0
+        }
+    } else {
+        if rate < -0.0006 {
+            -0.20
+        } else if rate < -0.0003 {
+            -0.10
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Bonus aditivo al score si el OI momentum confirma la dirección.
+/// +0.10 si alineado, 0.0 si no alineado o sin datos.
+pub fn oi_score_bonus(oi_momentum_aligned: Option<bool>) -> f64 {
+    match oi_momentum_aligned {
+        Some(true) => 0.10,
+        _ => 0.0,
+    }
+}
+
+/// Verifica si el basis perp-spot está dentro del umbral aceptable para la dirección.
+/// Retorna false si basis extremo en dirección contraria (hard gate).
+pub fn basis_ok(basis: Option<f64>, is_long: bool) -> bool {
+    match basis {
+        Some(b) if is_long && b > 0.5 => false,
+        Some(b) if !is_long && b < -0.5 => false,
+        _ => true,
     }
 }
 
@@ -387,5 +484,40 @@ pub fn build_volume_profile_context(
         } else {
             DataQuality::Missing
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn funding_penalty_works() {
+        assert_eq!(funding_score_penalty(Some(0.0007), true), -0.20);
+        assert_eq!(funding_score_penalty(Some(0.0004), true), -0.10);
+        assert_eq!(funding_score_penalty(Some(0.0001), true), 0.0);
+        assert_eq!(funding_score_penalty(Some(-0.0007), false), -0.20);
+        assert_eq!(funding_score_penalty(Some(-0.0004), false), -0.10);
+        assert_eq!(funding_score_penalty(Some(-0.0001), false), 0.0);
+        assert_eq!(funding_score_penalty(None, true), 0.0);
+        // Positive funding should not penalize shorts
+        assert_eq!(funding_score_penalty(Some(0.0007), false), 0.0);
+    }
+
+    #[test]
+    fn oi_bonus_works() {
+        assert_eq!(oi_score_bonus(Some(true)), 0.10);
+        assert_eq!(oi_score_bonus(Some(false)), 0.0);
+        assert_eq!(oi_score_bonus(None), 0.0);
+    }
+
+    #[test]
+    fn basis_gate_works() {
+        assert!(!basis_ok(Some(0.6), true));   // perp too expensive for long
+        assert!(basis_ok(Some(0.4), true));     // within threshold
+        assert!(!basis_ok(Some(-0.6), false)); // perp too cheap for short
+        assert!(basis_ok(Some(-0.4), false));  // within threshold
+        assert!(basis_ok(None, true));          // no data → allow
+        assert!(basis_ok(Some(0.6), false));   // positive basis ok for short
     }
 }

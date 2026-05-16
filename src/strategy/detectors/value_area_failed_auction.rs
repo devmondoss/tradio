@@ -1,5 +1,5 @@
 use super::toxic_flow_gate::toxic_flow_gate;
-use crate::strategy::types::*;
+use crate::strategy::{adapter, types::*};
 
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
     toxic_flow_gate(ctx, cfg).ok()?;
@@ -28,7 +28,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_above;
 
-    if short_location && short_flow && short_book {
+    if short_location && short_flow && short_book && adapter::basis_ok(flow.basis, false) {
         let entry = px;
         let stop = f64::max(vah + 0.25 * atr, px + 0.5 * atr);
         let target = poc;
@@ -76,7 +76,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_below;
 
-    if long_location && long_flow && long_book {
+    if long_location && long_flow && long_book && adapter::basis_ok(flow.basis, true) {
         let entry = px;
         let stop = f64::min(val - 0.25 * atr, px - 0.5 * atr);
         let target = poc;
@@ -162,6 +162,13 @@ mod tests {
                 sweep_confirmed: false,
                 mss_active: false,
                 quality: DataQuality::Live,
+                funding_rate: None,
+                basis: None,
+                oi_delta: None,
+                oi_momentum_aligned: None,
+                bid_wall_nearby: false,
+                ask_wall_nearby: false,
+                price_action_clean: true,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(-0.05),

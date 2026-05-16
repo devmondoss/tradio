@@ -89,6 +89,12 @@ pub struct PaperPosition {
     // MFE/MAE tracking — no van al output serializado, solo a ClosedTrade.
     highest: f64,
     lowest: f64,
+    #[serde(default)]
+    pub entry_vwap: Option<f64>,
+    #[serde(default)]
+    pub entry_val: Option<f64>,
+    #[serde(default)]
+    pub entry_vah: Option<f64>,
 }
 
 impl PaperPosition {
@@ -120,6 +126,29 @@ impl PaperPosition {
             Side::Long => self.size * (bar_close - self.entry_price),
             Side::Short => self.size * (self.entry_price - bar_close),
         }
+    }
+
+    fn check_invalidation(&self, ctx: &StrategyMarketContext) -> bool {
+        let px = ctx.price;
+        match self.side {
+            Side::Long => {
+                if self.entry_vwap.map(|v| px < v).unwrap_or(false) {
+                    return true;
+                }
+                if self.entry_val.map(|v| px < v).unwrap_or(false) {
+                    return true;
+                }
+            }
+            Side::Short => {
+                if self.entry_vwap.map(|v| px > v).unwrap_or(false) {
+                    return true;
+                }
+                if self.entry_vah.map(|v| px > v).unwrap_or(false) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Conservador: si stop y target se tocan en la misma vela, stop gana.
@@ -332,16 +361,17 @@ impl PaperAccount {
         bar_low: f64,
         now_ms: i64,
         signal: Option<&StrategySignal>,
+        ctx: Option<&StrategyMarketContext>,
     ) {
         // A — Funding y evaluación de posiciones abiertas
         self.apply_funding_if_crossed(now_ms);
-        self.process_position_closes(bar_close, bar_high, bar_low, now_ms);
+        self.process_position_closes(bar_close, bar_high, bar_low, now_ms, ctx);
 
         // B — Abrir nueva posición si hay señal
         if let Some(sig) = signal
             && sig.action == StrategyAction::ShadowSignal
         {
-            self.try_open_position(symbol, sig, bar_close, now_ms);
+            self.try_open_position(symbol, sig, bar_close, now_ms, ctx);
         }
 
         // C — Equity y curva
@@ -378,11 +408,23 @@ impl PaperAccount {
         bar_high: f64,
         bar_low: f64,
         now_ms: i64,
+        ctx: Option<&StrategyMarketContext>,
     ) {
         let mut i = 0;
         while i < self.open_positions.len() {
             self.open_positions[i].update_excursion(bar_high, bar_low);
-            if let Some(reason) = self.open_positions[i].check_close(bar_high, bar_low, now_ms) {
+            let reason = self.open_positions[i]
+                .check_close(bar_high, bar_low, now_ms)
+                .or_else(|| {
+                    ctx.and_then(|c| {
+                        if self.open_positions[i].check_invalidation(c) {
+                            Some("INVALIDATED")
+                        } else {
+                            None
+                        }
+                    })
+                });
+            if let Some(reason) = reason {
                 let pos = self.open_positions.remove(i);
                 let trade = self.build_closed_trade(pos, reason, bar_close, now_ms);
                 log_paper_trade(&trade);
@@ -464,6 +506,7 @@ impl PaperAccount {
         signal: &StrategySignal,
         bar_close: f64,
         now_ms: i64,
+        ctx: Option<&StrategyMarketContext>,
     ) {
         let Some(side) = signal.side else { return };
 
@@ -562,6 +605,15 @@ impl PaperAccount {
             balance_at_open,
             highest: entry_price,
             lowest: entry_price,
+            entry_vwap: ctx
+                .map(|c| c.vwap.vwap_session)
+                .unwrap_or(None),
+            entry_val: ctx
+                .map(|c| c.volume_profile.val)
+                .unwrap_or(None),
+            entry_vah: ctx
+                .map(|c| c.volume_profile.vah)
+                .unwrap_or(None),
         });
         self.save_state();
     }
@@ -717,7 +769,7 @@ mod tests {
 
         let mut acc = default_account();
         // Bar N close — signal arrives
-        acc.on_bar_close("BTCUSDT", 3_000.0, 3_010.0, 2_990.0, 1_000_000, Some(&sig));
+        acc.on_bar_close("BTCUSDT", 3_000.0, 3_010.0, 2_990.0, 1_000_000, Some(&sig), None);
 
         // risk_amount = 3000 * 0.01 = 30
         // size = 30 / 250 = 0.12
@@ -757,12 +809,12 @@ mod tests {
         );
 
         // Bars N+1, N+2 — no signal, price moves up
-        acc.on_bar_close("BTCUSDT", 3_200.0, 3_250.0, 3_180.0, 1_100_000, None);
-        acc.on_bar_close("BTCUSDT", 3_400.0, 3_450.0, 3_380.0, 1_200_000, None);
+        acc.on_bar_close("BTCUSDT", 3_200.0, 3_250.0, 3_180.0, 1_100_000, None, None);
+        acc.on_bar_close("BTCUSDT", 3_400.0, 3_450.0, 3_380.0, 1_200_000, None, None);
         assert_eq!(acc.open_positions.len(), 1, "still open after 2 bars");
 
         // Bar N+3 — target hit (high=3760 >= 3750)
-        acc.on_bar_close("BTCUSDT", 3_700.0, 3_760.0, 3_680.0, 1_300_000, None);
+        acc.on_bar_close("BTCUSDT", 3_700.0, 3_760.0, 3_680.0, 1_300_000, None, None);
 
         assert_eq!(acc.open_positions.len(), 0, "position should be closed");
         assert_eq!(acc.closed_trades.len(), 1);
@@ -830,11 +882,11 @@ mod tests {
         );
 
         let mut acc = default_account();
-        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig));
+        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig), None);
         assert_eq!(acc.open_positions.len(), 1);
 
         // Second signal — same symbol, same side, different strategy. Should be blocked.
-        acc.on_bar_close("BTCUSDT", 1_010.0, 1_020.0, 1_000.0, 1_100_000, Some(&sig2));
+        acc.on_bar_close("BTCUSDT", 1_010.0, 1_020.0, 1_000.0, 1_100_000, Some(&sig2), None);
         assert_eq!(
             acc.open_positions.len(),
             1,
@@ -871,6 +923,7 @@ mod tests {
             990.0,
             1_000_000,
             Some(&sig_long),
+            None,
         );
         assert_eq!(acc.open_positions.len(), 1);
 
@@ -882,6 +935,7 @@ mod tests {
             1_000.0,
             1_100_000,
             Some(&sig_short),
+            None,
         );
         assert_eq!(acc.open_positions.len(), 1, "existing long must survive");
         assert_eq!(
@@ -909,9 +963,9 @@ mod tests {
         );
 
         let mut acc = default_account();
-        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig));
+        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig), None);
         // Both stop and target hit in same bar
-        acc.on_bar_close("BTCUSDT", 1_050.0, 1_150.0, 850.0, 1_100_000, None);
+        acc.on_bar_close("BTCUSDT", 1_050.0, 1_150.0, 850.0, 1_100_000, None, None);
 
         assert_eq!(acc.closed_trades.len(), 1);
         assert_eq!(acc.closed_trades[0].close_reason, "STOP_HIT");
@@ -931,9 +985,9 @@ mod tests {
         );
 
         let mut acc = default_account();
-        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig));
+        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig), None);
         // Price stays safe but TTL expires
-        acc.on_bar_close("BTCUSDT", 1_010.0, 1_020.0, 1_005.0, 1_060_000, None);
+        acc.on_bar_close("BTCUSDT", 1_010.0, 1_020.0, 1_005.0, 1_060_000, None, None);
 
         assert_eq!(acc.closed_trades.len(), 1);
         assert_eq!(acc.closed_trades[0].close_reason, "TTL_EXPIRED");
@@ -958,13 +1012,13 @@ mod tests {
         );
 
         let mut acc = default_account();
-        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig));
+        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig), None);
         let expected_entry = 1_000.0 * (1.0 - 1.0 / 10_000.0);
         let pos_size = acc.open_positions[0].size;
         assert!((acc.open_positions[0].entry_price - expected_entry).abs() < 1e-6);
 
         // Target hit (low=795 <= 800)
-        acc.on_bar_close("BTCUSDT", 810.0, 820.0, 795.0, 1_100_000, None);
+        acc.on_bar_close("BTCUSDT", 810.0, 820.0, 795.0, 1_100_000, None, None);
 
         let trade = &acc.closed_trades[0];
         assert_eq!(trade.close_reason, "TARGET_HIT");
@@ -994,7 +1048,7 @@ mod tests {
 
         let mut acc = default_account();
         // Bar 0: open position
-        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 0, Some(&sig));
+        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 0, Some(&sig), None);
         assert_eq!(acc.open_positions.len(), 1);
 
         // Bar 1: crosses first 8h boundary — funding accumulates in pos.funding_paid
@@ -1006,6 +1060,7 @@ mod tests {
             1_020.0,
             1_005.0,
             FUNDING_INTERVAL_MS + 1,
+            None,
             None,
         );
 
@@ -1028,6 +1083,7 @@ mod tests {
             1_310.0,
             1_240.0,
             FUNDING_INTERVAL_MS + 2,
+            None,
             None,
         );
 
@@ -1067,8 +1123,8 @@ mod tests {
     #[test]
     fn equity_curve_populated_each_bar() {
         let mut acc = default_account();
-        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, None);
-        acc.on_bar_close("BTCUSDT", 1_010.0, 1_020.0, 1_000.0, 1_100_000, None);
+        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, None, None);
+        acc.on_bar_close("BTCUSDT", 1_010.0, 1_020.0, 1_000.0, 1_100_000, None, None);
         assert_eq!(acc.equity_curve.len(), 2);
         assert_eq!(acc.equity_curve[0].0, 1_000_000);
         assert_eq!(acc.equity_curve[1].0, 1_100_000);

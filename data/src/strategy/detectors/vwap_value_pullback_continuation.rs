@@ -1,5 +1,5 @@
 use super::toxic_flow_gate::toxic_flow_gate;
-use crate::strategy::types::*;
+use crate::strategy::{adapter, types::*};
 
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
     toxic_flow_gate(ctx, cfg).ok()?;
@@ -54,14 +54,18 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             ValueLocation::InValue | ValueLocation::BelowVal
         );
 
+    // CVD level gate: a single bar of positive delta cannot override strongly adverse
+    // cumulative flow. Threshold -200 was chosen after observing CVD=-471 triggering
+    // a spurious long in a day-long sell-side session (2026-05-14 deployment).
     let long_flow = flow.cvd_slope.unwrap_or(0.0) >= 0.0
         && flow.delta.unwrap_or(0.0) > 0.0
+        && flow.cvd.unwrap_or(0.0) > -200.0
         && !flow.failed_acceptance;
 
     let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps
         && ob.microprice.map(|m| m >= px * 0.9998).unwrap_or(true);
 
-    if long_context && long_flow && long_book {
+    if long_context && long_flow && long_book && adapter::basis_ok(flow.basis, true) {
         let entry = px;
         let stop = f64::min(val, entry - 0.75 * atr);
         let target = vah;
@@ -106,12 +110,13 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     let short_flow = flow.cvd_slope.unwrap_or(0.0) <= 0.0
         && flow.delta.unwrap_or(0.0) < 0.0
+        && flow.cvd.unwrap_or(0.0) < 200.0
         && !flow.failed_acceptance;
 
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps
         && ob.microprice.map(|m| m <= px * 1.0002).unwrap_or(true);
 
-    if short_context && short_flow && short_book {
+    if short_context && short_flow && short_book && adapter::basis_ok(flow.basis, false) {
         let entry = px;
         let stop = f64::max(vah, entry + 0.75 * atr);
         let target = val;
@@ -191,6 +196,13 @@ mod tests {
                 sweep_confirmed: false,
                 mss_active: true,
                 quality: DataQuality::Live,
+                funding_rate: None,
+                basis: None,
+                oi_delta: None,
+                oi_momentum_aligned: None,
+                bid_wall_nearby: false,
+                ask_wall_nearby: false,
+                price_action_clean: true,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.03),

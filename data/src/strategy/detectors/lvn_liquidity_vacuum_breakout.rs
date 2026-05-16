@@ -1,5 +1,5 @@
 use super::toxic_flow_gate::toxic_flow_gate;
-use crate::strategy::types::*;
+use crate::strategy::{adapter, types::*};
 
 const MAX_STOP_ATR_MULT: f64 = 1.5;
 const MIN_RR: f64 = 1.0;
@@ -49,7 +49,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps
         && ob.microprice.map(|m| m >= px).unwrap_or(true);
 
-    if long_location && long_flow && long_book {
+    if long_location && long_flow && long_book && adapter::basis_ok(flow.basis, true) {
         let mut targets = vp.hvn_nearby.clone();
         if let Some(vah) = vp.vah {
             targets.push(vah);
@@ -116,7 +116,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps
         && ob.microprice.map(|m| m <= px).unwrap_or(true);
 
-    if short_location && short_flow && short_book {
+    if short_location && short_flow && short_book && adapter::basis_ok(flow.basis, false) {
         let mut targets = vp.hvn_nearby.clone();
         if let Some(val) = vp.val {
             targets.push(val);
@@ -211,6 +211,13 @@ mod tests {
                 sweep_confirmed: false,
                 mss_active: false,
                 quality: DataQuality::Live,
+                funding_rate: None,
+                basis: None,
+                oi_delta: None,
+                oi_momentum_aligned: None,
+                bid_wall_nearby: false,
+                ask_wall_nearby: false,
+                price_action_clean: true,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.10),

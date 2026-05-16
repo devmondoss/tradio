@@ -1127,6 +1127,15 @@ impl KlineChart {
             );
         let cvd_divergence = adapter::derive_cvd_divergence(&recent_highs, &recent_lows, cvd_slope);
 
+        let atr_f64 = atr.unwrap_or(0.0);
+        let bid_wall_nearby = adapter::wall_nearby(&orderbook.walls_below, price, atr_f64);
+        let ask_wall_nearby = adapter::wall_nearby(&orderbook.walls_above, price, atr_f64);
+        let price_action_clean = {
+            let n = recent_closes.len();
+            let recent_5 = &recent_closes[n.saturating_sub(5)..];
+            adapter::count_price_reversals(recent_5) <= 2
+        };
+
         let flow = adapter::build_flow_context(
             cvd,
             cvd_slope,
@@ -1137,6 +1146,13 @@ impl KlineChart {
             failed_acceptance,
             footprint_absorption,
             cvd_divergence,
+            None, // funding_rate — not available in GUI
+            None, // basis — not available in GUI
+            None, // oi_delta — not available in GUI
+            None, // oi_momentum_aligned — not available in GUI
+            bid_wall_nearby,
+            ask_wall_nearby,
+            price_action_clean,
         );
 
         let ctx = StrategyMarketContext {
@@ -1171,6 +1187,7 @@ impl KlineChart {
             bar_low,
             ctx.timestamp_ms,
             paper_sig,
+            Some(&ctx),
         );
 
         if signal.action == StrategyAction::ShadowSignal {

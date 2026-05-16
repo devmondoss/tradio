@@ -2517,6 +2517,7 @@ dependencies = [
  "flowsurface-data",
  "flowsurface-exchange",
  "futures",
+ "reqwest",
  "serde_json",
  "tokio",
 ]

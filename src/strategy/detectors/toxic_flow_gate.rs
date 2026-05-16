@@ -76,6 +76,13 @@ mod tests {
                 sweep_confirmed: false,
                 mss_active: false,
                 quality: DataQuality::Live,
+                funding_rate: None,
+                basis: None,
+                oi_delta: None,
+                oi_momentum_aligned: None,
+                bid_wall_nearby: false,
+                ask_wall_nearby: false,
+                price_action_clean: true,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.05),

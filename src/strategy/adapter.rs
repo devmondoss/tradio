@@ -121,6 +121,13 @@ pub fn build_flow_context(
     failed_acceptance: bool,
     footprint_absorption: AbsorptionSide,
     cvd_divergence: Option<CvdDivergence>,
+    funding_rate: Option<f64>,
+    basis: Option<f64>,
+    oi_delta: Option<f64>,
+    oi_momentum_aligned: Option<bool>,
+    bid_wall_nearby: bool,
+    ask_wall_nearby: bool,
+    price_action_clean: bool,
 ) -> OrderFlowContext {
     let taker_imbalance = match (buy_volume, sell_volume) {
         (Some(buy), Some(sell)) => {
@@ -153,6 +160,71 @@ pub fn build_flow_context(
         } else {
             DataQuality::Missing
         },
+        funding_rate,
+        basis,
+        oi_delta,
+        oi_momentum_aligned,
+        bid_wall_nearby,
+        ask_wall_nearby,
+        price_action_clean,
+    }
+}
+
+pub fn wall_nearby(walls: &[f64], price: f64, atr: f64) -> bool {
+    if atr <= 0.0 {
+        return false;
+    }
+    walls.iter().any(|&w| (w - price).abs() <= atr)
+}
+
+pub fn wall_score_bonus(bid_wall_nearby: bool, ask_wall_nearby: bool, is_long: bool) -> f64 {
+    if is_long && bid_wall_nearby {
+        0.08
+    } else if !is_long && ask_wall_nearby {
+        0.08
+    } else {
+        0.0
+    }
+}
+
+pub fn count_price_reversals(closes: &[f64]) -> usize {
+    if closes.len() < 3 {
+        return 0;
+    }
+    closes
+        .windows(3)
+        .filter(|w| (w[1] - w[0]) * (w[2] - w[1]) < 0.0)
+        .count()
+}
+
+pub fn clean_action_score_bonus(price_action_clean: bool) -> f64 {
+    if price_action_clean { 0.05 } else { 0.0 }
+}
+
+pub fn funding_score_penalty(funding: Option<f64>, is_long: bool) -> f64 {
+    let rate = match funding {
+        Some(r) => r,
+        None => return 0.0,
+    };
+    if is_long {
+        if rate > 0.0006 { -0.20 } else if rate > 0.0003 { -0.10 } else { 0.0 }
+    } else {
+        if rate < -0.0006 { -0.20 } else if rate < -0.0003 { -0.10 } else { 0.0 }
+    }
+}
+
+pub fn oi_score_bonus(oi_momentum_aligned: Option<bool>) -> f64 {
+    match oi_momentum_aligned {
+        Some(true) => 0.10,
+        _ => 0.0,
+    }
+}
+
+pub fn basis_ok(basis: Option<f64>, is_long: bool) -> bool {
+    match basis {
+        Some(b) if is_long && b > 0.5 => false,
+        Some(b) if !is_long && b < -0.5 => false,
+        _ => true,
     }
 }
 

@@ -117,6 +117,20 @@ pub struct OrderFlowContext {
     pub sweep_confirmed: bool,
     pub mss_active: bool,
     pub quality: DataQuality,
+    /// Funding rate del perp (decimal, 0.0001 = 1 bp). None si no disponible.
+    pub funding_rate: Option<f64>,
+    /// Basis perp-spot en % ((perp/spot - 1) * 100). None si spot no disponible.
+    pub basis: Option<f64>,
+    /// OI delta acumulado en el período (contratos). None si no hay suficiente historia.
+    pub oi_delta: Option<f64>,
+    /// Precio subió + OI subió (long) o precio bajó + OI subió (short). None si sin datos.
+    pub oi_momentum_aligned: Option<bool>,
+    /// Pared de bids dentro de 1×ATR por debajo del precio (soporte cercano).
+    pub bid_wall_nearby: bool,
+    /// Pared de asks dentro de 1×ATR por encima del precio (resistencia cercana).
+    pub ask_wall_nearby: bool,
+    /// Últimas 5 velas con ≤2 reversiones — movimiento limpio sin chopping.
+    pub price_action_clean: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
