@@ -265,6 +265,7 @@ impl BarState {
             self.cvd_history.pop_front();
         }
 
+        let t0 = Instant::now();
         let closes: Vec<f64> = self.bars.iter().map(|b| b.close.to_f32() as f64).collect();
         let highs: Vec<f64> = self.bars.iter().map(|b| b.high.to_f32() as f64).collect();
         let lows: Vec<f64> = self.bars.iter().map(|b| b.low.to_f32() as f64).collect();
@@ -291,12 +292,15 @@ impl BarState {
             &regime_window[regime_window.len().saturating_sub(5)..],
             atr,
         );
+        let t_regime = t0.elapsed().as_millis();
 
         let cvd_slope = compute_cvd_slope(&self.cvd_history);
         let cvd_divergence = derive_cvd_divergence(&highs, &lows, cvd_slope);
+        let t_cvd = t0.elapsed().as_millis();
 
         let (poc, vah, val, hvn_nearby, lvn_nearby) =
             compute_volume_profile(&self.bars, VP_BINS, c);
+        let t_vp = t0.elapsed().as_millis();
 
         let deltas = [bar_delta];
         let (failed_acceptance, footprint_absorption) = derive_failed_acceptance_and_absorption(
@@ -409,6 +413,7 @@ impl BarState {
             None
         };
 
+        let t_avwap = t0.elapsed().as_millis();
         let vwap_ctx = build_vwap_context(c, self.vwap_session, avwap_bos);
         let vp_ctx = build_volume_profile_context(c, poc, vah, val, hvn_nearby, lvn_nearby);
         let ob_ctx = match &self.depth {
@@ -496,8 +501,10 @@ impl BarState {
             institutional,
         };
 
+        let t_ctx = t0.elapsed().as_millis();
         let signal = route_strategy(&ctx, &cfg);
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
+        let t_route = t0.elapsed().as_millis();
 
         for nm in collect_near_misses(&ctx, &cfg, signal_fired) {
             if let Ok(json) = serde_json::to_string(&nm) {
@@ -563,6 +570,11 @@ impl BarState {
             .collect::<Vec<_>>()
             .join(",");
 
+        let t_total = t0.elapsed().as_millis();
+        eprintln!(
+            "[perf] regime={t_regime}ms cvd={t_cvd}ms vp={t_vp}ms avwap={t_avwap}ms ctx={t_ctx}ms route={t_route}ms total={t_total}ms bars={}",
+            self.bars.len()
+        );
         let inst_ref = ctx.institutional.as_ref();
         eprintln!(
             "[bar] ts={bar_ms} close={c:.2} regime={regime:?} \
