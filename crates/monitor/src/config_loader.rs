@@ -159,5 +159,7 @@ fn parse_config_from_json(params: &Value) -> StrategyConfig {
         retail_long_threshold:     f("retail_long_threshold",     d.retail_long_threshold),
         min_divergence:            f("min_divergence",            d.min_divergence),
         smd_ttl_ms:                i("smd_ttl_ms",                d.smd_ttl_ms),
+        min_rr:                    f("min_rr",                    d.min_rr),
+        max_rr_m5:                 f("max_rr_m5",                 d.max_rr_m5),
     }
 }
