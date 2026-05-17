@@ -17,6 +17,13 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reqwest;
+use bytes::Bytes;
+use fastwebsockets::{FragmentCollector, OpCode};
+use http_body_util::Empty;
+use hyper::{Request, header::{CONNECTION, UPGRADE}, upgrade::Upgraded};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use std::sync::LazyLock;
+use tokio_rustls::{TlsConnector, rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName}};
 
 use config_loader::ConfigLoader;
 use supabase_writer::SupabaseWriter;
@@ -885,46 +892,99 @@ async fn fetch_taker_ratio(symbol: &str) -> Option<TakerRatioSnapshot> {
     Some(TakerRatioSnapshot { timestamp_ms: ts, buy_sell_ratio, taker_imbalance })
 }
 
-/// Fetches recent force-liquidation orders from Binance FAPI (last 100, within past 5 min).
-async fn fetch_recent_liquidations(symbol: &str) -> Vec<LiquidationEvent> {
-    let url = format!(
-        "https://fapi.binance.com/fapi/v1/forceOrders?symbol={}&autoCloseType=LIQUIDATION&limit=100",
-        symbol
-    );
-    let resp = match reqwest::get(&url).await {
-        Ok(r) => r,
-        Err(e) => { eprintln!("[fetch] forceOrders failed: {e}"); return vec![]; }
+// ── forceOrder WebSocket stream ───────────────────────────────────────────────
+// Binance @forceOrder is a PUBLIC stream — no API key needed.
+// The old REST /fapi/v1/forceOrders endpoint requires USER_DATA auth (signature),
+// which caused liq=0$ on every bar. This stream replaces it.
+
+static LIQ_TLS: LazyLock<TlsConnector> = LazyLock::new(|| {
+    let _ = aws_lc_rs::default_provider().install_default();
+    let root_store = RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    let cfg = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    TlsConnector::from(std::sync::Arc::new(cfg))
+});
+
+async fn connect_force_order_ws(
+    symbol: &str,
+) -> Result<FragmentCollector<TokioIo<Upgraded>>, Box<dyn std::error::Error + Send + Sync>> {
+    let domain = "fstream.binance.com";
+    let path = format!("/ws/{}@forceOrder", symbol.to_lowercase());
+    let addr = format!("{domain}:443");
+
+    let tcp = tokio::net::TcpStream::connect(&addr).await?;
+    let sn = ServerName::try_from(domain.to_string())?;
+    let tls = LIQ_TLS.connect(sn, tcp).await?;
+
+    let req: Request<Empty<Bytes>> = Request::builder()
+        .method("GET")
+        .uri(&path)
+        .header("Host", domain)
+        .header(UPGRADE, "websocket")
+        .header(CONNECTION, "upgrade")
+        .header("Sec-WebSocket-Key", fastwebsockets::handshake::generate_key())
+        .header("Sec-WebSocket-Version", "13")
+        .body(Empty::<Bytes>::new())?;
+
+    let (ws, _) = fastwebsockets::handshake::client(&TokioExecutor::new(), req, tls).await?;
+    Ok(FragmentCollector::new(ws))
+}
+
+fn parse_force_order_event(text: &str) -> Option<LiquidationEvent> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let o = v.get("o")?;
+    let side_str = o.get("S")?.as_str()?;
+    // In Binance force orders the order side closes the position:
+    // SELL = long was liquidated, BUY = short was liquidated.
+    let liq_side = match side_str {
+        "SELL" => LiqSide::Longs,
+        "BUY"  => LiqSide::Shorts,
+        _      => LiqSide::Neutral,
     };
-    let json: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(e) => { eprintln!("[fetch] forceOrders parse failed: {e}"); return vec![]; }
-    };
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-    let cutoff = now_ms - 5 * 60_000;
-    json.as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|entry| {
-                    let ts: i64 = entry.get("time")?.as_i64()?;
-                    if ts < cutoff { return None; }
-                    let side_str = entry.get("side")?.as_str()?;
-                    // In Binance force orders, "side" is the order side that was placed to close.
-                    // SELL = long position liquidated, BUY = short position liquidated.
-                    let liq_side = match side_str {
-                        "SELL" => LiqSide::Longs,
-                        "BUY"  => LiqSide::Shorts,
-                        _      => LiqSide::Neutral,
-                    };
-                    let qty: f64 = entry.get("executedQty")?.as_str()?.parse().ok()?;
-                    let price: f64 = entry.get("avgPrice")?.as_str()?.parse().ok()?;
-                    Some(LiquidationEvent { timestamp_ms: ts, side: liq_side, quantity_usd: qty * price })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    let qty: f64 = o.get("z")?.as_str()?.parse().ok()?;
+    let price: f64 = o.get("ap")?.as_str()?.parse().ok()?;
+    let ts: i64 = o.get("T")?.as_i64()?;
+    Some(LiquidationEvent { timestamp_ms: ts, side: liq_side, quantity_usd: qty * price })
+}
+
+/// Spawns a task that streams @forceOrder events into `tx` with auto-reconnect.
+fn spawn_force_order_stream(
+    symbol: String,
+    tx: tokio::sync::mpsc::Sender<Vec<LiquidationEvent>>,
+) {
+    tokio::spawn(async move {
+        loop {
+            match connect_force_order_ws(&symbol).await {
+                Err(e) => {
+                    eprintln!("[liq] forceOrder WS connect failed: {e} — retry in 5s");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+                Ok(mut ws) => {
+                    eprintln!("[liq] forceOrder WS connected for {symbol}");
+                    loop {
+                        match ws.read_frame().await {
+                            Err(e) => {
+                                eprintln!("[liq] forceOrder WS read error: {e} — reconnecting");
+                                break;
+                            }
+                            Ok(frame) => {
+                                if frame.opcode == OpCode::Close { break; }
+                                if frame.opcode != OpCode::Text { continue; }
+                                let text = match std::str::from_utf8(&frame.payload) {
+                                    Ok(s) => s,
+                                    Err(_) => continue,
+                                };
+                                if let Some(ev) = parse_force_order_event(text) {
+                                    let _ = tx.send(vec![ev]).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// Fetches recent funding rate history for the FundingTracker (last 21 samples).
@@ -1178,17 +1238,9 @@ async fn main() {
 
     // ── Institutional REST fetch tasks ────────────────────────────────────────
 
-    // Liquidations: every 60s (poll forceOrders for last 5 min)
-    let (liq_tx, mut liq_rx) = tokio::sync::mpsc::channel::<Vec<LiquidationEvent>>(4);
-    let liq_symbol = symbol_str.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
-        loop {
-            interval.tick().await;
-            let events = fetch_recent_liquidations(&liq_symbol).await;
-            let _ = liq_tx.send(events).await;
-        }
-    });
+    // Liquidations: real-time via @forceOrder WebSocket (public stream, no auth needed)
+    let (liq_tx, mut liq_rx) = tokio::sync::mpsc::channel::<Vec<LiquidationEvent>>(16);
+    spawn_force_order_stream(symbol_str.clone(), liq_tx);
 
     // L/S ratios (top traders + global): every 5 min
     type LsPayload = (Option<LongShortSnapshot>, Option<LongShortSnapshot>);

@@ -2514,13 +2514,20 @@ dependencies = [
 name = "monitor"
 version = "0.8.8"
 dependencies = [
+ "bytes",
+ "fastwebsockets",
  "flowsurface-data",
  "flowsurface-exchange",
  "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-rustls",
+ "webpki-roots",
 ]
 
 [[package]]
