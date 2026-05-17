@@ -20,6 +20,11 @@ use reqwest;
 
 use config_loader::ConfigLoader;
 use supabase_writer::SupabaseWriter;
+use data::institutional::{
+    FundingRateSample, FundingTracker, InstitutionalContext, LiqSide,
+    LiquidationEvent, LiquidationTracker, LongShortSnapshot, LsRatioTracker, LsSource,
+    OiHistSnapshot, OiTracker, TakerRatioSnapshot,
+};
 use data::strategy::{
     adapter::{
         build_flow_context, build_orderbook_context, build_volume_profile_context,
@@ -27,7 +32,7 @@ use data::strategy::{
         derive_failed_acceptance_and_absorption, derive_regime, wall_nearby,
     },
     intent_logger::collect_near_misses,
-    paper::{ClosedTrade, PaperAccount},
+    paper::PaperAccount,
     router::route_strategy,
     types::{DataQuality, OrderBookContext, StrategyAction, StrategyConfig, StrategyMarketContext},
 };
@@ -121,6 +126,12 @@ struct BarState {
     funding_rate: Option<f64>,
     spot_price: Option<f64>,
     oi_history: VecDeque<f64>,
+    // Institutional trackers
+    liq_tracker: LiquidationTracker,
+    ls_tracker: LsRatioTracker,
+    oi_tracker: OiTracker,
+    funding_tracker: FundingTracker,
+    last_taker_ratio: Option<TakerRatioSnapshot>,
     // Supabase writer (None if SUPABASE_URL not set)
     supabase: Option<SupabaseWriter>,
     // Dynamic config loaded from Supabase
@@ -148,6 +159,11 @@ impl BarState {
             funding_rate: None,
             spot_price: None,
             oi_history: VecDeque::with_capacity(7),
+            liq_tracker: LiquidationTracker::new(),
+            ls_tracker: LsRatioTracker::new(),
+            oi_tracker: OiTracker::new(),
+            funding_tracker: FundingTracker::new(),
+            last_taker_ratio: None,
             supabase,
             cfg: StrategyConfig { enabled: true, ..StrategyConfig::default() },
             config_loader: ConfigLoader::new(),
@@ -166,6 +182,10 @@ impl BarState {
         if let Some(tx) = &self.regime_tx {
             let _ = tx.try_send(regime.to_string());
         }
+    }
+
+    fn on_liquidation(&mut self, event: LiquidationEvent) {
+        self.liq_tracker.push(event);
     }
 
     fn on_trade(&mut self, is_sell: bool, qty: f32) {
@@ -335,6 +355,34 @@ impl BarState {
             price_action_clean,
         );
 
+        // Prune stale liquidation events before building the snapshot
+        self.liq_tracker.prune(bar_ms);
+        let liq_snap = self.liq_tracker.snapshot(bar_ms);
+        let ls_snap = self.ls_tracker.snapshot();
+        let oi_snap = self.oi_tracker.snapshot();
+        let fund_snap = self.funding_tracker.snapshot();
+
+        // Build institutional context — only live once we have at least one L/S
+        // fetch (ls_snap defaults to 0.5/0.5 until then, quality = Fallback).
+        let inst_quality = if ls_snap.top_traders_long_pct == 0.5
+            && ls_snap.retail_long_pct == 0.5
+            && fund_snap.current == 0.0
+        {
+            DataQuality::Fallback
+        } else {
+            DataQuality::Live
+        };
+
+        let institutional = Some(InstitutionalContext {
+            timestamp_ms: bar_ms,
+            liquidations: liq_snap,
+            ls_ratio: ls_snap,
+            oi_trend: oi_snap,
+            taker_ratio: self.last_taker_ratio.clone(),
+            funding: fund_snap,
+            quality: inst_quality,
+        });
+
         let ctx = StrategyMarketContext {
             symbol: symbol.to_string(),
             timestamp_ms: bar_ms,
@@ -345,7 +393,7 @@ impl BarState {
             vwap: vwap_ctx,
             flow,
             orderbook: ob_ctx,
-            institutional: None,
+            institutional,
         };
 
         let signal = route_strategy(&ctx, &cfg);
@@ -646,6 +694,125 @@ async fn fetch_open_interest(symbol: &str) -> Option<f64> {
     json.get("openInterest")?.as_str()?.parse::<f64>().ok()
 }
 
+/// Fetches top-trader long/short position ratio from Binance FAPI.
+async fn fetch_top_trader_ls(symbol: &str) -> Option<LongShortSnapshot> {
+    let url = format!(
+        "https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol={}&period=5m&limit=1",
+        symbol
+    );
+    let resp = reqwest::get(&url).await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let entry = json.as_array()?.first()?;
+    let long_ratio: f64 = entry.get("longAccount")?.as_str()?.parse().ok()?;
+    let short_ratio: f64 = entry.get("shortAccount")?.as_str()?.parse().ok()?;
+    let ls_ratio: f64 = entry.get("longShortRatio")?.as_str()?.parse().ok()?;
+    let ts: i64 = entry.get("timestamp")?.as_i64()?;
+    Some(LongShortSnapshot { timestamp_ms: ts, long_ratio, short_ratio, ls_ratio, source: LsSource::TopTraderPosition })
+}
+
+/// Fetches global account long/short ratio from Binance FAPI (retail proxy).
+async fn fetch_global_ls(symbol: &str) -> Option<LongShortSnapshot> {
+    let url = format!(
+        "https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol={}&period=5m&limit=1",
+        symbol
+    );
+    let resp = reqwest::get(&url).await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let entry = json.as_array()?.first()?;
+    let long_ratio: f64 = entry.get("longAccount")?.as_str()?.parse().ok()?;
+    let short_ratio: f64 = entry.get("shortAccount")?.as_str()?.parse().ok()?;
+    let ls_ratio: f64 = entry.get("longShortRatio")?.as_str()?.parse().ok()?;
+    let ts: i64 = entry.get("timestamp")?.as_i64()?;
+    Some(LongShortSnapshot { timestamp_ms: ts, long_ratio, short_ratio, ls_ratio, source: LsSource::GlobalAccount })
+}
+
+/// Fetches taker buy/sell volume ratio from Binance FAPI.
+async fn fetch_taker_ratio(symbol: &str) -> Option<TakerRatioSnapshot> {
+    let url = format!(
+        "https://fapi.binance.com/futures/data/takerlongshortRatio?symbol={}&period=5m&limit=1",
+        symbol
+    );
+    let resp = reqwest::get(&url).await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let entry = json.as_array()?.first()?;
+    let buy_sell_ratio: f64 = entry.get("buySellRatio")?.as_str()?.parse().ok()?;
+    let buy_vol: f64 = entry.get("buyVol")?.as_str()?.parse().ok()?;
+    let sell_vol: f64 = entry.get("sellVol")?.as_str()?.parse().ok()?;
+    let ts: i64 = entry.get("timestamp")?.as_i64()?;
+    let total = buy_vol + sell_vol;
+    let taker_imbalance = if total > 0.0 { (buy_vol - sell_vol) / total } else { 0.0 };
+    Some(TakerRatioSnapshot { timestamp_ms: ts, buy_sell_ratio, taker_imbalance })
+}
+
+/// Fetches recent force-liquidation orders from Binance FAPI (last 100, within past 5 min).
+async fn fetch_recent_liquidations(symbol: &str) -> Vec<LiquidationEvent> {
+    let url = format!(
+        "https://fapi.binance.com/fapi/v1/forceOrders?symbol={}&autoCloseType=LIQUIDATION&limit=100",
+        symbol
+    );
+    let resp = match reqwest::get(&url).await {
+        Ok(r) => r,
+        Err(e) => { eprintln!("[fetch] forceOrders failed: {e}"); return vec![]; }
+    };
+    let json: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => { eprintln!("[fetch] forceOrders parse failed: {e}"); return vec![]; }
+    };
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let cutoff = now_ms - 5 * 60_000;
+    json.as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| {
+                    let ts: i64 = entry.get("time")?.as_i64()?;
+                    if ts < cutoff { return None; }
+                    let side_str = entry.get("side")?.as_str()?;
+                    // In Binance force orders, "side" is the order side that was placed to close.
+                    // SELL = long position liquidated, BUY = short position liquidated.
+                    let liq_side = match side_str {
+                        "SELL" => LiqSide::Longs,
+                        "BUY"  => LiqSide::Shorts,
+                        _      => LiqSide::Neutral,
+                    };
+                    let qty: f64 = entry.get("executedQty")?.as_str()?.parse().ok()?;
+                    let price: f64 = entry.get("avgPrice")?.as_str()?.parse().ok()?;
+                    Some(LiquidationEvent { timestamp_ms: ts, side: liq_side, quantity_usd: qty * price })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Fetches recent funding rate history for the FundingTracker (last 21 samples).
+async fn fetch_funding_history(symbol: &str) -> Vec<FundingRateSample> {
+    let url = format!(
+        "https://fapi.binance.com/fapi/v1/fundingRate?symbol={}&limit=21",
+        symbol
+    );
+    let resp = match reqwest::get(&url).await {
+        Ok(r) => r,
+        Err(e) => { eprintln!("[fetch] fundingRate history failed: {e}"); return vec![]; }
+    };
+    let json: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => { eprintln!("[fetch] fundingRate history parse failed: {e}"); return vec![]; }
+    };
+    json.as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| {
+                    let rate: f64 = entry.get("fundingRate")?.as_str()?.parse().ok()?;
+                    let ts: i64 = entry.get("fundingTime")?.as_i64()?;
+                    Some(FundingRateSample { timestamp_ms: ts, rate })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -738,7 +905,7 @@ async fn main() {
 
     // ── Periodic REST fetch tasks ─────────────────────────────────────────────
 
-    // funding + spot: every 60s (funding only changes every ~8h; spot for basis)
+    // funding + spot: every 60s
     let (funding_tx, mut funding_rx) = tokio::sync::mpsc::channel::<(Option<f64>, Option<f64>)>(4);
     let funding_symbol = symbol_str.clone();
     tokio::spawn(async move {
@@ -750,7 +917,7 @@ async fn main() {
         }
     });
 
-    // spot price: every 30s (for accurate basis calculation)
+    // spot price: every 30s
     let (spot_tx, mut spot_rx) = tokio::sync::mpsc::channel::<Option<f64>>(4);
     let spot_symbol = symbol_str.clone();
     tokio::spawn(async move {
@@ -774,6 +941,54 @@ async fn main() {
         }
     });
 
+    // ── Institutional REST fetch tasks ────────────────────────────────────────
+
+    // Liquidations: every 60s (poll forceOrders for last 5 min)
+    let (liq_tx, mut liq_rx) = tokio::sync::mpsc::channel::<Vec<LiquidationEvent>>(4);
+    let liq_symbol = symbol_str.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let events = fetch_recent_liquidations(&liq_symbol).await;
+            let _ = liq_tx.send(events).await;
+        }
+    });
+
+    // L/S ratios (top traders + global): every 5 min
+    type LsPayload = (Option<LongShortSnapshot>, Option<LongShortSnapshot>);
+    let (ls_tx, mut ls_rx) = tokio::sync::mpsc::channel::<LsPayload>(4);
+    let ls_symbol = symbol_str.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            let top = fetch_top_trader_ls(&ls_symbol).await;
+            let global = fetch_global_ls(&ls_symbol).await;
+            let _ = ls_tx.send((top, global)).await;
+        }
+    });
+
+    // Taker buy/sell ratio: every 5 min
+    let (taker_tx, mut taker_rx) = tokio::sync::mpsc::channel::<Option<TakerRatioSnapshot>>(4);
+    let taker_symbol = symbol_str.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            let snap = fetch_taker_ratio(&taker_symbol).await;
+            let _ = taker_tx.send(snap).await;
+        }
+    });
+
+    // Funding rate history: once at startup to seed the FundingTracker percentile
+    let (funding_hist_tx, mut funding_hist_rx) = tokio::sync::mpsc::channel::<Vec<FundingRateSample>>(2);
+    let fh_symbol = symbol_str.clone();
+    tokio::spawn(async move {
+        let samples = fetch_funding_history(&fh_symbol).await;
+        let _ = funding_hist_tx.send(samples).await;
+    });
+
     // Trigger config reloads whenever the regime changes (sent from on_bar_close).
     let (regime_tx, mut regime_rx) = tokio::sync::mpsc::channel::<String>(8);
     state.regime_tx = Some(regime_tx);
@@ -789,20 +1004,16 @@ async fn main() {
 
                         match pending {
                             None => {
-                                // First kline ever — start accumulating
                                 pending = Some((open_ms, kline));
                             }
                             Some((prev_open, _)) if open_ms > prev_open => {
-                                // New bar arrived → flush previous (fallback path)
                                 let (closed_open_ms, closed_kline) = pending.take().unwrap();
                                 let bar_close_ms = closed_open_ms + tf_ms;
                                 state.on_bar_close(closed_kline, bar_close_ms, &symbol_str);
                                 pending = Some((open_ms, kline));
                             }
                             Some((prev_open, _)) if open_ms == prev_open => {
-                                // Same bar: update with latest OHLCV
                                 if kline.is_closed {
-                                    // Binance confirmed this bar is done — flush immediately
                                     pending = None;
                                     let bar_close_ms = open_ms + tf_ms;
                                     state.on_bar_close(kline, bar_close_ms, &symbol_str);
@@ -839,8 +1050,12 @@ async fn main() {
             Some((funding, mark_price)) = funding_rx.recv() => {
                 if let Some(r) = funding {
                     state.funding_rate = Some(r);
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64;
+                    state.funding_tracker.push(FundingRateSample { timestamp_ms: now_ms, rate: r });
                 }
-                // mark_price is not currently used (we use the kline close for perp price)
                 let _ = mark_price;
             }
 
@@ -852,16 +1067,48 @@ async fn main() {
 
             Some(oi) = oi_rx.recv() => {
                 if let Some(o) = oi {
+                    // Feed both the legacy VecDeque and the OiTracker
                     state.oi_history.push_back(o);
                     if state.oi_history.len() > 6 {
                         state.oi_history.pop_front();
                     }
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64;
+                    state.oi_tracker.push(OiHistSnapshot { timestamp_ms: now_ms, open_interest_usd: o });
+                }
+            }
+
+            Some(events) = liq_rx.recv() => {
+                for ev in events {
+                    state.on_liquidation(ev);
+                }
+            }
+
+            Some((top, global)) = ls_rx.recv() => {
+                if let Some(snap) = top {
+                    state.ls_tracker.push(snap);
+                }
+                if let Some(snap) = global {
+                    state.ls_tracker.push(snap);
+                }
+            }
+
+            Some(snap) = taker_rx.recv() => {
+                if let Some(s) = snap {
+                    state.last_taker_ratio = Some(s);
+                }
+            }
+
+            Some(samples) = funding_hist_rx.recv() => {
+                if !samples.is_empty() {
+                    eprintln!("[inst] loaded {} funding rate history samples", samples.len());
+                    state.funding_tracker.load(samples);
                 }
             }
 
             Some(regime) = regime_rx.recv() => {
-                // Drain duplicates (bar-close fires this every bar)
-                // should_reload() gates the actual Supabase HTTP call.
                 state.maybe_reload_config(&regime).await;
             }
         }

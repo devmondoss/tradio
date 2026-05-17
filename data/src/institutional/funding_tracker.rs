@@ -18,6 +18,15 @@ impl FundingTracker {
         self.samples = s;
     }
 
+    /// Appends a single new sample, keeping the window at MAX_SAMPLES.
+    pub fn push(&mut self, sample: FundingRateSample) {
+        self.samples.push(sample);
+        self.samples.sort_by_key(|r| r.timestamp_ms);
+        if self.samples.len() > MAX_SAMPLES {
+            self.samples.drain(..self.samples.len() - MAX_SAMPLES);
+        }
+    }
+
     pub fn snapshot(&self) -> FundingContext {
         if self.samples.is_empty() {
             return FundingContext::default();
