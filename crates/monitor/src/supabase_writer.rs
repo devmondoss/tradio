@@ -1,4 +1,4 @@
-/// Writes signals and closed trades to Supabase via REST API.
+/// Writes signals, closed trades, and regime changes to Supabase via REST API.
 ///
 /// Uses fire-and-forget tokio tasks — never blocks the bar-close path.
 /// Failures are logged to stderr but do not crash the monitor.
@@ -32,31 +32,89 @@ impl SupabaseWriter {
         })
     }
 
-    /// Inserts a signal into shadow_signals. Fire-and-forget.
-    pub fn write_signal(
+    /// Inserts a signal into shadow_signals. Returns the UUID assigned by Supabase.
+    /// The UUID is needed to link signal_outcomes rows. Returns None on failure.
+    pub async fn write_signal(
         &self,
         signal: &StrategySignal,
         ctx: &StrategyMarketContext,
-    ) {
+    ) -> Option<String> {
         if signal.action == StrategyAction::Wait {
-            return;
+            return None;
         }
 
         let body = build_signal_row(signal, ctx);
-        let writer = self.clone();
+        let url = format!("{}/rest/v1/shadow_signals", self.url);
+        let result = self
+            .client
+            .post(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&body)
+            .send()
+            .await;
 
-        tokio::spawn(async move {
-            writer.post("shadow_signals", &body).await;
-        });
+        match result {
+            Err(e) => {
+                eprintln!("[supabase] POST shadow_signals failed: {e}");
+                None
+            }
+            Ok(r) if !r.status().is_success() => {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                eprintln!("[supabase] POST shadow_signals error {status}: {text}");
+                None
+            }
+            Ok(r) => {
+                let json: Value = r.json().await.unwrap_or(Value::Null);
+                json.as_array()
+                    .and_then(|arr| arr.first())
+                    .and_then(|row| row.get("id"))
+                    .and_then(|id| id.as_str())
+                    .map(|s| s.to_string())
+            }
+        }
     }
 
     /// Inserts a closed trade into signal_outcomes. Fire-and-forget.
-    pub fn write_trade(&self, trade: &ClosedTrade) {
-        let body = build_trade_row(trade);
+    /// signal_uuid links this trade to its shadow_signals row (NOT NULL FK).
+    pub fn write_trade(&self, trade: &ClosedTrade, signal_uuid: Option<String>) {
+        let Some(uuid) = signal_uuid else {
+            eprintln!("[supabase] write_trade skipped — no signal_uuid (trade not linked to a signal)");
+            return;
+        };
+        let body = build_trade_row(trade, &uuid);
         let writer = self.clone();
 
         tokio::spawn(async move {
             writer.post("signal_outcomes", &body).await;
+        });
+    }
+
+    /// Inserts a row into regime_history when the regime changes. Fire-and-forget.
+    pub fn write_regime_change(
+        &self,
+        timestamp_ms: i64,
+        regime_slow: &str,
+        regime_fast: &str,
+        regime_combined: &str,
+        duration_ms: Option<i64>,
+        price: f64,
+    ) {
+        let body = json!({
+            "timestamp_ms":    timestamp_ms,
+            "regime_slow":     regime_slow,
+            "regime_fast":     regime_fast,
+            "regime_combined": regime_combined,
+            "duration_ms":     duration_ms,
+            "price_at_change": price,
+        });
+        let writer = self.clone();
+
+        tokio::spawn(async move {
+            writer.post("regime_history", &body).await;
         });
     }
 
@@ -141,7 +199,7 @@ fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Val
     })
 }
 
-fn build_trade_row(trade: &ClosedTrade) -> Value {
+fn build_trade_row(trade: &ClosedTrade, signal_uuid: &str) -> Value {
     let duration_ms = trade.closed_at_ms - trade.opened_at_ms;
     let risk = (trade.entry_price - trade.stop_price.unwrap_or(trade.entry_price)).abs();
     let r_multiple = if risk > 0.0 {
@@ -153,6 +211,7 @@ fn build_trade_row(trade: &ClosedTrade) -> Value {
     };
 
     json!({
+        "signal_id":         signal_uuid,
         "timestamp_ms":      trade.opened_at_ms,
         "close_reason":      trade.close_reason,
         "close_price":       trade.exit_price,

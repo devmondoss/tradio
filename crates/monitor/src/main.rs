@@ -134,11 +134,17 @@ struct BarState {
     last_taker_ratio: Option<TakerRatioSnapshot>,
     // Supabase writer (None if SUPABASE_URL not set)
     supabase: Option<SupabaseWriter>,
+    // UUID of the most recently written shadow_signals row — used to link signal_outcomes
+    pending_signal_uuid: Option<String>,
     // Dynamic config loaded from Supabase
     cfg: StrategyConfig,
     config_loader: ConfigLoader,
     // Sends detected regime string to the async loop for config reloading
     regime_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    // Last regime seen — used to detect regime changes and write regime_history
+    last_regime: Option<String>,
+    // Timestamp (ms) when the current regime started — for duration_ms in regime_history
+    regime_started_at_ms: Option<i64>,
 }
 
 impl BarState {
@@ -165,9 +171,12 @@ impl BarState {
             funding_tracker: FundingTracker::new(),
             last_taker_ratio: None,
             supabase,
+            pending_signal_uuid: None,
             cfg: StrategyConfig { enabled: true, ..StrategyConfig::default() },
             config_loader: ConfigLoader::new(),
             regime_tx: None,
+            last_regime: None,
+            regime_started_at_ms: None,
         }
     }
 
@@ -211,7 +220,7 @@ impl BarState {
         self.metrics.last_depth_at = Some(Instant::now());
     }
 
-    fn on_bar_close(&mut self, bar: Kline, bar_close_ms: u64, symbol: &str) {
+    async fn on_bar_close(&mut self, bar: Kline, bar_close_ms: u64, symbol: &str) {
         let cfg = self.cfg.clone();
         let bar_ms = bar.time.as_u64() as i64;
         self.metrics.bars_processed += 1;
@@ -264,7 +273,18 @@ impl BarState {
         let atr = compute_atr(&highs, &lows, &closes, ATR_WINDOW);
         let regime_window = &closes[closes.len().saturating_sub(REGIME_WINDOW)..];
         let regime = derive_regime(regime_window, atr);
-        self.notify_regime(&format!("{regime:?}"));
+        let regime_str = format!("{regime:?}");
+        self.notify_regime(&regime_str);
+
+        // Detect regime changes and persist to regime_history
+        if self.last_regime.as_deref() != Some(&regime_str) {
+            if let Some(sb) = &self.supabase {
+                let duration_ms = self.regime_started_at_ms.map(|start| bar_ms - start);
+                sb.write_regime_change(bar_ms, &regime_str, &regime_str, &regime_str, duration_ms, c);
+            }
+            self.regime_started_at_ms = Some(bar_ms);
+            self.last_regime = Some(regime_str.clone());
+        }
         // Compute slow/fast slopes for diagnostics (mirrors derive_regime internals)
         let slow_slope = compute_ols_slope(regime_window, atr);
         let fast_slope = compute_ols_slope(
@@ -486,8 +506,10 @@ impl BarState {
             if let Ok(json) = serde_json::to_string(&signal) {
                 println!("{{\"event\":\"signal\",\"data\":{json}}}");
             }
-            if let Some(sb) = &self.supabase {
-                sb.write_signal(&signal, &ctx);
+            // write_signal is async — await it to capture the Supabase-assigned UUID.
+            // Clone the writer to avoid holding an immutable borrow while we mutate pending_signal_uuid.
+            if let Some(sb) = self.supabase.clone() {
+                self.pending_signal_uuid = sb.write_signal(&signal, &ctx).await;
             }
         }
 
@@ -501,7 +523,8 @@ impl BarState {
                 println!("{{\"event\":\"trade_closed\",\"data\":{json}}}");
             }
             if let Some(sb) = &self.supabase {
-                sb.write_trade(trade);
+                // Pass the UUID of the signal that opened this position
+                sb.write_trade(trade, self.pending_signal_uuid.clone());
             }
         }
 
@@ -1086,14 +1109,14 @@ async fn main() {
                             Some((prev_open, _)) if open_ms > prev_open => {
                                 let (closed_open_ms, closed_kline) = pending.take().unwrap();
                                 let bar_close_ms = closed_open_ms + tf_ms;
-                                state.on_bar_close(closed_kline, bar_close_ms, &symbol_str);
+                                state.on_bar_close(closed_kline, bar_close_ms, &symbol_str).await;
                                 pending = Some((open_ms, kline));
                             }
                             Some((prev_open, _)) if open_ms == prev_open => {
                                 if kline.is_closed {
                                     pending = None;
                                     let bar_close_ms = open_ms + tf_ms;
-                                    state.on_bar_close(kline, bar_close_ms, &symbol_str);
+                                    state.on_bar_close(kline, bar_close_ms, &symbol_str).await;
                                 } else {
                                     pending = Some((open_ms, kline));
                                 }
