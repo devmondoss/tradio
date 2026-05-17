@@ -186,13 +186,6 @@ impl BarState {
         }
     }
 
-    /// Reloads StrategyConfig from Supabase if regime changed or config is stale.
-    async fn maybe_reload_config(&mut self, regime: &str) {
-        if self.config_loader.should_reload(regime) {
-            self.cfg = self.config_loader.load_for_regime(regime).await;
-        }
-    }
-
     fn notify_regime(&self, regime: &str) {
         if let Some(tx) = &self.regime_tx {
             let _ = tx.try_send(regime.to_string());
@@ -1216,7 +1209,9 @@ async fn main() {
     });
 
     // Trigger config reloads whenever the regime changes (sent from on_bar_close).
+    // The reload HTTP fetch is done in a spawned task — result comes back via cfg_rx.
     let (regime_tx, mut regime_rx) = tokio::sync::mpsc::channel::<String>(8);
+    let (cfg_tx, mut cfg_rx) = tokio::sync::mpsc::channel::<data::strategy::types::StrategyConfig>(4);
     state.regime_tx = Some(regime_tx);
 
     loop {
@@ -1335,7 +1330,26 @@ async fn main() {
             }
 
             Some(regime) = regime_rx.recv() => {
-                state.maybe_reload_config(&regime).await;
+                // Spawn the Supabase config fetch off the event loop.
+                if state.config_loader.should_reload(&regime) {
+                    let mut loader = ConfigLoader::new();
+                    loader.current_regime = state.config_loader.current_regime.clone();
+                    loader.last_reload = state.config_loader.last_reload;
+                    let tx = cfg_tx.clone();
+                    let regime_clone = regime.clone();
+                    tokio::spawn(async move {
+                        let cfg = loader.load_for_regime(&regime_clone).await;
+                        let _ = tx.send(cfg).await;
+                    });
+                    // Optimistically mark as reloaded so should_reload won't re-trigger
+                    // while the fetch is in flight.
+                    state.config_loader.current_regime = regime;
+                    state.config_loader.last_reload = Some(Instant::now());
+                }
+            }
+
+            Some(cfg) = cfg_rx.recv() => {
+                state.cfg = cfg;
             }
         }
 
