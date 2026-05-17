@@ -155,6 +155,8 @@ fn parse_config_from_json(params: &Value) -> StrategyConfig {
         liq_ttl_ms:                i("liq_ttl_ms",                d.liq_ttl_ms),
         funding_extreme_threshold: f("funding_extreme_threshold", d.funding_extreme_threshold),
         funding_ttl_ms:            i("funding_ttl_ms",            d.funding_ttl_ms),
+        fer_top_long_min:          f("fer_top_long_min",          d.fer_top_long_min),
+        fer_retail_long_max:       f("fer_retail_long_max",       d.fer_retail_long_max),
         smart_short_threshold:     f("smart_short_threshold",     d.smart_short_threshold),
         retail_long_threshold:     f("retail_long_threshold",     d.retail_long_threshold),
         min_divergence:            f("min_divergence",            d.min_divergence),
