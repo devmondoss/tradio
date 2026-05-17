@@ -1239,6 +1239,9 @@ impl KlineChart {
             .iter()
             .find(|s| s.action == StrategyAction::ShadowSignal)
             .map(|s| SignalSnap {
+                strategy_name: s
+                    .strategy_id
+                    .map_or("Unknown".into(), |id| format!("{id:?}")),
                 side: s
                     .side
                     .map_or("?".into(), |side| {
@@ -1259,6 +1262,10 @@ impl KlineChart {
             .rev()
             .take(5)
             .map(|t| TradeSnap {
+                strategy_name: t
+                    .strategy_id
+                    .clone()
+                    .unwrap_or_else(|| "Unknown".into()),
                 side: t.side.clone(),
                 close_reason: t.close_reason.clone(),
                 net_pnl: t.net_pnl,

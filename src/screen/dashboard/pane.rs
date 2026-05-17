@@ -1629,25 +1629,6 @@ impl State {
             ));
         }
 
-        if !treat_as_starter && matches!(&self.content, Content::Kline { .. }) {
-            let strategy_active = matches!(
-                &self.content,
-                Content::Kline { chart: Some(c), .. } if c.strategy_overlay_enabled
-            );
-            let icon = if strategy_active {
-                icon_text(Icon::StarFilled, 12)
-            } else {
-                icon_text(Icon::Star, 12)
-            };
-            buttons = buttons.push(button_with_tooltip(
-                icon,
-                Message::PaneEvent(pane, Event::ToggleStrategyOverlay),
-                Some("Strategy Overlay"),
-                tooltip_pos,
-                control_btn_style(strategy_active),
-            ));
-        }
-
         if is_popout {
             buttons = buttons.push(button_with_tooltip(
                 icon_text(Icon::Popout, 12),

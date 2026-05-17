@@ -21,6 +21,7 @@ pub struct PositionSnap {
 
 #[derive(Debug, Clone)]
 pub struct SignalSnap {
+    pub strategy_name: String,
     pub side: String,
     pub score: f64,
     pub evidence: Vec<String>,
@@ -29,6 +30,7 @@ pub struct SignalSnap {
 
 #[derive(Debug, Clone)]
 pub struct TradeSnap {
+    pub strategy_name: String,
     pub side: String,
     pub close_reason: String,
     pub net_pnl: f64,
