@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 //! Layer 2: headless strategy monitor for cloud deployment (Railway).
 //!
 //! Connects to Binance LinearPerps WebSocket streams, accumulates kline/depth/trade

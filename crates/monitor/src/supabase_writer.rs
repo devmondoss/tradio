@@ -151,6 +151,15 @@ fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Val
 
     let regime_str = format!("{:?}", ctx.regime);
 
+    // Split HVNs by current price for directional analysis in calibration
+    let price = ctx.price;
+    let hvn_above: Vec<f64> = ctx.volume_profile.hvn_nearby.iter().copied()
+        .filter(|&h| h > price).collect();
+    let hvn_below: Vec<f64> = ctx.volume_profile.hvn_nearby.iter().copied()
+        .filter(|&h| h < price).collect();
+    let nearest_wall_above = ctx.orderbook.walls_above.first().copied();
+    let nearest_wall_below = ctx.orderbook.walls_below.first().copied();
+
     json!({
         "timestamp_ms":   ctx.timestamp_ms,
         "strategy":       signal.strategy_id.map(|s| format!("{s:?}")).unwrap_or_default(),
@@ -179,6 +188,13 @@ fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Val
         "spread_bps":     ctx.orderbook.spread_bps,
         "obi_l5":         ctx.orderbook.obi_l5,
         "microprice":     ctx.orderbook.microprice,
+
+        // Structural levels (for calibration of find_structural_target)
+        "hvn_levels_above":   hvn_above,
+        "hvn_levels_below":   hvn_below,
+        "nearest_wall_above": nearest_wall_above,
+        "nearest_wall_below": nearest_wall_below,
+        // swing_high_20 / swing_low_20: requires bars — populated as NULL until added to context
 
         // Institutional context
         "short_liq_usd_5m":     inst.map(|i| i.liquidations.short_liq_usd_5m),
