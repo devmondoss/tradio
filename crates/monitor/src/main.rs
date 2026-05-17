@@ -518,8 +518,33 @@ impl BarState {
         let signal = route_strategy(&ctx, &cfg);
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
 
-        for nm in collect_near_misses(&ctx, &cfg, signal_fired) {
-            if let Ok(json) = serde_json::to_string(&nm) {
+        let near_misses = collect_near_misses(&ctx, &cfg, signal_fired);
+
+        // Build compact skip summary for [bar] log (only when no signal fired)
+        let skip_str: String = if signal_fired || near_misses.is_empty() {
+            String::new()
+        } else {
+            near_misses.iter()
+                .filter(|nm| !nm.blocked.is_empty())
+                .map(|nm| {
+                    let abbr = match nm.detector {
+                        "VwapValuePullbackContinuation" => "VWAP",
+                        "LvnLiquidityVacuumBreakout"   => "LVN",
+                        "ValueAreaFailedAuction"        => "VAFA",
+                        "LiquidationHunt"               => "LIQ",
+                        "FundingExhaustionReversal"     => "FUND",
+                        "SmartMoneyDivergence"          => "SMD",
+                        other => other,
+                    };
+                    let top = nm.blocked.iter().take(2).cloned().collect::<Vec<_>>().join("+");
+                    format!("{abbr}/{}:{top}", &nm.side[..1])
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+
+        for nm in &near_misses {
+            if let Ok(json) = serde_json::to_string(nm) {
                 println!("{{\"event\":\"near_miss\",\"data\":{json}}}");
             }
         }
@@ -591,7 +616,7 @@ impl BarState {
              vwap={:.2} cvd={:.1} ob={} \
              inst={} ls_top={:.1}%/{:.1}% liq={:.0}$ \
              action={:?} score={:.3} delivery={delivery_lag_ms}ms proc={processing_ms}ms equity={:.2} \
-             missing=[{missing_str}] evidence=[{evidence_str}]",
+             missing=[{missing_str}] evidence=[{evidence_str}] skip=[{skip_str}]",
             self.funding_rate.unwrap_or(0.0) * 10_000.0,
             basis.unwrap_or(0.0),
             oi_delta.unwrap_or(0.0),
