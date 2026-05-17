@@ -949,6 +949,124 @@ pub fn evaluate_smd(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<Ne
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Evaluation — FundingExhaustionReversal
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Evaluates FER conditions and returns NearMiss entries for sides where funding
+/// is at extreme level (the entry gate). Without this, FER failures are invisible.
+pub fn evaluate_fer(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<NearMiss> {
+    use crate::institutional::{FundingRegime, OiTrendDir};
+
+    let Some(inst) = ctx.institutional.as_ref() else {
+        return vec![];
+    };
+    let px = ctx.price;
+    let flow = &ctx.flow;
+    let vp = &ctx.volume_profile;
+    let ob = &ctx.orderbook;
+
+    let top_long = inst.ls_ratio.top_traders_long_pct;
+    let retail_long = inst.ls_ratio.retail_long_pct;
+    let oi_weakening = matches!(
+        inst.oi_trend.trend,
+        OiTrendDir::Decreasing | OiTrendDir::DecreasingFast
+    );
+
+    let mut results = vec![];
+
+    let check = |cond: bool, ok: &'static str, fail: &'static str,
+                 met: &mut Vec<&'static str>, blocked: &mut Vec<&'static str>| {
+        if cond { met.push(ok) } else { blocked.push(fail) }
+    };
+
+    // ── SHORT — extreme positive funding → longs exhausted, reversal down ──
+    let funding_extreme_long = matches!(inst.funding.regime, FundingRegime::ExtremeLong)
+        && inst.funding.current > cfg.funding_extreme_threshold;
+    if funding_extreme_long {
+        let mut met = vec![];
+        let mut blocked = vec![];
+
+        check(funding_extreme_long, "funding_extreme_long", "funding_not_extreme", &mut met, &mut blocked);
+        check(top_long < 0.52, "smart_money_exiting_long", "top_traders_still_long", &mut met, &mut blocked);
+        check(retail_long > 0.62, "retail_trapped_long", "retail_not_extreme_long", &mut met, &mut blocked);
+        check(oi_weakening, "oi_weakening", "oi_not_weakening", &mut met, &mut blocked);
+        check(
+            flow.cvd_slope.unwrap_or(0.0) <= 0.0,
+            "cvd_slope_negative", "cvd_slope_bullish", &mut met, &mut blocked,
+        );
+        check(
+            inst.taker_ratio.as_ref().map(|t| t.buy_sell_ratio < 1.0).unwrap_or(false),
+            "taker_sell_dominant", "taker_buy_dominant", &mut met, &mut blocked,
+        );
+        check(
+            inst.liquidations.long_liq_usd_5m < cfg.liq_cascade_threshold,
+            "no_long_cascade", "long_cascade_active", &mut met, &mut blocked,
+        );
+
+        let total = met.len() + blocked.len();
+        let score_pct = ((met.len() * 100).checked_div(total).unwrap_or(0)) as u8;
+        results.push(NearMiss {
+            timestamp_ms: ctx.timestamp_ms,
+            symbol: ctx.symbol.clone(),
+            detector: "FundingExhaustionReversal",
+            side: "Short",
+            price: px,
+            regime: format!("{:?}", ctx.regime),
+            atr: ctx.atr,
+            met, blocked, score_pct,
+            vah: vp.vah, val: vp.val, poc: vp.poc,
+            delta: flow.delta, cvd_slope: flow.cvd_slope,
+            vpin: flow.vpin, spread_bps: ob.spread_bps,
+            failed_acceptance: flow.failed_acceptance,
+        });
+    }
+
+    // ── LONG — extreme negative funding → shorts exhausted, reversal up ──
+    let funding_extreme_short = matches!(inst.funding.regime, FundingRegime::ExtremeShort)
+        && inst.funding.current < -cfg.funding_extreme_threshold;
+    if funding_extreme_short {
+        let mut met = vec![];
+        let mut blocked = vec![];
+
+        check(funding_extreme_short, "funding_extreme_short", "funding_not_extreme", &mut met, &mut blocked);
+        check(top_long > cfg.fer_top_long_min, "smart_money_positioning_long", "top_traders_not_bullish", &mut met, &mut blocked);
+        check(retail_long < cfg.fer_retail_long_max, "retail_not_chasing_longs", "retail_long_crowded", &mut met, &mut blocked);
+        check(oi_weakening, "oi_weakening", "oi_not_weakening", &mut met, &mut blocked);
+        check(
+            flow.cvd_slope.unwrap_or(0.0) >= 0.0,
+            "cvd_recovering", "cvd_slope_bearish", &mut met, &mut blocked,
+        );
+        check(
+            inst.taker_ratio.as_ref().map(|t| t.buy_sell_ratio > 1.0).unwrap_or(false),
+            "taker_buy_dominant", "taker_sell_dominant", &mut met, &mut blocked,
+        );
+        check(
+            inst.liquidations.short_liq_usd_5m < cfg.liq_cascade_threshold,
+            "no_short_cascade", "short_cascade_active", &mut met, &mut blocked,
+        );
+
+        let total = met.len() + blocked.len();
+        let score_pct = ((met.len() * 100).checked_div(total).unwrap_or(0)) as u8;
+        results.push(NearMiss {
+            timestamp_ms: ctx.timestamp_ms,
+            symbol: ctx.symbol.clone(),
+            detector: "FundingExhaustionReversal",
+            side: "Long",
+            price: px,
+            regime: format!("{:?}", ctx.regime),
+            atr: ctx.atr,
+            met, blocked, score_pct,
+            vah: vp.vah, val: vp.val, poc: vp.poc,
+            delta: flow.delta, cvd_slope: flow.cvd_slope,
+            vpin: flow.vpin, spread_bps: ob.spread_bps,
+            failed_acceptance: flow.failed_acceptance,
+        });
+    }
+
+    results
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Writer
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -966,6 +1084,7 @@ pub fn collect_near_misses(
     candidates.extend(evaluate_lvn(ctx, cfg));
     candidates.extend(evaluate_vwap(ctx, cfg));
     candidates.extend(evaluate_smd(ctx, cfg));
+    candidates.extend(evaluate_fer(ctx, cfg));
     candidates
         .into_iter()
         .filter(|nm| {

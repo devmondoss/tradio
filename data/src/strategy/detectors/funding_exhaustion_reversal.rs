@@ -80,8 +80,8 @@ pub fn detect(
     let funding_extreme_short = matches!(inst.funding.regime, FundingRegime::ExtremeShort)
         && inst.funding.current < -cfg.funding_extreme_threshold;
 
-    let institutional_diverging_long = inst.ls_ratio.top_traders_long_pct > 0.52
-        && inst.ls_ratio.retail_long_pct < 0.38;
+    let institutional_diverging_long = inst.ls_ratio.top_traders_long_pct > cfg.fer_top_long_min
+        && inst.ls_ratio.retail_long_pct < cfg.fer_retail_long_max;
 
     let flow_weakening_long = flow.cvd_slope.unwrap_or(0.0) >= 0.0
         && inst

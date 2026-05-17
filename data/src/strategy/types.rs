@@ -212,6 +212,10 @@ pub struct StrategyConfig {
     /// Absolute funding rate that triggers extreme regime (0.0006 = 0.06%).
     pub funding_extreme_threshold: f64,
     pub funding_ttl_ms: i64,
+    /// Top traders long pct minimum for FER Long (neutral-to-bullish positioning).
+    pub fer_top_long_min: f64,
+    /// Retail long pct maximum for FER Long (retail not overwhelmingly long).
+    pub fer_retail_long_max: f64,
 
     // SmartMoneyDivergence
     /// Top traders long pct below this → smart money predominantly short.
@@ -240,6 +244,8 @@ impl Default for StrategyConfig {
             liq_ttl_ms: 10 * 60 * 1000,
             funding_extreme_threshold: 0.0006,
             funding_ttl_ms: 30 * 60 * 1000,
+            fer_top_long_min: 0.46,
+            fer_retail_long_max: 0.58,
             smart_short_threshold: 0.45,
             retail_long_threshold: 0.60,
             min_divergence: 0.18,
