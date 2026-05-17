@@ -73,7 +73,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             return None;
         }
 
-        let target = find_structural_target(entry, risk, Side::Long, vp, ob, atr, cfg)?;
+        let target = find_structural_target(entry, risk, Side::Long, vp, ob, atr, ctx.swing_high_20, ctx.swing_low_20, cfg)?;
 
         return Some(StrategySignal {
             action: StrategyAction::ShadowSignal,
@@ -128,7 +128,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             return None;
         }
 
-        let target = find_structural_target(entry, risk, Side::Short, vp, ob, atr, cfg)?;
+        let target = find_structural_target(entry, risk, Side::Short, vp, ob, atr, ctx.swing_high_20, ctx.swing_low_20, cfg)?;
 
         return Some(StrategySignal {
             action: StrategyAction::ShadowSignal,
@@ -171,6 +171,8 @@ fn find_structural_target(
     vp: &VolumeProfileContext,
     ob: &OrderBookContext,
     atr: f64,
+    swing_high: Option<f64>,
+    swing_low: Option<f64>,
     cfg: &StrategyConfig,
 ) -> Option<f64> {
     let min_reward = risk * cfg.min_rr;
@@ -187,6 +189,11 @@ fn find_structural_target(
             if let Some(vah) = vp.vah {
                 if vah > lo && vah < hi {
                     candidates.push(vah);
+                }
+            }
+            if let Some(sh) = swing_high {
+                if sh > lo && sh < hi {
+                    candidates.push(sh);
                 }
             }
             candidates.extend(ob.walls_above.iter().copied().filter(|&w| w > lo && w < hi));
@@ -213,6 +220,11 @@ fn find_structural_target(
             if let Some(val) = vp.val {
                 if val < hi && val > lo {
                     candidates.push(val);
+                }
+            }
+            if let Some(sl) = swing_low {
+                if sl < hi && sl > lo {
+                    candidates.push(sl);
                 }
             }
             candidates.extend(ob.walls_below.iter().copied().filter(|&w| w < hi && w > lo));
@@ -298,6 +310,8 @@ mod tests {
                 quality: DataQuality::Live,
             },
             institutional: None,
+            swing_high_20: None,
+            swing_low_20: None,
         }
     }
 

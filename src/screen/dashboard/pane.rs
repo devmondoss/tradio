@@ -37,7 +37,7 @@ use data::{
     stream::PersistStreamKind,
 };
 use exchange::{
-    Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
+    FundingRate, Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
     adapter::{MarketKind, StreamKind, StreamTicksize},
     unit::PriceStep,
 };
@@ -427,6 +427,24 @@ impl State {
                     panic!("Kline chart wasn't initialized when inserting open interest");
                 };
                 chart.insert_open_interest(req_id, oi);
+            }
+            _ => {
+                log::error!("pane content not candlestick");
+            }
+        }
+    }
+
+    pub fn insert_hist_funding_rate(
+        &mut self,
+        req_id: Option<uuid::Uuid>,
+        data: &[FundingRate],
+    ) {
+        match &mut self.content {
+            Content::Kline { chart, .. } => {
+                let Some(chart) = chart else {
+                    panic!("Kline chart wasn't initialized when inserting funding rate");
+                };
+                chart.insert_funding_rate(req_id, data);
             }
             _ => {
                 log::error!("pane content not candlestick");
@@ -1102,6 +1120,9 @@ impl State {
             }
             Status::Loading(InfoKind::FetchingOI) => {
                 top_left_buttons = top_left_buttons.push(text("Fetching Open Interest..."));
+            }
+            Status::Loading(InfoKind::FetchingFundingRate) => {
+                top_left_buttons = top_left_buttons.push(text("Fetching Funding Rate..."));
             }
             Status::Stale(msg) => {
                 top_left_buttons = top_left_buttons.push(text(msg));

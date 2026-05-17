@@ -701,6 +701,14 @@ pub struct OpenInterest {
     pub value: f32,
 }
 
+/// A single historical funding rate sample.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FundingRate {
+    pub time: UnixMs,
+    /// Raw rate (e.g. 0.0001 = 1 bp). Positive = longs pay shorts.
+    pub rate: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Hash)]
 pub struct TickMultiplier(pub u16);
 

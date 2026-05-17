@@ -1,5 +1,5 @@
 use crate::{
-    Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs,
+    Event, FundingRate, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs,
     adapter::limiter::DynamicRateLimiterConfig,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
@@ -175,6 +175,16 @@ impl BinanceHandle {
             .await
     }
 
+    pub async fn fetch_funding_rate(
+        &self,
+        ticker: TickerInfo,
+        range: Option<(UnixMs, UnixMs)>,
+    ) -> Result<Vec<FundingRate>, AdapterError> {
+        self.request_port
+            .request(move |reply| BinanceCommand::FundingRate { ticker, range, reply })
+            .await
+    }
+
     pub async fn fetch_trades(
         &self,
         ticker: TickerInfo,
@@ -310,6 +320,17 @@ impl super::FetchCommandHandler<BinanceMarketScope> for Worker {
         Box::pin(async move {
             fetch::fetch_historical_oi(self.hub_for_market(market), ticker_info, range, timeframe)
                 .await
+        })
+    }
+
+    fn fetch_funding_rate(
+        &mut self,
+        ticker_info: TickerInfo,
+        range: Option<(UnixMs, UnixMs)>,
+    ) -> futures::future::BoxFuture<'_, Result<Vec<FundingRate>, AdapterError>> {
+        let market = ticker_info.market_type();
+        Box::pin(async move {
+            fetch::fetch_funding_rate(self.hub_for_market(market), ticker_info, range).await
         })
     }
 

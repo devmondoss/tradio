@@ -1,5 +1,6 @@
 use crate::{
-    Kline, OpenInterest, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs,
+    FundingRate, Kline, OpenInterest, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe,
+    Trade, UnixMs,
     Volume,
     depth::{DeOrder, DepthPayload},
     serde_util,
@@ -40,6 +41,14 @@ struct DeOpenInterest {
     pub time: u64,
     #[serde(rename = "sumOpenInterest", deserialize_with = "de_string_to_number")]
     pub sum: f32,
+}
+
+#[derive(Deserialize, Debug)]
+struct DeFundingRate {
+    #[serde(rename = "fundingTime")]
+    time: u64,
+    #[serde(rename = "fundingRate", deserialize_with = "de_string_to_number")]
+    rate: f32,
 }
 
 #[derive(Deserialize, Debug)]
@@ -550,6 +559,48 @@ pub(super) async fn fetch_historical_oi(
         .collect::<Vec<OpenInterest>>();
 
     Ok(open_interest)
+}
+
+pub(super) async fn fetch_funding_rate(
+    hub: &mut HttpHub<BinanceLimiter>,
+    ticker_info: TickerInfo,
+    range: Option<(UnixMs, UnixMs)>,
+) -> Result<Vec<FundingRate>, AdapterError> {
+    let (ticker_str, market) = ticker_info.ticker.to_full_symbol_and_type();
+
+    let base_url = match market {
+        MarketKind::LinearPerps => {
+            format!("{LINEAR_PERP_DOMAIN}/fapi/v1/fundingRate?symbol={ticker_str}")
+        }
+        MarketKind::InversePerps => {
+            format!("{INVERSE_PERP_DOMAIN}/dapi/v1/fundingRate?symbol={ticker_str}")
+        }
+        _ => {
+            return Err(AdapterError::InvalidRequest(format!(
+                "Funding rate not available for market type: {market:?}"
+            )));
+        }
+    };
+
+    let mut url = base_url;
+    if let Some((start, end)) = range {
+        url.push_str(&format!(
+            "&startTime={}&endTime={}&limit=1000",
+            start.as_u64(),
+            end.as_u64()
+        ));
+    } else {
+        url.push_str("&limit=200");
+    }
+
+    let raw: Vec<DeFundingRate> = hub.http_json_with_limiter(&url, 1, None, None).await?;
+    Ok(raw
+        .into_iter()
+        .map(|r| FundingRate {
+            time: r.time.into(),
+            rate: r.rate,
+        })
+        .collect())
 }
 
 async fn fetch_intraday_trades(

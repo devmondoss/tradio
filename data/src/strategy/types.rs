@@ -164,6 +164,12 @@ pub struct StrategyMarketContext {
     /// Institutional data (liquidations, L/S ratios, OI trend, funding).
     /// None until at least one REST fetch cycle completes.
     pub institutional: Option<crate::institutional::InstitutionalContext>,
+    /// 20-bar swing high/low for structural target selection in find_structural_target.
+    /// None during warmup (<20 bars available).
+    #[serde(default)]
+    pub swing_high_20: Option<f64>,
+    #[serde(default)]
+    pub swing_low_20: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

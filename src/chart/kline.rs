@@ -16,7 +16,7 @@ use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 
 use data::util::abbr_large_numbers;
 use exchange::unit::{Price, PriceStep, Qty};
-use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade, UnixMs};
+use exchange::{FundingRate as FRData, Kline, OpenInterest as OIData, TickerInfo, Trade, UnixMs};
 
 use iced::task::Handle;
 use iced::theme::palette::Extended;
@@ -120,6 +120,12 @@ impl Chart for KlineChart {
         match &self.data_source {
             PlotData::TimeBased(timeseries) => timeseries.datapoints.is_empty(),
             PlotData::TickBased(tick_aggr) => tick_aggr.datapoints.is_empty(),
+        }
+    }
+
+    fn on_avwap_anchor_set(&mut self, ts: u64) {
+        if let Some(indi) = self.indicators[KlineIndicator::Vwap].as_mut() {
+            indi.set_user_avwap_anchor(ts, &self.data_source);
         }
     }
 }
@@ -729,10 +735,25 @@ impl KlineChart {
             }
         }
 
-        for key in [KlineIndicator::OpenInterest, KlineIndicator::OiDelta] {
+        for key in [KlineIndicator::OpenInterest, KlineIndicator::OiDelta, KlineIndicator::OiZScore] {
             if let Some(indi) = self.indicators[key].as_mut() {
                 indi.on_open_interest(oi_data);
             }
+        }
+    }
+
+    pub fn insert_funding_rate(&mut self, req_id: Option<uuid::Uuid>, data: &[FRData]) {
+        if let Some(req_id) = req_id {
+            if data.is_empty() {
+                self.request_handler
+                    .mark_failed(req_id, "No data received".to_string());
+            } else {
+                self.request_handler.mark_completed(req_id);
+            }
+        }
+
+        if let Some(indi) = self.indicators[KlineIndicator::FundingRate].as_mut() {
+            indi.on_funding_rate(data);
         }
     }
 
@@ -1171,6 +1192,8 @@ impl KlineChart {
             flow,
             orderbook,
             institutional: None,
+            swing_high_20: None,
+            swing_low_20: None,
         };
 
         let cfg = StrategyConfig {
@@ -1445,6 +1468,42 @@ impl KlineChart {
                             ..Default::default()
                         },
                         line_color,
+                    ),
+                );
+            }
+
+            // Draw extra overlay lines (session VWAPs, etc.)
+            for (pts, rgba) in indi.overlay_extra_lines(earliest, latest) {
+                let filtered: Vec<_> = pts
+                    .iter()
+                    .filter(|(_, p)| p.is_finite() && *p > 0.0)
+                    .collect();
+                if filtered.len() < 2 {
+                    continue;
+                }
+                let path = Path::new(|builder| {
+                    let mut started = false;
+                    for &&(key, price) in &filtered {
+                        let x = interval_to_x(key);
+                        let y = price_to_y(Price::from_f32(price));
+                        if !x.is_finite() || !y.is_finite() {
+                            started = false;
+                            continue;
+                        }
+                        if !started {
+                            builder.move_to(Point::new(x, y));
+                            started = true;
+                        } else {
+                            builder.line_to(Point::new(x, y));
+                        }
+                    }
+                });
+                let color = Color::from_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+                frame.stroke(
+                    &path,
+                    Stroke::with_color(
+                        Stroke { width: 1.5, ..Default::default() },
+                        color,
                     ),
                 );
             }
@@ -1891,6 +1950,7 @@ impl canvas::Program<Message> for KlineChart {
         match interaction {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
+            Interaction::PlacingAvwapAnchor => mouse::Interaction::Cell,
             Interaction::None | Interaction::Ruler { .. } => {
                 if cursor.is_over(bounds) {
                     mouse::Interaction::Crosshair

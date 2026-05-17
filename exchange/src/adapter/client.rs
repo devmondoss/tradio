@@ -2,7 +2,7 @@ use super::{
     AdapterError, Event, Exchange, MarketKind, StreamConfig, Venue,
     hub::{binance, bybit, hyperliquid, mexc, okex},
 };
-use crate::{Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
+use crate::{FundingRate, Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
 
 use futures::{StreamExt, stream, stream::BoxStream};
 use std::{collections::HashMap, collections::HashSet, path::PathBuf};
@@ -407,6 +407,26 @@ impl AdapterHandles {
             }
             _ => Err(AdapterError::InvalidRequest(format!(
                 "Open interest data not available for {exchange}"
+            ))),
+        }
+    }
+
+    pub async fn fetch_funding_rate(
+        &self,
+        ticker_info: TickerInfo,
+        range: Option<(UnixMs, UnixMs)>,
+    ) -> Result<Vec<FundingRate>, AdapterError> {
+        let exchange = ticker_info.ticker.exchange;
+
+        match exchange {
+            Exchange::BinanceLinear | Exchange::BinanceInverse => {
+                let Some(handle) = self.binance.as_ref() else {
+                    return Err(Self::missing_venue_error(exchange.venue()));
+                };
+                handle.fetch_funding_rate(ticker_info, range).await
+            }
+            _ => Err(AdapterError::InvalidRequest(format!(
+                "Funding rate not available for {exchange}"
             ))),
         }
     }

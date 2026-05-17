@@ -38,6 +38,8 @@ pub enum Interaction {
     Ruler {
         start: Option<Point>,
     },
+    /// Waiting for user to click to place an AVWAP anchor.
+    PlacingAvwapAnchor,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +59,8 @@ pub enum Message {
     BoundsChanged(Rectangle),
     SplitDragged(usize, f32),
     DoubleClick(AxisScaleClicked),
+    /// Set the user-anchored AVWAP to the given timestamp (0 = clear).
+    SetAvwapAnchor(u64),
 }
 
 pub trait Chart: PlotConstants + canvas::Program<Message> {
@@ -81,6 +85,8 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
     fn supports_fit_autoscaling(&self) -> bool;
 
     fn is_empty(&self) -> bool;
+
+    fn on_avwap_anchor_set(&mut self, _ts: u64) {}
 }
 
 fn canvas_interaction<T: Chart>(
@@ -96,6 +102,12 @@ fn canvas_interaction<T: Chart>(
 
     let shrunken_bounds = bounds.shrink(DRAG_SIZE * 4.0);
     let cursor_position = cursor.position_in(shrunken_bounds);
+
+    if let Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)) = event {
+        if matches!(interaction, Interaction::PlacingAvwapAnchor) {
+            *interaction = Interaction::None;
+        }
+    }
 
     if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
         match interaction {
@@ -122,6 +134,19 @@ fn canvas_interaction<T: Chart>(
 
                     if let mouse::Button::Left = button {
                         match interaction {
+                            Interaction::PlacingAvwapAnchor => {
+                                let region = state.visible_region(shrunken_bounds.size());
+                                let (ts, _) = state.snap_x_to_index(
+                                    cursor_in_bounds.x,
+                                    shrunken_bounds.size(),
+                                    region,
+                                );
+                                *interaction = Interaction::None;
+                                return Some(
+                                    canvas::Action::publish(Message::SetAvwapAnchor(ts))
+                                        .and_capture(),
+                                );
+                            }
                             Interaction::None
                             | Interaction::Panning { .. }
                             | Interaction::Zoomin { .. } => {
@@ -262,6 +287,10 @@ fn canvas_interaction<T: Chart>(
                     }
                     keyboard::Key::Named(keyboard::key::Named::Escape) => {
                         *interaction = Interaction::None;
+                        Some(canvas::Action::request_redraw().and_capture())
+                    }
+                    keyboard::Key::Character(c) if c == "a" || c == "A" => {
+                        *interaction = Interaction::PlacingAvwapAnchor;
                         Some(canvas::Action::request_redraw().and_capture())
                     }
                     _ => None,
@@ -487,6 +516,9 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
             }
         }
         Message::CrosshairMoved => return chart.invalidate_crosshair(),
+        Message::SetAvwapAnchor(ts) => {
+            chart.on_avwap_anchor_set(*ts);
+        }
     }
     chart.invalidate_all();
 }

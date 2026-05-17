@@ -7,7 +7,7 @@ pub mod okex;
 use crate::adapter::AdapterError;
 use crate::adapter::limiter::RateLimiter;
 use crate::depth::DepthPayload;
-use crate::{Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
+use crate::{FundingRate, Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
 
 use futures::future::BoxFuture;
 use reqwest::{Client, Method, Response, header};
@@ -44,6 +44,11 @@ enum FetchCommand<M> {
         timeframe: Timeframe,
         range: Option<(UnixMs, UnixMs)>,
         reply: ResponseTx<Vec<OpenInterest>>,
+    },
+    FundingRate {
+        ticker: TickerInfo,
+        range: Option<(UnixMs, UnixMs)>,
+        reply: ResponseTx<Vec<FundingRate>>,
     },
     DepthSnapshot {
         ticker: Ticker,
@@ -303,6 +308,15 @@ pub trait FetchCommandHandler<M> {
         Box::pin(async { Err(unsupported_fetch("Open interest fetch")) })
     }
 
+    fn fetch_funding_rate(
+        &mut self,
+        ticker_info: TickerInfo,
+        range: Option<(UnixMs, UnixMs)>,
+    ) -> BoxFuture<'_, Result<Vec<FundingRate>, AdapterError>> {
+        let _ = (ticker_info, range);
+        Box::pin(async { Err(unsupported_fetch("Funding rate fetch")) })
+    }
+
     fn fetch_depth_snapshot(
         &mut self,
         ticker: Ticker,
@@ -378,6 +392,14 @@ where
             reply,
         } => {
             let result = handler.fetch_open_interest(ticker, timeframe, range).await;
+            let _ = reply.send(result);
+        }
+        FetchCommand::FundingRate {
+            ticker,
+            range,
+            reply,
+        } => {
+            let result = handler.fetch_funding_rate(ticker, range).await;
             let _ = reply.send(result);
         }
         FetchCommand::DepthSnapshot { ticker, reply } => {

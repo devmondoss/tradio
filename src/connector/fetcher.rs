@@ -1,5 +1,5 @@
 use exchange::adapter::{AdapterError, AdapterHandles, Exchange, StreamKind};
-use exchange::{Kline, OpenInterest, TickerInfo, Trade, UnixMs};
+use exchange::{FundingRate, Kline, OpenInterest, TickerInfo, Trade, UnixMs};
 use iced::{
     Task,
     task::{Handle, Straw, sipper},
@@ -31,6 +31,10 @@ pub enum FetchedData {
     },
     OI {
         data: Vec<OpenInterest>,
+        req_id: Option<uuid::Uuid>,
+    },
+    FundingRate {
+        data: Vec<FundingRate>,
         req_id: Option<uuid::Uuid>,
     },
 }
@@ -109,6 +113,7 @@ pub enum FetchRange {
     Kline(UnixMs, UnixMs),
     OpenInterest(UnixMs, UnixMs),
     Trades(UnixMs, UnixMs),
+    FundingRate(UnixMs, UnixMs),
 }
 
 #[derive(PartialEq, Debug)]
@@ -132,6 +137,9 @@ impl FetchRequest {
                 e1 == e2 && s1 == s2
             }
             (FetchRange::Trades(s1, e1), FetchRange::Trades(s2, e2)) => e1 == e2 && s1 == s2,
+            (FetchRange::FundingRate(s1, e1), FetchRange::FundingRate(s2, e2)) => {
+                e1 == e2 && s1 == s2
+            }
             _ => false,
         }
     }
@@ -178,6 +186,7 @@ pub enum InfoKind {
     FetchingKlines,
     FetchingTrades(usize),
     FetchingOI,
+    FetchingFundingRate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -255,6 +264,30 @@ pub fn request_fetch(
 
             if let Some((stream, pane_uid)) = kline_stream {
                 return oi_fetch_task(
+                    handles.clone(),
+                    layout_id,
+                    pane_uid,
+                    stream,
+                    Some(req_id),
+                    Some((from, to)),
+                );
+            }
+        }
+        FetchRange::FundingRate(from, to) => {
+            let kline_stream = if let Some(s) = stream {
+                Some((s, pane_id))
+            } else {
+                ready_streams.iter().find_map(|stream| {
+                    if let StreamKind::Kline { .. } = stream {
+                        Some((*stream, pane_id))
+                    } else {
+                        None
+                    }
+                })
+            };
+
+            if let Some((stream, pane_uid)) = kline_stream {
+                return funding_rate_fetch_task(
                     handles.clone(),
                     layout_id,
                     pane_uid,
@@ -389,6 +422,52 @@ pub fn oi_fetch_task(
                 move |result| match result {
                     Ok(oi) => {
                         let data = FetchedData::OI { data: oi, req_id };
+                        FetchUpdate::Data {
+                            layout_id,
+                            pane_id,
+                            data,
+                            stream,
+                        }
+                    }
+                    Err(err) => FetchUpdate::Error {
+                        pane_id,
+                        req_id,
+                        error: err,
+                    },
+                },
+            )
+        }
+        _ => Task::none(),
+    };
+
+    update_status.chain(fetch_task)
+}
+
+pub fn funding_rate_fetch_task(
+    handles: AdapterHandles,
+    layout_id: Uuid,
+    pane_id: Uuid,
+    stream: StreamKind,
+    req_id: Option<Uuid>,
+    range: Option<(UnixMs, UnixMs)>,
+) -> Task<FetchUpdate> {
+    let update_status = Task::done(FetchUpdate::Status {
+        pane_id,
+        status: FetchTaskStatus::Loading(InfoKind::FetchingFundingRate),
+    });
+
+    let fetch_task = match stream {
+        StreamKind::Kline { ticker_info, .. } => {
+            let fetch = async move { handles.fetch_funding_rate(ticker_info, range).await };
+
+            Task::perform(
+                iced::futures::TryFutureExt::map_err(fetch, |err| {
+                    log::error!("Funding rate fetch failed: {err}");
+                    err.ui_message()
+                }),
+                move |result| match result {
+                    Ok(data) => {
+                        let data = FetchedData::FundingRate { data, req_id };
                         FetchUpdate::Data {
                             layout_id,
                             pane_id,

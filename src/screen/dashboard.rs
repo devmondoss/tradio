@@ -997,6 +997,15 @@ impl Dashboard {
                     }
                 }
             }
+            FetchedData::FundingRate { data, req_id } => {
+                if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
+                    pane_state.status = pane::Status::Ready;
+
+                    if let StreamKind::Kline { .. } = stream_type {
+                        pane_state.insert_hist_funding_rate(req_id, &data);
+                    }
+                }
+            }
         }
 
         Task::none()

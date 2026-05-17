@@ -194,7 +194,8 @@ fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Val
         "hvn_levels_below":   hvn_below,
         "nearest_wall_above": nearest_wall_above,
         "nearest_wall_below": nearest_wall_below,
-        // swing_high_20 / swing_low_20: requires bars — populated as NULL until added to context
+        "swing_high_20":      ctx.swing_high_20,
+        "swing_low_20":       ctx.swing_low_20,
 
         // Institutional context
         "short_liq_usd_5m":     inst.map(|i| i.liquidations.short_liq_usd_5m),

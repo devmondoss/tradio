@@ -224,6 +224,8 @@ mod tests {
                 quality: DataQuality::Live,
             },
             institutional: None,
+            swing_high_20: None,
+            swing_low_20: None,
         }
     }
 

@@ -24,10 +24,41 @@ pub struct VwapPoint {
     pub lower_band2: f32,
 }
 
+/// Session VWAP window defined by UTC hour offsets.
+struct SessionWindow {
+    start_hour: u64,
+    end_hour: u64,
+}
+
+impl SessionWindow {
+    /// Returns the UTC session epoch (ms) for the day containing `time_ms`.
+    fn session_start_ms(&self, time_ms: u64) -> u64 {
+        let day_start = (time_ms / 86_400_000) * 86_400_000;
+        day_start + self.start_hour * 3_600_000
+    }
+
+    fn contains(&self, time_ms: u64) -> bool {
+        let ms_in_day = time_ms % 86_400_000;
+        let start_ms = self.start_hour * 3_600_000;
+        let end_ms = self.end_hour * 3_600_000;
+        ms_in_day >= start_ms && ms_in_day < end_ms
+    }
+}
+
+const ASIA:   SessionWindow = SessionWindow { start_hour: 0,  end_hour: 8  };
+const LONDON: SessionWindow = SessionWindow { start_hour: 8,  end_hour: 16 };
+const NY:     SessionWindow = SessionWindow { start_hour: 13, end_hour: 21 };
+
 pub struct VwapIndicator {
     cache: Caches,
     data: BasisSeries<VwapPoint>,
     avwap_bos: Option<f32>,
+    /// Session VWAPs keyed by time: (asia, london, ny) — None outside their session.
+    session_vwap: BTreeMap<exchange::UnixMs, [Option<f32>; 3]>,
+    /// User-placed AVWAP anchor timestamp. None = no anchor set.
+    user_anchor: Option<exchange::UnixMs>,
+    /// Computed AVWAP values from user_anchor to the latest candle.
+    user_avwap: BTreeMap<exchange::UnixMs, f32>,
 }
 
 impl VwapIndicator {
@@ -36,7 +67,76 @@ impl VwapIndicator {
             cache: Caches::default(),
             data: BasisSeries::default(),
             avwap_bos: None,
+            session_vwap: BTreeMap::new(),
+            user_anchor: None,
+            user_avwap: BTreeMap::new(),
         }
+    }
+
+    fn compute_session_vwap(
+        datapoints: &BTreeMap<exchange::UnixMs, KlineDataPoint>,
+    ) -> BTreeMap<exchange::UnixMs, [Option<f32>; 3]> {
+        let sessions = [&ASIA, &LONDON, &NY];
+        let mut accum: [(u64, f64, f64); 3] = [(0, 0.0, 0.0); 3]; // (anchor_ms, cum_vol, cum_pv)
+        let mut result = BTreeMap::new();
+
+        for (&time, dp) in datapoints.iter() {
+            let t = time.as_u64();
+            let tp = (dp.kline.high.to_f32() as f64
+                + dp.kline.low.to_f32() as f64
+                + dp.kline.close.to_f32() as f64)
+                / 3.0;
+            let vol = f32::from(dp.kline.volume.total()) as f64;
+
+            let mut values: [Option<f32>; 3] = [None; 3];
+
+            for (i, session) in sessions.iter().enumerate() {
+                if !session.contains(t) {
+                    accum[i] = (0, 0.0, 0.0);
+                    continue;
+                }
+                let sess_start = session.session_start_ms(t);
+                if accum[i].0 != sess_start {
+                    // New session instance — reset
+                    accum[i] = (sess_start, 0.0, 0.0);
+                }
+                accum[i].1 += vol;
+                accum[i].2 += tp * vol;
+                if accum[i].1 > 0.0 {
+                    values[i] = Some((accum[i].2 / accum[i].1) as f32);
+                }
+            }
+
+            result.insert(time, values);
+        }
+
+        result
+    }
+
+    pub fn session_vwap_lines(&self, earliest: u64, latest: u64) -> Vec<(Vec<(u64, f32)>, [f32; 4])> {
+        let colors: [[f32; 4]; 3] = [
+            [1.0, 0.7, 0.0, 0.75],  // Asia  — amber
+            [0.2, 0.8, 0.4, 0.75],  // London — green
+            [0.7, 0.3, 1.0, 0.75],  // NY    — purple
+        ];
+
+        let mut series: [Vec<(u64, f32)>; 3] = [vec![], vec![], vec![]];
+
+        let range = exchange::UnixMs::new(earliest)..=exchange::UnixMs::new(latest);
+        for (&time, values) in self.session_vwap.range(range) {
+            for (i, &v) in values.iter().enumerate() {
+                if let Some(price) = v {
+                    series[i].push((time.as_u64(), price));
+                }
+            }
+        }
+
+        series
+            .into_iter()
+            .zip(colors.iter())
+            .filter(|(pts, _)| !pts.is_empty())
+            .map(|(pts, &col)| (pts, col))
+            .collect()
     }
 
     /// Finds the most recent swing-low pivot in [start..n-1) and returns its index.
@@ -234,6 +334,45 @@ impl VwapIndicator {
         result
     }
 
+    fn rebuild_user_avwap(&mut self, source: &PlotData<KlineDataPoint>) {
+        self.user_avwap.clear();
+        let Some(anchor) = self.user_anchor else { return };
+
+        let PlotData::TimeBased(ts) = source else { return };
+
+        let mut cum_vol = 0.0_f64;
+        let mut cum_pv = 0.0_f64;
+        for (&time, dp) in ts.datapoints.range(anchor..) {
+            let tp = (dp.kline.high.to_f32() as f64
+                + dp.kline.low.to_f32() as f64
+                + dp.kline.close.to_f32() as f64)
+                / 3.0;
+            let vol = f32::from(dp.kline.volume.total()) as f64;
+            cum_vol += vol;
+            cum_pv += tp * vol;
+            if cum_vol > 0.0 {
+                self.user_avwap.insert(time, (cum_pv / cum_vol) as f32);
+            }
+        }
+    }
+
+    fn user_avwap_line(&self, earliest: u64, latest: u64) -> Option<(Vec<(u64, f32)>, [f32; 4])> {
+        if self.user_avwap.is_empty() {
+            return None;
+        }
+        let range = exchange::UnixMs::new(earliest)..=exchange::UnixMs::new(latest);
+        let pts: Vec<(u64, f32)> = self
+            .user_avwap
+            .range(range)
+            .map(|(t, &v)| (t.as_u64(), v))
+            .collect();
+        if pts.is_empty() {
+            return None;
+        }
+        // Cyan color for user-anchored AVWAP
+        Some((pts, [0.0, 0.9, 1.0, 0.9]))
+    }
+
     fn indicator_elem<'a>(
         &'a self,
         main_chart: &'a ViewState,
@@ -317,6 +456,25 @@ impl KlineIndicatorImpl for VwapIndicator {
         vec![band2, band1]
     }
 
+    fn overlay_extra_lines(&self, earliest: u64, latest: u64) -> Vec<(Vec<(u64, f32)>, [f32; 4])> {
+        let mut lines = self.session_vwap_lines(earliest, latest);
+        if let Some(user_line) = self.user_avwap_line(earliest, latest) {
+            lines.push(user_line);
+        }
+        lines
+    }
+
+    fn set_user_avwap_anchor(&mut self, ts: u64, source: &PlotData<KlineDataPoint>) {
+        if ts == 0 {
+            self.user_anchor = None;
+            self.user_avwap.clear();
+        } else {
+            self.user_anchor = Some(exchange::UnixMs::new(ts));
+            self.rebuild_user_avwap(source);
+        }
+        self.cache.clear_all();
+    }
+
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
         self.data = source.map_basis_series(
             |timeseries| Self::compute_vwap_time(&timeseries.datapoints),
@@ -326,6 +484,11 @@ impl KlineIndicatorImpl for VwapIndicator {
             PlotData::TimeBased(ts) => Self::compute_avwap_time(&ts.datapoints),
             PlotData::TickBased(ta) => Self::compute_avwap_tick(&ta.datapoints),
         };
+        self.session_vwap = match source {
+            PlotData::TimeBased(ts) => Self::compute_session_vwap(&ts.datapoints),
+            PlotData::TickBased(_) => BTreeMap::new(),
+        };
+        self.rebuild_user_avwap(source);
         self.clear_all_caches();
     }
 

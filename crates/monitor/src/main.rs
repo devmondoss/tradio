@@ -608,6 +608,17 @@ impl BarState {
             quality: inst_quality,
         });
 
+        // 20-bar swing high/low for structural target selection.
+        const SWING20: usize = 20;
+        let (swing_high_20, swing_low_20) = if n >= SWING20 {
+            let sh = highs[n - SWING20..n - 1].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let sl = lows[n - SWING20..n - 1].iter().copied().fold(f64::INFINITY, f64::min);
+            (if sh.is_finite() { Some(sh) } else { None },
+             if sl.is_finite() { Some(sl) } else { None })
+        } else {
+            (None, None)
+        };
+
         let ctx = StrategyMarketContext {
             symbol: symbol.to_string(),
             timestamp_ms: bar_ms,
@@ -619,6 +630,8 @@ impl BarState {
             flow,
             orderbook: ob_ctx,
             institutional,
+            swing_high_20,
+            swing_low_20,
         };
 
         let signal = route_strategy(&ctx, &cfg);

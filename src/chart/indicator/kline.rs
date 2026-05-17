@@ -11,7 +11,9 @@ use super::plot::AnySeries;
 
 pub mod atr;
 pub mod cumulative_delta;
+pub mod funding_rate;
 pub mod oi_delta;
+pub mod oi_zscore;
 pub mod open_interest;
 pub mod relative_volume;
 pub mod volume;
@@ -104,6 +106,12 @@ pub trait KlineIndicatorImpl {
     /// Return price-level points for overlay drawing on the main chart.
     /// Each point is (interval_key, price_f32).
     fn overlay_line_points(&self, _earliest: u64, _latest: u64) -> Vec<(u64, f32)> {
+        vec![]
+    }
+
+    /// Return additional named line series for overlay drawing (e.g. session VWAPs).
+    /// Each entry is (points, rgba_color). Points are (interval_key, price_f32).
+    fn overlay_extra_lines(&self, _earliest: u64, _latest: u64) -> Vec<(Vec<(u64, f32)>, [f32; 4])> {
         vec![]
     }
 
@@ -221,6 +229,11 @@ pub trait KlineIndicatorImpl {
 
     fn on_open_interest(&mut self, _pairs: &[exchange::OpenInterest]) {}
 
+    /// Set a user-placed AVWAP anchor timestamp. ts=0 clears the anchor.
+    fn set_user_avwap_anchor(&mut self, _ts: u64, _source: &PlotData<KlineDataPoint>) {}
+
+    fn on_funding_rate(&mut self, _data: &[exchange::FundingRate]) {}
+
     /// Called each frame with the current visible time/tick range.
     /// Override to rebuild view-dependent data (e.g. VRVP histogram).
     fn update_visible_range(
@@ -250,6 +263,12 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
             Box::new(super::kline::open_interest::OpenInterestIndicator::new())
         }
         KlineIndicator::OiDelta => Box::new(super::kline::oi_delta::OiDeltaIndicator::new()),
+        KlineIndicator::OiZScore => {
+            Box::new(super::kline::oi_zscore::OiZScoreIndicator::new())
+        }
+        KlineIndicator::FundingRate => {
+            Box::new(super::kline::funding_rate::FundingRateIndicator::new())
+        }
         KlineIndicator::Vwap => Box::new(super::kline::vwap::VwapIndicator::new()),
         KlineIndicator::VolumeProfile => {
             Box::new(super::kline::volume_profile::VolumeProfileIndicator::new())

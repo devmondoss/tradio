@@ -816,6 +816,139 @@ pub fn evaluate_vwap(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<N
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Evaluation — SmartMoneyDivergence
+// ──────────────────────────────────────────────────────────────────────────────
+
+pub fn evaluate_smd(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<NearMiss> {
+    let Some(inst) = ctx.institutional.as_ref() else {
+        return vec![];
+    };
+    let px = ctx.price;
+    let atr = ctx.atr.unwrap_or(0.0);
+    let flow = &ctx.flow;
+    let vp = &ctx.volume_profile;
+    let ob = &ctx.orderbook;
+
+    let top_long = inst.ls_ratio.top_traders_long_pct;
+    let retail_long = inst.ls_ratio.retail_long_pct;
+    let divergence = retail_long - top_long;
+
+    let mut results = vec![];
+
+    // SHORT — forming when smart money is short OR retail is long (partial signals)
+    let partial_short = top_long < cfg.smart_short_threshold || retail_long > cfg.retail_long_threshold;
+    if partial_short {
+        let mut met = vec![];
+        let mut blocked = vec![];
+
+        let check = |cond: bool, ok: &'static str, fail: &'static str,
+                     met: &mut Vec<&'static str>, blocked: &mut Vec<&'static str>| {
+            if cond { met.push(ok) } else { blocked.push(fail) }
+        };
+
+        check(top_long < cfg.smart_short_threshold, "smart_money_short", "top_traders_long_dominant", &mut met, &mut blocked);
+        check(retail_long > cfg.retail_long_threshold, "retail_long_extreme", "retail_not_extreme_long", &mut met, &mut blocked);
+        check(divergence > cfg.min_divergence, "divergence_ok", "divergence_insufficient", &mut met, &mut blocked);
+        check(
+            matches!(inst.funding.regime, crate::institutional::FundingRegime::ElevatedLong | crate::institutional::FundingRegime::ExtremeLong),
+            "funding_elevated_long", "funding_not_elevated", &mut met, &mut blocked,
+        );
+        check(
+            !matches!(inst.oi_trend.trend, crate::institutional::OiTrendDir::AccumulatingFast),
+            "oi_mature", "oi_accumulating_fast", &mut met, &mut blocked,
+        );
+        check(
+            vp.vah.map(|vah| (px - vah).abs() < 0.5 * atr).unwrap_or(false)
+                || ob.walls_above.iter().any(|&w| w.is_finite() && (w - px).abs() < 0.3 * atr),
+            "price_at_resistance", "price_not_at_resistance", &mut met, &mut blocked,
+        );
+        check(flow.cvd_slope.unwrap_or(0.0) <= 0.0, "cvd_weak", "cvd_strong", &mut met, &mut blocked);
+        check(!inst.liquidations.cascade_detected, "no_cascade", "cascade_active", &mut met, &mut blocked);
+
+        let total = met.len() + blocked.len();
+        let score_pct = ((met.len() * 100).checked_div(total).unwrap_or(0)) as u8;
+
+        results.push(NearMiss {
+            timestamp_ms: ctx.timestamp_ms,
+            symbol: ctx.symbol.clone(),
+            detector: "SmartMoneyDivergence",
+            side: "Short",
+            price: px,
+            regime: format!("{:?}", ctx.regime),
+            atr: ctx.atr,
+            met,
+            blocked,
+            score_pct,
+            vah: vp.vah,
+            val: vp.val,
+            poc: vp.poc,
+            delta: flow.delta,
+            cvd_slope: flow.cvd_slope,
+            vpin: flow.vpin,
+            spread_bps: ob.spread_bps,
+            failed_acceptance: flow.failed_acceptance,
+        });
+    }
+
+    // LONG — forming when smart money is long OR retail is short
+    let partial_long = top_long > (1.0 - cfg.smart_short_threshold) || retail_long < (1.0 - cfg.retail_long_threshold);
+    if partial_long {
+        let mut met = vec![];
+        let mut blocked = vec![];
+
+        let check = |cond: bool, ok: &'static str, fail: &'static str,
+                     met: &mut Vec<&'static str>, blocked: &mut Vec<&'static str>| {
+            if cond { met.push(ok) } else { blocked.push(fail) }
+        };
+
+        check(top_long > (1.0 - cfg.smart_short_threshold), "smart_money_long", "top_traders_short_dominant", &mut met, &mut blocked);
+        check(retail_long < (1.0 - cfg.retail_long_threshold), "retail_short_extreme", "retail_not_extreme_short", &mut met, &mut blocked);
+        check((-divergence) > cfg.min_divergence, "divergence_ok", "divergence_insufficient", &mut met, &mut blocked);
+        check(
+            matches!(inst.funding.regime, crate::institutional::FundingRegime::ElevatedShort | crate::institutional::FundingRegime::ExtremeShort),
+            "funding_elevated_short", "funding_not_elevated", &mut met, &mut blocked,
+        );
+        check(
+            !matches!(inst.oi_trend.trend, crate::institutional::OiTrendDir::AccumulatingFast),
+            "oi_mature", "oi_accumulating_fast", &mut met, &mut blocked,
+        );
+        check(
+            vp.val.map(|val| (px - val).abs() < 0.5 * atr).unwrap_or(false)
+                || ob.walls_below.iter().any(|&w| w.is_finite() && (px - w).abs() < 0.3 * atr),
+            "price_at_support", "price_not_at_support", &mut met, &mut blocked,
+        );
+        check(flow.cvd_slope.unwrap_or(0.0) >= 0.0, "cvd_recovering", "cvd_weak", &mut met, &mut blocked);
+        check(!inst.liquidations.cascade_detected, "no_cascade", "cascade_active", &mut met, &mut blocked);
+
+        let total = met.len() + blocked.len();
+        let score_pct = ((met.len() * 100).checked_div(total).unwrap_or(0)) as u8;
+
+        results.push(NearMiss {
+            timestamp_ms: ctx.timestamp_ms,
+            symbol: ctx.symbol.clone(),
+            detector: "SmartMoneyDivergence",
+            side: "Long",
+            price: px,
+            regime: format!("{:?}", ctx.regime),
+            atr: ctx.atr,
+            met,
+            blocked,
+            score_pct,
+            vah: vp.vah,
+            val: vp.val,
+            poc: vp.poc,
+            delta: flow.delta,
+            cvd_slope: flow.cvd_slope,
+            vpin: flow.vpin,
+            spread_bps: ob.spread_bps,
+            failed_acceptance: flow.failed_acceptance,
+        });
+    }
+
+    results
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Writer
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -832,6 +965,7 @@ pub fn collect_near_misses(
     let mut candidates = evaluate_vafa(ctx, cfg);
     candidates.extend(evaluate_lvn(ctx, cfg));
     candidates.extend(evaluate_vwap(ctx, cfg));
+    candidates.extend(evaluate_smd(ctx, cfg));
     candidates
         .into_iter()
         .filter(|nm| {
