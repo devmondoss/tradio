@@ -7,6 +7,8 @@ pub struct StrategySnapshot {
     pub wins: usize,
     pub losses: usize,
     pub overlay_enabled: bool,
+    pub regime: String,
+    pub last_score: f64,
     pub open_positions: Vec<PositionSnap>,
     pub active_signal: Option<SignalSnap>,
     pub recent_trades: Vec<TradeSnap>,
@@ -15,9 +17,11 @@ pub struct StrategySnapshot {
 #[derive(Debug, Clone)]
 pub struct PositionSnap {
     pub side: String,
+    pub strategy_name: String,
     pub entry_price: f64,
     pub stop_price: Option<f64>,
     pub target_price: Option<f64>,
+    pub unrealized_pnl_pct: f64,
 }
 
 #[derive(Debug, Clone)]

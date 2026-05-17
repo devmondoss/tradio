@@ -2505,11 +2505,17 @@ fn strategy_monitor_view(
     let Some(snap) = snapshot else {
         return center(
             column![
-                text("Strategy Monitor").size(14),
-                text("Link to a Candlestick Chart pane").size(12),
-                text("using the same link group").size(12),
+                text("Strategy Monitor").size(14).style(|t: &Theme| text::Style {
+                    color: Some(t.extended_palette().background.strong.color),
+                }),
+                text("Link to a Candlestick chart").size(11).style(|t: &Theme| text::Style {
+                    color: Some(t.extended_palette().background.strong.color),
+                }),
+                text("using the same link group").size(11).style(|t: &Theme| text::Style {
+                    color: Some(t.extended_palette().background.strong.color),
+                }),
             ]
-            .spacing(6)
+            .spacing(4)
             .align_x(Alignment::Center),
         )
         .into();
@@ -2522,7 +2528,8 @@ fn strategy_monitor_view(
         snap.equity
     };
     let pnl_pct = (display_equity - initial) / initial * 100.0;
-    let pnl_sign = if pnl_pct >= 0.0 { "+" } else { "" };
+    let pnl_is_pos = pnl_pct >= 0.0;
+    let pnl_sign = if pnl_is_pos { "+" } else { "" };
 
     let total_trades = snap.wins + snap.losses;
     let win_rate = if total_trades > 0 {
@@ -2531,7 +2538,7 @@ fn strategy_monitor_view(
         0.0
     };
 
-    // ── Header: symbol + overlay toggle + equity ──────────────────────────────
+    // ── Overlay toggle ────────────────────────────────────────────────────────
     let overlay_icon = if overlay_enabled {
         icon_text(Icon::StarFilled, 12)
     } else {
@@ -2542,78 +2549,196 @@ fn strategy_monitor_view(
         .style(move |theme, status| style::button::transparent(theme, status, overlay_enabled))
         .padding(padding::all(2));
 
-    let header_row = row![
+    // ── Header row: toggle + symbol + regime ─────────────────────────────────
+    let regime_label = if snap.regime.is_empty() {
+        "—".to_string()
+    } else {
+        snap.regime.clone()
+    };
+    let header = row![
         overlay_btn,
         text(&snap.symbol).size(13),
-        text(format!("  ${display_equity:.0}  {pnl_sign}{pnl_pct:.1}%")).size(13),
+        text(regime_label).size(10).style(|t: &Theme| text::Style {
+            color: Some(t.extended_palette().background.strong.color),
+        }),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
 
-    let stats_row = text(format!(
-        "Trades {total_trades}  W:{}  L:{}  WR:{win_rate:.0}%",
-        snap.wins, snap.losses
-    ))
-    .size(11);
+    // ── Equity row ────────────────────────────────────────────────────────────
+    let equity_row = row![
+        text(format!("${display_equity:.0}")).size(13),
+        text(format!("{pnl_sign}{pnl_pct:.2}%")).size(12).style(move |t: &Theme| {
+            let p = t.extended_palette();
+            text::Style {
+                color: Some(if pnl_is_pos { p.success.base.color } else { p.danger.base.color }),
+            }
+        }),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
 
-    let mut col = column![header_row, stats_row].spacing(4).padding(8);
+    // ── Stats row ─────────────────────────────────────────────────────────────
+    let stats = row![
+        text(format!("{total_trades} trades")).size(11),
+        text(format!("W {} / L {}", snap.wins, snap.losses)).size(11).style(|t: &Theme| text::Style {
+            color: Some(t.extended_palette().background.strong.color),
+        }),
+        text(format!("WR {win_rate:.0}%")).size(11).style(move |t: &Theme| {
+            let p = t.extended_palette();
+            text::Style {
+                color: Some(if win_rate >= 50.0 { p.success.weak.color } else { p.danger.weak.color }),
+            }
+        }),
+    ]
+    .spacing(8);
+
+    let mut col = column![header, equity_row, stats].spacing(4).padding(8);
+
+    // ── Separator ─────────────────────────────────────────────────────────────
+    col = col.push(
+        container(text("").size(1))
+            .height(1)
+            .width(Length::Fill)
+            .style(|t: &Theme| container::Style {
+                background: Some(t.extended_palette().background.strong.color.into()),
+                ..Default::default()
+            })
+    );
+
+    // ── Active signal ─────────────────────────────────────────────────────────
+    if let Some(sig) = &snap.active_signal {
+        let strat = abbrev_strategy(&sig.strategy_name);
+        let is_long = sig.side == "Long";
+        let side_color = move |t: &Theme| {
+            let p = t.extended_palette();
+            text::Style { color: Some(if is_long { p.success.base.color } else { p.danger.base.color }) }
+        };
+
+        let score_pct = (sig.score * 100.0) as u32;
+        let score_color = move |t: &Theme| {
+            let p = t.extended_palette();
+            text::Style {
+                color: Some(if sig.score >= 0.7 { p.success.base.color }
+                    else if sig.score >= 0.5 { p.secondary.base.color }
+                    else { p.danger.base.color }),
+            }
+        };
+
+        col = col.push(
+            row![
+                text(format!("▶ {strat}")).size(11).style(|t: &Theme| text::Style {
+                    color: Some(t.extended_palette().secondary.strong.color),
+                }),
+                text(sig.side.to_uppercase()).size(11).style(side_color),
+                text(format!("{score_pct}%")).size(11).style(score_color),
+            ]
+            .spacing(8)
+        );
+
+        if !sig.evidence.is_empty() {
+            for ev in &sig.evidence {
+                col = col.push(
+                    text(format!("  ✓ {ev}")).size(10).style(|t: &Theme| text::Style {
+                        color: Some(t.extended_palette().success.weak.color),
+                    })
+                );
+            }
+        }
+        if !sig.missing.is_empty() {
+            for m in &sig.missing {
+                col = col.push(
+                    text(format!("  ✗ {m}")).size(10).style(|t: &Theme| text::Style {
+                        color: Some(t.extended_palette().danger.weak.color),
+                    })
+                );
+            }
+        }
+    } else if snap.open_positions.is_empty() {
+        col = col.push(
+            text("Scanning...").size(11).style(|t: &Theme| text::Style {
+                color: Some(t.extended_palette().background.strong.color),
+            })
+        );
+    }
 
     // ── Open positions ────────────────────────────────────────────────────────
     if !snap.open_positions.is_empty() {
-        col = col.push(text("── Open ──").size(10));
+        col = col.push(
+            text("── Open positions ──").size(10).style(|t: &Theme| text::Style {
+                color: Some(t.extended_palette().background.strong.color),
+            })
+        );
         for pos in &snap.open_positions {
-            let side_label = pos.side.to_uppercase();
+            let is_long = pos.side == "Long";
+            let upnl = pos.unrealized_pnl_pct;
+            let upnl_sign = if upnl >= 0.0 { "+" } else { "" };
+            let strat = abbrev_strategy(&pos.strategy_name);
             let stop_str = pos.stop_price.map_or("—".into(), |v| format!("{v:.1}"));
             let tgt_str = pos.target_price.map_or("—".into(), |v| format!("{v:.1}"));
+
             col = col.push(
-                text(format!(
-                    "{side_label} @ {:.1}  stop {stop_str}  tgt {tgt_str}",
-                    pos.entry_price
-                ))
-                .size(11),
+                row![
+                    text(pos.side.to_uppercase()).size(11).style(move |t: &Theme| {
+                        let p = t.extended_palette();
+                        text::Style { color: Some(if is_long { p.success.base.color } else { p.danger.base.color }) }
+                    }),
+                    text(format!("[{strat}]")).size(10).style(|t: &Theme| text::Style {
+                        color: Some(t.extended_palette().secondary.weak.color),
+                    }),
+                    text(format!("@ {:.1}", pos.entry_price)).size(11),
+                    text(format!("{upnl_sign}{upnl:.2}%")).size(11).style(move |t: &Theme| {
+                        let p = t.extended_palette();
+                        text::Style { color: Some(if upnl >= 0.0 { p.success.base.color } else { p.danger.base.color }) }
+                    }),
+                ]
+                .spacing(6)
+            );
+            col = col.push(
+                text(format!("  stop {stop_str}  tgt {tgt_str}")).size(10)
+                    .style(|t: &Theme| text::Style {
+                        color: Some(t.extended_palette().background.strong.color),
+                    })
             );
         }
     }
 
-    // ── Active signal ─────────────────────────────────────────────────────────
-    if let Some(sig) = &snap.active_signal {
-        let strategy_label = abbrev_strategy(&sig.strategy_name);
-        col = col.push(text(format!("── Signal · {strategy_label} ──")).size(10));
-        col = col.push(
-            text(format!("{}  score {:.2}", sig.side.to_uppercase(), sig.score)).size(11),
-        );
-        if !sig.evidence.is_empty() {
-            col = col.push(text(format!("+ {}", sig.evidence.join(", "))).size(10));
-        }
-        if !sig.missing.is_empty() {
-            col = col.push(text(format!("✗ {}", sig.missing.join(", "))).size(10));
-        }
-    } else if snap.open_positions.is_empty() {
-        col = col.push(text("Scanning...").size(11));
-    }
-
     // ── Recent trades ─────────────────────────────────────────────────────────
     if !snap.recent_trades.is_empty() {
-        col = col.push(text("── Recent ──").size(10));
+        col = col.push(
+            text("── Recent trades ──").size(10).style(|t: &Theme| text::Style {
+                color: Some(t.extended_palette().background.strong.color),
+            })
+        );
         for trade in &snap.recent_trades {
-            let side_char = if trade.side == "Long" { "L" } else { "S" };
-            let reason_short = if trade.close_reason.contains("TARGET") {
-                "TGT"
-            } else if trade.close_reason.contains("STOP") {
-                "STP"
-            } else if trade.close_reason.contains("INVALIDATED") {
-                "INV"
-            } else {
-                "TTL"
-            };
-            let pnl_sign = if trade.net_pnl_pct >= 0.0 { "+" } else { "" };
+            let is_long = trade.side == "Long";
+            let pnl = trade.net_pnl_pct * 100.0;
+            let pnl_sign = if pnl >= 0.0 { "+" } else { "" };
+            let pnl_pos = pnl >= 0.0;
+            let reason = if trade.close_reason.contains("TARGET") { "TGT" }
+                else if trade.close_reason.contains("STOP") { "STP" }
+                else if trade.close_reason.contains("INVALIDATED") { "INV" }
+                else { "TTL" };
             let strat = abbrev_strategy(&trade.strategy_name);
+
             col = col.push(
-                text(format!(
-                    "{side_char} {strat} {reason_short}  {pnl_sign}{:.1}%",
-                    trade.net_pnl_pct * 100.0
-                ))
-                .size(11),
+                row![
+                    text(if is_long { "L" } else { "S" }).size(11).style(move |t: &Theme| {
+                        let p = t.extended_palette();
+                        text::Style { color: Some(if is_long { p.success.base.color } else { p.danger.base.color }) }
+                    }),
+                    text(strat).size(10).style(|t: &Theme| text::Style {
+                        color: Some(t.extended_palette().secondary.weak.color),
+                    }),
+                    text(reason).size(10).style(|t: &Theme| text::Style {
+                        color: Some(t.extended_palette().background.strong.color),
+                    }),
+                    text(format!("{pnl_sign}{pnl:.2}%")).size(11).style(move |t: &Theme| {
+                        let p = t.extended_palette();
+                        text::Style { color: Some(if pnl_pos { p.success.base.color } else { p.danger.base.color }) }
+                    }),
+                ]
+                .spacing(8)
             );
         }
     }
@@ -2624,7 +2749,7 @@ fn strategy_monitor_view(
         .into()
 }
 
-fn abbrev_strategy(name: &str) -> &str {
+fn abbrev_strategy(name: &str) -> &'static str {
     match name {
         "ValueAreaFailedAuction" => "VAFA",
         "LvnLiquidityVacuumBreakout" => "LVN",
@@ -2632,6 +2757,6 @@ fn abbrev_strategy(name: &str) -> &str {
         "LiquidationHunt" => "LIQ",
         "FundingExhaustionReversal" => "FER",
         "SmartMoneyDivergence" => "SMD",
-        other => other,
+        _ => "?",
     }
 }

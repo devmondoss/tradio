@@ -167,6 +167,7 @@ pub struct KlineChart {
     pub strategy_signals: Vec<StrategySignal>,
     pub strategy_overlay_enabled: bool,
     pub last_depth: Option<exchange::depth::Depth>,
+    pub last_regime: String,
     pub config: data::chart::kline::Config,
     outcome_tracker: crate::strategy::tracker::OutcomeTracker,
     paper_account: crate::strategy::paper::PaperAccount,
@@ -266,6 +267,7 @@ impl KlineChart {
                     strategy_signals: Vec::new(),
                     strategy_overlay_enabled: config.strategy_overlay_enabled,
                     last_depth: None,
+                    last_regime: String::new(),
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
@@ -328,6 +330,7 @@ impl KlineChart {
                     strategy_signals: Vec::new(),
                     strategy_overlay_enabled: config.strategy_overlay_enabled,
                     last_depth: None,
+                    last_regime: String::new(),
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
@@ -1176,6 +1179,8 @@ impl KlineChart {
             ..Default::default()
         };
 
+        self.last_regime = format!("{:?}", ctx.regime);
+
         let signal = router::route_strategy(&ctx, &cfg);
         logger::log_signal(&ctx, &signal);
 
@@ -1219,18 +1224,37 @@ impl KlineChart {
         let wins = paper.closed_trades.iter().filter(|t| t.net_pnl > 0.0).count();
         let losses = paper.closed_trades.iter().filter(|t| t.net_pnl <= 0.0).count();
 
+        let current_price = self.chart.last_price.map(|lp| match lp {
+            crate::chart::scale::linear::PriceInfoLabel::Up(p) |
+            crate::chart::scale::linear::PriceInfoLabel::Down(p) |
+            crate::chart::scale::linear::PriceInfoLabel::Neutral(p) => p.to_f32() as f64,
+        }).unwrap_or(0.0);
+
         let open_positions = paper
             .open_positions
             .iter()
-            .map(|p| PositionSnap {
-                side: if p.side == crate::strategy::types::Side::Long {
-                    "Long".into()
+            .map(|p| {
+                let upnl_pct = if p.balance_at_open > 0.0 {
+                    let upnl = match p.side {
+                        crate::strategy::types::Side::Long => p.size * (current_price - p.entry_price),
+                        crate::strategy::types::Side::Short => p.size * (p.entry_price - current_price),
+                    };
+                    upnl / p.balance_at_open * 100.0
                 } else {
-                    "Short".into()
-                },
-                entry_price: p.entry_price,
-                stop_price: p.stop_price,
-                target_price: p.target_price,
+                    0.0
+                };
+                PositionSnap {
+                    side: if p.side == crate::strategy::types::Side::Long {
+                        "Long".into()
+                    } else {
+                        "Short".into()
+                    },
+                    strategy_name: p.strategy_id.map_or("Unknown".into(), |id| format!("{id:?}")),
+                    entry_price: p.entry_price,
+                    stop_price: p.stop_price,
+                    target_price: p.target_price,
+                    unrealized_pnl_pct: upnl_pct,
+                }
             })
             .collect();
 
@@ -1273,6 +1297,9 @@ impl KlineChart {
             })
             .collect();
 
+        let last_score = self.strategy_signals.last().map(|s| s.score).unwrap_or(0.0);
+        let regime = self.last_regime.clone();
+
         StrategySnapshot {
             symbol: self.chart.ticker_info.ticker.display_symbol_and_type().0,
             equity: paper.equity,
@@ -1281,6 +1308,8 @@ impl KlineChart {
             wins,
             losses,
             overlay_enabled: self.strategy_overlay_enabled,
+            regime,
+            last_score,
             open_positions,
             active_signal,
             recent_trades,
