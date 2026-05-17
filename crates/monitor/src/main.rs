@@ -62,7 +62,8 @@ struct PipelineMetrics {
     trade_count: u64,
     depth_updates: u64,
     bars_processed: u64,
-    latencies_ms: Vec<i64>,
+    latencies_ms: Vec<i64>,     // delivery lag: theoretical close → our receipt (Binance WS delay)
+    processing_ms: Vec<u128>,   // our compute time per bar
     last_depth_at: Option<Instant>,
     last_trade_at: Option<Instant>,
 }
@@ -103,8 +104,15 @@ impl PipelineMetrics {
         if trade_age_ms > 5_000 {
             eprintln!("[WARN] trade stream stale — last update {trade_age_ms}ms ago");
         }
-        if self.bars_processed > 0 && avg_lat > 500.0 {
-            eprintln!("[WARN] high bar-close latency {avg_lat:.0}ms — strategy signals delayed");
+        let avg_proc = if self.processing_ms.is_empty() {
+            0.0
+        } else {
+            self.processing_ms.iter().sum::<u128>() as f64 / self.processing_ms.len() as f64
+        };
+        let max_proc = self.processing_ms.iter().max().copied().unwrap_or(0);
+        eprintln!("[metrics] proc_avg={avg_proc:.0}ms proc_max={max_proc}ms (delivery_avg={avg_lat:.0}ms)");
+        if self.bars_processed > 0 && avg_proc > 100.0 {
+            eprintln!("[WARN] high bar processing time {avg_proc:.0}ms — check compute path");
         }
     }
 }
@@ -224,11 +232,15 @@ impl BarState {
         let bar_ms = bar.time.as_u64() as i64;
         self.metrics.bars_processed += 1;
 
+        let proc_start = Instant::now();
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        let latency_ms = now_ms - bar_close_ms as i64;
+        // delivery_lag: Binance WS delay from theoretical bar close to our receipt
+        // processing_ms: our actual compute time (measured at end of fn)
+        let delivery_lag_ms = now_ms - bar_close_ms as i64;
+        let latency_ms = delivery_lag_ms; // kept for metrics compatibility
         self.metrics.latencies_ms.push(latency_ms);
 
         // VWAP — reset at UTC midnight
@@ -265,7 +277,6 @@ impl BarState {
             self.cvd_history.pop_front();
         }
 
-        let t0 = Instant::now();
         let closes: Vec<f64> = self.bars.iter().map(|b| b.close.to_f32() as f64).collect();
         let highs: Vec<f64> = self.bars.iter().map(|b| b.high.to_f32() as f64).collect();
         let lows: Vec<f64> = self.bars.iter().map(|b| b.low.to_f32() as f64).collect();
@@ -292,15 +303,11 @@ impl BarState {
             &regime_window[regime_window.len().saturating_sub(5)..],
             atr,
         );
-        let t_regime = t0.elapsed().as_millis();
-
         let cvd_slope = compute_cvd_slope(&self.cvd_history);
         let cvd_divergence = derive_cvd_divergence(&highs, &lows, cvd_slope);
-        let t_cvd = t0.elapsed().as_millis();
 
         let (poc, vah, val, hvn_nearby, lvn_nearby) =
             compute_volume_profile(&self.bars, VP_BINS, c);
-        let t_vp = t0.elapsed().as_millis();
 
         let deltas = [bar_delta];
         let (failed_acceptance, footprint_absorption) = derive_failed_acceptance_and_absorption(
@@ -413,7 +420,6 @@ impl BarState {
             None
         };
 
-        let t_avwap = t0.elapsed().as_millis();
         let vwap_ctx = build_vwap_context(c, self.vwap_session, avwap_bos);
         let vp_ctx = build_volume_profile_context(c, poc, vah, val, hvn_nearby, lvn_nearby);
         let ob_ctx = match &self.depth {
@@ -501,10 +507,8 @@ impl BarState {
             institutional,
         };
 
-        let t_ctx = t0.elapsed().as_millis();
         let signal = route_strategy(&ctx, &cfg);
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
-        let t_route = t0.elapsed().as_millis();
 
         for nm in collect_near_misses(&ctx, &cfg, signal_fired) {
             if let Ok(json) = serde_json::to_string(&nm) {
@@ -570,11 +574,7 @@ impl BarState {
             .collect::<Vec<_>>()
             .join(",");
 
-        let t_total = t0.elapsed().as_millis();
-        eprintln!(
-            "[perf] regime={t_regime}ms cvd={t_cvd}ms vp={t_vp}ms avwap={t_avwap}ms ctx={t_ctx}ms route={t_route}ms total={t_total}ms bars={}",
-            self.bars.len()
-        );
+        let processing_ms = proc_start.elapsed().as_millis();
         let inst_ref = ctx.institutional.as_ref();
         eprintln!(
             "[bar] ts={bar_ms} close={c:.2} regime={regime:?} \
@@ -582,7 +582,7 @@ impl BarState {
              funding={:.4} basis={:.3}% oi_delta={:.0} \
              vwap={:.2} cvd={:.1} ob={} \
              inst={} ls_top={:.1}%/{:.1}% liq={:.0}$ \
-             action={:?} score={:.3} latency={latency_ms}ms equity={:.2} \
+             action={:?} score={:.3} delivery={delivery_lag_ms}ms proc={processing_ms}ms equity={:.2} \
              missing=[{missing_str}] evidence=[{evidence_str}]",
             self.funding_rate.unwrap_or(0.0) * 10_000.0,
             basis.unwrap_or(0.0),
@@ -599,6 +599,7 @@ impl BarState {
             self.paper.equity,
         );
 
+        self.metrics.processing_ms.push(processing_ms);
         if self.metrics.bars_processed % 10 == 0 {
             self.metrics.report();
         }
