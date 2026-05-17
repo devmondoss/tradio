@@ -1153,6 +1153,8 @@ impl KlineChart {
             bid_wall_nearby,
             ask_wall_nearby,
             price_action_clean,
+            false, // mss_active — not tracked in GUI chart
+            false, // sweep_confirmed — not tracked in GUI chart
         );
 
         let ctx = StrategyMarketContext {
@@ -1822,13 +1824,19 @@ impl canvas::Program<Message> for KlineChart {
                     && matches!(self.kind, KlineChartKind::Candles)
                     && let PlotData::TimeBased(ts) = &self.data_source
                 {
+                    // price_to_y returns chart-space Y (origin = center, scaled+translated).
+                    // The crosshair frame has no transform applied, so we convert to
+                    // screen-space: screen_y = height/2 + (chart_y * scaling) + (translation.y * scaling)
+                    let h2 = bounds.height / 2.0;
+                    let sc = chart.scaling;
+                    let ty = chart.translation.y;
                     draw_key_level_tooltip(
                         frame,
                         palette,
                         &ts.datapoints,
                         cursor_position,
                         bounds,
-                        |price| chart.price_to_y(price),
+                        |price| h2 + (chart.price_to_y(price) + ty) * sc,
                     );
                 }
             }
@@ -2276,12 +2284,6 @@ fn draw_key_level_tooltip(
         kl.weekly_open,
     ];
 
-    // Only trigger when cursor is in the right 60px where labels are drawn
-    let label_zone_x = bounds.width - 60.0;
-    if cursor.x < label_zone_x {
-        return;
-    }
-
     for (price_opt, (abbr, name, desc)) in prices.iter().zip(DESCRIPTIONS.iter()) {
         let Some(price) = price_opt else { continue };
         if !price.is_finite() || *price <= 0.0 {
@@ -2292,10 +2294,7 @@ fn draw_key_level_tooltip(
             continue;
         }
 
-        // Map chart-space y to screen-space y
-        let screen_y = y + bounds.height / 2.0;
-
-        if (cursor.y - screen_y).abs() > 10.0 {
+        if (cursor.y - y).abs() > 8.0 {
             continue;
         }
 

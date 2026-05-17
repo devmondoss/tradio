@@ -311,7 +311,82 @@ impl BarState {
             price_rising == (delta > 0.0)
         });
 
-        let vwap_ctx = build_vwap_context(c, self.vwap_session, None);
+        // --- Market structure: MSS, sweep, AVWAP-BOS ---
+        // Use a lookback of 10 bars for swing detection.
+        const SWING_LB: usize = 10;
+        let n = closes.len();
+        // Identify the most recent swing high and swing low over [0..n-SWING_LB).
+        // A swing high is the max of highs[i-k..i+k] for some k; here we use a
+        // simple rolling max over the prior SWING_LB bars (excluding the last bar).
+        let (prior_swing_high, prior_swing_low) = if n > SWING_LB {
+            let window = &highs[..n - 1]; // exclude the current (last) bar
+            let wl = &lows[..n - 1];
+            let sh = window.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let sl = wl.iter().copied().fold(f64::INFINITY, f64::min);
+            (sh, sl)
+        } else {
+            (f64::NEG_INFINITY, f64::INFINITY)
+        };
+
+        // MSS: current close breaks above prior swing high (bullish) or
+        // below prior swing low (bearish).
+        let mss_active = prior_swing_high.is_finite() && prior_swing_low.is_finite()
+            && (c > prior_swing_high || c < prior_swing_low);
+
+        // Sweep: in the last 3 bars price pierced a swing extreme intrabar but
+        // closed back inside — classic liquidity grab.
+        let sweep_confirmed = if n >= 4 && prior_swing_high.is_finite() && prior_swing_low.is_finite() {
+            let recent_bars: Vec<_> = self.bars.iter().rev().take(3).collect();
+            // Bullish sweep: wick below prior swing low, closed above it
+            let bull_sweep = recent_bars.iter().any(|b| {
+                (b.low.to_f32() as f64) < prior_swing_low
+                    && (b.close.to_f32() as f64) > prior_swing_low
+            });
+            // Bearish sweep: wick above prior swing high, closed below it
+            let bear_sweep = recent_bars.iter().any(|b| {
+                (b.high.to_f32() as f64) > prior_swing_high
+                    && (b.close.to_f32() as f64) < prior_swing_high
+            });
+            bull_sweep || bear_sweep
+        } else {
+            false
+        };
+
+        // AVWAP-BOS: anchored VWAP from the most recent Break of Structure bar.
+        // BOS is defined as a close above prior_swing_high (bullish) or below
+        // prior_swing_low (bearish). We scan backwards for the most recent such bar.
+        let avwap_bos: Option<f64> = if n > SWING_LB {
+            // Scan from newest to oldest (skip the last bar — that's current)
+            let bars_vec: Vec<_> = self.bars.iter().collect();
+            let bos_idx = (0..n.saturating_sub(1)).rev().find(|&i| {
+                let cl = bars_vec[i].close.to_f32() as f64;
+                // Reference swing: max/min of bars *before* i
+                if i == 0 { return false; }
+                let ref_high = bars_vec[..i].iter()
+                    .map(|b| b.high.to_f32() as f64)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let ref_low = bars_vec[..i].iter()
+                    .map(|b| b.low.to_f32() as f64)
+                    .fold(f64::INFINITY, f64::min);
+                cl > ref_high || cl < ref_low
+            });
+            bos_idx.map(|anchor| {
+                // Compute cumulative VWAP from anchor bar to the last bar
+                let (cum_pv, cum_vol) = bars_vec[anchor..].iter().fold((0.0_f64, 0.0_f64), |(pv, v), b| {
+                    let bh = b.high.to_f32() as f64;
+                    let bl = b.low.to_f32() as f64;
+                    let bc = b.close.to_f32() as f64;
+                    let bv = b.volume.total().to_f32_lossy() as f64;
+                    let tp = (bh + bl + bc) / 3.0;
+                    (pv + tp * bv, v + bv)
+                });
+                if cum_vol > 0.0 { cum_pv / cum_vol } else { 0.0 }
+            }).filter(|&v| v > 0.0)
+        } else {
+            None
+        };
+
+        let vwap_ctx = build_vwap_context(c, self.vwap_session, avwap_bos);
         let vp_ctx = build_volume_profile_context(c, poc, vah, val, hvn_nearby, lvn_nearby);
         let ob_ctx = match &self.depth {
             Some(d) => build_orderbook_context(d),
@@ -353,6 +428,8 @@ impl BarState {
             bid_wall_nearby,
             ask_wall_nearby,
             price_action_clean,
+            mss_active,
+            sweep_confirmed,
         );
 
         // Prune stale liquidation events before building the snapshot

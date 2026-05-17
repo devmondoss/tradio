@@ -128,6 +128,8 @@ pub fn build_flow_context(
     bid_wall_nearby: bool,
     ask_wall_nearby: bool,
     price_action_clean: bool,
+    mss_active: bool,
+    sweep_confirmed: bool,
 ) -> OrderFlowContext {
     let taker_imbalance = match (buy_volume, sell_volume) {
         (Some(buy), Some(sell)) => {
@@ -153,8 +155,8 @@ pub fn build_flow_context(
         footprint_absorption,
         stacked_imbalance: ImbalanceSide::Unknown,
         failed_acceptance,
-        sweep_confirmed: false,
-        mss_active: false,
+        sweep_confirmed,
+        mss_active,
         quality: if cvd.is_some() || delta.is_some() {
             DataQuality::Live
         } else {
