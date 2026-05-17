@@ -28,7 +28,7 @@ use std::sync::LazyLock;
 use tokio_rustls::{TlsConnector, rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName}};
 
 use config_loader::ConfigLoader;
-use intrabar::IntrabarConfig;
+use intrabar::{IntrabarConfig, IntrabarDetector, IntrabarMode};
 use supabase_writer::SupabaseWriter;
 use data::institutional::{
     FundingRateSample, FundingTracker, InstitutionalContext, LiqSide,
@@ -44,7 +44,10 @@ use data::strategy::{
     intent_logger::collect_near_misses,
     paper::PaperAccount,
     router::route_strategy,
-    types::{DataQuality, OrderBookContext, StrategyAction, StrategyConfig, StrategyMarketContext},
+    types::{
+        AbsorptionSide, CvdDivergence, DataQuality, OrderBookContext, Regime,
+        StrategyAction, StrategyConfig, StrategyMarketContext,
+    },
 };
 use exchange::{
     Kline, Volume, PushFrequency, Ticker, TickerInfo, Timeframe,
@@ -151,6 +154,45 @@ struct StreamStates {
     klines: StreamHealth,
     depth:  StreamHealth,
     liq:    StreamHealth,
+}
+
+/// Bar-level state frozen at each 5m close, reused by the intrabar evaluator.
+/// Only bar-level fields go here; tick-level fields come from live BarState.
+#[derive(Clone)]
+struct FrozenBarCtx {
+    regime: Regime,
+    fast_slope: f64,
+    atr: f64,
+    // Volume profile
+    poc: Option<f64>,
+    vah: Option<f64>,
+    val: Option<f64>,
+    hvn_nearby: Vec<f64>,
+    lvn_nearby: Vec<f64>,
+    // VWAP / AVWAP
+    vwap_session: Option<f64>,
+    avwap_bos: Option<f64>,
+    // Flow (bar-computed, frozen)
+    cvd_slope: Option<f64>,
+    failed_acceptance: bool,
+    footprint_absorption: AbsorptionSide,
+    cvd_divergence: Option<CvdDivergence>,
+    // Market structure
+    mss_active: bool,
+    sweep_confirmed: bool,
+    price_action_clean: bool,
+    // Order-book walls (snapshot from last close)
+    bid_wall_nearby: bool,
+    ask_wall_nearby: bool,
+    // Swing levels
+    swing_high_20: Option<f64>,
+    swing_low_20: Option<f64>,
+    // OI / basis (slow-moving — freeze from last bar)
+    oi_momentum_aligned: Option<bool>,
+    basis: Option<f64>,
+    // Timing
+    bar_close_ms: i64,
+    bar_close_price: f64,
 }
 
 impl PipelineMetrics {
@@ -269,8 +311,14 @@ struct BarState {
     // Health monitoring
     freshness: DataFreshness,
     streams: StreamStates,
-    // Intrabar tactical layer config (P0 — no-op evaluator for now)
+    // Intrabar tactical layer
     intrabar_cfg: IntrabarConfig,
+    current_price: f64,
+    frozen: Option<FrozenBarCtx>,
+    last_intrabar_eval_price: f64,
+    last_intrabar_eval_ms: i64,
+    intrabar_eval_count: u32,
+    intrabar_signal_fired: bool,
 }
 
 impl BarState {
@@ -308,6 +356,12 @@ impl BarState {
             freshness: DataFreshness::default(),
             streams: StreamStates::default(),
             intrabar_cfg: IntrabarConfig::from_env(),
+            current_price: 0.0,
+            frozen: None,
+            last_intrabar_eval_price: 0.0,
+            last_intrabar_eval_ms: 0,
+            intrabar_eval_count: 0,
+            intrabar_signal_fired: false,
         }
     }
 
@@ -323,7 +377,10 @@ impl BarState {
         self.liq_tracker.push(event);
     }
 
-    fn on_trade(&mut self, is_sell: bool, qty: f32) {
+    fn on_trade(&mut self, is_sell: bool, qty: f32, price: f64) {
+        if price > 0.0 {
+            self.current_price = price;
+        }
         let delta = f64::from(qty);
         if is_sell {
             self.bar_sell_vol += delta;
@@ -338,6 +395,178 @@ impl BarState {
 
     fn on_trade_batch(&mut self) {
         self.metrics.trade_batches += 1;
+    }
+
+    // ── Intrabar tactical layer ───────────────────────────────────────────────
+
+    fn should_eval_intrabar(&self, now_ms: i64) -> bool {
+        let cfg = &self.intrabar_cfg;
+        if !cfg.enabled { return false; }
+        let Some(frozen) = &self.frozen else { return false; };
+        if self.intrabar_signal_fired { return false; }
+        if self.intrabar_eval_count >= cfg.max_evals_per_bar { return false; }
+        if self.current_price <= 0.0 { return false; }
+
+        let elapsed_ms = (now_ms - self.last_intrabar_eval_ms).max(0) as u64;
+        if elapsed_ms < cfg.min_seconds_between_evals * 1000 { return false; }
+
+        let price_move = (self.current_price - self.last_intrabar_eval_price).abs();
+        let time_fallback = elapsed_ms >= cfg.time_fallback_ms;
+        if frozen.atr > 0.0 {
+            price_move >= cfg.price_move_atr_k * frozen.atr || time_fallback
+        } else {
+            time_fallback
+        }
+    }
+
+    fn build_intrabar_ctx(&self, frozen: &FrozenBarCtx, now_ms: i64, symbol: &str) -> StrategyMarketContext {
+        let px = self.current_price;
+
+        // Regime override: fast_slope from last bar close reveals directional bias
+        // even when the canonical regime hasn't flipped yet (requires bar close).
+        let effective_regime = if frozen.fast_slope < -0.15 && frozen.regime == Regime::TrendUp {
+            Regime::TrendDown
+        } else if frozen.fast_slope > 0.15 && frozen.regime == Regime::TrendDown {
+            Regime::TrendUp
+        } else {
+            frozen.regime
+        };
+
+        let vwap_ctx = build_vwap_context(px, frozen.vwap_session, frozen.avwap_bos);
+        let vp_ctx = build_volume_profile_context(
+            px,
+            frozen.poc,
+            frozen.vah,
+            frozen.val,
+            frozen.hvn_nearby.clone(),
+            frozen.lvn_nearby.clone(),
+        );
+        let ob_ctx = match &self.depth {
+            Some(d) => build_orderbook_context(d),
+            None => OrderBookContext {
+                obi_l5: None, obi_l10: None, obi_l20: None,
+                microprice: None, spread_bps: None,
+                walls_above: vec![], walls_below: vec![],
+                thin_zone_above: false, thin_zone_below: false,
+                quality: DataQuality::Missing,
+            },
+        };
+
+        let live_delta = self.bar_buy_vol - self.bar_sell_vol;
+        let bid_wall = wall_nearby(&ob_ctx.walls_below, px, frozen.atr);
+        let ask_wall = wall_nearby(&ob_ctx.walls_above, px, frozen.atr);
+        let oi_delta = if self.oi_history.len() >= 2 {
+            let r = self.oi_history.back().copied().unwrap_or(0.0);
+            let o = self.oi_history.front().copied().unwrap_or(0.0);
+            Some(r - o)
+        } else {
+            None
+        };
+
+        let flow = build_flow_context(
+            Some(self.cvd),
+            frozen.cvd_slope,
+            Some(live_delta),
+            Some(self.bar_buy_vol),
+            Some(self.bar_sell_vol),
+            None,
+            frozen.failed_acceptance,
+            frozen.footprint_absorption,
+            frozen.cvd_divergence,
+            self.funding_rate,
+            frozen.basis,
+            oi_delta,
+            frozen.oi_momentum_aligned,
+            bid_wall,
+            ask_wall,
+            frozen.price_action_clean,
+            frozen.mss_active,
+            frozen.sweep_confirmed,
+        );
+
+        let liq_snap = self.liq_tracker.snapshot(now_ms);
+        let ls_snap = self.ls_tracker.snapshot();
+        let oi_snap = self.oi_tracker.snapshot();
+        let fund_snap = self.funding_tracker.snapshot();
+        let inst_quality = if ls_snap.top_traders_long_pct == 0.5
+            && ls_snap.retail_long_pct == 0.5
+            && fund_snap.current == 0.0
+        {
+            DataQuality::Fallback
+        } else {
+            DataQuality::Live
+        };
+        let institutional = Some(InstitutionalContext {
+            timestamp_ms: now_ms,
+            liquidations: liq_snap,
+            ls_ratio: ls_snap,
+            oi_trend: oi_snap,
+            taker_ratio: self.last_taker_ratio.clone(),
+            funding: fund_snap,
+            quality: inst_quality,
+        });
+
+        StrategyMarketContext {
+            symbol: symbol.to_string(),
+            timestamp_ms: now_ms,
+            price: px,
+            regime: effective_regime,
+            atr: if frozen.atr > 0.0 { Some(frozen.atr) } else { None },
+            volume_profile: vp_ctx,
+            vwap: vwap_ctx,
+            flow,
+            orderbook: ob_ctx,
+            institutional,
+            swing_high_20: frozen.swing_high_20,
+            swing_low_20: frozen.swing_low_20,
+        }
+    }
+
+    async fn on_intrabar_tick(&mut self, now_ms: i64, triggered_by: &str, symbol: &str) {
+        let Some(frozen) = self.frozen.clone() else { return; };
+        let ctx = self.build_intrabar_ctx(&frozen, now_ms, symbol);
+        let cfg = self.cfg.clone();
+        let signal = route_strategy(&ctx, &cfg);
+
+        self.last_intrabar_eval_price = self.current_price;
+        self.last_intrabar_eval_ms = now_ms;
+        self.intrabar_eval_count += 1;
+
+        let fired = signal.action == StrategyAction::ShadowSignal;
+        eprintln!(
+            "[intrabar] ts={now_ms} px={:.2} regime={:?} fast_slope={:.3} trigger={triggered_by} \
+             eval={}/{} action={:?} score={:.3} id={:?}",
+            ctx.price, ctx.regime, frozen.fast_slope,
+            self.intrabar_eval_count, self.intrabar_cfg.max_evals_per_bar,
+            signal.action, signal.score, signal.strategy_id,
+        );
+
+        if !fired { return; }
+
+        match self.intrabar_cfg.mode {
+            IntrabarMode::ObserveOnly => {
+                eprintln!("[intrabar] signal suppressed — mode=ObserveOnly");
+            }
+            IntrabarMode::ShadowEvent => {
+                if let Ok(json) = serde_json::to_string(&signal) {
+                    println!("{{\"event\":\"intrabar_signal\",\"data\":{json}}}");
+                }
+            }
+            IntrabarMode::ShadowSignal => {
+                self.intrabar_signal_fired = true;
+                self.metrics.signals_today += 1;
+                if let Ok(json) = serde_json::to_string(&signal) {
+                    println!("{{\"event\":\"intrabar_signal\",\"data\":{json}}}");
+                }
+                if let Some(sb) = self.supabase.clone() {
+                    let signal_clone = signal.clone();
+                    let ctx_clone = ctx.clone();
+                    tokio::spawn(async move {
+                        sb.write_signal(&signal_clone, &ctx_clone).await;
+                    });
+                }
+            }
+        }
     }
 
     fn on_depth(&mut self, depth: Depth) {
@@ -541,6 +770,9 @@ impl BarState {
 
         let vwap_ctx = build_vwap_context(c, self.vwap_session, avwap_bos);
         let vp_ctx = build_volume_profile_context(c, poc, vah, val, hvn_nearby, lvn_nearby);
+        // Snapshot VP lists before vp_ctx is moved into StrategyMarketContext
+        let frozen_hvn = vp_ctx.hvn_nearby.clone();
+        let frozen_lvn = vp_ctx.lvn_nearby.clone();
         let ob_ctx = match &self.depth {
             Some(d) => build_orderbook_context(d),
             None => OrderBookContext {
@@ -770,6 +1002,39 @@ impl BarState {
             signal.score,
             self.paper.equity,
         );
+
+        // Freeze bar-level context for intrabar evaluation during the next bar
+        self.frozen = Some(FrozenBarCtx {
+            regime,
+            fast_slope,
+            atr,
+            poc,
+            vah,
+            val,
+            hvn_nearby: frozen_hvn,
+            lvn_nearby: frozen_lvn,
+            vwap_session: self.vwap_session,
+            avwap_bos,
+            cvd_slope,
+            failed_acceptance,
+            footprint_absorption,
+            cvd_divergence,
+            mss_active,
+            sweep_confirmed,
+            price_action_clean,
+            bid_wall_nearby,
+            ask_wall_nearby,
+            swing_high_20,
+            swing_low_20,
+            oi_momentum_aligned,
+            basis,
+            bar_close_ms: bar_ms,
+            bar_close_price: c,
+        });
+        self.intrabar_signal_fired = false;
+        self.intrabar_eval_count = 0;
+        self.last_intrabar_eval_price = c;
+        self.last_intrabar_eval_ms = bar_ms;
 
         self.metrics.processing_ms.push(processing_ms);
         if self.metrics.bars_processed % 10 == 0 {
@@ -1519,10 +1784,16 @@ async fn main() {
             }
 
             Some(event) = trade_stream.next() => {
-                if let Event::TradesReceived(_kind, _ts, trades) = event {
+                if let Event::TradesReceived(_kind, ts, trades) = event {
                     state.on_trade_batch();
                     for trade in trades.iter() {
-                        state.on_trade(trade.is_sell, trade.qty.to_f32_lossy());
+                        state.on_trade(trade.is_sell, trade.qty.to_f32_lossy(), trade.price.to_f32() as f64);
+                    }
+                    if state.intrabar_cfg.enabled {
+                        let now_ms = ts.as_u64() as i64;
+                        if state.should_eval_intrabar(now_ms) {
+                            state.on_intrabar_tick(now_ms, "price_move", &symbol_str).await;
+                        }
                     }
                 }
             }
@@ -1564,6 +1835,18 @@ async fn main() {
             Some(events) = liq_rx.recv() => {
                 for ev in events {
                     state.on_liquidation(ev);
+                }
+                if state.intrabar_cfg.enabled
+                    && state.intrabar_cfg.detectors.contains(&IntrabarDetector::Liq)
+                    && !state.intrabar_signal_fired
+                    && state.frozen.is_some()
+                    && state.current_price > 0.0
+                {
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64;
+                    state.on_intrabar_tick(now_ms, "liquidation", &symbol_str).await;
                 }
             }
 
