@@ -1280,6 +1280,7 @@ impl KlineChart {
             initial_capital: paper.config.initial_capital,
             wins,
             losses,
+            overlay_enabled: self.strategy_overlay_enabled,
             open_positions,
             active_signal,
             recent_trades,

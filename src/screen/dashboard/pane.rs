@@ -54,6 +54,7 @@ pub enum Effect {
     SwitchTickersInGroup(TickerInfo),
     FocusWidget(iced::widget::Id),
     PersistVisualConfig(VisualConfig),
+    ToggleLinkedStrategyOverlay,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -1074,7 +1075,11 @@ impl State {
                 }
             }
             Content::StrategyMonitor(snapshot) => {
-                let base = strategy_monitor_view(snapshot.as_ref());
+                let overlay_enabled = snapshot
+                    .as_ref()
+                    .map(|s| s.overlay_enabled)
+                    .unwrap_or(false);
+                let base = strategy_monitor_view(id, snapshot.as_ref(), overlay_enabled);
                 self.compose_stack_view(
                     base,
                     id,
@@ -1201,6 +1206,9 @@ impl State {
                         }
                     }
                     return Some(Effect::PersistVisualConfig(VisualConfig::Kline(c.config)));
+                }
+                if matches!(self.content, Content::StrategyMonitor(_)) {
+                    return Some(Effect::ToggleLinkedStrategyOverlay);
                 }
             }
             Event::DeleteNotification(idx) => {
@@ -2490,9 +2498,10 @@ fn by_basis_default<T>(
 }
 
 fn strategy_monitor_view(
+    pane: pane_grid::Pane,
     snapshot: Option<&crate::strategy::snapshot::StrategySnapshot>,
+    overlay_enabled: bool,
 ) -> Element<'_, Message> {
-
     let Some(snap) = snapshot else {
         return center(
             column![
@@ -2522,35 +2531,40 @@ fn strategy_monitor_view(
         0.0
     };
 
-    // Header: symbol + equity
-    let equity_row = row![
+    // ── Header: symbol + overlay toggle + equity ──────────────────────────────
+    let overlay_icon = if overlay_enabled {
+        icon_text(Icon::StarFilled, 12)
+    } else {
+        icon_text(Icon::Star, 12)
+    };
+    let overlay_btn = button(overlay_icon)
+        .on_press(Message::PaneEvent(pane, Event::ToggleStrategyOverlay))
+        .style(move |theme, status| style::button::transparent(theme, status, overlay_enabled))
+        .padding(padding::all(2));
+
+    let header_row = row![
+        overlay_btn,
         text(&snap.symbol).size(13),
-        text(format!(
-            "  ${display_equity:.0}  {pnl_sign}{pnl_pct:.1}%"
-        ))
-        .size(13),
+        text(format!("  ${display_equity:.0}  {pnl_sign}{pnl_pct:.1}%")).size(13),
     ]
-    .spacing(4);
+    .spacing(6)
+    .align_y(Alignment::Center);
 
     let stats_row = text(format!(
-        "Trades {total_trades}  W:{} L:{}  WR:{win_rate:.0}%",
+        "Trades {total_trades}  W:{}  L:{}  WR:{win_rate:.0}%",
         snap.wins, snap.losses
     ))
     .size(11);
 
-    let mut col = column![equity_row, stats_row,].spacing(4).padding(8);
+    let mut col = column![header_row, stats_row].spacing(4).padding(8);
 
-    // Open positions
+    // ── Open positions ────────────────────────────────────────────────────────
     if !snap.open_positions.is_empty() {
         col = col.push(text("── Open ──").size(10));
         for pos in &snap.open_positions {
             let side_label = pos.side.to_uppercase();
-            let stop_str = pos
-                .stop_price
-                .map_or("—".into(), |v| format!("{v:.1}"));
-            let tgt_str = pos
-                .target_price
-                .map_or("—".into(), |v| format!("{v:.1}"));
+            let stop_str = pos.stop_price.map_or("—".into(), |v| format!("{v:.1}"));
+            let tgt_str = pos.target_price.map_or("—".into(), |v| format!("{v:.1}"));
             col = col.push(
                 text(format!(
                     "{side_label} @ {:.1}  stop {stop_str}  tgt {tgt_str}",
@@ -2561,16 +2575,12 @@ fn strategy_monitor_view(
         }
     }
 
-    // Active signal
+    // ── Active signal ─────────────────────────────────────────────────────────
     if let Some(sig) = &snap.active_signal {
-        col = col.push(text("── Signal ──").size(10));
+        let strategy_label = abbrev_strategy(&sig.strategy_name);
+        col = col.push(text(format!("── Signal · {strategy_label} ──")).size(10));
         col = col.push(
-            text(format!(
-                "{} score {:.2}",
-                sig.side.to_uppercase(),
-                sig.score
-            ))
-            .size(11),
+            text(format!("{}  score {:.2}", sig.side.to_uppercase(), sig.score)).size(11),
         );
         if !sig.evidence.is_empty() {
             col = col.push(text(format!("+ {}", sig.evidence.join(", "))).size(10));
@@ -2582,7 +2592,7 @@ fn strategy_monitor_view(
         col = col.push(text("Scanning...").size(11));
     }
 
-    // Recent trades
+    // ── Recent trades ─────────────────────────────────────────────────────────
     if !snap.recent_trades.is_empty() {
         col = col.push(text("── Recent ──").size(10));
         for trade in &snap.recent_trades {
@@ -2597,9 +2607,10 @@ fn strategy_monitor_view(
                 "TTL"
             };
             let pnl_sign = if trade.net_pnl_pct >= 0.0 { "+" } else { "" };
+            let strat = abbrev_strategy(&trade.strategy_name);
             col = col.push(
                 text(format!(
-                    "{side_char} {reason_short}  {pnl_sign}{:.1}%",
+                    "{side_char} {strat} {reason_short}  {pnl_sign}{:.1}%",
                     trade.net_pnl_pct * 100.0
                 ))
                 .size(11),
@@ -2611,4 +2622,16 @@ fn strategy_monitor_view(
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+fn abbrev_strategy(name: &str) -> &str {
+    match name {
+        "ValueAreaFailedAuction" => "VAFA",
+        "LvnLiquidityVacuumBreakout" => "LVN",
+        "VwapValuePullbackContinuation" => "VWPC",
+        "LiquidationHunt" => "LIQ",
+        "FundingExhaustionReversal" => "FER",
+        "SmartMoneyDivergence" => "SMD",
+        other => other,
+    }
 }

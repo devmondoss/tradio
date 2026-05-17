@@ -409,7 +409,38 @@ impl Dashboard {
                             return (Task::none(), None);
                         };
 
+                        // If a StrategyMonitor wants to toggle the overlay, find the linked Kline.
+                        if matches!(effect, pane::Effect::ToggleLinkedStrategyOverlay) {
+                            let monitor_group = state.link_group;
+                            if let Some(group) = monitor_group {
+                                self.iter_all_panes_mut(main_window.id)
+                                    .for_each(|(_, _, s)| {
+                                        if s.link_group == Some(group) {
+                                            if let pane::Content::Kline {
+                                                chart: Some(c),
+                                                indicators,
+                                                ..
+                                            } = &mut s.content
+                                            {
+                                                let added = c.toggle_strategy_overlay();
+                                                for ind in added {
+                                                    if !indicators.contains(&ind) {
+                                                        indicators.push(ind);
+                                                    }
+                                                }
+                                                s.settings.visual_config =
+                                                    Some(data::layout::pane::VisualConfig::Kline(
+                                                        c.config,
+                                                    ));
+                                            }
+                                        }
+                                    });
+                            }
+                            return (Task::none(), None);
+                        }
+
                         let task = match effect {
+                            pane::Effect::ToggleLinkedStrategyOverlay => unreachable!(),
                             pane::Effect::RefreshStreams => self.refresh_streams(main_window.id),
                             pane::Effect::RequestFetch(reqs) => {
                                 let pane_id = state.unique_id();
@@ -1033,9 +1064,7 @@ impl Dashboard {
                     match &mut pane_state.content {
                         pane::Content::Kline { chart: Some(c), .. } => {
                             c.update_latest_kline(kline);
-                            if c.strategy_overlay_enabled {
-                                snapshots.push((pane_state.link_group, c.strategy_snapshot()));
-                            }
+                            snapshots.push((pane_state.link_group, c.strategy_snapshot()));
                         }
                         pane::Content::Comparison(Some(c)) => {
                             c.update_latest_kline(&stream.ticker_info(), kline);

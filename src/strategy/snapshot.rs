@@ -6,6 +6,7 @@ pub struct StrategySnapshot {
     pub initial_capital: f64,
     pub wins: usize,
     pub losses: usize,
+    pub overlay_enabled: bool,
     pub open_positions: Vec<PositionSnap>,
     pub active_signal: Option<SignalSnap>,
     pub recent_trades: Vec<TradeSnap>,
