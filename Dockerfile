@@ -1,5 +1,10 @@
 FROM rust:1.95-slim AS builder
 
+# Bypass rust-toolchain.toml channel sync — uses the toolchain already in the image.
+# Without this, rustup tries to download channel-rust-1.95.0.toml from
+# static.rust-lang.org during `cargo build`, which fails on Railway's build servers.
+ENV RUSTUP_TOOLCHAIN=1.95.0
+
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
