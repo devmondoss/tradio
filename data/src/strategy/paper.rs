@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 // === VALORES DE ARRANQUE — se tunean en Fase D con datos reales ===
 // Todas las constantes se pueden sobreescribir con variables de entorno.
-const DEFAULT_INITIAL_CAPITAL: f64 = 3_000.0; // PAPER_INITIAL_CAPITAL (USD)
+const DEFAULT_INITIAL_CAPITAL: f64 = 300.0; // PAPER_INITIAL_CAPITAL (USD)
 const DEFAULT_LEVERAGE: f64 = 10.0; // PAPER_LEVERAGE — simulates Binance USDM Futures
 const DEFAULT_MAX_CONCURRENT: usize = 1; // PAPER_MAX_POSITIONS
 const DEFAULT_RISK_PCT: f64 = 0.01; // PAPER_RISK_PCT — 1% del capital por trade
