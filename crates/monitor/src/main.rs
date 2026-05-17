@@ -12,6 +12,7 @@
 //!   PAPER_RISK_PCT, PAPER_SLIPPAGE_BPS, PAPER_TAKER_FEE, PAPER_FUNDING_RATE
 
 mod config_loader;
+mod intrabar;
 mod supabase_writer;
 
 use std::collections::VecDeque;
@@ -27,6 +28,7 @@ use std::sync::LazyLock;
 use tokio_rustls::{TlsConnector, rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName}};
 
 use config_loader::ConfigLoader;
+use intrabar::IntrabarConfig;
 use supabase_writer::SupabaseWriter;
 use data::institutional::{
     FundingRateSample, FundingTracker, InstitutionalContext, LiqSide,
@@ -267,6 +269,8 @@ struct BarState {
     // Health monitoring
     freshness: DataFreshness,
     streams: StreamStates,
+    // Intrabar tactical layer config (P0 — no-op evaluator for now)
+    intrabar_cfg: IntrabarConfig,
 }
 
 impl BarState {
@@ -303,6 +307,7 @@ impl BarState {
             regime_started_at_ms: None,
             freshness: DataFreshness::default(),
             streams: StreamStates::default(),
+            intrabar_cfg: IntrabarConfig::from_env(),
         }
     }
 
@@ -1358,6 +1363,7 @@ async fn main() {
     }
 
     let mut state = BarState::new(supabase);
+    state.intrabar_cfg.log_boot();
 
     // Seed bar history from REST before the live stream starts
     warm_up_history(&mut state, &symbol_str, tf_min, 50).await;
