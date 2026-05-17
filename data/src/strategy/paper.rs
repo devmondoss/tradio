@@ -6,7 +6,7 @@ use std::path::PathBuf;
 // === VALORES DE ARRANQUE — se tunean en Fase D con datos reales ===
 // Todas las constantes se pueden sobreescribir con variables de entorno.
 const DEFAULT_INITIAL_CAPITAL: f64 = 3_000.0; // PAPER_INITIAL_CAPITAL (USD)
-const DEFAULT_LEVERAGE: f64 = 1.0; // PAPER_LEVERAGE
+const DEFAULT_LEVERAGE: f64 = 10.0; // PAPER_LEVERAGE — simulates Binance USDM Futures
 const DEFAULT_MAX_CONCURRENT: usize = 1; // PAPER_MAX_POSITIONS
 const DEFAULT_RISK_PCT: f64 = 0.01; // PAPER_RISK_PCT — 1% del capital por trade
 const DEFAULT_SLIPPAGE_BPS: f64 = 1.0; // PAPER_SLIPPAGE_BPS — 1 bp por lado
@@ -571,10 +571,12 @@ impl PaperAccount {
             return;
         }
 
-        // Floor risk_per_unit to entry * risk_pct so that size never exceeds balance/entry
-        // at leverage=1, eliminating spurious notional-cap warnings on tight-stop signals.
+        // Floor risk_per_unit so size never exceeds max_notional, eliminating spurious
+        // cap warnings on tight-stop signals. Formula: entry × risk_pct / leverage ensures
+        // the resulting notional is exactly balance×leverage when the floor binds.
         // The actual stop_price in the position is unchanged — only sizing is affected.
-        let min_risk_per_unit = intended_entry * self.config.risk_pct;
+        let min_risk_per_unit =
+            intended_entry * self.config.risk_pct / self.config.leverage.max(1.0);
         let risk_per_unit = raw_risk_per_unit.max(min_risk_per_unit);
 
         let risk_amount = self.balance * self.config.risk_pct;
