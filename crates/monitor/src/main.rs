@@ -88,6 +88,7 @@ struct PipelineMetrics {
 #[derive(Default)]
 struct DataFreshness {
     liq_last_event_at:  Option<Instant>,
+    liq_stream_ok:      bool,            // true while forceOrder WS is connected
     ls_fetched_at:      Option<Instant>,
     taker_fetched_at:   Option<Instant>,
     oi_fetched_at:      Option<Instant>,
@@ -105,27 +106,24 @@ impl DataFreshness {
         }
     }
 
-    fn liq_age_str(&self)    -> String { Self::age_str(self.liq_last_event_at) }
-    fn ls_age_str(&self)     -> String { Self::age_str(self.ls_fetched_at) }
-    fn taker_age_str(&self)  -> String { Self::age_str(self.taker_fetched_at) }
-    fn oi_age_str(&self)     -> String { Self::age_str(self.oi_fetched_at) }
+    fn liq_age_str(&self)     -> String { Self::age_str(self.liq_last_event_at) }
+    fn ls_age_str(&self)      -> String { Self::age_str(self.ls_fetched_at) }
+    fn taker_age_str(&self)   -> String { Self::age_str(self.taker_fetched_at) }
+    fn oi_age_str(&self)      -> String { Self::age_str(self.oi_fetched_at) }
     fn funding_age_str(&self) -> String { Self::age_str(self.funding_tick_at) }
 
     /// Returns (sources_ok, total_sources). A source is "ok" if updated within 10 min.
+    /// Liq is counted as ok when the forceOrder stream is connected (events are 0 on quiet markets).
     fn quality(&self) -> (u8, u8) {
         let threshold = Duration::from_secs(10 * 60);
         let fresh = |t: Option<Instant>| t.map(|i| i.elapsed() < threshold).unwrap_or(false);
-        let ok = [
-            self.liq_last_event_at,
-            self.ls_fetched_at,
-            self.ls_fetched_at,   // top + global share the same fetch timestamp
-            self.oi_fetched_at,
-            self.taker_fetched_at,
-            self.funding_tick_at,
-        ]
-        .into_iter()
-        .filter(|&t| fresh(t))
-        .count() as u8;
+        let mut ok = 0u8;
+        if self.liq_stream_ok                { ok += 1; }  // stream connected = liq ok
+        if fresh(self.ls_fetched_at)         { ok += 1; }
+        if fresh(self.ls_fetched_at)         { ok += 1; }  // top + global share same fetch
+        if fresh(self.oi_fetched_at)         { ok += 1; }
+        if fresh(self.taker_fetched_at)      { ok += 1; }
+        if fresh(self.funding_tick_at)       { ok += 1; }
         (ok, 6)
     }
 }
@@ -201,10 +199,10 @@ impl PipelineMetrics {
         };
         if streams.liq == StreamHealth::Disc {
             eprintln!("[WARN] forceOrder stream disconnected — liq data unavailable");
-        } else {
-            let liq_age = freshness.liq_last_event_at.map(|t| t.elapsed().as_secs()).unwrap_or(u64::MAX);
-            if liq_age > 300 {
-                eprintln!("[WARN] forceOrder stream: no events for {liq_age}s — stream may be quiet or dead");
+        } else if let Some(age) = freshness.liq_last_event_at.map(|t| t.elapsed().as_secs()) {
+            // Only warn if we previously had events and now they've stopped (liq=never is normal on quiet markets)
+            if age > 300 {
+                eprintln!("[WARN] forceOrder stream: no liquidation events for {age}s — market very quiet or stream issue");
             }
         }
         warn_age("LS ratio fetch",    freshness.ls_fetched_at,      600);
@@ -1569,6 +1567,7 @@ async fn main() {
 
             Some(connected) = liq_health_rx.recv() => {
                 state.streams.liq = if connected { StreamHealth::Ok } else { StreamHealth::Disc };
+                state.freshness.liq_stream_ok = connected;
                 if !connected { state.metrics.ws_reconnects += 1; }
             }
 
