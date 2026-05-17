@@ -190,6 +190,10 @@ pub struct StrategyConfig {
     pub max_vpin: f64,
     pub min_score: f64,
     pub default_ttl_ms: i64,
+    /// Minimum R:R to emit a signal (default 1.5).
+    pub min_rr: f64,
+    /// Maximum R:R considered reachable on M5 BTC (default 8.0); filters fantasy targets.
+    pub max_rr_m5: f64,
 
     // LiquidationHunt
     /// Minimum USD liquidated in 5 min to confirm hunt is in progress.
@@ -222,7 +226,9 @@ impl Default for StrategyConfig {
             // PLACEHOLDER — el umbral real se determina en Fase D analizando
             // la distribución de scores reales. No optimizar este número antes de eso.
             min_score: 0.60,
-            default_ttl_ms: 5 * 60 * 1000,
+            default_ttl_ms: 250 * 60 * 1000,
+            min_rr: 1.5,
+            max_rr_m5: 8.0,
             liq_hunt_min_usd: 500_000.0,
             liq_cascade_threshold: 5_000_000.0,
             liq_ttl_ms: 10 * 60 * 1000,

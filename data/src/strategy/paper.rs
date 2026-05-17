@@ -565,11 +565,17 @@ impl PaperAccount {
             return;
         };
 
-        let risk_per_unit = (intended_entry - stop).abs();
-        if !risk_per_unit.is_finite() || risk_per_unit < 1e-10 {
-            eprintln!("paper: degenerate risk_per_unit={risk_per_unit:.6} — skipping");
+        let raw_risk_per_unit = (intended_entry - stop).abs();
+        if !raw_risk_per_unit.is_finite() || raw_risk_per_unit < 1e-10 {
+            eprintln!("paper: degenerate risk_per_unit={raw_risk_per_unit:.6} — skipping");
             return;
         }
+
+        // Floor risk_per_unit to entry * risk_pct so that size never exceeds balance/entry
+        // at leverage=1, eliminating spurious notional-cap warnings on tight-stop signals.
+        // The actual stop_price in the position is unchanged — only sizing is affected.
+        let min_risk_per_unit = intended_entry * self.config.risk_pct;
+        let risk_per_unit = raw_risk_per_unit.max(min_risk_per_unit);
 
         let risk_amount = self.balance * self.config.risk_pct;
         let mut size = risk_amount / risk_per_unit;
@@ -577,10 +583,9 @@ impl PaperAccount {
         let entry_price = apply_slippage_entry(intended_entry, side, self.config.slippage_bps);
         let mut notional = size * entry_price;
 
-        // El notional máximo depende del leverage, pero lo que se inmoviliza es margen.
+        // Notional cap: guards against leverage > 1 or floating-point edge cases.
         let max_notional = self.balance * self.config.leverage;
         if notional > max_notional {
-            eprintln!("paper: notional {notional:.2} > max {max_notional:.2} — capping size");
             size = max_notional / entry_price;
             notional = size * entry_price;
         }
@@ -752,17 +757,8 @@ mod tests {
     #[test]
     fn full_accounting_long_target_hit() {
         // Entry=100000, Stop=99750 (risk=250), Target=100750 (R:R=3.0)
-        // risk_amount = 3000 * 0.01 = 30 USD
-        // size = 30 / 250 = 0.12 BTC
-        // entry_fill = 100000 * (1 + 0.0001) = 100010 USD (slippage)
-        // notional = 0.12 * 100010 = 12001.20
-        // entry_fee = 12001.20 * 0.0004 = 4.80048
-        // balance after open = 3000 - 12001.20 - 4.80048 = ... wait, max_notional = 3000 * 1.0 = 3000
-        // 12001.20 > 3000 → size gets capped!
-        // capped size = 3000 / 100010 ≈ 0.029997
-        // notional = 0.029997 * 100010 ≈ 3000.00 (roughly)
-        // So the notional cap kicks in here.
-        // Let's use a more realistic example: entry=3000, stop=2750 (risk=250), target=3750
+        // entry=3000, stop=2750 (risk_per_unit=250 = 8.3% of price, above the 1% floor)
+        // risk_amount = 3000 * 0.01 = 30, size = 30 / 250 = 0.12 BTC
 
         let sig = make_signal(
             StrategyId::LvnLiquidityVacuumBreakout,
