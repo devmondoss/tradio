@@ -373,32 +373,35 @@ impl BarState {
         };
 
         // AVWAP-BOS: anchored VWAP from the most recent Break of Structure bar.
-        // BOS is defined as a close above prior_swing_high (bullish) or below
-        // prior_swing_low (bearish). We scan backwards for the most recent such bar.
+        // O(n) via prefix running max/min — avoids the O(n²) nested scan.
         let avwap_bos: Option<f64> = if n > SWING_LB {
-            // Scan from newest to oldest (skip the last bar — that's current)
             let bars_vec: Vec<_> = self.bars.iter().collect();
-            let bos_idx = (0..n.saturating_sub(1)).rev().find(|&i| {
-                let cl = bars_vec[i].close.to_f32() as f64;
-                // Reference swing: max/min of bars *before* i
-                if i == 0 { return false; }
-                let ref_high = bars_vec[..i].iter()
-                    .map(|b| b.high.to_f32() as f64)
-                    .fold(f64::NEG_INFINITY, f64::max);
-                let ref_low = bars_vec[..i].iter()
-                    .map(|b| b.low.to_f32() as f64)
-                    .fold(f64::INFINITY, f64::min);
+            // Build prefix running max of highs and min of lows (oldest-first).
+            // prefix_high[i] = max(highs[0..=i]), prefix_low[i] = min(lows[0..=i]).
+            let mut prefix_high = vec![0.0f64; n];
+            let mut prefix_low  = vec![0.0f64; n];
+            prefix_high[0] = bars_vec[0].high.to_f32() as f64;
+            prefix_low[0]  = bars_vec[0].low.to_f32() as f64;
+            for i in 1..n {
+                prefix_high[i] = prefix_high[i - 1].max(bars_vec[i].high.to_f32() as f64);
+                prefix_low[i]  = prefix_low[i - 1].min(bars_vec[i].low.to_f32() as f64);
+            }
+            // Scan newest→oldest (skip index 0 — needs at least one prior bar).
+            // BOS at bar i: close breaks above all-time high of bars[0..i-1]
+            //               or below all-time low of bars[0..i-1].
+            let bos_idx = (1..n.saturating_sub(1)).rev().find(|&i| {
+                let cl       = bars_vec[i].close.to_f32() as f64;
+                let ref_high = prefix_high[i - 1];
+                let ref_low  = prefix_low[i - 1];
                 cl > ref_high || cl < ref_low
             });
             bos_idx.map(|anchor| {
-                // Compute cumulative VWAP from anchor bar to the last bar
                 let (cum_pv, cum_vol) = bars_vec[anchor..].iter().fold((0.0_f64, 0.0_f64), |(pv, v), b| {
                     let bh = b.high.to_f32() as f64;
                     let bl = b.low.to_f32() as f64;
                     let bc = b.close.to_f32() as f64;
                     let bv = b.volume.total().to_f32_lossy() as f64;
-                    let tp = (bh + bl + bc) / 3.0;
-                    (pv + tp * bv, v + bv)
+                    (pv + (bh + bl + bc) / 3.0 * bv, v + bv)
                 });
                 if cum_vol > 0.0 { cum_pv / cum_vol } else { 0.0 }
             }).filter(|&v| v > 0.0)
