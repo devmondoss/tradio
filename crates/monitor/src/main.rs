@@ -136,6 +136,8 @@ struct BarState {
     supabase: Option<SupabaseWriter>,
     // UUID of the most recently written shadow_signals row — used to link signal_outcomes
     pending_signal_uuid: Option<String>,
+    // Receives the UUID from an in-flight write_signal task (fire-and-forget, non-blocking)
+    pending_uuid_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
     // Dynamic config loaded from Supabase
     cfg: StrategyConfig,
     config_loader: ConfigLoader,
@@ -174,6 +176,7 @@ impl BarState {
             last_taker_ratio: None,
             supabase,
             pending_signal_uuid: None,
+            pending_uuid_rx: None,
             cfg: StrategyConfig { enabled: true, ..StrategyConfig::default() },
             config_loader: ConfigLoader::new(),
             regime_tx: None,
@@ -506,14 +509,33 @@ impl BarState {
             }
         }
 
+        // Collect UUID from the previous bar's in-flight write (non-blocking try_recv).
+        if let Some(mut rx) = self.pending_uuid_rx.take() {
+            match rx.try_recv() {
+                Ok(uuid) => self.pending_signal_uuid = uuid,
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    // Write still in flight — trade linker will miss this one, acceptable.
+                    eprintln!("[supabase] UUID not ready by next bar — trade won't be linked");
+                }
+                Err(_) => {} // sender dropped (write failed), uuid stays None
+            }
+        }
+
         if signal_fired {
             if let Ok(json) = serde_json::to_string(&signal) {
                 println!("{{\"event\":\"signal\",\"data\":{json}}}");
             }
-            // write_signal is async — await it to capture the Supabase-assigned UUID.
-            // Clone the writer to avoid holding an immutable borrow while we mutate pending_signal_uuid.
+            // Spawn write_signal off the hot path — send UUID back via oneshot when done.
             if let Some(sb) = self.supabase.clone() {
-                self.pending_signal_uuid = sb.write_signal(&signal, &ctx).await;
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.pending_uuid_rx = Some(rx);
+                self.pending_signal_uuid = None; // cleared until write completes
+                let signal_clone = signal.clone();
+                let ctx_clone = ctx.clone();
+                tokio::spawn(async move {
+                    let uuid = sb.write_signal(&signal_clone, &ctx_clone).await;
+                    let _ = tx.send(uuid);
+                });
             }
         }
 
