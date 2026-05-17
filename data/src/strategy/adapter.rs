@@ -353,6 +353,61 @@ pub fn derive_regime(recent_closes: &[f64], atr: f64) -> Regime {
     }
 }
 
+/// Wraps `derive_regime` with hysteresis to prevent rapid regime flipping in choppy markets.
+///
+/// Entry thresholds: slow ±0.10, fast ±0.25 (same as `derive_regime`).
+/// Exit thresholds (staying in current trend): slow ±0.05, fast ±0.15.
+/// A regime switch only happens when the signal clearly exits the current regime AND
+/// clearly enters the new one.
+pub fn derive_regime_with_hysteresis(
+    recent_closes: &[f64],
+    atr: f64,
+    prev_regime: Regime,
+) -> Regime {
+    let raw = derive_regime(recent_closes, atr);
+
+    // For structural states that are not trend-directional, just use the raw result.
+    if raw == Regime::Unknown
+        || raw == Regime::Compression
+        || raw == Regime::Expansion
+        || prev_regime == Regime::Unknown
+        || prev_regime == Regime::Compression
+        || prev_regime == Regime::Expansion
+    {
+        return raw;
+    }
+
+    // For TrendUp/TrendDown vs Chop — apply sticky exit thresholds.
+    if recent_closes.len() < 5 || atr <= 0.0 {
+        return raw;
+    }
+
+    let slow = ols_slope_per_atr(recent_closes, atr);
+    let fast_window = &recent_closes[recent_closes.len().saturating_sub(5)..];
+    let fast = ols_slope_per_atr(fast_window, atr);
+
+    match prev_regime {
+        Regime::TrendUp => {
+            // Stay in TrendUp as long as slope hasn't dropped below the exit threshold
+            if slow > 0.05 || fast > 0.15 {
+                Regime::TrendUp
+            } else {
+                raw
+            }
+        }
+        Regime::TrendDown => {
+            // Stay in TrendDown as long as slope hasn't risen above the exit threshold
+            if slow < -0.05 || fast < -0.15 {
+                Regime::TrendDown
+            } else {
+                raw
+            }
+        }
+        // Chop: switch to trend only if signal clearly crosses entry threshold (raw handles this)
+        _ => raw,
+    }
+}
+
 /// Evaluates absorption side at the breach candle using per-candle delta.
 ///
 /// Returns Unknown when `recent_deltas` is empty or doesn't cover the breach index —

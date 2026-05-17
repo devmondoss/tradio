@@ -29,7 +29,7 @@ use data::strategy::{
     adapter::{
         build_flow_context, build_orderbook_context, build_volume_profile_context,
         build_vwap_context, count_price_reversals, derive_cvd_divergence,
-        derive_failed_acceptance_and_absorption, derive_regime, wall_nearby,
+        derive_failed_acceptance_and_absorption, derive_regime, derive_regime_with_hysteresis, wall_nearby,
     },
     intent_logger::collect_near_misses,
     paper::PaperAccount,
@@ -37,7 +37,7 @@ use data::strategy::{
     types::{DataQuality, OrderBookContext, StrategyAction, StrategyConfig, StrategyMarketContext},
 };
 use exchange::{
-    Kline, PushFrequency, Ticker, TickerInfo, Timeframe,
+    Kline, Volume, PushFrequency, Ticker, TickerInfo, Timeframe,
     adapter::{
         AdapterHandles, AdapterNetworkConfig, Event, Exchange, MarketKind, StreamConfig, Venue,
     },
@@ -143,6 +143,8 @@ struct BarState {
     regime_tx: Option<tokio::sync::mpsc::Sender<String>>,
     // Last regime seen — used to detect regime changes and write regime_history
     last_regime: Option<String>,
+    // Last regime as enum — used for hysteresis in derive_regime_with_hysteresis
+    last_regime_enum: data::strategy::types::Regime,
     // Timestamp (ms) when the current regime started — for duration_ms in regime_history
     regime_started_at_ms: Option<i64>,
 }
@@ -176,6 +178,7 @@ impl BarState {
             config_loader: ConfigLoader::new(),
             regime_tx: None,
             last_regime: None,
+            last_regime_enum: data::strategy::types::Regime::Unknown,
             regime_started_at_ms: None,
         }
     }
@@ -272,7 +275,7 @@ impl BarState {
 
         let atr = compute_atr(&highs, &lows, &closes, ATR_WINDOW);
         let regime_window = &closes[closes.len().saturating_sub(REGIME_WINDOW)..];
-        let regime = derive_regime(regime_window, atr);
+        let regime = derive_regime_with_hysteresis(regime_window, atr, self.last_regime_enum);
         let regime_str = format!("{regime:?}");
         self.notify_regime(&regime_str);
 
@@ -284,6 +287,7 @@ impl BarState {
             }
             self.regime_started_at_ms = Some(bar_ms);
             self.last_regime = Some(regime_str.clone());
+            self.last_regime_enum = regime;
         }
         // Compute slow/fast slopes for diagnostics (mirrors derive_regime internals)
         let slow_slope = compute_ols_slope(regime_window, atr);
@@ -541,11 +545,13 @@ impl BarState {
             .collect::<Vec<_>>()
             .join(",");
 
+        let inst_ref = ctx.institutional.as_ref();
         eprintln!(
             "[bar] ts={bar_ms} close={c:.2} regime={regime:?} \
              slow={slow_slope:.3} fast={fast_slope:.3} \
              funding={:.4} basis={:.3}% oi_delta={:.0} \
              vwap={:.2} cvd={:.1} ob={} \
+             inst={} ls_top={:.1}%/{:.1}% liq={:.0}$ \
              action={:?} score={:.3} latency={latency_ms}ms equity={:.2} \
              missing=[{missing_str}] evidence=[{evidence_str}]",
             self.funding_rate.unwrap_or(0.0) * 10_000.0,
@@ -554,6 +560,10 @@ impl BarState {
             self.vwap_session.unwrap_or(0.0),
             self.cvd,
             if self.depth.is_some() { "live" } else { "miss" },
+            inst_ref.map(|i| format!("{:?}", i.quality)).unwrap_or_else(|| "null".into()),
+            inst_ref.map(|i| i.ls_ratio.top_traders_long_pct * 100.0).unwrap_or(0.0),
+            inst_ref.map(|i| i.ls_ratio.retail_long_pct * 100.0).unwrap_or(0.0),
+            inst_ref.map(|i| i.liquidations.total_usd_5m).unwrap_or(0.0),
             signal.action,
             signal.score,
             self.paper.equity,
@@ -913,6 +923,97 @@ async fn fetch_funding_history(symbol: &str) -> Vec<FundingRateSample> {
         .unwrap_or_default()
 }
 
+/// Fetches `limit` historical closed klines from Binance FAPI REST and seeds BarState
+/// with them so ATR, VWAP, VP, and regime are warm before the first live bar is processed.
+/// Signals are NOT emitted for historical bars — Supabase writes are suppressed.
+async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit: usize) {
+    let interval_str = match tf_min {
+        1 => "1m", 3 => "3m", 5 => "5m", 15 => "15m", 30 => "30m", 60 => "1h", _ => "5m",
+    };
+    let url = format!(
+        "https://fapi.binance.com/fapi/v1/klines?symbol={}&interval={}&limit={}",
+        symbol, interval_str, limit + 1 // +1 so we skip the current (open) bar
+    );
+    let resp = match reqwest::get(&url).await {
+        Ok(r) => r,
+        Err(e) => { eprintln!("[warmup] klines fetch failed: {e}"); return; }
+    };
+    let json: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => { eprintln!("[warmup] klines parse failed: {e}"); return; }
+    };
+    let arr = match json.as_array() {
+        Some(a) if a.len() > 1 => a,
+        _ => { eprintln!("[warmup] klines response unexpected shape"); return; }
+    };
+
+    // Skip last entry — it's the still-open current bar
+    let closed = &arr[..arr.len() - 1];
+    eprintln!("[warmup] seeding {} historical bars ({})", closed.len(), interval_str);
+
+    for entry in closed {
+        let arr = match entry.as_array() {
+            Some(a) if a.len() >= 10 => a,
+            _ => continue,
+        };
+        let open_ms: i64  = arr[0].as_i64().unwrap_or(0);
+        let high: f64     = arr[2].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let low: f64      = arr[3].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let close: f64    = arr[4].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let volume: f64   = arr[5].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let taker_buy_vol: f64 = arr[9].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+
+        if close <= 0.0 || volume <= 0.0 { continue; }
+
+        // Update VWAP accumulators
+        let day = open_ms / 86_400_000;
+        if day != state.vwap_day {
+            state.vwap_cum_pv = 0.0;
+            state.vwap_cum_vol = 0.0;
+            state.vwap_day = day;
+        }
+        let typical = (high + low + close) / 3.0;
+        state.vwap_cum_pv += typical * volume;
+        state.vwap_cum_vol += volume;
+        state.vwap_session = Some(state.vwap_cum_pv / state.vwap_cum_vol);
+
+        // Accumulate CVD (taker_buy_vol from REST; taker_sell = vol - taker_buy)
+        let taker_sell_vol = (volume - taker_buy_vol).max(0.0);
+        state.cvd += taker_buy_vol - taker_sell_vol;
+        state.cvd_history.push_back(state.cvd);
+        if state.cvd_history.len() > CVD_WINDOW {
+            state.cvd_history.pop_front();
+        }
+
+        // Build a synthetic Kline and push it into the bar history
+        use exchange::{UnixMs, unit::{Price, Qty}};
+        let bar = Kline {
+            time:  UnixMs(open_ms as u64),
+            open:  Price::from_f32(close as f32),
+            high:  Price::from_f32(high as f32),
+            low:   Price::from_f32(low as f32),
+            close: Price::from_f32(close as f32),
+            volume: Volume::TotalOnly(Qty::from_f32(volume as f32)),
+            is_closed: true,
+        };
+        state.bars.push_back(bar);
+        if state.bars.len() > VP_WINDOW {
+            state.bars.pop_front();
+        }
+    }
+
+    // Prime last_regime_enum so hysteresis starts with the correct state
+    let closes: Vec<f64> = state.bars.iter().map(|b| b.close.to_f32() as f64).collect();
+    let highs:  Vec<f64> = state.bars.iter().map(|b| b.high.to_f32() as f64).collect();
+    let lows:   Vec<f64> = state.bars.iter().map(|b| b.low.to_f32() as f64).collect();
+    let atr = compute_atr(&highs, &lows, &closes, ATR_WINDOW);
+    let regime_window = &closes[closes.len().saturating_sub(REGIME_WINDOW)..];
+    let regime = derive_regime(regime_window, atr);
+    state.last_regime_enum = regime;
+    state.last_regime = Some(format!("{regime:?}"));
+    eprintln!("[warmup] complete — {} bars loaded, atr={atr:.2}, regime={regime:?}", state.bars.len());
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -996,6 +1097,9 @@ async fn main() {
     }
 
     let mut state = BarState::new(supabase);
+
+    // Seed bar history from REST before the live stream starts
+    warm_up_history(&mut state, &symbol_str, tf_min, 50).await;
 
     let tf_ms = timeframe.to_milliseconds();
     let mut pending: Option<(u64, Kline)> = None;

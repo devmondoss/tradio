@@ -63,32 +63,29 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Stra
     }
 
     let mut candidates = Vec::new();
+    // Rejection reasons per detector — populated when a detector returns None
+    let mut rejections: Vec<String> = Vec::new();
 
-    if let Some(s) = value_area_failed_auction::detect(ctx, cfg) {
-        candidates.push(score_signal(ctx, s));
+    macro_rules! try_detect {
+        ($name:literal, $expr:expr) => {
+            match $expr {
+                Some(s) => candidates.push(score_signal(ctx, s)),
+                None => rejections.push(format!("{}:SKIP", $name)),
+            }
+        };
     }
 
-    if let Some(s) = lvn_liquidity_vacuum_breakout::detect(ctx, cfg) {
-        candidates.push(score_signal(ctx, s));
-    }
-
-    if let Some(s) = vwap_value_pullback_continuation::detect(ctx, cfg) {
-        candidates.push(score_signal(ctx, s));
-    }
+    try_detect!("VAFA", value_area_failed_auction::detect(ctx, cfg));
+    try_detect!("LVN", lvn_liquidity_vacuum_breakout::detect(ctx, cfg));
+    try_detect!("VWAP", vwap_value_pullback_continuation::detect(ctx, cfg));
 
     // Institutional detectors — only run when institutional data is available
     if let Some(inst) = &ctx.institutional {
-        if let Some(s) = liquidation_hunt::detect(ctx, inst, cfg) {
-            candidates.push(score_signal(ctx, s));
-        }
-
-        if let Some(s) = funding_exhaustion_reversal::detect(ctx, inst, cfg) {
-            candidates.push(score_signal(ctx, s));
-        }
-
-        if let Some(s) = smart_money_divergence::detect(ctx, inst, cfg) {
-            candidates.push(score_signal(ctx, s));
-        }
+        try_detect!("LIQ", liquidation_hunt::detect(ctx, inst, cfg));
+        try_detect!("FER", funding_exhaustion_reversal::detect(ctx, inst, cfg));
+        try_detect!("SMD", smart_money_divergence::detect(ctx, inst, cfg));
+    } else {
+        rejections.push("INST:NULL".into());
     }
 
     let best = candidates
@@ -128,7 +125,7 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Stra
             score: 0.0,
             ttl_ms: 0,
             evidence: vec![],
-            missing: vec!["NO_VALID_SETUP".into()],
+            missing: rejections,
             invalidation: vec![],
             created_at_ms: ctx.timestamp_ms,
         },
