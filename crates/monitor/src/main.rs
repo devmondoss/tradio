@@ -70,14 +70,91 @@ struct PipelineMetrics {
     trade_count: u64,
     depth_updates: u64,
     bars_processed: u64,
-    latencies_ms: Vec<i64>,     // delivery lag: theoretical close → our receipt (Binance WS delay)
-    processing_ms: Vec<u128>,   // our compute time per bar
+    latencies_ms: Vec<i64>,
+    processing_ms: Vec<u128>,
     last_depth_at: Option<Instant>,
     last_trade_at: Option<Instant>,
+    // counters
+    bars_since_signal: u64,
+    signals_today: u64,
+    liq_events_today: u64,
+    ws_reconnects: u64,
+}
+
+// ── data freshness ────────────────────────────────────────────────────────────
+
+/// Tracks when each institutional data source was last updated.
+/// Used to compute ages shown in [bar] log and trigger [WARN] in [metrics].
+#[derive(Default)]
+struct DataFreshness {
+    liq_last_event_at:  Option<Instant>,
+    ls_fetched_at:      Option<Instant>,
+    taker_fetched_at:   Option<Instant>,
+    oi_fetched_at:      Option<Instant>,
+    funding_tick_at:    Option<Instant>,
+}
+
+impl DataFreshness {
+    fn age_str(t: Option<Instant>) -> String {
+        match t {
+            None => "never".into(),
+            Some(t) => {
+                let s = t.elapsed().as_secs();
+                if s < 60 { format!("{s}s") } else { format!("{}m{:02}s", s / 60, s % 60) }
+            }
+        }
+    }
+
+    fn liq_age_str(&self)    -> String { Self::age_str(self.liq_last_event_at) }
+    fn ls_age_str(&self)     -> String { Self::age_str(self.ls_fetched_at) }
+    fn taker_age_str(&self)  -> String { Self::age_str(self.taker_fetched_at) }
+    fn oi_age_str(&self)     -> String { Self::age_str(self.oi_fetched_at) }
+    fn funding_age_str(&self) -> String { Self::age_str(self.funding_tick_at) }
+
+    /// Returns (sources_ok, total_sources). A source is "ok" if updated within 10 min.
+    fn quality(&self) -> (u8, u8) {
+        let threshold = Duration::from_secs(10 * 60);
+        let fresh = |t: Option<Instant>| t.map(|i| i.elapsed() < threshold).unwrap_or(false);
+        let ok = [
+            self.liq_last_event_at,
+            self.ls_fetched_at,
+            self.ls_fetched_at,   // top + global share the same fetch timestamp
+            self.oi_fetched_at,
+            self.taker_fetched_at,
+            self.funding_tick_at,
+        ]
+        .into_iter()
+        .filter(|&t| fresh(t))
+        .count() as u8;
+        (ok, 6)
+    }
+}
+
+// ── stream health ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+enum StreamHealth { #[default] Unknown, Ok, Reconnecting, Disc }
+
+impl std::fmt::Display for StreamHealth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown      => write!(f, "?"),
+            Self::Ok           => write!(f, "ok"),
+            Self::Reconnecting => write!(f, "recon"),
+            Self::Disc         => write!(f, "disc"),
+        }
+    }
+}
+
+#[derive(Default)]
+struct StreamStates {
+    klines: StreamHealth,
+    depth:  StreamHealth,
+    liq:    StreamHealth,
 }
 
 impl PipelineMetrics {
-    fn report(&self) {
+    fn report(&self, freshness: &DataFreshness, streams: &StreamStates) {
         let avg_lat = if self.latencies_ms.is_empty() {
             0.0
         } else {
@@ -85,40 +162,64 @@ impl PipelineMetrics {
         };
         let max_lat = self.latencies_ms.iter().max().copied().unwrap_or(0);
 
-        let depth_age_ms = self
-            .last_depth_at
-            .map(|t| t.elapsed().as_millis())
-            .unwrap_or(999_999);
-        let trade_age_ms = self
-            .last_trade_at
-            .map(|t| t.elapsed().as_millis())
-            .unwrap_or(999_999);
+        let depth_age_ms = self.last_depth_at.map(|t| t.elapsed().as_millis()).unwrap_or(999_999);
+        let trade_age_ms = self.last_trade_at.map(|t| t.elapsed().as_millis()).unwrap_or(999_999);
 
+        let (inst_ok, inst_total) = freshness.quality();
         eprintln!(
-            "[metrics] bars={} kline_ticks={} trade_batches={} trades={} depth_updates={} \
+            "[metrics] bars={} signals={} liq_events={} ws_reconnects={} | \
+             kline_ticks={} trades={} depth_updates={} | \
              bar_latency_avg={:.0}ms max={max_lat}ms | \
-             depth_age={depth_age_ms}ms trade_age={trade_age_ms}ms",
-            self.bars_processed,
-            self.kline_ticks,
-            self.trade_batches,
-            self.trade_count,
-            self.depth_updates,
+             depth_age={depth_age_ms}ms trade_age={trade_age_ms}ms | \
+             inst={inst_ok}/{inst_total} liq_age={} ls_age={} taker_age={} oi_age={} funding_age={} | \
+             ws=[kline:{} depth:{} trades:ok liq:{}]",
+            self.bars_processed, self.signals_today, self.liq_events_today, self.ws_reconnects,
+            self.kline_ticks, self.trade_count, self.depth_updates,
             avg_lat,
+            freshness.liq_age_str(), freshness.ls_age_str(),
+            freshness.taker_age_str(), freshness.oi_age_str(), freshness.funding_age_str(),
+            streams.klines, streams.depth, streams.liq,
         );
 
+        // stream health warnings
         if depth_age_ms > 5_000 {
             eprintln!("[WARN] depth stream stale — last update {depth_age_ms}ms ago");
         }
         if trade_age_ms > 5_000 {
             eprintln!("[WARN] trade stream stale — last update {trade_age_ms}ms ago");
         }
+        // institutional freshness warnings
+        let warn_age = |label: &str, t: Option<Instant>, threshold_secs: u64| {
+            if let Some(inst) = t {
+                let age = inst.elapsed().as_secs();
+                if age > threshold_secs {
+                    eprintln!("[WARN] {label}: last update {age}s ago — fetch may be failing");
+                }
+            } else {
+                eprintln!("[WARN] {label}: no data received yet");
+            }
+        };
+        if streams.liq == StreamHealth::Disc {
+            eprintln!("[WARN] forceOrder stream disconnected — liq data unavailable");
+        } else {
+            let liq_age = freshness.liq_last_event_at.map(|t| t.elapsed().as_secs()).unwrap_or(u64::MAX);
+            if liq_age > 300 {
+                eprintln!("[WARN] forceOrder stream: no events for {liq_age}s — stream may be quiet or dead");
+            }
+        }
+        warn_age("LS ratio fetch",    freshness.ls_fetched_at,      600);
+        warn_age("taker ratio fetch",  freshness.taker_fetched_at,   300);
+        warn_age("OI fetch",           freshness.oi_fetched_at,       600);
+        warn_age("funding stream",     freshness.funding_tick_at,     120);
+
         let avg_proc = if self.processing_ms.is_empty() {
             0.0
         } else {
             self.processing_ms.iter().sum::<u128>() as f64 / self.processing_ms.len() as f64
         };
         let max_proc = self.processing_ms.iter().max().copied().unwrap_or(0);
-        eprintln!("[metrics] proc_avg={avg_proc:.0}ms proc_max={max_proc}ms (delivery_avg={avg_lat:.0}ms)");
+        eprintln!("[metrics] proc_avg={avg_proc:.0}ms proc_max={max_proc}ms bars_since_signal={}",
+            self.bars_since_signal);
         if self.bars_processed > 0 && avg_proc > 100.0 {
             eprintln!("[WARN] high bar processing time {avg_proc:.0}ms — check compute path");
         }
@@ -165,6 +266,9 @@ struct BarState {
     last_regime_enum: data::strategy::types::Regime,
     // Timestamp (ms) when the current regime started — for duration_ms in regime_history
     regime_started_at_ms: Option<i64>,
+    // Health monitoring
+    freshness: DataFreshness,
+    streams: StreamStates,
 }
 
 impl BarState {
@@ -199,6 +303,8 @@ impl BarState {
             last_regime: None,
             last_regime_enum: data::strategy::types::Regime::Unknown,
             regime_started_at_ms: None,
+            freshness: DataFreshness::default(),
+            streams: StreamStates::default(),
         }
     }
 
@@ -209,6 +315,8 @@ impl BarState {
     }
 
     fn on_liquidation(&mut self, event: LiquidationEvent) {
+        self.freshness.liq_last_event_at = Some(Instant::now());
+        self.metrics.liq_events_today += 1;
         self.liq_tracker.push(event);
     }
 
@@ -517,6 +625,12 @@ impl BarState {
 
         let signal = route_strategy(&ctx, &cfg);
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
+        if signal_fired {
+            self.metrics.signals_today += 1;
+            self.metrics.bars_since_signal = 0;
+        } else {
+            self.metrics.bars_since_signal += 1;
+        }
 
         let near_misses = collect_near_misses(&ctx, &cfg, signal_fired);
 
@@ -600,30 +714,39 @@ impl BarState {
             .map(|m| format!("{m:?}"))
             .collect::<Vec<_>>()
             .join(",");
-        let evidence_str = signal
-            .evidence
-            .iter()
-            .map(|e| format!("{e:?}"))
-            .collect::<Vec<_>>()
-            .join(",");
 
         let processing_ms = proc_start.elapsed().as_millis();
         let inst_ref = ctx.institutional.as_ref();
+        let (inst_ok, inst_total) = self.freshness.quality();
+        let inst_label = if inst_ref.is_none() {
+            "null".to_string()
+        } else if inst_ok == inst_total {
+            format!("Live({inst_ok}/{inst_total})")
+        } else if inst_ok > 0 {
+            format!("Partial({inst_ok}/{inst_total})")
+        } else {
+            format!("Stale(0/{inst_total})")
+        };
+        let ws_label = format!(
+            "kline:{} depth:{} trades:ok liq:{}",
+            self.streams.klines, self.streams.depth, self.streams.liq
+        );
+        let liq_age = self.freshness.liq_age_str();
         eprintln!(
             "[bar] ts={bar_ms} close={c:.2} regime={regime:?} \
              slow={slow_slope:.3} fast={fast_slope:.3} \
              funding={:.4} basis={:.3}% oi_delta={:.0} \
              vwap={:.2} cvd={:.1} ob={} \
-             inst={} ls_top={:.1}%/{:.1}% liq={:.0}$ \
+             inst={inst_label} ls_top={:.1}%/{:.1}% liq={:.0}$ liq_age={liq_age} \
+             ws=[{ws_label}] \
              action={:?} score={:.3} delivery={delivery_lag_ms}ms proc={processing_ms}ms equity={:.2} \
-             missing=[{missing_str}] evidence=[{evidence_str}] skip=[{skip_str}]",
+             missing=[{missing_str}] skip=[{skip_str}]",
             self.funding_rate.unwrap_or(0.0) * 10_000.0,
             basis.unwrap_or(0.0),
             oi_delta.unwrap_or(0.0),
             self.vwap_session.unwrap_or(0.0),
             self.cvd,
             if self.depth.is_some() { "live" } else { "miss" },
-            inst_ref.map(|i| format!("{:?}", i.quality)).unwrap_or_else(|| "null".into()),
             inst_ref.map(|i| i.ls_ratio.top_traders_long_pct * 100.0).unwrap_or(0.0),
             inst_ref.map(|i| i.ls_ratio.retail_long_pct * 100.0).unwrap_or(0.0),
             inst_ref.map(|i| i.liquidations.total_usd_5m).unwrap_or(0.0),
@@ -634,7 +757,9 @@ impl BarState {
 
         self.metrics.processing_ms.push(processing_ms);
         if self.metrics.bars_processed % 10 == 0 {
-            self.metrics.report();
+            let freshness = &self.freshness;
+            let streams = &self.streams;
+            self.metrics.report(freshness, streams);
         }
     }
 }
@@ -975,27 +1100,35 @@ fn parse_force_order_event(text: &str) -> Option<LiquidationEvent> {
 }
 
 /// Spawns a task that streams @forceOrder events into `tx` with auto-reconnect.
+/// Sends `true` to `health_tx` on connect and `false` on disconnect.
 fn spawn_force_order_stream(
     symbol: String,
     tx: tokio::sync::mpsc::Sender<Vec<LiquidationEvent>>,
+    health_tx: tokio::sync::mpsc::Sender<bool>,
 ) {
     tokio::spawn(async move {
         loop {
             match connect_force_order_ws(&symbol).await {
                 Err(e) => {
                     eprintln!("[liq] forceOrder WS connect failed: {e} — retry in 5s");
+                    let _ = health_tx.send(false).await;
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
                 Ok(mut ws) => {
                     eprintln!("[liq] forceOrder WS connected for {symbol}");
+                    let _ = health_tx.send(true).await;
                     loop {
                         match ws.read_frame().await {
                             Err(e) => {
                                 eprintln!("[liq] forceOrder WS read error: {e} — reconnecting");
+                                let _ = health_tx.send(false).await;
                                 break;
                             }
                             Ok(frame) => {
-                                if frame.opcode == OpCode::Close { break; }
+                                if frame.opcode == OpCode::Close {
+                                    let _ = health_tx.send(false).await;
+                                    break;
+                                }
                                 if frame.opcode != OpCode::Text { continue; }
                                 let text = match std::str::from_utf8(&frame.payload) {
                                     Ok(s) => s,
@@ -1266,7 +1399,8 @@ async fn main() {
 
     // Liquidations: real-time via @forceOrder WebSocket (public stream, no auth needed)
     let (liq_tx, mut liq_rx) = tokio::sync::mpsc::channel::<Vec<LiquidationEvent>>(16);
-    spawn_force_order_stream(symbol_str.clone(), liq_tx);
+    let (liq_health_tx, mut liq_health_rx) = tokio::sync::mpsc::channel::<bool>(4);
+    spawn_force_order_stream(symbol_str.clone(), liq_tx, liq_health_tx);
 
     // L/S ratios (top traders + global): every 5 min
     type LsPayload = (Option<LongShortSnapshot>, Option<LongShortSnapshot>);
@@ -1339,17 +1473,31 @@ async fn main() {
                             _ => {}
                         }
                     }
-                    Event::Connected(ex) => eprintln!("[kline] connected ({ex:?})"),
+                    Event::Connected(ex) => {
+                        eprintln!("[kline] connected ({ex:?})");
+                        state.streams.klines = StreamHealth::Ok;
+                    }
                     Event::Disconnected(ex, reason) => {
                         eprintln!("[kline] DISCONNECTED ({ex:?}): {reason}");
+                        state.streams.klines = StreamHealth::Reconnecting;
+                        state.metrics.ws_reconnects += 1;
                     }
                     _ => {}
                 }
             }
 
             Some(event) = depth_stream.next() => {
-                if let Event::DepthReceived(_kind, _ts, depth_arc) = event {
-                    state.on_depth((*depth_arc).clone());
+                match event {
+                    Event::DepthReceived(_kind, _ts, depth_arc) => {
+                        state.streams.depth = StreamHealth::Ok;
+                        state.on_depth((*depth_arc).clone());
+                    }
+                    Event::Connected(_) => { state.streams.depth = StreamHealth::Ok; }
+                    Event::Disconnected(_, _) => {
+                        state.streams.depth = StreamHealth::Reconnecting;
+                        state.metrics.ws_reconnects += 1;
+                    }
+                    _ => {}
                 }
             }
 
@@ -1365,6 +1513,7 @@ async fn main() {
             Some((funding, mark_price)) = funding_rx.recv() => {
                 if let Some(r) = funding {
                     state.funding_rate = Some(r);
+                    state.freshness.funding_tick_at = Some(Instant::now());
                     let now_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
@@ -1382,7 +1531,7 @@ async fn main() {
 
             Some(oi) = oi_rx.recv() => {
                 if let Some(o) = oi {
-                    // Feed both the legacy VecDeque and the OiTracker
+                    state.freshness.oi_fetched_at = Some(Instant::now());
                     state.oi_history.push_back(o);
                     if state.oi_history.len() > 6 {
                         state.oi_history.pop_front();
@@ -1402,6 +1551,7 @@ async fn main() {
             }
 
             Some((top, global)) = ls_rx.recv() => {
+                state.freshness.ls_fetched_at = Some(Instant::now());
                 if let Some(snap) = top {
                     state.ls_tracker.push(snap);
                 }
@@ -1411,9 +1561,15 @@ async fn main() {
             }
 
             Some(snap) = taker_rx.recv() => {
+                state.freshness.taker_fetched_at = Some(Instant::now());
                 if let Some(s) = snap {
                     state.last_taker_ratio = Some(s);
                 }
+            }
+
+            Some(connected) = liq_health_rx.recv() => {
+                state.streams.liq = if connected { StreamHealth::Ok } else { StreamHealth::Disc };
+                if !connected { state.metrics.ws_reconnects += 1; }
             }
 
             Some(samples) = funding_hist_rx.recv() => {
@@ -1448,7 +1604,7 @@ async fn main() {
         }
 
         if last_metrics_print.elapsed() >= metrics_interval {
-            state.metrics.report();
+            state.metrics.report(&state.freshness, &state.streams);
             last_metrics_print = Instant::now();
         }
     }
