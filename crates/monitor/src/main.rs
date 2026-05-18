@@ -519,7 +519,6 @@ impl BarState {
     fn resolve_outcomes(&mut self, bar_close_ms: i64, bar_close_px: f64) {
         let mut resolved = vec![];
         self.pending_outcomes.retain(|o| {
-            // Resolve when at least one full bar (5m) has elapsed since signal
             if bar_close_ms >= o.signal_ms + 300_000 {
                 resolved.push(o.clone());
                 false
@@ -528,7 +527,6 @@ impl BarState {
             }
         });
         for mut o in resolved {
-            // Final update with bar close price and fill any missing horizons
             o.update(bar_close_px, bar_close_ms);
             let rr_final = if o.is_long {
                 (bar_close_px - o.entry_px) / o.risk
@@ -539,6 +537,19 @@ impl BarState {
             if o.rr_at_3m.is_none() { o.rr_at_3m = Some(rr_final); }
             if o.rr_at_5m.is_none() { o.rr_at_5m = Some(rr_final); }
             o.log(bar_close_ms);
+            if let Some(sb) = &self.supabase {
+                let age_ms = bar_close_ms - o.signal_ms;
+                sb.write_outcome(
+                    o.signal_ms,
+                    &o.source.to_string(),
+                    &o.strategy_id,
+                    if o.is_long { "L" } else { "S" },
+                    o.entry_px, o.stop_px, o.target_px, o.risk,
+                    o.mfe, o.mae,
+                    o.rr_at_1m, o.rr_at_3m, o.rr_at_5m,
+                    o.hit_target, o.hit_stop, age_ms,
+                );
+            }
         }
     }
 

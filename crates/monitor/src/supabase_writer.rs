@@ -118,6 +118,50 @@ impl SupabaseWriter {
         });
     }
 
+    /// Inserts a resolved outcome into intrabar_outcomes. Fire-and-forget.
+    pub fn write_outcome(
+        &self,
+        signal_ms: i64,
+        source: &str,
+        strategy_id: &str,
+        side: &str,
+        entry_px: f64,
+        stop_px: f64,
+        target_px: f64,
+        risk: f64,
+        mfe: f64,
+        mae: f64,
+        rr_at_1m: Option<f64>,
+        rr_at_3m: Option<f64>,
+        rr_at_5m: Option<f64>,
+        hit_target: bool,
+        hit_stop: bool,
+        age_ms: i64,
+    ) {
+        let body = json!({
+            "signal_ms":   signal_ms,
+            "source":      source,
+            "strategy_id": strategy_id,
+            "side":        side,
+            "entry_px":    entry_px,
+            "stop_px":     stop_px,
+            "target_px":   target_px,
+            "risk":        risk,
+            "mfe":         mfe,
+            "mae":         mae,
+            "rr_at_1m":    rr_at_1m,
+            "rr_at_3m":    rr_at_3m,
+            "rr_at_5m":    rr_at_5m,
+            "hit_target":  hit_target,
+            "hit_stop":    hit_stop,
+            "age_ms":      age_ms,
+        });
+        let writer = self.clone();
+        tokio::spawn(async move {
+            writer.post("intrabar_outcomes", &body).await;
+        });
+    }
+
     async fn post(&self, table: &str, body: &Value) {
         let url = format!("{}/rest/v1/{}", self.url, table);
         let result = self
