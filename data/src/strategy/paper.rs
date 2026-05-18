@@ -1,3 +1,5 @@
+use super::target_selector::TargetSelector;
+use super::trade_manager::{ActiveTrade, TradeConfig};
 use super::types::*;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -96,6 +98,9 @@ pub struct PaperPosition {
     pub entry_val: Option<f64>,
     #[serde(default)]
     pub entry_vah: Option<f64>,
+    /// Dynamic stop management. None falls back to fixed stop/target from signal.
+    #[serde(default)]
+    pub active_trade: Option<ActiveTrade>,
 }
 
 impl PaperPosition {
@@ -211,6 +216,27 @@ pub struct ClosedTrade {
     pub net_pnl_pct: f64,
     pub mfe: f64,
     pub mae: f64,
+    /// Initial stop at trade open (same as stop_price when no active trade).
+    #[serde(default)]
+    pub stop_initial: Option<f64>,
+    /// Final stop price at close (reflects trailing if active).
+    #[serde(default)]
+    pub stop_final: Option<f64>,
+    /// StopState name at close: "Original", "BreakEven", "TrailingStructural".
+    #[serde(default)]
+    pub stop_state_at_close: Option<String>,
+    /// Structural target used by TradeManager (may differ from original signal target).
+    #[serde(default)]
+    pub target_structural: Option<f64>,
+    /// Intermediate level between entry and target (break-even trigger).
+    #[serde(default)]
+    pub intermediate_level: Option<f64>,
+    /// TradePhase name at close: "Open", "Level1Confirmed", "TargetExceeded".
+    #[serde(default)]
+    pub trade_phase_at_close: Option<String>,
+    /// Number of bars the trade was open.
+    #[serde(default)]
+    pub bars_open: u32,
 }
 
 /// Registra contradicciones (señal opuesta a posición abierta del mismo symbol).
@@ -246,6 +272,7 @@ pub struct PaperAccount {
     pub balance: f64,
     pub equity: f64,
     pub config: PaperConfig,
+    pub trade_config: TradeConfig,
     pub open_positions: Vec<PaperPosition>,
     pub closed_trades: Vec<ClosedTrade>,
     pub contradiction_log: Vec<ContradictionEvent>,
@@ -265,10 +292,12 @@ impl PaperAccount {
     pub fn new() -> Self {
         let config = PaperConfig::from_env();
         let balance = config.initial_capital;
+        let trade_config = TradeConfig { risk_pct: config.risk_pct, ..TradeConfig::default() };
         Self {
             equity: balance,
             balance,
             config,
+            trade_config,
             open_positions: Vec::new(),
             closed_trades: Vec::new(),
             contradiction_log: Vec::new(),
@@ -299,10 +328,13 @@ impl PaperAccount {
                             state.closed_trades.len(),
                         );
                         let config = PaperConfig::from_env();
+                        let trade_config =
+                            TradeConfig { risk_pct: config.risk_pct, ..TradeConfig::default() };
                         return Self {
                             balance: state.balance,
                             equity: state.equity,
                             config,
+                            trade_config,
                             open_positions: state.open_positions,
                             closed_trades: state.closed_trades,
                             contradiction_log: state.contradiction_log,
@@ -418,20 +450,23 @@ impl PaperAccount {
         now_ms: i64,
         ctx: Option<&StrategyMarketContext>,
     ) {
+        let atr = ctx.and_then(|c| c.atr).unwrap_or(0.0);
+        let tc = self.trade_config;
         let mut i = 0;
         while i < self.open_positions.len() {
             self.open_positions[i].update_excursion(bar_high, bar_low);
-            let reason = self.open_positions[i]
-                .check_close(bar_high, bar_low, now_ms)
-                .or_else(|| {
-                    ctx.and_then(|c| {
-                        if self.open_positions[i].check_invalidation(c) {
-                            Some("INVALIDATED")
-                        } else {
-                            None
-                        }
-                    })
-                });
+            let invalidated = ctx
+                .map(|c| self.open_positions[i].check_invalidation(c))
+                .unwrap_or(false);
+            let reason: Option<&'static str> =
+                if let Some(ref mut at) = self.open_positions[i].active_trade {
+                    at.on_bar_close(bar_high, bar_low, bar_close, atr, tc, invalidated)
+                        .map(|r| r.as_str())
+                } else {
+                    self.open_positions[i]
+                        .check_close(bar_high, bar_low, now_ms)
+                        .or(if invalidated { Some("INVALIDATED") } else { None })
+                };
             if let Some(reason) = reason {
                 let pos = self.open_positions.remove(i);
                 let trade = self.build_closed_trade(pos, reason, bar_close, now_ms);
@@ -454,10 +489,18 @@ impl PaperAccount {
         bar_close: f64,
         now_ms: i64,
     ) -> ClosedTrade {
-        let exit_level = match reason {
-            "STOP_HIT" => pos.stop_price.unwrap_or(bar_close),
-            "TARGET_HIT" => pos.target_price.unwrap_or(bar_close),
-            _ => bar_close, // TTL_EXPIRED → cierra al close
+        let exit_level = if let Some(ref at) = pos.active_trade {
+            match reason {
+                "STOP_HIT" | "TRAILING_HIT" => at.stop_price,
+                "TARGET_HIT" => at.levels.target,
+                _ => bar_close,
+            }
+        } else {
+            match reason {
+                "STOP_HIT" => pos.stop_price.unwrap_or(bar_close),
+                "TARGET_HIT" => pos.target_price.unwrap_or(bar_close),
+                _ => bar_close,
+            }
         };
 
         let exit_price = apply_slippage_exit(exit_level, pos.side, self.config.slippage_bps);
@@ -480,6 +523,21 @@ impl PaperAccount {
         // entry_fee y funding_paid no se descontaron del balance en su momento,
         // por eso net_pnl ya los cubre y la fórmula no tiene términos implícitos.
         self.balance += self.position_margin(&pos) + net_pnl;
+
+        let (stop_initial, stop_final, stop_state_at_close, target_structural, intermediate_level, trade_phase_at_close, bars_open) =
+            if let Some(ref at) = pos.active_trade {
+                (
+                    Some(at.stop_initial),
+                    Some(at.stop_price),
+                    Some(at.stop_state.name().to_string()),
+                    Some(at.levels.target),
+                    at.levels.intermediate,
+                    Some(at.phase.name().to_string()),
+                    at.bars_open,
+                )
+            } else {
+                (None, pos.stop_price, None, pos.target_price, None, None, 0)
+            };
 
         ClosedTrade {
             id: pos.id,
@@ -505,6 +563,13 @@ impl PaperAccount {
             net_pnl_pct,
             mfe: pos.mfe(),
             mae: pos.mae(),
+            stop_initial,
+            stop_final,
+            stop_state_at_close,
+            target_structural,
+            intermediate_level,
+            trade_phase_at_close,
+            bars_open,
         }
     }
 
@@ -604,6 +669,17 @@ impl PaperAccount {
             .map(|c| (c.vwap.vwap_session, c.volume_profile.val, c.volume_profile.vah))
             .unwrap_or((None, None, None));
 
+        let active_trade = TargetSelector::from_signal(signal, ctx, side).and_then(|levels| {
+            ActiveTrade::open(
+                entry_price,
+                stop.into(),
+                levels,
+                side,
+                self.equity,
+                self.trade_config,
+            )
+        });
+
         self.open_positions.push(PaperPosition {
             id,
             symbol: symbol.to_string(),
@@ -627,6 +703,7 @@ impl PaperAccount {
             entry_vwap,
             entry_val,
             entry_vah,
+            active_trade,
         });
         self.save_state();
     }
@@ -742,10 +819,12 @@ mod tests {
             funding_rate: 0.0001,
         };
         let balance = config.initial_capital;
+        let trade_config = TradeConfig { risk_pct: config.risk_pct, ..TradeConfig::default() };
         PaperAccount {
             equity: balance,
             balance,
             config,
+            trade_config,
             open_positions: Vec::new(),
             closed_trades: Vec::new(),
             contradiction_log: Vec::new(),

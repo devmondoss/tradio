@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+use crate::detectors::{FvgContext, OrderBlockContext, SpoofContext};
+use crate::session::SessionContext;
+use crate::structure::MarketStructureContext;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
     Long,
@@ -151,6 +155,9 @@ pub struct OrderBookContext {
     pub thin_zone_above: bool,
     pub thin_zone_below: bool,
     pub quality: DataQuality,
+    /// Detección de spoofing L2 en el tick actual. None hasta que SpoofDetector esté activo.
+    #[serde(default)]
+    pub spoof: Option<SpoofContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,6 +180,28 @@ pub struct StrategyMarketContext {
     pub swing_high_20: Option<f64>,
     #[serde(default)]
     pub swing_low_20: Option<f64>,
+
+    // ── Nuevos contextos de Fase 1 ────────────────────────────────────────────
+
+    /// Estructura de precio HTF (BOS/CHoCH, sesgo, zona premium/discount).
+    /// None hasta que MarketStructureTracker haya procesado suficientes barras HTF.
+    #[serde(default)]
+    pub market_structure: Option<MarketStructureContext>,
+
+    /// Sesión de trading activa (Asia/London/NY/Overlap) derivada del timestamp.
+    /// None hasta que se inicialice el SessionTracker.
+    #[serde(default)]
+    pub session: Option<SessionContext>,
+
+    /// Order Blocks activos detectados por OrderBlockDetector.
+    /// None hasta que el detector tenga suficiente historia.
+    #[serde(default)]
+    pub order_blocks: Option<OrderBlockContext>,
+
+    /// Fair Value Gaps activos detectados por FvgDetector.
+    /// None hasta que el detector tenga suficiente historia.
+    #[serde(default)]
+    pub fvg: Option<FvgContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,6 +257,23 @@ pub struct StrategyConfig {
     /// Minimum divergence (retail_long - top_traders_long) to trigger.
     pub min_divergence: f64,
     pub smd_ttl_ms: i64,
+
+    // ── Fase 1: nuevas opciones ───────────────────────────────────────────────
+
+    /// Filtrar señales según la sesión de trading activa.
+    /// Si false, se omite el filtro y todas las sesiones son válidas.
+    pub session_filter_enabled: bool,
+
+    /// min_score para estrategias institucionales (LiqHunt, FER, SMD).
+    /// Separado porque sus señales son infrecuentes pero de alta convicción.
+    pub min_score_institutional: f64,
+
+    /// Activar multiplicador HTF basado en MarketStructureContext.
+    /// Si false, el multiplicador vale 1.0 (neutro).
+    pub htf_scoring_enabled: bool,
+
+    /// Activar bloqueo de toxic_flow_gate cuando spoof_detected en dirección de señal.
+    pub spoof_gate_enabled: bool,
 }
 
 impl Default for StrategyConfig {
@@ -253,6 +299,10 @@ impl Default for StrategyConfig {
             retail_long_threshold: 0.60,
             min_divergence: 0.18,
             smd_ttl_ms: 20 * 60 * 1000,
+            session_filter_enabled: false,
+            min_score_institutional: 0.55,
+            htf_scoring_enabled: false,
+            spoof_gate_enabled: false,
         }
     }
 }

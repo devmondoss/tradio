@@ -163,5 +163,9 @@ fn parse_config_from_json(params: &Value) -> StrategyConfig {
         smd_ttl_ms:                i("smd_ttl_ms",                d.smd_ttl_ms),
         min_rr:                    f("min_rr",                    d.min_rr),
         max_rr_m5:                 f("max_rr_m5",                 d.max_rr_m5),
+        session_filter_enabled:    d.session_filter_enabled,
+        min_score_institutional:   f("min_score_institutional",   d.min_score_institutional),
+        htf_scoring_enabled:       d.htf_scoring_enabled,
+        spoof_gate_enabled:        d.spoof_gate_enabled,
     }
 }

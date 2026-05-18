@@ -192,6 +192,7 @@ mod tests {
                 bid_wall_nearby: false,
                 ask_wall_nearby: false,
                 price_action_clean: true,
+                fast_slope: None,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(-0.05),
@@ -204,10 +205,15 @@ mod tests {
                 thin_zone_above: false,
                 thin_zone_below: false,
                 quality: DataQuality::Live,
+                spoof: None,
             },
             institutional: None,
             swing_high_20: None,
             swing_low_20: None,
+            market_structure: None,
+            session: None,
+            order_blocks: None,
+            fvg: None,
         }
     }
 
@@ -244,6 +250,8 @@ mod tests {
                 regime: FundingRegime::ExtremeLong,
             },
             quality: DataQuality::Live,
+            smart_money_score: None,
+            liq_map: None,
         }
     }
 

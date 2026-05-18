@@ -29,6 +29,16 @@ pub fn toxic_flow_gate(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Res
         return Err("VPIN_TOXIC".to_string());
     }
 
+    // Bloquear si spoof detectado en la dirección de cualquier señal potencial
+    // (el side aún no se conoce aquí, así que bloqueamos ante cualquier spoof activo)
+    if cfg.spoof_gate_enabled {
+        if let Some(ref spoof) = ctx.orderbook.spoof {
+            if spoof.spoof_detected {
+                return Err("SPOOF_DETECTED".to_string());
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -83,6 +93,7 @@ mod tests {
                 bid_wall_nearby: false,
                 ask_wall_nearby: false,
                 price_action_clean: true,
+                fast_slope: None,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.05),
@@ -95,10 +106,15 @@ mod tests {
                 thin_zone_above: false,
                 thin_zone_below: false,
                 quality: DataQuality::Live,
+                spoof: None,
             },
             institutional: None,
             swing_high_20: None,
             swing_low_20: None,
+            market_structure: None,
+            session: None,
+            order_blocks: None,
+            fvg: None,
         }
     }
 

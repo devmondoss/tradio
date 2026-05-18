@@ -177,6 +177,9 @@ pub struct KlineChart {
     pub config: data::chart::kline::Config,
     outcome_tracker: crate::strategy::tracker::OutcomeTracker,
     paper_account: crate::strategy::paper::PaperAccount,
+    ms_tracker: data::structure::MarketStructureTracker,
+    ob_detector: data::detectors::OrderBlockDetector,
+    fvg_detector: data::detectors::FvgDetector,
 }
 
 impl KlineChart {
@@ -277,6 +280,9 @@ impl KlineChart {
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
+                    ms_tracker: data::structure::MarketStructureTracker::new(200, 3),
+                    ob_detector: data::detectors::OrderBlockDetector::new(100),
+                    fvg_detector: data::detectors::FvgDetector::new(100),
                 }
             }
             Basis::Tick(interval) => {
@@ -340,6 +346,9 @@ impl KlineChart {
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
+                    ms_tracker: data::structure::MarketStructureTracker::new(200, 3),
+                    ob_detector: data::detectors::OrderBlockDetector::new(100),
+                    fvg_detector: data::detectors::FvgDetector::new(100),
                 }
             }
         }
@@ -349,14 +358,17 @@ impl KlineChart {
         let latest_x = self.chart.latest_x;
         let is_new_bar = kline.time.as_u64() > latest_x && latest_x > 0;
 
-        // Read closed bar OHLC before inserting the new bar into the timeseries.
-        let closed_bar: Option<(f64, f64, f64)> = if is_new_bar {
+        // Read closed bar OHLCТ before inserting the new bar into the timeseries.
+        // Tuple: (close, high, low, open, timestamp_ms)
+        let closed_bar: Option<(f64, f64, f64, f64, i64)> = if is_new_bar {
             match &self.data_source {
                 PlotData::TimeBased(ts) => ts.datapoints.values().last().map(|dp| {
                     (
                         dp.kline.close.to_f32() as f64,
                         dp.kline.high.to_f32() as f64,
                         dp.kline.low.to_f32() as f64,
+                        dp.kline.open.to_f32() as f64,
+                        dp.kline.time.as_u64() as i64,
                     )
                 }),
                 PlotData::TickBased(_) => None,

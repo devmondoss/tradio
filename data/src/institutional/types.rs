@@ -184,4 +184,15 @@ pub struct InstitutionalContext {
     pub taker_ratio: Option<TakerRatioSnapshot>,
     pub funding: FundingContext,
     pub quality: DataQuality,
+
+    /// Score institucional unificado −1.0 (smart short) a +1.0 (smart long).
+    /// Computed by `institutional::smart_money_score::compute`.
+    /// None hasta el primer ciclo completo de datos institucionales.
+    #[serde(default)]
+    pub smart_money_score: Option<f32>,
+
+    /// Mapa de densidad de stops estimados por nivel de precio.
+    /// None hasta que LiqMapTracker tenga suficiente historia de swings.
+    #[serde(default)]
+    pub liq_map: Option<crate::institutional::liq_map_tracker::LiqMapSnapshot>,
 }

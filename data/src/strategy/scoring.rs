@@ -1,13 +1,47 @@
+use crate::structure::{HtfBias, PriceZone};
+
 use super::{adapter, types::*};
 
 // VALORES DE ARRANQUE — se tunean en Fase D con datos reales
 
-// --- Pesos de la suma ponderada (deben sumar 1.0) ---
+// ── Perfil de estrategia: determina los pesos de scoring ─────────────────────
+
+/// Clasifica cada estrategia para aplicar pesos diferenciados en el scoring.
+///
+/// - `MarketPure`: usa datos de precio y flow exclusivamente (VAFA, VWAP, LVN).
+/// - `Institutional`: combina flow + datos institucionales (LiqHunt, FER, SMD).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrategyProfile {
+    MarketPure,
+    Institutional,
+}
+
+impl StrategyProfile {
+    pub fn from_id(id: StrategyId) -> Self {
+        match id {
+            StrategyId::LiquidationHunt
+            | StrategyId::FundingExhaustionReversal
+            | StrategyId::SmartMoneyDivergence => Self::Institutional,
+            _ => Self::MarketPure,
+        }
+    }
+}
+
+// --- Pesos Market Pure (deben sumar 1.0) ---
 const W_CVD_SLOPE: f64 = 0.25;
 const W_TAKER_IMBALANCE: f64 = 0.20;
 const W_DELTA_ALIGNED: f64 = 0.10; // binary: normalization vs. instrument volume → taker_imbalance ya cubre la magnitud
 const W_TARGET_ATR_DIST: f64 = 0.25;
 const W_RR: f64 = 0.20;
+
+// --- Pesos Institutional (deben sumar 1.0) ---
+// El componente institucional (funding/OI/LS) ahora domina con 35%.
+const W_CVD_SLOPE_INST: f64 = 0.15;
+const W_TAKER_IMBALANCE_INST: f64 = 0.10;
+const W_DELTA_ALIGNED_INST: f64 = 0.05;
+const W_TARGET_ATR_DIST_INST: f64 = 0.20;
+const W_RR_INST: f64 = 0.15;
+const W_INSTITUTIONAL: f64 = 0.35;
 
 // --- Rampas: cvd_slope (signed, aligned with side) ---
 const CVD_SLOPE_MIN: f64 = 0.0;
@@ -45,6 +79,18 @@ const CONFLUENCE_TOL_ATR: f64 = 0.25; // tolerancia: 0.25 × ATR
 const FACTOR_CONFLUENCIA_2: f64 = 1.10;
 const FACTOR_CONFLUENCIA_3: f64 = 1.20;
 
+// --- Factor estructura HTF (MarketStructureContext) ---
+const FACTOR_HTF_WITH: f64 = 1.20;   // sesgo HTF a favor de la señal
+const FACTOR_HTF_AGAINST: f64 = 0.70; // sesgo HTF contrario a la señal
+const BONUS_ZONE_DISCOUNT_LONG: f64 = 0.05;  // señal larga en zona Discount
+const BONUS_ZONE_PREMIUM_SHORT: f64 = 0.05;  // señal corta en zona Premium
+
+// --- Factor smart_money_score (institucional) ---
+const SMS_THRESHOLD_WITH: f32 = 0.40;    // score a favor de la señal
+const SMS_THRESHOLD_AGAINST: f32 = -0.40; // score contra la señal
+const FACTOR_SMS_WITH: f64 = 1.15;
+const FACTOR_SMS_AGAINST: f64 = 0.70;
+
 /// Mapea `value` linealmente de [min, max] a [0.0, 1.0], clampeado.
 fn ramp(value: f64, min: f64, max: f64) -> f64 {
     if value <= min {
@@ -61,43 +107,66 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
     let sign = if is_long { 1.0_f64 } else { -1.0_f64 };
     let atr = ctx.atr.unwrap_or(0.0);
 
+    // Determinar perfil de la estrategia para seleccionar pesos
+    let profile = signal
+        .strategy_id
+        .map(StrategyProfile::from_id)
+        .unwrap_or(StrategyProfile::MarketPure);
+
+    let (w_cvd_slope, w_taker, w_delta, w_target_dist_w, w_rr_w) = match profile {
+        StrategyProfile::MarketPure => (
+            W_CVD_SLOPE,
+            W_TAKER_IMBALANCE,
+            W_DELTA_ALIGNED,
+            W_TARGET_ATR_DIST,
+            W_RR,
+        ),
+        StrategyProfile::Institutional => (
+            W_CVD_SLOPE_INST,
+            W_TAKER_IMBALANCE_INST,
+            W_DELTA_ALIGNED_INST,
+            W_TARGET_ATR_DIST_INST,
+            W_RR_INST,
+        ),
+    };
+
     // --- Suma ponderada por magnitud ---
 
     // CVD slope alineado con el side
     let w_cvd = {
         let signed = ctx.flow.cvd_slope.unwrap_or(0.0) * sign;
-        W_CVD_SLOPE * ramp(signed, CVD_SLOPE_MIN, CVD_SLOPE_MAX)
+        w_cvd_slope * ramp(signed, CVD_SLOPE_MIN, CVD_SLOPE_MAX)
     };
 
     // Taker imbalance alineado (ya está en [-1, 1], cubre la magnitud del delta normalizado)
-    let w_taker = {
+    let w_taker_score = {
         let signed = ctx.flow.taker_imbalance.unwrap_or(0.0) * sign;
-        W_TAKER_IMBALANCE * ramp(signed, TAKER_IMBAL_MIN, TAKER_IMBAL_MAX)
+        w_taker * ramp(signed, TAKER_IMBAL_MIN, TAKER_IMBAL_MAX)
     };
 
     // Delta alineado: binario — magnitud cruda no es normalizable cross-instrument
-    let w_delta = {
+    let w_delta_score = {
         let signed = ctx.flow.delta.map(|d| d * sign).unwrap_or(0.0);
-        if signed > 0.0 { W_DELTA_ALIGNED } else { 0.0 }
+        if signed > 0.0 { w_delta } else { 0.0 }
     };
 
     // Distancia entry→target en múltiplos de ATR
-    let w_target_dist = if atr > 0.0 {
+    let w_target_dist_score = if atr > 0.0 {
         let entry = signal.entry_price.unwrap_or(ctx.price);
         let target = signal.target_price.unwrap_or(entry);
         let dist_atr = (target - entry).abs() / atr;
-        W_TARGET_ATR_DIST * ramp(dist_atr, TARGET_ATR_MIN, TARGET_ATR_MAX)
+        w_target_dist_w * ramp(dist_atr, TARGET_ATR_MIN, TARGET_ATR_MAX)
     } else {
         0.0
     };
 
     // Calidad del R:R
-    let w_rr = match (signal.entry_price, signal.stop_price, signal.target_price) {
+    let w_rr_score = match (signal.entry_price, signal.stop_price, signal.target_price) {
         (Some(entry), Some(stop), Some(target)) => {
             let risk = (entry - stop).abs();
             let reward = (target - entry).abs();
             if risk > 0.0 {
-                W_RR * ramp(reward / risk, RR_MIN, RR_MAX)
+                w_rr_w * ramp(reward / risk, RR_MIN, RR_MAX)
             } else {
                 0.0
             }
@@ -105,7 +174,25 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
         _ => 0.0,
     };
 
-    let base_score = w_cvd + w_taker + w_delta + w_target_dist + w_rr;
+    // Componente institucional (solo para estrategias Institutional)
+    let w_institutional = if matches!(profile, StrategyProfile::Institutional) {
+        if let Some(inst) = &ctx.institutional {
+            if let Some(sms) = inst.smart_money_score {
+                // Smart money score alineado con el side de la señal
+                let signed_sms = if is_long { sms as f64 } else { -sms as f64 };
+                W_INSTITUTIONAL * ramp(signed_sms, 0.0, 1.0)
+            } else {
+                // Sin smart_money_score: distribuir el peso entre los componentes restantes
+                0.0
+            }
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    let base_score = w_cvd + w_taker_score + w_delta_score + w_target_dist_score + w_rr_score + w_institutional;
 
     // --- Factores moduladores ---
 
@@ -161,7 +248,46 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
         1.0
     };
 
-    let mut score = base_score * factor_vpin * factor_spread * factor_regime * factor_confluencia;
+    // factor_structure: sesgo HTF amplifica o penaliza según dirección de la señal
+    let (factor_structure, zone_bonus) = if let Some(ms) = &ctx.market_structure {
+        let f = match (ms.htf_bias, is_long) {
+            (HtfBias::Bullish, true) => FACTOR_HTF_WITH,
+            (HtfBias::Bearish, false) => FACTOR_HTF_WITH,
+            (HtfBias::Bullish, false) => FACTOR_HTF_AGAINST,
+            (HtfBias::Bearish, true) => FACTOR_HTF_AGAINST,
+            (HtfBias::Neutral, _) => 1.0,
+        };
+        let bonus = if is_long && matches!(ms.price_zone, PriceZone::Discount) {
+            BONUS_ZONE_DISCOUNT_LONG
+        } else if !is_long && matches!(ms.price_zone, PriceZone::Premium) {
+            BONUS_ZONE_PREMIUM_SHORT
+        } else {
+            0.0
+        };
+        (f, bonus)
+    } else {
+        (1.0, 0.0)
+    };
+
+    // factor_sms: smart_money_score como multiplicador cuando está disponible
+    let factor_sms = if let Some(inst) = &ctx.institutional {
+        if let Some(sms) = inst.smart_money_score {
+            let signed = if is_long { sms } else { -sms };
+            if signed >= SMS_THRESHOLD_WITH {
+                FACTOR_SMS_WITH
+            } else if signed <= SMS_THRESHOLD_AGAINST {
+                FACTOR_SMS_AGAINST
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        }
+    } else {
+        1.0
+    };
+
+    let mut score = base_score * factor_vpin * factor_spread * factor_regime * factor_confluencia * factor_structure * factor_sms;
 
     // Regla de precedencia del veto: VPIN tóxico clampea sin importar amplificadores
     if vpin_is_toxic {
@@ -173,6 +299,8 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
     score += adapter::oi_score_bonus(ctx.flow.oi_momentum_aligned);
     score += adapter::wall_score_bonus(ctx.flow.bid_wall_nearby, ctx.flow.ask_wall_nearby, is_long);
     score += adapter::clean_action_score_bonus(ctx.flow.price_action_clean);
+    // Bonus de zona HTF (aditivo para no componer con los multiplicadores)
+    score += zone_bonus;
 
     // Re-apply veto cap: additive adjustments must not escape the toxic VPIN ceiling.
     if vpin_is_toxic {
@@ -234,6 +362,7 @@ mod tests {
                 bid_wall_nearby: false,
                 ask_wall_nearby: false,
                 price_action_clean: true,
+                fast_slope: None,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.05),
@@ -246,10 +375,15 @@ mod tests {
                 thin_zone_above: false,
                 thin_zone_below: false,
                 quality: DataQuality::Live,
+                spoof: None,
             },
             institutional: None,
             swing_high_20: None,
             swing_low_20: None,
+            market_structure: None,
+            session: None,
+            order_blocks: None,
+            fvg: None,
         }
     }
 

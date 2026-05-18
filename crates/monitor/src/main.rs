@@ -605,6 +605,7 @@ impl BarState {
                 walls_above: vec![], walls_below: vec![],
                 thin_zone_above: false, thin_zone_below: false,
                 quality: DataQuality::Missing,
+                spoof: None,
             },
         };
 
@@ -661,6 +662,8 @@ impl BarState {
             taker_ratio: self.last_taker_ratio.clone(),
             funding: fund_snap,
             quality: inst_quality,
+            smart_money_score: None,
+            liq_map: None,
         });
 
         StrategyMarketContext {
@@ -676,6 +679,10 @@ impl BarState {
             institutional,
             swing_high_20: frozen.swing_high_20,
             swing_low_20: frozen.swing_low_20,
+            market_structure: None,
+            session: None,
+            order_blocks: None,
+            fvg: None,
         }
     }
 
@@ -946,6 +953,7 @@ impl BarState {
                 thin_zone_above: false,
                 thin_zone_below: false,
                 quality: DataQuality::Missing,
+                spoof: None,
             },
         };
 
@@ -1004,6 +1012,8 @@ impl BarState {
             taker_ratio: self.last_taker_ratio.clone(),
             funding: fund_snap,
             quality: inst_quality,
+            smart_money_score: None,
+            liq_map: None,
         });
 
         // 20-bar swing high/low for structural target selection.
@@ -1030,6 +1040,10 @@ impl BarState {
             institutional,
             swing_high_20,
             swing_low_20,
+            market_structure: None,
+            session: None,
+            order_blocks: None,
+            fvg: None,
         };
 
         let signal = route_strategy(&ctx, &cfg);

@@ -108,6 +108,7 @@ pub fn build_orderbook_context(depth: &Depth) -> OrderBookContext {
         thin_zone_above,
         thin_zone_below,
         quality: DataQuality::Live,
+        spoof: None,
     }
 }
 

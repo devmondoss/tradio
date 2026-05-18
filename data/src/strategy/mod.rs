@@ -6,5 +6,8 @@ pub mod logger;
 pub mod paper;
 pub mod router;
 pub mod scoring;
+pub mod target_selector;
 pub mod tracker;
+pub mod trade_manager;
+pub mod trade_state;
 pub mod types;
