@@ -167,5 +167,6 @@ fn parse_config_from_json(params: &Value) -> StrategyConfig {
         min_score_institutional:   f("min_score_institutional",   d.min_score_institutional),
         htf_scoring_enabled:       d.htf_scoring_enabled,
         spoof_gate_enabled:        d.spoof_gate_enabled,
+        cooldown_bars:             d.cooldown_bars,
     }
 }

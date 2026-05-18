@@ -162,6 +162,38 @@ impl SupabaseWriter {
         });
     }
 
+    /// PATCHes signal_outcomes with a forward price horizon (price_5m, r_5m, etc.).
+    /// Fire-and-forget — called from flush_pending_horizons via tokio::spawn.
+    pub async fn patch_horizon(&self, uuid: &str, label: &str, price: f64, r: f64) {
+        let price_field = format!("price_{label}");
+        let r_field = format!("r_{label}");
+        let body = json!({ &price_field: price, &r_field: r });
+        let url = format!(
+            "{}/rest/v1/signal_outcomes?id=eq.{uuid}",
+            self.url
+        );
+        let result = self
+            .client
+            .patch(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=minimal")
+            .json(&body)
+            .send()
+            .await;
+
+        match result {
+            Err(e) => eprintln!("[supabase] PATCH signal_outcomes horizon {label} failed: {e}"),
+            Ok(r) if !r.status().is_success() => {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                eprintln!("[supabase] PATCH signal_outcomes horizon {label} error {status}: {text}");
+            }
+            Ok(_) => {}
+        }
+    }
+
     async fn post(&self, table: &str, body: &Value) {
         let url = format!("{}/rest/v1/{}", self.url, table);
         let result = self

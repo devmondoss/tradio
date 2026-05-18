@@ -253,6 +253,17 @@ fn fmt_opt(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "-".into())
 }
 
+/// Tracks forward price horizons for a closed paper trade so we can PATCH
+/// signal_outcomes with price_5m/r_5m etc. after the appropriate bars elapse.
+#[derive(Clone)]
+struct PendingHorizon {
+    signal_uuid: String,
+    entry_price: f64,
+    stop_price: f64,
+    side: String,      // "Long" or "Short"
+    close_bar_n: u64,  // bar_counter when trade closed
+}
+
 /// Bar-level state frozen at each 5m close, reused by the intrabar evaluator.
 /// Only bar-level fields go here; tick-level fields come from live BarState.
 #[derive(Clone)]
@@ -418,6 +429,9 @@ struct BarState {
     last_intrabar_eval_ms: i64,
     intrabar_eval_count: u32,
     intrabar_signal_fired: bool,
+    // Forward horizon tracker: populated when a trade closes, patched over the next 12 bars
+    bar_counter: u64,
+    pending_horizons: Vec<PendingHorizon>,
 }
 
 impl BarState {
@@ -462,6 +476,8 @@ impl BarState {
             last_intrabar_eval_ms: 0,
             intrabar_eval_count: 0,
             intrabar_signal_fired: false,
+            bar_counter: 0,
+            pending_horizons: Vec::new(),
         }
     }
 
@@ -550,6 +566,52 @@ impl BarState {
                     o.hit_target, o.hit_stop, age_ms,
                 );
             }
+        }
+    }
+
+    // ── Forward horizon tracker ───────────────────────────────────────────────
+
+    /// Called at the start of each on_bar_close() with the previous bar's close price.
+    /// Checks all pending trades and patches signal_outcomes with price_Xm/r_Xm when
+    /// the corresponding bar horizon has elapsed.
+    async fn flush_pending_horizons(&mut self, bar_close: f64) {
+        // Horizons mapped to elapsed bars (5m bars): 5m=1, 15m=3, 30m=6, 1h=12
+        const HORIZONS: &[(&str, u64)] = &[("5m", 1), ("15m", 3), ("30m", 6), ("1h", 12)];
+
+        let mut completed: Vec<usize> = Vec::new();
+
+        for (idx, h) in self.pending_horizons.iter().enumerate() {
+            let elapsed = self.bar_counter.saturating_sub(h.close_bar_n);
+            let sign = if h.side == "Long" { 1.0 } else { -1.0 };
+            let risk = (h.entry_price - h.stop_price).abs();
+
+            for &(label, bars) in HORIZONS {
+                if elapsed == bars {
+                    let r = if risk > 0.0 {
+                        sign * (bar_close - h.entry_price) / risk
+                    } else {
+                        0.0
+                    };
+                    if let Some(sb) = &self.supabase {
+                        let sb = sb.clone();
+                        let uuid = h.signal_uuid.clone();
+                        let lbl = label.to_string();
+                        tokio::spawn(async move {
+                            sb.patch_horizon(&uuid, &lbl, bar_close, r).await;
+                        });
+                    }
+                }
+            }
+
+            // Mark complete once 1h horizon (12 bars) has passed
+            if elapsed > 12 {
+                completed.push(idx);
+            }
+        }
+
+        // Remove completed in reverse order to preserve indices
+        for idx in completed.into_iter().rev() {
+            self.pending_horizons.swap_remove(idx);
         }
     }
 
@@ -746,6 +808,10 @@ impl BarState {
         let cfg = self.cfg.clone();
         let bar_ms = bar.time.as_u64() as i64;
         self.metrics.bars_processed += 1;
+
+        // --- Forward horizon check (runs before processing current bar) ---
+        let bar_c_prev = bar.open.to_f32() as f64; // use open of new bar = close of prev bar
+        self.flush_pending_horizons(bar_c_prev).await;
 
         let proc_start = Instant::now();
         let now_ms = SystemTime::now()
@@ -1133,6 +1199,23 @@ impl BarState {
                 // Pass the UUID of the signal that opened this position
                 sb.write_trade(trade, self.pending_signal_uuid.clone());
             }
+            // Register trade for forward horizon tracking (price_5m, price_15m, etc.)
+            if let Some(uuid) = &self.pending_signal_uuid {
+                if let Some(stop) = trade.stop_price {
+                    let h = PendingHorizon {
+                        signal_uuid: uuid.clone(),
+                        entry_price: trade.entry_price,
+                        stop_price: stop,
+                        side: trade.side.clone(),
+                        close_bar_n: self.bar_counter,
+                    };
+                    eprintln!(
+                        "[horizon_pending] uuid={} close_bar={} entry={} stop={} side={}",
+                        h.signal_uuid, h.close_bar_n, h.entry_price, h.stop_price, h.side
+                    );
+                    self.pending_horizons.push(h);
+                }
+            }
         }
 
         let missing_str = signal
@@ -1210,6 +1293,7 @@ impl BarState {
             bar_close_ms: bar_ms,
             bar_close_price: c,
         });
+        self.bar_counter += 1;
         self.intrabar_signal_fired = false;
         self.intrabar_eval_count = 0;
         self.last_intrabar_eval_price = c;
