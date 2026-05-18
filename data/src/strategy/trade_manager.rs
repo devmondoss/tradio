@@ -123,16 +123,18 @@ impl ActiveTrade {
             return Some(CloseReason::TTLExpired);
         }
 
-        if invalidated {
-            return Some(CloseReason::Invalidated);
-        }
-
+        // Stop checked before invalidation: when both fire in the same bar the stop
+        // price caps the loss. Invalidation at bar_close would exit at a worse price.
         if self.stop_was_hit(low, high) {
             return Some(if matches!(self.phase, TradePhase::TargetExceeded) {
                 CloseReason::TrailingHit
             } else {
                 CloseReason::StopHit
             });
+        }
+
+        if invalidated {
+            return Some(CloseReason::Invalidated);
         }
 
         // Only close on TargetHit when trailing is not yet active.

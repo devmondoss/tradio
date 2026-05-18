@@ -202,6 +202,11 @@ pub struct StrategyMarketContext {
     /// None hasta que el detector tenga suficiente historia.
     #[serde(default)]
     pub fvg: Option<FvgContext>,
+
+    /// Apalancamiento configurado en el paper trader (PAPER_LEVERAGE). Útil para
+    /// calibrar si el edge depende del leverage usado durante la captura de datos.
+    #[serde(default)]
+    pub leverage: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,7 +307,7 @@ impl Default for StrategyConfig {
             fer_retail_long_max: 0.58,
             smart_short_threshold: 0.45,
             retail_long_threshold: 0.60,
-            min_divergence: 0.18,
+            min_divergence: 0.10,
             smd_ttl_ms: 20 * 60 * 1000,
             session_filter_enabled: false,
             min_score_institutional: 0.55,

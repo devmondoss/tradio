@@ -44,15 +44,19 @@ Un row por cada posición cerrada (escrito por `SupabaseWriter::write_trade`). R
 |-------|------|-------------|
 | `signal_id` | UUID FK | Señal que generó este trade |
 | `timestamp_ms` | BIGINT | Timestamp del cierre |
-| `close_reason` | TEXT | `STOP_HIT`, `TARGET_HIT`, `TTL_EXPIRED`, `INVALIDATED` |
+| `close_reason` | TEXT | `STOP_HIT`, `TARGET_HIT`, `TTL_EXPIRED`, `INVALIDATED`, `TP1_PARTIAL` |
 | `close_price` | FLOAT | Precio de cierre (con slippage) |
 | `duration_ms` | BIGINT | Duración del trade en ms |
 | `r_multiple` | FLOAT | `(exit - entry) × side / |entry - stop|` |
 | `pnl_gross_usd` / `pnl_net_usd` | FLOAT | PnL bruto y neto |
 | `fee_entry_usd` / `fee_exit_usd` / `slippage_usd` / `funding_cost_usd` | FLOAT | Costos |
 | `mfe_r` / `mae_r` | FLOAT | Max Favorable / Adverse Excursion en R |
+| `is_partial` | BOOLEAN | `TRUE` para el leg TP1 (50%); `FALSE` para el cierre final |
+| `partial_fraction` | FLOAT | Fracción cerrada: `0.5` en TP1, `0.0` en cierre total |
 | `price_5m` / `price_15m` / `price_30m` / `price_1h` / `price_4h` | FLOAT | Precio posterior (futuro) |
 | `r_5m` / `r_15m` / `r_30m` / `r_1h` / `r_4h` | FLOAT | R a distintos horizontes |
+
+> Cada señal con partial exit genera **dos rows** en `signal_outcomes` con el mismo `signal_id`: uno con `close_reason='TP1_PARTIAL'` y otro con el cierre final. Para análisis de expectancy, filtrar `WHERE NOT is_partial` o sumar ambos `pnl_net_usd`.
 
 ---
 

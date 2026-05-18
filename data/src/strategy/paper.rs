@@ -1,5 +1,6 @@
 use super::target_selector::TargetSelector;
 use super::trade_manager::{ActiveTrade, TradeConfig};
+use super::trade_state::{StopState, TradePhase};
 use super::types::*;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -101,6 +102,12 @@ pub struct PaperPosition {
     /// Dynamic stop management. None falls back to fixed stop/target from signal.
     #[serde(default)]
     pub active_trade: Option<ActiveTrade>,
+    /// Partial exit at 1.5R — set at open, None if no stop on signal.
+    #[serde(default)]
+    pub tp1_price: Option<f64>,
+    /// True once the 50% partial exit has been executed.
+    #[serde(default)]
+    pub tp1_hit: bool,
 }
 
 impl PaperPosition {
@@ -237,6 +244,12 @@ pub struct ClosedTrade {
     /// Number of bars the trade was open.
     #[serde(default)]
     pub bars_open: u32,
+    /// True for the TP1 50% partial exit — paired with a later entry sharing the same id.
+    #[serde(default)]
+    pub is_partial: bool,
+    /// Fraction of the original position closed here (0.5 for TP1).
+    #[serde(default)]
+    pub partial_fraction: f64,
 }
 
 /// Registra contradicciones (señal opuesta a posición abierta del mismo symbol).
@@ -455,6 +468,28 @@ impl PaperAccount {
         let mut i = 0;
         while i < self.open_positions.len() {
             self.open_positions[i].update_excursion(bar_high, bar_low);
+
+            // TP1 partial exit: 50% at 1.5R, stop moved to breakeven.
+            // Runs before the full-close check so same-bar sequences are handled correctly
+            // (e.g. price hits TP1 then reverses to new breakeven stop in the same bar).
+            if !self.open_positions[i].tp1_hit {
+                let tp1_touched = self.open_positions[i]
+                    .tp1_price
+                    .map(|tp1| match self.open_positions[i].side {
+                        Side::Long => bar_high >= tp1,
+                        Side::Short => bar_low <= tp1,
+                    })
+                    .unwrap_or(false);
+                if tp1_touched {
+                    let tp1 = self.open_positions[i].tp1_price.unwrap();
+                    let partial = self.execute_tp1_partial(i, tp1, now_ms);
+                    log_paper_trade(&partial);
+                    self.closed_trades.push(partial);
+                    self.update_equity(bar_close);
+                    self.save_state();
+                }
+            }
+
             let invalidated = ctx
                 .map(|c| self.open_positions[i].check_invalidation(c))
                 .unwrap_or(false);
@@ -570,6 +605,134 @@ impl PaperAccount {
             intermediate_level,
             trade_phase_at_close,
             bars_open,
+            is_partial: false,
+            partial_fraction: 0.0,
+        }
+    }
+
+    /// Executes the TP1 partial exit: closes 50% of the position at `tp1`, moves stop to
+    /// breakeven, and returns the `ClosedTrade` record for the partial leg.
+    /// The caller is responsible for logging and saving state.
+    fn execute_tp1_partial(&mut self, idx: usize, tp1: f64, now_ms: i64) -> ClosedTrade {
+        // --- Snapshot fields before any mutation ---
+        let side = self.open_positions[idx].side;
+        let id = self.open_positions[idx].id;
+        let symbol = self.open_positions[idx].symbol.clone();
+        let strategy_id = self.open_positions[idx].strategy_id;
+        let entry_price = self.open_positions[idx].entry_price;
+        let intended_entry = self.open_positions[idx].intended_entry;
+        let orig_stop = self.open_positions[idx].stop_price;
+        let target_price = self.open_positions[idx].target_price;
+        let score = self.open_positions[idx].score;
+        let opened_at_ms = self.open_positions[idx].opened_at_ms;
+        let ttl_ms = self.open_positions[idx].ttl_ms;
+        let balance_at_open = self.open_positions[idx].balance_at_open;
+        let mfe = self.open_positions[idx].mfe();
+        let mae = self.open_positions[idx].mae();
+
+        let full_size = self.open_positions[idx].size;
+        let full_notional = self.open_positions[idx].notional;
+        // Inline position_margin logic to avoid double-borrow
+        let full_margin = {
+            let pos = &self.open_positions[idx];
+            if pos.margin.is_finite() && pos.margin > 0.0 {
+                pos.margin
+            } else {
+                (pos.notional / self.config.leverage.max(1e-10)).min(pos.balance_at_open)
+            }
+        };
+        let full_entry_fee = self.open_positions[idx].fees_paid;
+        let full_funding = self.open_positions[idx].funding_paid;
+
+        // Snapshot active_trade state for the ClosedTrade record
+        let (stop_initial, stop_final, stop_state_name, target_structural, intermediate_level, trade_phase_name, bars_open) =
+            if let Some(ref at) = self.open_positions[idx].active_trade {
+                (
+                    Some(at.stop_initial),
+                    Some(at.stop_price),
+                    Some(at.stop_state.name().to_string()),
+                    Some(at.levels.target),
+                    at.levels.intermediate,
+                    Some(at.phase.name().to_string()),
+                    at.bars_open,
+                )
+            } else {
+                (None, orig_stop, None, target_price, None, None, 0)
+            };
+
+        // --- Partial accounting ---
+        let partial_size = full_size * 0.5;
+        let partial_notional = full_notional * 0.5;
+        let partial_margin = full_margin * 0.5;
+        let partial_entry_fee = full_entry_fee * 0.5;
+        let partial_funding = full_funding * 0.5;
+
+        let exit_price = apply_slippage_exit(tp1, side, self.config.slippage_bps);
+        let exit_fee = partial_size * exit_price * self.config.taker_fee;
+        let total_fees = partial_entry_fee + exit_fee;
+
+        let gross_pnl = match side {
+            Side::Long => partial_size * (exit_price - entry_price),
+            Side::Short => partial_size * (entry_price - exit_price),
+        };
+        let net_pnl = gross_pnl - total_fees - partial_funding;
+        let net_pnl_pct = if balance_at_open > 0.0 { net_pnl / balance_at_open } else { 0.0 };
+
+        // Credit released margin + net_pnl to free balance
+        self.balance += partial_margin + net_pnl;
+
+        // --- Mutate position for the remaining 50% ---
+        let be_price = entry_price; // exact breakeven
+        {
+            let pos = &mut self.open_positions[idx];
+            pos.size = full_size - partial_size;
+            pos.notional = full_notional - partial_notional;
+            pos.margin = full_margin - partial_margin;
+            pos.fees_paid = full_entry_fee - partial_entry_fee;
+            pos.funding_paid = full_funding - partial_funding;
+            pos.tp1_hit = true;
+            pos.stop_price = Some(be_price);
+            if let Some(ref mut at) = pos.active_trade {
+                at.stop_price = be_price;
+                at.stop_state = StopState::BreakEven { confirmed_level: be_price };
+                at.phase = TradePhase::Level1Confirmed;
+                at.position_size *= 0.5;
+            }
+        }
+
+        ClosedTrade {
+            id,
+            symbol,
+            strategy_id: strategy_id.map(|id| format!("{id:?}")),
+            side: format!("{side:?}"),
+            entry_price,
+            intended_entry,
+            exit_price,
+            stop_price: orig_stop,
+            target_price,
+            size: partial_size,
+            notional: partial_notional,
+            score,
+            opened_at_ms,
+            closed_at_ms: now_ms,
+            ttl_ms,
+            close_reason: "TP1_PARTIAL".to_string(),
+            gross_pnl,
+            fees_paid: total_fees,
+            funding_paid: partial_funding,
+            net_pnl,
+            net_pnl_pct,
+            mfe,
+            mae,
+            stop_initial,
+            stop_final,
+            stop_state_at_close: stop_state_name,
+            target_structural,
+            intermediate_level,
+            trade_phase_at_close: trade_phase_name,
+            bars_open,
+            is_partial: true,
+            partial_fraction: 0.5,
         }
     }
 
@@ -680,6 +843,13 @@ impl PaperAccount {
             )
         });
 
+        // TP1 at 1.5R from fill price — uses raw_risk_per_unit so the level
+        // reflects the signal's intended stop distance, not the sizing floor.
+        let tp1_price = Some(match side {
+            Side::Long => entry_price + 1.5 * raw_risk_per_unit,
+            Side::Short => entry_price - 1.5 * raw_risk_per_unit,
+        });
+
         self.open_positions.push(PaperPosition {
             id,
             symbol: symbol.to_string(),
@@ -704,6 +874,8 @@ impl PaperAccount {
             entry_val,
             entry_vah,
             active_trade,
+            tp1_price,
+            tp1_hit: false,
         });
         self.save_state();
     }
@@ -897,15 +1069,21 @@ mod tests {
         acc.on_bar_close("BTCUSDT", 3_400.0, 3_450.0, 3_380.0, 1_200_000, None, None);
         assert_eq!(acc.open_positions.len(), 1, "still open after 2 bars");
 
-        // Bar N+3 — target hit (high=3760 >= 3750)
+        // Bar N+3 — both TP1 (3375.30) and target (3750) hit in same bar (high=3760)
         acc.on_bar_close("BTCUSDT", 3_700.0, 3_760.0, 3_680.0, 1_300_000, None, None);
 
         assert_eq!(acc.open_positions.len(), 0, "position should be closed");
-        assert_eq!(acc.closed_trades.len(), 1);
-        let trade = &acc.closed_trades[0];
-        assert_eq!(trade.close_reason, "TARGET_HIT");
+        // TP1_PARTIAL fires first (50%), then TARGET_HIT for the remaining 50%.
+        assert_eq!(acc.closed_trades.len(), 2);
+        assert_eq!(acc.closed_trades[0].close_reason, "TP1_PARTIAL");
+        assert!(acc.closed_trades[0].is_partial);
+        assert!((acc.closed_trades[0].partial_fraction - 0.5).abs() < 1e-9);
 
-        // exit_fill = 3750 * (1 - 0.0001) = 3749.625 (slippage exit long)
+        let trade = &acc.closed_trades[1];
+        assert_eq!(trade.close_reason, "TARGET_HIT");
+        assert!(!trade.is_partial);
+
+        // TARGET_HIT leg exits the remaining 50% at 3750.
         let expected_exit = 3_750.0 * (1.0 - 1.0 / 10_000.0);
         assert!(
             (trade.exit_price - expected_exit).abs() < 1e-4,
@@ -913,32 +1091,19 @@ mod tests {
             trade.exit_price
         );
 
-        // gross_pnl = size * (exit - entry_fill)
-        let expected_gross = expected_size * (expected_exit - expected_entry);
+        // gross_pnl for the TARGET leg = half_size * (exit - entry_fill)
+        let half_size = expected_size * 0.5;
+        let expected_gross = half_size * (expected_exit - expected_entry);
         assert!(
             (trade.gross_pnl - expected_gross).abs() < 1e-4,
             "gross={}",
             trade.gross_pnl
         );
 
-        let exit_fee = expected_size * expected_exit * 0.0004;
-        let expected_total_fees = expected_entry_fee + exit_fee;
+        // Balance = 3000 + combined net_pnl from both legs
+        let total_net = acc.closed_trades[0].net_pnl + acc.closed_trades[1].net_pnl;
         assert!(
-            (trade.fees_paid - expected_total_fees).abs() < 1e-4,
-            "fees={}",
-            trade.fees_paid
-        );
-
-        let expected_net = expected_gross - expected_total_fees;
-        assert!(
-            (trade.net_pnl - expected_net).abs() < 1e-4,
-            "net={}",
-            trade.net_pnl
-        );
-
-        // Balance should be roughly 3000 + net_pnl
-        assert!(
-            (acc.balance - (3_000.0 + expected_net)).abs() < 1e-2,
+            (acc.balance - (3_000.0 + total_net)).abs() < 1e-2,
             "final_balance={}",
             acc.balance
         );
@@ -1101,16 +1266,19 @@ mod tests {
         let pos_size = acc.open_positions[0].size;
         assert!((acc.open_positions[0].entry_price - expected_entry).abs() < 1e-6);
 
-        // Target hit (low=795 <= 800)
+        // TP1 = 1000 - 1.5*100 = 850. Bar low=795 hits both TP1 and target.
         acc.on_bar_close("BTCUSDT", 810.0, 820.0, 795.0, 1_100_000, None, None);
 
-        let trade = &acc.closed_trades[0];
+        // TP1_PARTIAL first (50%), then TARGET_HIT for the remaining 50%.
+        assert_eq!(acc.closed_trades.len(), 2);
+        assert_eq!(acc.closed_trades[0].close_reason, "TP1_PARTIAL");
+        let trade = &acc.closed_trades[1];
         assert_eq!(trade.close_reason, "TARGET_HIT");
-        // exit_fill = 800 * (1 + 0.0001) = 800.08 (slippage short exit, always adverse)
+        // exit_fill = 800 * (1 + 0.0001) (slippage short exit, always adverse)
         let expected_exit = 800.0 * (1.0 + 1.0 / 10_000.0);
         assert!((trade.exit_price - expected_exit).abs() < 1e-4);
-        // gross_pnl = size * (entry - exit) for Short
-        let expected_gross = pos_size * (expected_entry - expected_exit);
+        // gross_pnl = half_size * (entry - exit) for Short
+        let expected_gross = (pos_size * 0.5) * (expected_entry - expected_exit);
         assert!((trade.gross_pnl - expected_gross).abs() < 1e-4);
         assert!(trade.net_pnl < trade.gross_pnl, "fees must reduce net_pnl");
     }
@@ -1171,31 +1339,34 @@ mod tests {
             None,
         );
 
-        assert_eq!(acc.closed_trades.len(), 1);
-        let trade = &acc.closed_trades[0];
+        // TP1 = 1000 + 1.5*100 = 1150. Bar high=1310 hits TP1 and target in same bar.
+        // Two trades: TP1_PARTIAL (50%) + TARGET_HIT (50%).
+        assert_eq!(acc.closed_trades.len(), 2);
+        assert_eq!(acc.closed_trades[0].close_reason, "TP1_PARTIAL");
+        assert_eq!(acc.closed_trades[1].close_reason, "TARGET_HIT");
 
-        // funding_paid must be in the closed trade and must reduce net_pnl
+        // Combined funding across both legs must equal the funding accumulated before close.
+        let total_funding = acc.closed_trades[0].funding_paid + acc.closed_trades[1].funding_paid;
         assert!(
-            (trade.funding_paid - funding_paid).abs() < 1e-9,
-            "trade.funding_paid={} expected={}",
-            trade.funding_paid,
+            (total_funding - funding_paid).abs() < 1e-9,
+            "total_funding={} expected={}",
+            total_funding,
             funding_paid
         );
-        assert!(
-            trade.net_pnl < trade.gross_pnl - trade.fees_paid,
-            "funding must reduce net_pnl: gross={} fees={} net={} funding={}",
-            trade.gross_pnl,
-            trade.fees_paid,
-            trade.net_pnl,
-            trade.funding_paid
-        );
-        assert!(
-            (trade.net_pnl - (trade.gross_pnl - trade.fees_paid - trade.funding_paid)).abs() < 1e-9,
-            "net_pnl must equal gross_pnl - fees_paid - funding_paid"
-        );
 
-        // Balance after close must equal pre_close + notional + net_pnl
-        let expected_balance = pre_close_balance + trade.notional + trade.net_pnl;
+        // Each leg satisfies: net = gross - fees - funding
+        for t in &acc.closed_trades {
+            assert!(
+                (t.net_pnl - (t.gross_pnl - t.fees_paid - t.funding_paid)).abs() < 1e-9,
+                "net_pnl formula mismatch for {}: gross={} fees={} funding={} net={}",
+                t.close_reason, t.gross_pnl, t.fees_paid, t.funding_paid, t.net_pnl
+            );
+        }
+
+        // Balance after both closes = pre_close + sum(notional_i + net_pnl_i)
+        let expected_balance = pre_close_balance
+            + acc.closed_trades[0].notional + acc.closed_trades[0].net_pnl
+            + acc.closed_trades[1].notional + acc.closed_trades[1].net_pnl;
         assert!(
             (acc.balance - expected_balance).abs() < 1e-6,
             "balance={} expected={}",

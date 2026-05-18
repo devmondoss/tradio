@@ -133,9 +133,13 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     // Expansion is accepted symmetrically with the long side; delta/cvd_slope/value_location
     // already filter direction, so Expansion alone does not create false shorts.
     // AboveVah is excluded: price above VAH is a breakout above value, not a pullback into it.
+    // fast_slope gate: suppress shorts when bar momentum is strongly bullish (> +0.20) —
+    // mirrors the long-side gate and avoids entering short into a fast regime flip.
+    let fast_slope_ok_short = flow.fast_slope.map(|fs| fs < 0.20).unwrap_or(true);
     let short_context = matches!(ctx.regime, Regime::TrendDown | Regime::Expansion)
         && short_anchor_ok
-        && vp.value_location == ValueLocation::InValue;
+        && vp.value_location == ValueLocation::InValue
+        && fast_slope_ok_short;
 
     let short_flow = flow.cvd_slope.unwrap_or(0.0) <= 0.0
         && flow.delta.unwrap_or(0.0) < 0.0

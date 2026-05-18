@@ -1,15 +1,17 @@
 -- ============================================================
 -- FlowSurface — Reset completo de la base de datos
--- Ejecutar en Supabase SQL Editor cuando Railway redeploya
--- y los datos viejos ya no son válidos.
+-- Ejecutar en Supabase SQL Editor cuando los datos viejos
+-- ya no son válidos o el schema cambió.
 --
 -- ADVERTENCIA: borra TODOS los datos. No hay vuelta atrás.
 -- ============================================================
 
--- 1. Vista analítica
-DROP VIEW IF EXISTS v_signals_with_outcomes;
+-- ============================================================
+-- 1. LIMPIAR (orden: vistas → hijos con FK → padres)
+-- ============================================================
 
--- 2. Tablas con FK primero (hijos antes que padres)
+DROP VIEW  IF EXISTS v_signals_with_outcomes;
+
 DROP TABLE IF EXISTS signal_outcomes;
 DROP TABLE IF EXISTS intrabar_outcomes;
 DROP TABLE IF EXISTS deployed_params;
@@ -19,19 +21,22 @@ DROP TABLE IF EXISTS institutional_snapshots;
 DROP TABLE IF EXISTS regime_history;
 
 -- ============================================================
--- RECREAR TABLAS
+-- 2. TABLAS
 -- ============================================================
 
+-- Señales generadas por los detectores (write_signal)
 CREATE TABLE shadow_signals (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     timestamp_ms            BIGINT NOT NULL,
+
     strategy                TEXT NOT NULL,
     side                    TEXT,
     regime_slow             TEXT,
     regime_fast             TEXT,
     regime_combined         TEXT,
     action                  TEXT NOT NULL,
+
     entry_price             DOUBLE PRECISION,
     stop_price              DOUBLE PRECISION,
     target_price            DOUBLE PRECISION,
@@ -41,6 +46,8 @@ CREATE TABLE shadow_signals (
     reject_reason           TEXT,
     evidence                TEXT[],
     missing                 TEXT[],
+
+    -- Contexto técnico
     price                   DOUBLE PRECISION NOT NULL,
     vwap_session            DOUBLE PRECISION,
     poc                     DOUBLE PRECISION,
@@ -52,26 +59,40 @@ CREATE TABLE shadow_signals (
     spread_bps              DOUBLE PRECISION,
     obi_l5                  DOUBLE PRECISION,
     microprice              DOUBLE PRECISION,
+
+    -- Contexto institucional — Liquidaciones
     short_liq_usd_5m        DOUBLE PRECISION,
     long_liq_usd_5m         DOUBLE PRECISION,
     total_liq_usd_5m        DOUBLE PRECISION,
     cascade_active          BOOLEAN,
     liq_dominant_side       TEXT,
+
+    -- Long/Short ratios
     top_traders_long_pct    DOUBLE PRECISION,
     retail_long_pct         DOUBLE PRECISION,
     ls_divergence           DOUBLE PRECISION,
     divergence_signal       TEXT,
+
+    -- Open Interest
     oi_current_btc          DOUBLE PRECISION,
     oi_change_30m_pct       DOUBLE PRECISION,
     oi_change_2h_pct        DOUBLE PRECISION,
     oi_trend                TEXT,
+
+    -- Funding
     funding_current         DOUBLE PRECISION,
     funding_regime          TEXT,
     funding_percentile_30d  DOUBLE PRECISION,
     funding_avg_7d          DOUBLE PRECISION,
+
+    -- Taker
     taker_buy_sell_ratio    DOUBLE PRECISION,
     taker_imbalance         DOUBLE PRECISION,
-    -- Campos adicionales del writer actual
+
+    -- Paper trader config
+    leverage                DOUBLE PRECISION,
+
+    -- Niveles estructurales (para calibrar find_structural_target)
     hvn_levels_above        DOUBLE PRECISION[],
     hvn_levels_below        DOUBLE PRECISION[],
     nearest_wall_above      DOUBLE PRECISION,
@@ -80,28 +101,40 @@ CREATE TABLE shadow_signals (
     swing_low_20            DOUBLE PRECISION
 );
 
+-- Trades cerrados del paper trader (write_trade)
+-- Una señal con partial exit genera DOS rows con el mismo signal_id:
+--   close_reason='TP1_PARTIAL' (is_partial=TRUE)  + cierre final (is_partial=FALSE).
 CREATE TABLE signal_outcomes (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     signal_id           UUID NOT NULL REFERENCES shadow_signals(id) ON DELETE CASCADE,
     resolved_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     timestamp_ms        BIGINT NOT NULL,
-    close_reason        TEXT NOT NULL,
+
+    close_reason        TEXT NOT NULL,   -- STOP_HIT | TARGET_HIT | TTL_EXPIRED | INVALIDATED | TP1_PARTIAL | TRAILING_HIT
     close_price         DOUBLE PRECISION NOT NULL,
     duration_ms         BIGINT NOT NULL,
     r_multiple          DOUBLE PRECISION NOT NULL,
+
     pnl_gross_usd       DOUBLE PRECISION,
     pnl_net_usd         DOUBLE PRECISION,
     fee_entry_usd       DOUBLE PRECISION,
     fee_exit_usd        DOUBLE PRECISION,
     slippage_usd        DOUBLE PRECISION,
     funding_cost_usd    DOUBLE PRECISION,
+
     mfe_r               DOUBLE PRECISION,
     mae_r               DOUBLE PRECISION,
+
+    is_partial          BOOLEAN          NOT NULL DEFAULT FALSE,
+    partial_fraction    DOUBLE PRECISION NOT NULL DEFAULT 0.0,  -- 0.5 = TP1, 0.0 = cierre total
+
+    -- Precios futuros (patch_horizon los rellena en diferido)
     price_5m            DOUBLE PRECISION,
     price_15m           DOUBLE PRECISION,
     price_30m           DOUBLE PRECISION,
     price_1h            DOUBLE PRECISION,
     price_4h            DOUBLE PRECISION,
+
     r_5m                DOUBLE PRECISION,
     r_15m               DOUBLE PRECISION,
     r_30m               DOUBLE PRECISION,
@@ -109,7 +142,7 @@ CREATE TABLE signal_outcomes (
     r_4h                DOUBLE PRECISION
 );
 
--- Outcomes intrabar del outcome tracker (write_outcome en supabase_writer.rs)
+-- Outcomes intrabar del OutcomeTracker (write_outcome)
 CREATE TABLE intrabar_outcomes (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -131,6 +164,7 @@ CREATE TABLE intrabar_outcomes (
     age_ms      BIGINT
 );
 
+-- Snapshots institucionales cada 5 minutos
 CREATE TABLE institutional_snapshots (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -155,6 +189,7 @@ CREATE TABLE institutional_snapshots (
     regime_fast             TEXT
 );
 
+-- Historial de cambios de régimen (write_regime_change)
 CREATE TABLE regime_history (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     detected_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -166,6 +201,7 @@ CREATE TABLE regime_history (
     price_at_change DOUBLE PRECISION
 );
 
+-- Historial de calibraciones del pipeline Python
 CREATE TABLE calibration_log (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     calibrated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -185,6 +221,7 @@ CREATE TABLE calibration_log (
     deployed_at         TIMESTAMPTZ
 );
 
+-- Parámetros activos por régimen (leídos por el monitor Rust)
 CREATE TABLE deployed_params (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -197,26 +234,30 @@ CREATE TABLE deployed_params (
 );
 
 -- ============================================================
--- ÍNDICES
+-- 3. ÍNDICES
 -- ============================================================
 
-CREATE INDEX idx_signals_strategy_time   ON shadow_signals(strategy, timestamp_ms DESC);
-CREATE INDEX idx_signals_action_time     ON shadow_signals(action, timestamp_ms DESC);
-CREATE INDEX idx_signals_regime          ON shadow_signals(regime_combined, strategy);
-CREATE INDEX idx_signals_institutional   ON shadow_signals(short_liq_usd_5m, funding_percentile_30d, ls_divergence);
-CREATE INDEX idx_outcomes_signal         ON signal_outcomes(signal_id);
-CREATE INDEX idx_outcomes_reason         ON signal_outcomes(close_reason, r_multiple);
-CREATE INDEX idx_intrabar_strategy_time  ON intrabar_outcomes(strategy_id, signal_ms DESC);
-CREATE INDEX idx_intrabar_source         ON intrabar_outcomes(source, signal_ms DESC);
-CREATE INDEX idx_snapshots_time          ON institutional_snapshots(timestamp_ms DESC);
-CREATE INDEX idx_regime_history_time     ON regime_history(timestamp_ms DESC);
-CREATE INDEX idx_calibration_regime      ON calibration_log(regime, calibrated_at DESC);
+CREATE INDEX idx_signals_strategy_time  ON shadow_signals(strategy, timestamp_ms DESC);
+CREATE INDEX idx_signals_action_time    ON shadow_signals(action, timestamp_ms DESC);
+CREATE INDEX idx_signals_regime         ON shadow_signals(regime_combined, strategy);
+CREATE INDEX idx_signals_institutional  ON shadow_signals(short_liq_usd_5m, funding_percentile_30d, ls_divergence);
+
+CREATE INDEX idx_outcomes_signal        ON signal_outcomes(signal_id);
+CREATE INDEX idx_outcomes_reason        ON signal_outcomes(close_reason, r_multiple);
+CREATE INDEX idx_outcomes_partial       ON signal_outcomes(signal_id, is_partial);
+
+CREATE INDEX idx_intrabar_strategy_time ON intrabar_outcomes(strategy_id, signal_ms DESC);
+CREATE INDEX idx_intrabar_source        ON intrabar_outcomes(source, signal_ms DESC);
+
+CREATE INDEX idx_snapshots_time         ON institutional_snapshots(timestamp_ms DESC);
+CREATE INDEX idx_regime_history_time    ON regime_history(timestamp_ms DESC);
+CREATE INDEX idx_calibration_regime     ON calibration_log(regime, calibrated_at DESC);
 
 -- ============================================================
--- VISTA ANALÍTICA
+-- 4. VISTA ANALÍTICA
 -- ============================================================
 
-CREATE OR REPLACE VIEW v_signals_with_outcomes AS
+CREATE VIEW v_signals_with_outcomes AS
 SELECT
     s.id,
     s.timestamp_ms,
@@ -232,6 +273,8 @@ SELECT
     s.target_price,
     s.atr,
     s.spread_bps,
+
+    -- Contexto institucional
     s.short_liq_usd_5m,
     s.long_liq_usd_5m,
     s.cascade_active,
@@ -246,20 +289,31 @@ SELECT
     s.funding_percentile_30d,
     s.taker_imbalance,
     s.cvd_slope,
+
+    -- Outcome del trade
     o.close_reason,
     o.r_multiple,
     o.pnl_net_usd,
     o.duration_ms,
     o.mfe_r,
     o.mae_r,
+    o.is_partial,
+    o.partial_fraction,
+
+    -- Horizontes futuros
     o.r_5m,
     o.r_15m,
     o.r_30m,
     o.r_1h,
-    CASE WHEN o.close_reason = 'TARGET'      THEN TRUE ELSE FALSE END AS hit_target,
-    CASE WHEN o.close_reason = 'STOP'        THEN TRUE ELSE FALSE END AS hit_stop,
-    CASE WHEN o.close_reason = 'EXPIRED'     THEN TRUE ELSE FALSE END AS expired,
+
+    -- Booleans de resultado (para filtros rápidos en Python)
+    CASE WHEN o.close_reason = 'TARGET_HIT'  THEN TRUE ELSE FALSE END AS hit_target,
+    CASE WHEN o.close_reason = 'STOP_HIT'    THEN TRUE ELSE FALSE END AS hit_stop,
+    CASE WHEN o.close_reason = 'TTL_EXPIRED' THEN TRUE ELSE FALSE END AS expired,
     CASE WHEN o.close_reason = 'INVALIDATED' THEN TRUE ELSE FALSE END AS invalidated,
+    CASE WHEN o.close_reason = 'TP1_PARTIAL' THEN TRUE ELSE FALSE END AS tp1_partial,
+
+    -- Buckets para segmentación
     CASE
         WHEN s.short_liq_usd_5m > 3000000 THEN '>$3M'
         WHEN s.short_liq_usd_5m > 2000000 THEN '$2M-$3M'
@@ -267,12 +321,14 @@ SELECT
         WHEN s.short_liq_usd_5m > 500000  THEN '$500K-$1M'
         ELSE '<$500K'
     END AS liq_bucket,
+
     CASE
         WHEN s.funding_percentile_30d > 85 THEN 'extreme'
         WHEN s.funding_percentile_30d > 65 THEN 'elevated'
         WHEN s.funding_percentile_30d > 35 THEN 'neutral'
         ELSE 'depressed'
     END AS funding_bucket
+
 FROM shadow_signals s
 LEFT JOIN signal_outcomes o ON s.id = o.signal_id
 WHERE s.action = 'ShadowSignal';

@@ -19,12 +19,27 @@ struct TrackedSignal {
     highest: f64,
     /// Lowest price seen since the signal was opened
     lowest: f64,
+    /// 1.5R price level computed at signal creation.
+    tp1_price: Option<f64>,
+    /// True once the 1.5R level has been touched.
+    tp1_hit: bool,
 }
 
 impl TrackedSignal {
     fn new(symbol: &str, signal: StrategySignal, open_price: f64) -> Self {
+        let tp1_price = match (signal.entry_price, signal.stop_price, signal.side) {
+            (Some(entry), Some(stop), Some(Side::Long)) => {
+                Some(entry + 1.5 * (entry - stop).abs())
+            }
+            (Some(entry), Some(stop), Some(Side::Short)) => {
+                Some(entry - 1.5 * (entry - stop).abs())
+            }
+            _ => None,
+        };
         Self {
             symbol: symbol.to_string(),
+            tp1_price,
+            tp1_hit: false,
             signal,
             highest: open_price,
             lowest: open_price,
@@ -37,6 +52,15 @@ impl TrackedSignal {
         }
         if low < self.lowest {
             self.lowest = low;
+        }
+        if !self.tp1_hit {
+            if let Some(tp1) = self.tp1_price {
+                self.tp1_hit = match self.signal.side {
+                    Some(Side::Long) => self.highest >= tp1,
+                    Some(Side::Short) => self.lowest <= tp1,
+                    None => false,
+                };
+            }
         }
     }
 
@@ -166,6 +190,10 @@ struct OutcomeEntry {
     mfe_r: f64,
     mae_r: f64,
     outcome: String,
+    /// Whether price reached the 1.5R partial-exit level before final close.
+    tp1_hit: bool,
+    /// The 1.5R price level (None when stop was missing at signal creation).
+    tp1_price: Option<f64>,
 }
 
 fn log_outcome(tracked: &TrackedSignal, outcome: &str, closed_at_ms: i64) {
@@ -185,6 +213,8 @@ fn log_outcome(tracked: &TrackedSignal, outcome: &str, closed_at_ms: i64) {
         mfe_r: tracked.mfe() / risk,
         mae_r: tracked.mae() / risk,
         outcome: outcome.to_string(),
+        tp1_hit: tracked.tp1_hit,
+        tp1_price: tracked.tp1_price,
     };
 
     let path = outcomes_dir().join("strategy_outcomes.jsonl");

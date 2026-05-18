@@ -745,6 +745,7 @@ impl BarState {
             session: None,
             order_blocks: None,
             fvg: None,
+            leverage: self.paper.config.leverage,
         }
     }
 
@@ -1110,6 +1111,7 @@ impl BarState {
             session: None,
             order_blocks: None,
             fvg: None,
+            leverage: self.paper.config.leverage,
         };
 
         let signal = route_strategy(&ctx, &cfg);

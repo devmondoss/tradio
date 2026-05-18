@@ -70,7 +70,10 @@ CREATE TABLE IF NOT EXISTS shadow_signals (
 
     -- Taker
     taker_buy_sell_ratio    DOUBLE PRECISION,
-    taker_imbalance         DOUBLE PRECISION
+    taker_imbalance         DOUBLE PRECISION,
+
+    -- Paper trader config
+    leverage                DOUBLE PRECISION
 );
 
 -- ============================================================
@@ -96,6 +99,11 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
 
     mfe_r               DOUBLE PRECISION,
     mae_r               DOUBLE PRECISION,
+
+    -- Partial exit: TP1 (50% at 1.5R) generates is_partial=TRUE; final leg is_partial=FALSE.
+    -- Both rows share the same signal_id. partial_fraction=0.5 for TP1, 0.0 for full close.
+    is_partial          BOOLEAN NOT NULL DEFAULT FALSE,
+    partial_fraction    DOUBLE PRECISION NOT NULL DEFAULT 0.0,
 
     price_5m            DOUBLE PRECISION,
     price_15m           DOUBLE PRECISION,
@@ -273,11 +281,14 @@ SELECT
     o.r_15m,
     o.r_30m,
     o.r_1h,
+    o.is_partial,
+    o.partial_fraction,
 
-    CASE WHEN o.close_reason = 'TARGET'      THEN TRUE ELSE FALSE END AS hit_target,
-    CASE WHEN o.close_reason = 'STOP'        THEN TRUE ELSE FALSE END AS hit_stop,
-    CASE WHEN o.close_reason = 'EXPIRED'     THEN TRUE ELSE FALSE END AS expired,
-    CASE WHEN o.close_reason = 'INVALIDATED' THEN TRUE ELSE FALSE END AS invalidated,
+    CASE WHEN o.close_reason = 'TARGET_HIT'   THEN TRUE ELSE FALSE END AS hit_target,
+    CASE WHEN o.close_reason = 'STOP_HIT'     THEN TRUE ELSE FALSE END AS hit_stop,
+    CASE WHEN o.close_reason = 'TTL_EXPIRED'  THEN TRUE ELSE FALSE END AS expired,
+    CASE WHEN o.close_reason = 'INVALIDATED'  THEN TRUE ELSE FALSE END AS invalidated,
+    CASE WHEN o.close_reason = 'TP1_PARTIAL'  THEN TRUE ELSE FALSE END AS tp1_partial,
 
     CASE
         WHEN s.short_liq_usd_5m > 3000000 THEN '>$3M'
@@ -297,6 +308,15 @@ SELECT
 FROM shadow_signals s
 LEFT JOIN signal_outcomes o ON s.id = o.signal_id
 WHERE s.action = 'ShadowSignal';
+
+-- ============================================================
+-- MIGRATION: añadir columnas de partial exit a bases existentes
+-- Ejecutar una sola vez en el SQL Editor de Supabase si la tabla ya existe.
+-- En instalaciones nuevas el CREATE TABLE ya las incluye.
+-- ============================================================
+-- ALTER TABLE signal_outcomes
+--     ADD COLUMN IF NOT EXISTS is_partial       BOOLEAN          NOT NULL DEFAULT FALSE,
+--     ADD COLUMN IF NOT EXISTS partial_fraction DOUBLE PRECISION NOT NULL DEFAULT 0.0;
 
 -- ============================================================
 -- TTL AUTOMÁTICO: borrar snapshots > 90 días

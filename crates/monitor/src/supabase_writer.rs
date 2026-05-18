@@ -252,6 +252,9 @@ fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Val
         "evidence":       evidence,
         "missing":        missing,
 
+        // Paper trader config
+        "leverage":       ctx.leverage,
+
         // Technical context
         "price":          ctx.price,
         "vwap_session":   ctx.vwap.vwap_session,
@@ -317,5 +320,7 @@ fn build_trade_row(trade: &ClosedTrade, signal_uuid: &str) -> Value {
         "funding_cost_usd":  trade.funding_paid,
         "mfe_r":             if risk > 0.0 { trade.mfe / risk } else { 0.0 },
         "mae_r":             if risk > 0.0 { trade.mae / risk } else { 0.0 },
+        "is_partial":        trade.is_partial,
+        "partial_fraction":  trade.partial_fraction,
     })
 }
