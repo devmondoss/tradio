@@ -45,7 +45,7 @@ use data::strategy::{
     paper::PaperAccount,
     router::route_strategy,
     types::{
-        AbsorptionSide, CvdDivergence, DataQuality, OrderBookContext, Regime,
+        AbsorptionSide, CvdDivergence, DataQuality, OrderBookContext, Regime, Side,
         StrategyAction, StrategyConfig, StrategyMarketContext,
     },
 };
@@ -154,6 +154,103 @@ struct StreamStates {
     klines: StreamHealth,
     depth:  StreamHealth,
     liq:    StreamHealth,
+}
+
+// ── outcome tracking ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy)]
+enum OutcomeSource { BarClose, Intrabar }
+
+impl std::fmt::Display for OutcomeSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BarClose => write!(f, "bar"),
+            Self::Intrabar => write!(f, "intrabar"),
+        }
+    }
+}
+
+/// Tracks MFE/MAE/RR for one signal from entry until the next bar closes.
+#[derive(Debug, Clone)]
+struct PendingOutcome {
+    signal_ms: i64,
+    source: OutcomeSource,
+    strategy_id: String,
+    is_long: bool,
+    entry_px: f64,
+    stop_px: f64,
+    target_px: f64,
+    risk: f64,
+    mfe: f64,           // best favorable excursion in pts
+    mae: f64,           // worst adverse excursion in pts
+    rr_at_1m: Option<f64>,
+    rr_at_3m: Option<f64>,
+    rr_at_5m: Option<f64>,
+    hit_target: bool,
+    hit_stop: bool,
+}
+
+impl PendingOutcome {
+    fn new(
+        signal_ms: i64,
+        source: OutcomeSource,
+        strategy_id: String,
+        is_long: bool,
+        entry_px: f64,
+        stop_px: f64,
+        target_px: f64,
+    ) -> Self {
+        let risk = (entry_px - stop_px).abs().max(1.0);
+        Self {
+            signal_ms, source, strategy_id, is_long,
+            entry_px, stop_px, target_px, risk,
+            mfe: 0.0, mae: 0.0,
+            rr_at_1m: None, rr_at_3m: None, rr_at_5m: None,
+            hit_target: false, hit_stop: false,
+        }
+    }
+
+    fn update(&mut self, px: f64, now_ms: i64) {
+        let excursion = if self.is_long { px - self.entry_px } else { self.entry_px - px };
+        let adverse   = -excursion;
+
+        if excursion > self.mfe { self.mfe = excursion; }
+        if adverse   > self.mae { self.mae = adverse; }
+
+        if self.is_long {
+            if px <= self.stop_px   { self.hit_stop   = true; }
+            if px >= self.target_px { self.hit_target = true; }
+        } else {
+            if px >= self.stop_px   { self.hit_stop   = true; }
+            if px <= self.target_px { self.hit_target = true; }
+        }
+
+        let rr = excursion / self.risk;
+        let elapsed = now_ms - self.signal_ms;
+        if elapsed >= 60_000  && self.rr_at_1m.is_none() { self.rr_at_1m = Some(rr); }
+        if elapsed >= 180_000 && self.rr_at_3m.is_none() { self.rr_at_3m = Some(rr); }
+        if elapsed >= 300_000 && self.rr_at_5m.is_none() { self.rr_at_5m = Some(rr); }
+    }
+
+    fn log(&self, bar_close_ms: i64) {
+        let age_ms = bar_close_ms - self.signal_ms;
+        eprintln!(
+            "[outcome] src={} id={} side={} entry={:.1} stop={:.1} target={:.1} \
+             risk={:.1} mfe={:.1} mae={:.1} \
+             rr_1m={} rr_3m={} rr_5m={} \
+             hit_target={} hit_stop={} age={}ms",
+            self.source, self.strategy_id,
+            if self.is_long { "L" } else { "S" },
+            self.entry_px, self.stop_px, self.target_px,
+            self.risk, self.mfe, self.mae,
+            fmt_opt(self.rr_at_1m), fmt_opt(self.rr_at_3m), fmt_opt(self.rr_at_5m),
+            self.hit_target, self.hit_stop, age_ms,
+        );
+    }
+}
+
+fn fmt_opt(v: Option<f64>) -> String {
+    v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "-".into())
 }
 
 /// Bar-level state frozen at each 5m close, reused by the intrabar evaluator.
@@ -311,6 +408,8 @@ struct BarState {
     // Health monitoring
     freshness: DataFreshness,
     streams: StreamStates,
+    // Outcome tracking (intrabar + bar-close signals)
+    pending_outcomes: Vec<PendingOutcome>,
     // Intrabar tactical layer
     intrabar_cfg: IntrabarConfig,
     current_price: f64,
@@ -355,6 +454,7 @@ impl BarState {
             regime_started_at_ms: None,
             freshness: DataFreshness::default(),
             streams: StreamStates::default(),
+            pending_outcomes: Vec::new(),
             intrabar_cfg: IntrabarConfig::from_env(),
             current_price: 0.0,
             frozen: None,
@@ -395,6 +495,51 @@ impl BarState {
 
     fn on_trade_batch(&mut self) {
         self.metrics.trade_batches += 1;
+    }
+
+    // ── Outcome tracking ──────────────────────────────────────────────────────
+
+    fn push_outcome(&mut self, signal: &data::strategy::types::StrategySignal, source: OutcomeSource) {
+        let (Some(entry), Some(stop), Some(target), Some(side)) = (
+            signal.entry_price, signal.stop_price, signal.target_price, signal.side
+        ) else { return; };
+        let is_long = matches!(side, Side::Long);
+        let id = signal.strategy_id.as_ref().map(|s| format!("{s:?}")).unwrap_or_else(|| "Unknown".into());
+        self.pending_outcomes.push(PendingOutcome::new(
+            signal.created_at_ms, source, id, is_long, entry, stop, target,
+        ));
+    }
+
+    fn update_outcomes(&mut self, px: f64, now_ms: i64) {
+        for o in &mut self.pending_outcomes {
+            o.update(px, now_ms);
+        }
+    }
+
+    fn resolve_outcomes(&mut self, bar_close_ms: i64, bar_close_px: f64) {
+        let mut resolved = vec![];
+        self.pending_outcomes.retain(|o| {
+            // Resolve when at least one full bar (5m) has elapsed since signal
+            if bar_close_ms >= o.signal_ms + 300_000 {
+                resolved.push(o.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for mut o in resolved {
+            // Final update with bar close price and fill any missing horizons
+            o.update(bar_close_px, bar_close_ms);
+            let rr_final = if o.is_long {
+                (bar_close_px - o.entry_px) / o.risk
+            } else {
+                (o.entry_px - bar_close_px) / o.risk
+            };
+            if o.rr_at_1m.is_none() { o.rr_at_1m = Some(rr_final); }
+            if o.rr_at_3m.is_none() { o.rr_at_3m = Some(rr_final); }
+            if o.rr_at_5m.is_none() { o.rr_at_5m = Some(rr_final); }
+            o.log(bar_close_ms);
+        }
     }
 
     // ── Intrabar tactical layer ───────────────────────────────────────────────
@@ -542,6 +687,9 @@ impl BarState {
         );
 
         if !fired { return; }
+
+        // Track outcome regardless of mode — measures suppressed signals too
+        self.push_outcome(&signal, OutcomeSource::Intrabar);
 
         match self.intrabar_cfg.mode {
             IntrabarMode::ObserveOnly => {
@@ -876,9 +1024,13 @@ impl BarState {
         if signal_fired {
             self.metrics.signals_today += 1;
             self.metrics.bars_since_signal = 0;
+            self.push_outcome(&signal, OutcomeSource::BarClose);
         } else {
             self.metrics.bars_since_signal += 1;
         }
+
+        // Resolve outcomes that are at least one bar (5m) old
+        self.resolve_outcomes(bar_ms, c);
 
         let near_misses = collect_near_misses(&ctx, &cfg, signal_fired);
 
@@ -1786,14 +1938,15 @@ async fn main() {
             Some(event) = trade_stream.next() => {
                 if let Event::TradesReceived(_kind, ts, trades) = event {
                     state.on_trade_batch();
+                    let now_ms = ts.as_u64() as i64;
                     for trade in trades.iter() {
                         state.on_trade(trade.is_sell, trade.qty.to_f32_lossy(), trade.price.to_f32() as f64);
                     }
-                    if state.intrabar_cfg.enabled {
-                        let now_ms = ts.as_u64() as i64;
-                        if state.should_eval_intrabar(now_ms) {
-                            state.on_intrabar_tick(now_ms, "price_move", &symbol_str).await;
-                        }
+                    if !state.pending_outcomes.is_empty() && state.current_price > 0.0 {
+                        state.update_outcomes(state.current_price, now_ms);
+                    }
+                    if state.intrabar_cfg.enabled && state.should_eval_intrabar(now_ms) {
+                        state.on_intrabar_tick(now_ms, "price_move", &symbol_str).await;
                     }
                 }
             }
