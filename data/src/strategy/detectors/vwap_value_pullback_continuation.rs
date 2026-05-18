@@ -66,7 +66,22 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps
         && ob.microprice.map(|m| m >= px * 0.9998).unwrap_or(true);
 
-    if long_context && long_flow && long_book && adapter::basis_ok(flow.basis, true) {
+    // Funding gate: block longs when funding is elevated/extreme long side.
+    // If institutional data is absent, block by default (conservative — feed failure
+    // should not permit long entries into potentially overleveraged markets).
+    let funding_ok_long = ctx
+        .institutional
+        .as_ref()
+        .map(|inst| {
+            !matches!(
+                inst.funding.regime,
+                crate::institutional::FundingRegime::ExtremeLong
+                    | crate::institutional::FundingRegime::ElevatedLong
+            )
+        })
+        .unwrap_or(false);
+
+    if long_context && long_flow && long_book && funding_ok_long && adapter::basis_ok(flow.basis, true) {
         let entry = px;
         // max() → closest of (VAL structural level, 1×ATR floor).
         // Original min() was choosing the farthest, creating R:R ~0.2 in production.
@@ -79,6 +94,20 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
         let target = find_structural_target(entry, risk, Side::Long, vp, ob, atr, ctx.swing_high_20, ctx.swing_low_20, cfg)?;
 
+        let mut evidence = vec![
+            "trend_up".into(),
+            long_anchor_label.into(),
+            "pullback_into_value".into(),
+            "positive_delta_reentry".into(),
+            "cvd_aligned".into(),
+        ];
+        // Fase A — OB logging (peso 0, solo evidencia)
+        if let Some(ref obs) = ctx.order_blocks {
+            if obs.nearest_bullish.is_some() { evidence.push("bullish_ob_in_pullback_zone".into()); }
+        }
+        if let Some(ref fvg_ctx) = ctx.fvg {
+            if fvg_ctx.nearest_bullish.is_some() { evidence.push("bullish_fvg_nearby".into()); }
+        }
         return Some(StrategySignal {
             action: StrategyAction::ShadowSignal,
             strategy_id: Some(StrategyId::VwapValuePullbackContinuation),
@@ -89,13 +118,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             target_price: Some(target),
             score: 0.0,
             ttl_ms: cfg.default_ttl_ms,
-            evidence: vec![
-                "trend_up".into(),
-                long_anchor_label.into(),
-                "pullback_into_value".into(),
-                "positive_delta_reentry".into(),
-                "cvd_aligned".into(),
-            ],
+            evidence,
             missing: vec![],
             invalidation: vec![
                 "price_loses_VAL".into(),
@@ -134,6 +157,20 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
         let target = find_structural_target(entry, risk, Side::Short, vp, ob, atr, ctx.swing_high_20, ctx.swing_low_20, cfg)?;
 
+        let mut evidence = vec![
+            "trend_down".into(),
+            short_anchor_label.into(),
+            "pullback_into_value".into(),
+            "negative_delta_reentry".into(),
+            "cvd_aligned".into(),
+        ];
+        // Fase A — OB logging (peso 0, solo evidencia)
+        if let Some(ref obs) = ctx.order_blocks {
+            if obs.nearest_bearish.is_some() { evidence.push("bearish_ob_in_pullback_zone".into()); }
+        }
+        if let Some(ref fvg_ctx) = ctx.fvg {
+            if fvg_ctx.nearest_bearish.is_some() { evidence.push("bearish_fvg_nearby".into()); }
+        }
         return Some(StrategySignal {
             action: StrategyAction::ShadowSignal,
             strategy_id: Some(StrategyId::VwapValuePullbackContinuation),
@@ -144,13 +181,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             target_price: Some(target),
             score: 0.0,
             ttl_ms: cfg.default_ttl_ms,
-            evidence: vec![
-                "trend_down".into(),
-                short_anchor_label.into(),
-                "pullback_into_value".into(),
-                "negative_delta_reentry".into(),
-                "cvd_aligned".into(),
-            ],
+            evidence,
             missing: vec![],
             invalidation: vec![
                 "price_reclaims_VAH".into(),
@@ -252,6 +283,50 @@ fn find_structural_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::institutional::{
+        DivergenceSignal, FundingContext, FundingRegime, InstitutionalContext, LiqSide,
+        LiquidationSnapshot, LsRatioContext, OiTrend, OiTrendDir, TakerRatioSnapshot,
+    };
+
+    fn base_inst(regime: FundingRegime) -> InstitutionalContext {
+        InstitutionalContext {
+            timestamp_ms: 1710000000000,
+            liquidations: LiquidationSnapshot {
+                long_liq_usd_5m: 0.0,
+                short_liq_usd_5m: 0.0,
+                total_usd_5m: 0.0,
+                dominant_side: LiqSide::Neutral,
+                cascade_detected: false,
+                last_event_ms: None,
+            },
+            ls_ratio: LsRatioContext {
+                top_traders_long_pct: 0.52,
+                retail_long_pct: 0.50,
+                divergence_signal: DivergenceSignal::Neutral,
+            },
+            oi_trend: OiTrend {
+                current: 1_000_000_000.0,
+                change_30m: 0.0,
+                slope_5bar: 0.0,
+                trend: OiTrendDir::Flat,
+            },
+            taker_ratio: Some(TakerRatioSnapshot {
+                timestamp_ms: 1710000000000,
+                buy_sell_ratio: 1.0,
+                taker_imbalance: 0.0,
+            }),
+            funding: FundingContext {
+                current: 0.0001,
+                avg: 0.0001,
+                regime,
+                velocity: 0.0,
+                peak_confirmed: false,
+            },
+            quality: DataQuality::Live,
+            smart_money_score: None,
+            liq_map: None,
+        }
+    }
 
     fn base_long_ctx() -> StrategyMarketContext {
         StrategyMarketContext {
@@ -315,7 +390,7 @@ mod tests {
                 quality: DataQuality::Live,
                 spoof: None,
             },
-            institutional: None,
+            institutional: Some(base_inst(FundingRegime::Neutral)),
             swing_high_20: None,
             swing_low_20: None,
             market_structure: None,
@@ -427,5 +502,57 @@ mod tests {
         ctx.flow.delta = Some(-100.0);
         let cfg = StrategyConfig::default();
         assert!(detect(&ctx, &cfg).is_none());
+    }
+
+    #[test]
+    fn rejects_long_when_funding_extreme_long() {
+        let mut ctx = base_long_ctx();
+        ctx.institutional = Some(base_inst(FundingRegime::ExtremeLong));
+        let cfg = StrategyConfig::default();
+        assert!(detect(&ctx, &cfg).is_none(), "ExtremeLong funding should block long entries");
+    }
+
+    #[test]
+    fn rejects_long_when_funding_elevated_long() {
+        let mut ctx = base_long_ctx();
+        ctx.institutional = Some(base_inst(FundingRegime::ElevatedLong));
+        let cfg = StrategyConfig::default();
+        assert!(detect(&ctx, &cfg).is_none(), "ElevatedLong funding should block long entries");
+    }
+
+    #[test]
+    fn rejects_long_when_no_institutional_data() {
+        let mut ctx = base_long_ctx();
+        ctx.institutional = None; // feed failure — conservative: block
+        let cfg = StrategyConfig::default();
+        assert!(detect(&ctx, &cfg).is_none(), "no inst data should block longs (conservative)");
+    }
+
+    #[test]
+    fn allows_long_when_funding_neutral() {
+        let ctx = base_long_ctx(); // base has Neutral funding
+        let cfg = StrategyConfig::default();
+        let signal = detect(&ctx, &cfg);
+        assert!(signal.is_some(), "Neutral funding should allow long");
+        assert_eq!(signal.unwrap().side, Some(Side::Long));
+    }
+
+    #[test]
+    fn funding_gate_does_not_affect_shorts() {
+        // Even with ExtremeLong funding (bad for longs), shorts should still be evaluated
+        let mut ctx = base_long_ctx();
+        ctx.regime = Regime::TrendDown;
+        ctx.price = 99800.0;
+        ctx.volume_profile.value_location = ValueLocation::InValue;
+        ctx.vwap.price_vs_avwap_bos = PriceRelation::Below;
+        ctx.flow.cvd = Some(-300.0);
+        ctx.flow.cvd_slope = Some(-0.4);
+        ctx.flow.delta = Some(-80.0);
+        ctx.orderbook.microprice = Some(99790.0);
+        ctx.institutional = Some(base_inst(FundingRegime::ExtremeLong)); // extreme long = supports shorts
+        let cfg = StrategyConfig::default();
+        let signal = detect(&ctx, &cfg);
+        assert!(signal.is_some(), "ExtremeLong funding should not block shorts");
+        assert_eq!(signal.unwrap().side, Some(Side::Short));
     }
 }
