@@ -194,5 +194,5 @@ pub struct InstitutionalContext {
     /// Mapa de densidad de stops estimados por nivel de precio.
     /// None hasta que LiqMapTracker tenga suficiente historia de swings.
     #[serde(default)]
-    pub liq_map: Option<crate::institutional::liq_map_tracker::LiqMapSnapshot>,
+    pub liq_map: Option<super::liq_map_tracker::LiqMapSnapshot>,
 }

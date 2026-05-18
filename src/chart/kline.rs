@@ -399,9 +399,9 @@ impl KlineChart {
 
         if is_new_bar
             && self.strategy_overlay_enabled
-            && let Some((close, high, low)) = closed_bar
+            && let Some((close, high, low, open, ts_ms)) = closed_bar
         {
-            self.run_strategy_detection(close, high, low);
+            self.run_strategy_detection(close, high, low, open, ts_ms);
         }
     }
 
@@ -1012,8 +1012,16 @@ impl KlineChart {
         self.last_depth = Some(depth.clone());
     }
 
-    fn run_strategy_detection(&mut self, bar_close: f64, bar_high: f64, bar_low: f64) {
+    fn run_strategy_detection(
+        &mut self,
+        bar_close: f64,
+        bar_high: f64,
+        bar_low: f64,
+        bar_open: f64,
+        bar_ts_ms: i64,
+    ) {
         use crate::strategy::{adapter, logger, router, types::*};
+        use data::session::classify_session;
 
         let Some(depth) = &self.last_depth else {
             return;
@@ -1194,9 +1202,19 @@ impl KlineChart {
             None, // fast_slope — not available in GUI chart
         );
 
+        // Alimentar trackers con la vela cerrada y obtener sus snapshots
+        self.ms_tracker.push_bar(bar_open, bar_high, bar_low, bar_close, bar_ts_ms);
+        self.ob_detector.push_bar(bar_open, bar_high, bar_low, bar_close, bar_ts_ms);
+        self.fvg_detector.push_bar(bar_high, bar_low, bar_ts_ms);
+
+        let market_structure = self.ms_tracker.snapshot();
+        let order_blocks = Some(self.ob_detector.snapshot(price));
+        let fvg = Some(self.fvg_detector.snapshot(price));
+        let session = Some(classify_session(bar_ts_ms));
+
         let ctx = StrategyMarketContext {
             symbol: self.chart.ticker_info.ticker.to_string(),
-            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            timestamp_ms: bar_ts_ms,
             price,
             regime,
             atr,
@@ -1207,11 +1225,17 @@ impl KlineChart {
             institutional: None,
             swing_high_20: None,
             swing_low_20: None,
+            market_structure,
+            session,
+            order_blocks,
+            fvg,
         };
 
         let cfg = StrategyConfig {
             enabled: true,
             default_ttl_ms: ttl_ms,
+            htf_scoring_enabled: true,
+            session_filter_enabled: true,
             ..Default::default()
         };
 
