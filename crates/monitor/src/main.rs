@@ -1170,23 +1170,10 @@ impl BarState {
             }
         }
 
-        if signal_fired {
-            if let Ok(json) = serde_json::to_string(&signal) {
-                println!("{{\"event\":\"signal\",\"data\":{json}}}");
-            }
-            // Spawn write_signal off the hot path — send UUID back via oneshot when done.
-            if let Some(sb) = self.supabase.clone() {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                self.pending_uuid_rx = Some(rx);
-                self.pending_signal_uuid = None; // cleared until write completes
-                let signal_clone = signal.clone();
-                let ctx_clone = ctx.clone();
-                tokio::spawn(async move {
-                    let uuid = sb.write_signal(&signal_clone, &ctx_clone).await;
-                    let _ = tx.send(uuid);
-                });
-            }
-        }
+        // Snapshot the UUID that belongs to the currently open position BEFORE
+        // processing the new signal — a new signal clears pending_signal_uuid, which
+        // would cause write_trade to skip linking any trade that closes in this same bar.
+        let trade_uuid = self.pending_signal_uuid.clone();
 
         let prev_closed = self.paper.closed_trades.len();
         let paper_signal = if signal_fired { Some(&signal) } else { None };
@@ -1198,11 +1185,10 @@ impl BarState {
                 println!("{{\"event\":\"trade_closed\",\"data\":{json}}}");
             }
             if let Some(sb) = &self.supabase {
-                // Pass the UUID of the signal that opened this position
-                sb.write_trade(trade, self.pending_signal_uuid.clone());
+                sb.write_trade(trade, trade_uuid.clone());
             }
             // Register trade for forward horizon tracking (price_5m, price_15m, etc.)
-            if let Some(uuid) = &self.pending_signal_uuid {
+            if let Some(ref uuid) = trade_uuid {
                 if let Some(stop) = trade.stop_price {
                     let h = PendingHorizon {
                         signal_uuid: uuid.clone(),
@@ -1217,6 +1203,25 @@ impl BarState {
                     );
                     self.pending_horizons.push(h);
                 }
+            }
+        }
+
+        // Write the new signal to Supabase AFTER closing any trades, so the UUID
+        // of the previous signal is still intact when write_trade runs above.
+        if signal_fired {
+            if let Ok(json) = serde_json::to_string(&signal) {
+                println!("{{\"event\":\"signal\",\"data\":{json}}}");
+            }
+            if let Some(sb) = self.supabase.clone() {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.pending_uuid_rx = Some(rx);
+                self.pending_signal_uuid = None; // cleared until write completes
+                let signal_clone = signal.clone();
+                let ctx_clone = ctx.clone();
+                tokio::spawn(async move {
+                    let uuid = sb.write_signal(&signal_clone, &ctx_clone).await;
+                    let _ = tx.send(uuid);
+                });
             }
         }
 
