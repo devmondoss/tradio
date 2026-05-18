@@ -124,6 +124,7 @@ pub struct OrderFlowContext {
     pub bid_wall_nearby: bool,
     pub ask_wall_nearby: bool,
     pub price_action_clean: bool,
+    pub fast_slope: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

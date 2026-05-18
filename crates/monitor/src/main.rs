@@ -580,9 +580,9 @@ impl BarState {
 
         // Regime override: fast_slope from last bar close reveals directional bias
         // even when the canonical regime hasn't flipped yet (requires bar close).
-        let effective_regime = if frozen.fast_slope < -0.15 && frozen.regime == Regime::TrendUp {
+        let effective_regime = if frozen.fast_slope < -0.35 && frozen.regime == Regime::TrendUp {
             Regime::TrendDown
-        } else if frozen.fast_slope > 0.15 && frozen.regime == Regime::TrendDown {
+        } else if frozen.fast_slope > 0.35 && frozen.regime == Regime::TrendDown {
             Regime::TrendUp
         } else {
             frozen.regime
@@ -638,6 +638,7 @@ impl BarState {
             frozen.price_action_clean,
             frozen.mss_active,
             frozen.sweep_confirmed,
+            Some(frozen.fast_slope),
         );
 
         let liq_snap = self.liq_tracker.snapshot(now_ms);
@@ -974,6 +975,7 @@ impl BarState {
             price_action_clean,
             mss_active,
             sweep_confirmed,
+            Some(fast_slope),
         );
 
         // Prune stale liquidation events before building the snapshot

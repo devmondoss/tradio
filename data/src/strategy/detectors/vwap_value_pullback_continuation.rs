@@ -47,9 +47,13 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     // LONG: trend up, pullback into value, flow realigns.
     // BelowVal is excluded: price below VAL is a breakdown of support, not a pullback.
+    // fast_slope gate: if bar momentum is strongly bearish (< -0.20), suppress even in
+    // TrendUp — slow_slope can lag while price is already dropping hard intrabar.
+    let fast_slope_ok_long = flow.fast_slope.map(|fs| fs > -0.20).unwrap_or(true);
     let long_context = matches!(ctx.regime, Regime::TrendUp | Regime::Expansion)
         && long_anchor_ok
-        && vp.value_location == ValueLocation::InValue;
+        && vp.value_location == ValueLocation::InValue
+        && fast_slope_ok_long;
 
     // CVD level gate: a single bar of positive delta cannot override strongly adverse
     // cumulative flow. Threshold -200 was chosen after observing CVD=-471 triggering

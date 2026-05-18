@@ -1179,6 +1179,7 @@ impl KlineChart {
             price_action_clean,
             false, // mss_active — not tracked in GUI chart
             false, // sweep_confirmed — not tracked in GUI chart
+            None, // fast_slope — not available in GUI chart
         );
 
         let ctx = StrategyMarketContext {

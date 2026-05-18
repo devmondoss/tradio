@@ -134,6 +134,9 @@ pub struct OrderFlowContext {
     pub ask_wall_nearby: bool,
     /// Últimas 5 velas con ≤2 reversiones — movimiento limpio sin chopping.
     pub price_action_clean: bool,
+    /// Pendiente rápida (últimas 5 barras) del precio normalizado por ATR.
+    /// Negativo fuerte indica momentum bajista incluso si regime=TrendUp.
+    pub fast_slope: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

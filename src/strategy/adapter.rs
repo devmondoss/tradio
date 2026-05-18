@@ -130,6 +130,7 @@ pub fn build_flow_context(
     price_action_clean: bool,
     mss_active: bool,
     sweep_confirmed: bool,
+    fast_slope: Option<f64>,
 ) -> OrderFlowContext {
     let taker_imbalance = match (buy_volume, sell_volume) {
         (Some(buy), Some(sell)) => {
@@ -169,6 +170,7 @@ pub fn build_flow_context(
         bid_wall_nearby,
         ask_wall_nearby,
         price_action_clean,
+        fast_slope,
     }
 }
 
