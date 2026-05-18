@@ -11,9 +11,14 @@ pub enum TradingSession {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionPhase {
-    Open,  // primeros 30 min de la sesión
-    Mid,   // cuerpo central de la sesión
-    Close, // últimos 30 min de la sesión
+    /// Primeros 15 min de London o NY open — mayor edge para LiquidationHunt.
+    OpeningRush,
+    /// Minutos 16–30 desde apertura.
+    Open,
+    /// Cuerpo central de la sesión.
+    Mid,
+    /// Últimos 30 min de la sesión.
+    Close,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,7 +62,14 @@ pub fn classify_session(timestamp_ms: i64) -> SessionContext {
     let minutes_since_open = (day_minutes - open_min).max(0) as u32;
     let minutes_until_close = (close_min - day_minutes).max(0) as u32;
 
-    let phase = if minutes_since_open < 30 {
+    // OpeningRush only applies to high-liquidity sessions (London, NY, Overlap).
+    let is_high_liq_open = matches!(
+        session,
+        TradingSession::London | TradingSession::NewYork | TradingSession::LondonNyOverlap
+    );
+    let phase = if is_high_liq_open && minutes_since_open < 15 {
+        SessionPhase::OpeningRush
+    } else if minutes_since_open < 30 {
         SessionPhase::Open
     } else if minutes_until_close < 30 {
         SessionPhase::Close
@@ -79,8 +91,28 @@ mod tests {
 
     #[test]
     fn classifies_london_session() {
-        // 08:00 UTC = 480 min → London open
+        // 08:00 UTC = 480 min → 60 min into London (open at 420) → Mid
         let ts_ms = 8 * 3600 * 1000_i64;
+        let ctx = classify_session(ts_ms);
+        assert_eq!(ctx.session, TradingSession::London);
+        assert_eq!(ctx.phase, SessionPhase::Mid);
+        assert_eq!(ctx.minutes_since_open, 60);
+    }
+
+    #[test]
+    fn classifies_london_opening_rush() {
+        // 07:05 UTC = 425 min → 5 min into London → OpeningRush
+        let ts_ms = (7 * 3600 + 5 * 60) * 1000_i64;
+        let ctx = classify_session(ts_ms);
+        assert_eq!(ctx.session, TradingSession::London);
+        assert_eq!(ctx.phase, SessionPhase::OpeningRush);
+        assert_eq!(ctx.minutes_since_open, 5);
+    }
+
+    #[test]
+    fn classifies_london_open_phase() {
+        // 07:20 UTC = 440 min → 20 min into London → Open (>=15, <30)
+        let ts_ms = (7 * 3600 + 20 * 60) * 1000_i64;
         let ctx = classify_session(ts_ms);
         assert_eq!(ctx.session, TradingSession::London);
         assert_eq!(ctx.phase, SessionPhase::Open);

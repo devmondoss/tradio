@@ -274,6 +274,11 @@ pub struct StrategyConfig {
 
     /// Activar bloqueo de toxic_flow_gate cuando spoof_detected en dirección de señal.
     pub spoof_gate_enabled: bool,
+
+    /// Velas mínimas entre señales del mismo id de estrategia.
+    /// Evita señales back-to-back en el mismo nivel mientras el trade sigue activo.
+    /// Default: 5 velas.
+    pub cooldown_bars: u64,
 }
 
 impl Default for StrategyConfig {
@@ -303,6 +308,7 @@ impl Default for StrategyConfig {
             min_score_institutional: 0.55,
             htf_scoring_enabled: false,
             spoof_gate_enabled: false,
+            cooldown_bars: 5,
         }
     }
 }

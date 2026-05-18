@@ -56,6 +56,20 @@ pub fn detect(
             .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))?;
 
         if target > entry && stop < entry {
+            let mut evidence = vec![
+                "short_liquidations_cascade".into(),
+                "oi_slope_positive".into(),
+                "taker_imbalance_bullish".into(),
+                "cvd_slope_positive".into(),
+                "thin_zone_above".into(),
+            ];
+            // Fase A — LiqMap logging (peso 0, sin cambio de gate)
+            if let Some(ref lm) = inst.liq_map {
+                if lm.primary_target_above.is_some() { evidence.push("liq_target_above".into()); }
+                if lm.density_above.iter().any(|d| d.density > 0.5) {
+                    evidence.push("high_liq_density_above".into());
+                }
+            }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::LiquidationHunt),
@@ -66,13 +80,7 @@ pub fn detect(
                 target_price: Some(target),
                 score: 0.0,
                 ttl_ms: cfg.liq_ttl_ms,
-                evidence: vec![
-                    "short_liquidations_cascade".into(),
-                    "oi_slope_positive".into(),
-                    "taker_imbalance_bullish".into(),
-                    "cvd_slope_positive".into(),
-                    "thin_zone_above".into(),
-                ],
+                evidence,
                 missing: vec![],
                 invalidation: vec![
                     "cvd_turns_negative".into(),
@@ -124,6 +132,20 @@ pub fn detect(
             .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))?;
 
         if target < entry && stop > entry {
+            let mut evidence = vec![
+                "long_liquidations_cascade".into(),
+                "oi_slope_negative".into(),
+                "taker_imbalance_bearish".into(),
+                "cvd_slope_negative".into(),
+                "thin_zone_below".into(),
+            ];
+            // Fase A — LiqMap logging (peso 0)
+            if let Some(ref lm) = inst.liq_map {
+                if lm.primary_target_below.is_some() { evidence.push("liq_target_below".into()); }
+                if lm.density_below.iter().any(|d| d.density > 0.5) {
+                    evidence.push("high_liq_density_below".into());
+                }
+            }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::LiquidationHunt),
@@ -134,13 +156,7 @@ pub fn detect(
                 target_price: Some(target),
                 score: 0.0,
                 ttl_ms: cfg.liq_ttl_ms,
-                evidence: vec![
-                    "long_liquidations_cascade".into(),
-                    "oi_slope_negative".into(),
-                    "taker_imbalance_bearish".into(),
-                    "cvd_slope_negative".into(),
-                    "thin_zone_below".into(),
-                ],
+                evidence,
                 missing: vec![],
                 invalidation: vec![
                     "cvd_turns_positive".into(),
@@ -265,6 +281,7 @@ mod tests {
                 current: 0.0003,
                 avg: 0.0002,
                 regime: FundingRegime::Neutral,
+                ..FundingContext::default()
             },
             quality: DataQuality::Live,
             smart_money_score: None,

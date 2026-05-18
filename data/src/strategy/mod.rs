@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod context;
+pub mod cooldown;
 pub mod detectors;
 pub mod intent_logger;
 pub mod logger;

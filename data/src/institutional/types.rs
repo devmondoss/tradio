@@ -161,6 +161,14 @@ pub struct FundingContext {
     pub current: f64,
     pub avg: f64,
     pub regime: FundingRegime,
+    /// Change in funding rate across the last 3 samples (positive = rising).
+    /// Used by FER to detect rate is actively retreating from extreme.
+    #[serde(default)]
+    pub velocity: f64,
+    /// True when funding reached an extreme regime and has since retreated ≥ 10%.
+    /// FER entries are highest quality when peak_confirmed = true (exhaustion confirmed).
+    #[serde(default)]
+    pub peak_confirmed: bool,
 }
 
 impl Default for FundingContext {
@@ -169,6 +177,8 @@ impl Default for FundingContext {
             current: 0.0,
             avg: 0.0,
             regime: FundingRegime::Neutral,
+            velocity: 0.0,
+            peak_confirmed: false,
         }
     }
 }

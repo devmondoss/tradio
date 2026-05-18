@@ -13,6 +13,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     let val = vp.val?;
     let poc = vp.poc?;
 
+    // In Chop regime, VAFA generates more false signals (price bouncing inside VA without
+    // a real acceptance attempt). Require significantly stronger confirmation.
+    let chop_strict = matches!(ctx.regime, Regime::Chop);
+
     // SHORT: failed auction above VAH
     // Fix 2: price must still be near VAH (within 0.5 ATR), not already deep inside value area.
     // Fix 3 (delta): require delta < 0 — momentum aligned with SHORT, consistent with scorer.
@@ -22,10 +26,15 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && flow.delta.unwrap_or(0.0) < 0.0         // fix 3: aligned delta for SHORT
         && flow.footprint_absorption == AbsorptionSide::Ask;
 
-    // taker_imbalance < 0.10: requires neutral-to-bearish flow, not merely "not very bullish".
-    // The old 0.25 threshold passed ~90% of market time and filtered nothing useful.
-    let short_flow =
-        flow.cvd_slope.unwrap_or(0.0) <= 0.0 && flow.taker_imbalance.unwrap_or(0.0) < 0.10;
+    // In Chop: require clear directional flow (strong cvd_slope + taker_imbalance + delta magnitude).
+    // Normal: requires neutral-to-bearish flow (< 0.10 taker_imbalance filters ~20% of market time).
+    let short_flow = if chop_strict {
+        flow.cvd_slope.unwrap_or(0.0) < -0.20
+            && flow.taker_imbalance.unwrap_or(0.0) < -0.15
+            && (atr <= 0.0 || flow.delta.unwrap_or(0.0) / atr < -0.35)
+    } else {
+        flow.cvd_slope.unwrap_or(0.0) <= 0.0 && flow.taker_imbalance.unwrap_or(0.0) < 0.10
+    };
 
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_above;
 
@@ -38,6 +47,19 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         let risk = (stop - entry).abs();
         let reward = (target - entry).abs();
         if target < entry && stop > entry && risk > 1e-10 && reward / risk >= 1.5 {
+            let mut evidence = vec![
+                "failed_acceptance_above_VAH".into(),
+                "ask_absorption".into(),
+                "delta_aligned_short".into(),
+                "target_POC".into(),
+            ];
+            if chop_strict { evidence.push("chop_strict_gates_passed".into()); }
+            // Fase A — OB logging (peso 0, solo evidencia)
+            if let Some(ref obs) = ctx.order_blocks {
+                if let Some(ref ob) = obs.nearest_bearish {
+                    if (ob.high - px).abs() < atr { evidence.push("bearish_ob_nearby".into()); }
+                }
+            }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::ValueAreaFailedAuction),
@@ -48,12 +70,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 target_price: Some(target),
                 score: 0.0,
                 ttl_ms: cfg.default_ttl_ms,
-                evidence: vec![
-                    "failed_acceptance_above_VAH".into(),
-                    "ask_absorption".into(),
-                    "delta_aligned_short".into(),
-                    "target_POC".into(),
-                ],
+                evidence,
                 missing: vec![],
                 invalidation: vec![
                     "price_reclaims_above_failed_auction_high".into(),
@@ -73,9 +90,14 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && flow.delta.unwrap_or(0.0) > 0.0          // fix 3: aligned delta for LONG
         && flow.footprint_absorption == AbsorptionSide::Bid;
 
-    // taker_imbalance > -0.10: requires neutral-to-bullish flow.
-    let long_flow =
-        flow.cvd_slope.unwrap_or(0.0) >= 0.0 && flow.taker_imbalance.unwrap_or(0.0) > -0.10;
+    // In Chop: mirror of short — require strong bullish conviction.
+    let long_flow = if chop_strict {
+        flow.cvd_slope.unwrap_or(0.0) > 0.20
+            && flow.taker_imbalance.unwrap_or(0.0) > 0.15
+            && (atr <= 0.0 || flow.delta.unwrap_or(0.0) / atr > 0.35)
+    } else {
+        flow.cvd_slope.unwrap_or(0.0) >= 0.0 && flow.taker_imbalance.unwrap_or(0.0) > -0.10
+    };
 
     let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_below;
 
@@ -88,6 +110,19 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         let risk = (stop - entry).abs();
         let reward = (target - entry).abs();
         if target > entry && stop < entry && risk > 1e-10 && reward / risk >= 1.5 {
+            let mut evidence = vec![
+                "failed_acceptance_below_VAL".into(),
+                "bid_absorption".into(),
+                "delta_aligned_long".into(),
+                "target_POC".into(),
+            ];
+            if chop_strict { evidence.push("chop_strict_gates_passed".into()); }
+            // Fase A — OB logging (peso 0, solo evidencia)
+            if let Some(ref obs) = ctx.order_blocks {
+                if let Some(ref ob) = obs.nearest_bullish {
+                    if (px - ob.low).abs() < atr { evidence.push("bullish_ob_nearby".into()); }
+                }
+            }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::ValueAreaFailedAuction),
@@ -98,12 +133,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 target_price: Some(target),
                 score: 0.0,
                 ttl_ms: cfg.default_ttl_ms,
-                evidence: vec![
-                    "failed_acceptance_below_VAL".into(),
-                    "bid_absorption".into(),
-                    "delta_aligned_long".into(),
-                    "target_POC".into(),
-                ],
+                evidence,
                 missing: vec![],
                 invalidation: vec![
                     "price_loses_below_failed_auction_low".into(),
@@ -131,7 +161,7 @@ mod tests {
             symbol: "BTCUSDT".to_string(),
             timestamp_ms: 1710000000000,
             price: 100050.0,
-            regime: Regime::Chop,
+            regime: Regime::TrendDown, // non-Chop so basic gate thresholds apply
             atr: Some(250.0),
             volume_profile: VolumeProfileContext {
                 poc: Some(99200.0), // far enough for good R:R

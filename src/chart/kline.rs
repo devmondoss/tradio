@@ -180,6 +180,8 @@ pub struct KlineChart {
     ms_tracker: data::structure::MarketStructureTracker,
     ob_detector: data::detectors::OrderBlockDetector,
     fvg_detector: data::detectors::FvgDetector,
+    cooldown_registry: data::strategy::cooldown::CooldownRegistry,
+    bar_index: u64,
 }
 
 impl KlineChart {
@@ -283,6 +285,8 @@ impl KlineChart {
                     ms_tracker: data::structure::MarketStructureTracker::new(200, 3),
                     ob_detector: data::detectors::OrderBlockDetector::new(100),
                     fvg_detector: data::detectors::FvgDetector::new(100),
+                    cooldown_registry: data::strategy::cooldown::CooldownRegistry::new(5),
+                    bar_index: 0,
                 }
             }
             Basis::Tick(interval) => {
@@ -349,6 +353,8 @@ impl KlineChart {
                     ms_tracker: data::structure::MarketStructureTracker::new(200, 3),
                     ob_detector: data::detectors::OrderBlockDetector::new(100),
                     fvg_detector: data::detectors::FvgDetector::new(100),
+                    cooldown_registry: data::strategy::cooldown::CooldownRegistry::new(5),
+                    bar_index: 0,
                 }
             }
         }
@@ -1204,7 +1210,8 @@ impl KlineChart {
 
         // Alimentar trackers con la vela cerrada y obtener sus snapshots
         self.ms_tracker.push_bar(bar_open, bar_high, bar_low, bar_close, bar_ts_ms);
-        self.ob_detector.push_bar(bar_open, bar_high, bar_low, bar_close, bar_ts_ms);
+        let bar_volume = buy_vol.unwrap_or(0.0) + sell_vol.unwrap_or(0.0);
+        self.ob_detector.push_bar(bar_open, bar_high, bar_low, bar_close, bar_volume, bar_ts_ms);
         self.fvg_detector.push_bar(bar_high, bar_low, bar_ts_ms);
 
         let market_structure = self.ms_tracker.snapshot();
@@ -1241,7 +1248,34 @@ impl KlineChart {
 
         self.last_regime = format!("{:?}", ctx.regime);
 
-        let signal = router::route_strategy(&ctx, &cfg);
+        self.bar_index += 1;
+        let current_bar = self.bar_index;
+
+        let mut signal = router::route_strategy(&ctx, &cfg);
+
+        // Cooldown: suppress repeat signals from the same strategy within cooldown_bars.
+        // Only the winning strategy enters cooldown — others remain available.
+        if signal.action == StrategyAction::ShadowSignal {
+            if let Some(id) = signal.strategy_id {
+                if !self.cooldown_registry.is_available(id, current_bar) {
+                    let remaining = self.cooldown_registry.bars_remaining(id, current_bar);
+                    signal.action = StrategyAction::Wait;
+                    signal.missing.push(format!("COOLDOWN_ACTIVE:{remaining}_bars_remaining"));
+                } else {
+                    let side = match signal.side {
+                        Some(Side::Long) => data::strategy::cooldown::SignalSide::Long,
+                        _ => data::strategy::cooldown::SignalSide::Short,
+                    };
+                    self.cooldown_registry.register_signal(
+                        id,
+                        current_bar,
+                        side,
+                        signal.entry_price.unwrap_or(price),
+                    );
+                }
+            }
+        }
+
         logger::log_signal(&ctx, &signal);
 
         let signal_fired = signal.action == StrategyAction::ShadowSignal;

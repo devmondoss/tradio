@@ -48,7 +48,29 @@ impl FundingTracker {
             _ => FundingRegime::Neutral,
         };
 
-        FundingContext { current, avg, regime }
+        // Velocity: change across the last 3 samples (most recent - 3rd-to-last).
+        let n = self.samples.len();
+        let velocity = if n >= 3 {
+            self.samples[n - 1].rate - self.samples[n - 3].rate
+        } else {
+            0.0
+        };
+
+        // Peak confirmed: funding reached an extreme (positive or negative) in the last
+        // 6 samples and has since retreated ≥ 10% of that peak value.
+        let peak_confirmed = {
+            let window = if n > 6 { &self.samples[n - 6..] } else { &self.samples[..] };
+            let peak_pos = window.iter().map(|s| s.rate).fold(f64::NEG_INFINITY, f64::max);
+            let peak_neg = window.iter().map(|s| s.rate).fold(f64::INFINITY, f64::min);
+            let retreat_threshold = 0.10; // 10% retreat from peak
+            let pos_peak_retreated = peak_pos > 0.0
+                && current < peak_pos * (1.0 - retreat_threshold);
+            let neg_peak_retreated = peak_neg < 0.0
+                && current > peak_neg * (1.0 - retreat_threshold);
+            pos_peak_retreated || neg_peak_retreated
+        };
+
+        FundingContext { current, avg, regime, velocity, peak_confirmed }
     }
 }
 

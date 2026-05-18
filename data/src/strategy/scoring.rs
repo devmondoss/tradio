@@ -1,3 +1,4 @@
+use crate::session::SessionPhase;
 use crate::structure::{HtfBias, PriceZone};
 
 use super::{adapter, types::*};
@@ -90,6 +91,9 @@ const SMS_THRESHOLD_WITH: f32 = 0.40;    // score a favor de la señal
 const SMS_THRESHOLD_AGAINST: f32 = -0.40; // score contra la señal
 const FACTOR_SMS_WITH: f64 = 1.15;
 const FACTOR_SMS_AGAINST: f64 = 0.70;
+
+// --- Factor OpeningRush (solo LiquidationHunt) ---
+const FACTOR_OPENING_RUSH: f64 = 1.15;
 
 /// Mapea `value` linealmente de [min, max] a [0.0, 1.0], clampeado.
 fn ramp(value: f64, min: f64, max: f64) -> f64 {
@@ -287,7 +291,22 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
         1.0
     };
 
-    let mut score = base_score * factor_vpin * factor_spread * factor_regime * factor_confluencia * factor_structure * factor_sms;
+    // factor_opening_rush: LiqHunt en los primeros 15 min de London/NY/Overlap → edge máximo
+    let factor_opening_rush = if matches!(signal.strategy_id, Some(StrategyId::LiquidationHunt)) {
+        if let Some(ref session) = ctx.session {
+            if matches!(session.phase, SessionPhase::OpeningRush) {
+                FACTOR_OPENING_RUSH
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        }
+    } else {
+        1.0
+    };
+
+    let mut score = base_score * factor_vpin * factor_spread * factor_regime * factor_confluencia * factor_structure * factor_sms * factor_opening_rush;
 
     // Regla de precedencia del veto: VPIN tóxico clampea sin importar amplificadores
     if vpin_is_toxic {

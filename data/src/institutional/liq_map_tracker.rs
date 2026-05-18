@@ -10,6 +10,35 @@ pub struct LiqDensityLevel {
     pub density: f32,
 }
 
+/// Nivel de confianza en la predicción del LiqMapTracker.
+/// Se deriva automáticamente de la densidad máxima del snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LiqMapConfidence {
+    /// Densidad >= 0.75 — nivel fuertemente respaldado por OI histórico.
+    High,
+    /// Densidad 0.50–0.74 — nivel relevante con respaldo moderado.
+    Medium,
+    /// Densidad < 0.50 — solo informativo, no usar para colocar targets.
+    Low,
+}
+
+impl Default for LiqMapConfidence {
+    fn default() -> Self { Self::Low }
+}
+
+/// Fuente de los datos de OI usados para construir el mapa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LiqMapSource {
+    BinanceOI,
+    BybitOI,
+    /// Calculado a partir de swings + OI agregado — sin datos de OI por nivel.
+    Estimated,
+}
+
+impl Default for LiqMapSource {
+    fn default() -> Self { Self::Estimated }
+}
+
 /// Snapshot del mapa de liquidez estimado.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LiqMapSnapshot {
@@ -21,6 +50,12 @@ pub struct LiqMapSnapshot {
     pub primary_target_above: Option<f64>,
     /// Nivel de mayor densidad por debajo (target principal bajista).
     pub primary_target_below: Option<f64>,
+    /// Confianza en los targets (derivada de la densidad máxima).
+    #[serde(default)]
+    pub confidence: LiqMapConfidence,
+    /// Fuente de los datos de OI.
+    #[serde(default)]
+    pub data_source: LiqMapSource,
 }
 
 /// Metodología: los stops se concentran justo por encima de swing highs (stops de cortos)
@@ -139,11 +174,27 @@ impl LiqMapTracker {
         let primary_target_above = above.first().map(|l| l.price);
         let primary_target_below = below.first().map(|l| l.price);
 
+        let max_density = above
+            .iter()
+            .chain(below.iter())
+            .map(|l| l.density)
+            .fold(0.0_f32, f32::max);
+
+        let confidence = if max_density >= 0.75 {
+            LiqMapConfidence::High
+        } else if max_density >= 0.50 {
+            LiqMapConfidence::Medium
+        } else {
+            LiqMapConfidence::Low
+        };
+
         LiqMapSnapshot {
             density_above: above,
             density_below: below,
             primary_target_above,
             primary_target_below,
+            confidence,
+            data_source: LiqMapSource::Estimated,
         }
     }
 }

@@ -48,6 +48,10 @@ pub fn detect(
     // CVD no confirmando el precio (debilidad)
     let cvd_weak = flow.cvd_slope.unwrap_or(0.0) <= 0.0;
 
+    // Sprint 2 — OI by delta: OI rising + negative delta = institucionales comprando en caídas
+    let oi_by_delta_long = flow.oi_delta.unwrap_or(0.0) > 0.0
+        && flow.delta.unwrap_or(0.0) < -0.20 * atr;
+
     if strong_divergence_short && funding_confirms_short && oi_confirms && at_resistance && cvd_weak
     {
         let entry = px;
@@ -55,6 +59,25 @@ pub fn detect(
         let target = vp.val.unwrap_or(entry - 3.0 * atr);
 
         if target < entry && stop > entry {
+            let mut evidence = vec![
+                "smart_money_short".into(),
+                "retail_long_extreme".into(),
+                "funding_elevated".into(),
+                "oi_mature".into(),
+                "price_at_resistance".into(),
+                "cvd_weak".into(),
+            ];
+            // Fase A — OB logging (peso 0)
+            if let Some(ref obs) = ctx.order_blocks {
+                if obs.nearest_bearish.is_some() { evidence.push("bearish_ob_at_divergence".into()); }
+            }
+            // Fase A — LiqMap logging (peso 0)
+            if let Some(ref inst) = ctx.institutional {
+                if let Some(ref lm) = inst.liq_map {
+                    if lm.primary_target_below.is_some() { evidence.push("liq_target_below".into()); }
+                }
+            }
+            if oi_by_delta_long { evidence.push("oi_accumulation_on_dip".into()); }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::SmartMoneyDivergence),
@@ -65,14 +88,7 @@ pub fn detect(
                 target_price: Some(target),
                 score: 0.0,
                 ttl_ms: cfg.smd_ttl_ms,
-                evidence: vec![
-                    "smart_money_short".into(),
-                    "retail_long_extreme".into(),
-                    "funding_elevated".into(),
-                    "oi_mature".into(),
-                    "price_at_resistance".into(),
-                    "cvd_weak".into(),
-                ],
+                evidence,
                 missing: vec![],
                 invalidation: vec![
                     "smart_money_flips_long".into(),
@@ -123,6 +139,25 @@ pub fn detect(
         let target = vp.vah.unwrap_or(entry + 3.0 * atr);
 
         if target > entry && stop < entry {
+            let mut evidence = vec![
+                "smart_money_long".into(),
+                "retail_short_extreme".into(),
+                "funding_negative_elevated".into(),
+                "oi_mature".into(),
+                "price_at_support".into(),
+                "cvd_recovering".into(),
+            ];
+            // Fase A — OB logging (peso 0)
+            if let Some(ref obs) = ctx.order_blocks {
+                if obs.nearest_bullish.is_some() { evidence.push("bullish_ob_at_divergence".into()); }
+            }
+            // Fase A — LiqMap logging (peso 0)
+            if let Some(ref inst) = ctx.institutional {
+                if let Some(ref lm) = inst.liq_map {
+                    if lm.primary_target_above.is_some() { evidence.push("liq_target_above".into()); }
+                }
+            }
+            if oi_by_delta_long { evidence.push("oi_accumulation_on_dip".into()); }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::SmartMoneyDivergence),
@@ -133,14 +168,7 @@ pub fn detect(
                 target_price: Some(target),
                 score: 0.0,
                 ttl_ms: cfg.smd_ttl_ms,
-                evidence: vec![
-                    "smart_money_long".into(),
-                    "retail_short_extreme".into(),
-                    "funding_negative_elevated".into(),
-                    "oi_mature".into(),
-                    "price_at_support".into(),
-                    "cvd_recovering".into(),
-                ],
+                evidence,
                 missing: vec![],
                 invalidation: vec![
                     "smart_money_flips_short".into(),
@@ -266,6 +294,7 @@ mod tests {
                 current: 0.0005,
                 avg: 0.0003,
                 regime: FundingRegime::ElevatedLong,
+                ..FundingContext::default()
             },
             quality: DataQuality::Live,
             smart_money_score: None,

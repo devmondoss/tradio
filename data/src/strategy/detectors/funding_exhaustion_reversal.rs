@@ -48,6 +48,24 @@ pub fn detect(
         let target = vp.val.unwrap_or(entry - 2.0 * atr);
 
         if target < entry && stop > entry {
+            let mut evidence = vec![
+                "funding_extreme_positive".into(),
+                "top_traders_exiting_long".into(),
+                "retail_still_long".into(),
+                "oi_decreasing".into(),
+                "cvd_weakening".into(),
+            ];
+            let mut missing = vec![];
+            // Sprint 2 — funding velocity and peak confirmation
+            if inst.funding.velocity < 0.0 { evidence.push("funding_velocity_retreating".into()); }
+            if inst.funding.peak_confirmed {
+                evidence.push("funding_peak_confirmed".into());
+            } else {
+                missing.push("FUNDING_PEAK_NOT_CONFIRMED".into());
+            }
+            // Book thin side: ask thinner than bid = no sellers left (confirms exhaustion)
+            let ask_thin = ctx.orderbook.thin_zone_above;
+            if ask_thin { evidence.push("ask_side_thin".into()); }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::FundingExhaustionReversal),
@@ -58,14 +76,8 @@ pub fn detect(
                 target_price: Some(target),
                 score: 0.0,
                 ttl_ms: cfg.funding_ttl_ms,
-                evidence: vec![
-                    "funding_extreme_positive".into(),
-                    "top_traders_exiting_long".into(),
-                    "retail_still_long".into(),
-                    "oi_decreasing".into(),
-                    "cvd_weakening".into(),
-                ],
-                missing: vec![],
+                evidence,
+                missing,
                 invalidation: vec![
                     "funding_drops_below_threshold".into(),
                     "oi_resumes_accumulation".into(),
@@ -106,6 +118,22 @@ pub fn detect(
         let target = vp.vah.unwrap_or(entry + 2.0 * atr);
 
         if target > entry && stop < entry {
+            let mut evidence = vec![
+                "funding_extreme_negative".into(),
+                "top_traders_exiting_short".into(),
+                "retail_still_short".into(),
+                "oi_decreasing".into(),
+                "cvd_recovering".into(),
+            ];
+            let mut missing = vec![];
+            if inst.funding.velocity > 0.0 { evidence.push("funding_velocity_rising".into()); }
+            if inst.funding.peak_confirmed {
+                evidence.push("funding_peak_confirmed".into());
+            } else {
+                missing.push("FUNDING_PEAK_NOT_CONFIRMED".into());
+            }
+            let bid_thin = ctx.orderbook.thin_zone_below;
+            if bid_thin { evidence.push("bid_side_thin".into()); }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::FundingExhaustionReversal),
@@ -116,14 +144,8 @@ pub fn detect(
                 target_price: Some(target),
                 score: 0.0,
                 ttl_ms: cfg.funding_ttl_ms,
-                evidence: vec![
-                    "funding_extreme_negative".into(),
-                    "top_traders_exiting_short".into(),
-                    "retail_still_short".into(),
-                    "oi_decreasing".into(),
-                    "cvd_recovering".into(),
-                ],
-                missing: vec![],
+                evidence,
+                missing,
                 invalidation: vec![
                     "funding_rises_above_threshold".into(),
                     "oi_resumes_accumulation_short".into(),
@@ -248,6 +270,7 @@ mod tests {
                 current: 0.0008, // above 0.0006 threshold
                 avg: 0.0004,
                 regime: FundingRegime::ExtremeLong,
+                ..FundingContext::default()
             },
             quality: DataQuality::Live,
             smart_money_score: None,
