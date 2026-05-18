@@ -115,6 +115,7 @@ mod tests {
             session: None,
             order_blocks: None,
             fvg: None,
+            leverage: 1.0,
         }
     }
 

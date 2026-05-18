@@ -134,7 +134,24 @@ impl ActiveTrade {
         }
 
         if invalidated {
-            return Some(CloseReason::Invalidated);
+            // Conditions broke but price hasn't hit the stop — behave like a disciplined
+            // trader: if we're in profit, lock it in with a breakeven stop; if we're in
+            // loss, let the original stop define the max risk rather than exiting early.
+            // Only act when stop is still Original — BE/Trailing are already protective.
+            let in_profit = match self.side {
+                Side::Long => close > self.entry_price,
+                Side::Short => close < self.entry_price,
+            };
+            if in_profit && matches!(self.stop_state, StopState::Original) {
+                let be_price = match self.side {
+                    Side::Long => self.entry_price * (1.0 + 0.0008),
+                    Side::Short => self.entry_price * (1.0 - 0.0008),
+                };
+                self.stop_price = be_price;
+                self.stop_state = StopState::BreakEven { confirmed_level: close };
+                self.phase = TradePhase::Level1Confirmed;
+            }
+            // In loss or already protected: do nothing, stop handles the exit.
         }
 
         // Only close on TargetHit when trailing is not yet active.
