@@ -499,14 +499,14 @@ impl BarState {
 
     // ── Outcome tracking ──────────────────────────────────────────────────────
 
-    fn push_outcome(&mut self, signal: &data::strategy::types::StrategySignal, source: OutcomeSource) {
+    fn push_outcome(&mut self, signal: &data::strategy::types::StrategySignal, source: OutcomeSource, at_ms: i64) {
         let (Some(entry), Some(stop), Some(target), Some(side)) = (
             signal.entry_price, signal.stop_price, signal.target_price, signal.side
         ) else { return; };
         let is_long = matches!(side, Side::Long);
         let id = signal.strategy_id.as_ref().map(|s| format!("{s:?}")).unwrap_or_else(|| "Unknown".into());
         self.pending_outcomes.push(PendingOutcome::new(
-            signal.created_at_ms, source, id, is_long, entry, stop, target,
+            at_ms, source, id, is_long, entry, stop, target,
         ));
     }
 
@@ -700,7 +700,7 @@ impl BarState {
         if !fired { return; }
 
         // Track outcome regardless of mode — measures suppressed signals too
-        self.push_outcome(&signal, OutcomeSource::Intrabar);
+        self.push_outcome(&signal, OutcomeSource::Intrabar, now_ms);
 
         match self.intrabar_cfg.mode {
             IntrabarMode::ObserveOnly => {
@@ -1035,7 +1035,7 @@ impl BarState {
         if signal_fired {
             self.metrics.signals_today += 1;
             self.metrics.bars_since_signal = 0;
-            self.push_outcome(&signal, OutcomeSource::BarClose);
+            self.push_outcome(&signal, OutcomeSource::BarClose, now_ms);
         } else {
             self.metrics.bars_since_signal += 1;
         }
