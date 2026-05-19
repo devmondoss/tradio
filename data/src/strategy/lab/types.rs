@@ -387,3 +387,14 @@ impl Default for LabConfig {
         }
     }
 }
+
+impl LabConfig {
+    pub fn from_env() -> Self {
+        Self {
+            enabled: std::env::var("LAB_ENABLED")
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                .unwrap_or(false),
+            ..Self::default()
+        }
+    }
+}

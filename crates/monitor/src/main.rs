@@ -623,7 +623,7 @@ impl BarState {
             pending_horizons: Vec::new(),
             prev_obi_l5: 0.0,
             lab_tracker: LabTracker::new(50),
-            lab_cfg: LabConfig::default(),
+            lab_cfg: LabConfig::from_env(),
         }
     }
 
