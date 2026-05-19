@@ -166,6 +166,48 @@ CREATE TABLE IF NOT EXISTS regime_history (
 );
 
 -- ============================================================
+-- TABLAS DEL STRATEGY LAB
+-- ============================================================
+CREATE TABLE IF NOT EXISTS lab_signals (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    strategy_id     TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    maturity        TEXT NOT NULL,
+    timestamp_ms    BIGINT NOT NULL,
+    action          TEXT,
+    side            TEXT,
+    entry_price     DOUBLE PRECISION,
+    target          DOUBLE PRECISION,
+    stop            DOUBLE PRECISION,
+    rr              DOUBLE PRECISION,
+    confidence      DOUBLE PRECISION,
+    missing_data    TEXT[],
+    block_reason    TEXT,
+    snapshot        JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lab_outcomes (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    signal_id       UUID REFERENCES lab_signals(id) ON DELETE CASCADE,
+    strategy_id     TEXT NOT NULL,
+    entry_price     DOUBLE PRECISION NOT NULL,
+    target          DOUBLE PRECISION NOT NULL,
+    stop            DOUBLE PRECISION NOT NULL,
+    side            TEXT NOT NULL,
+    outcome_30s     JSONB,
+    outcome_1m      JSONB,
+    outcome_3m      JSONB,
+    outcome_5m      JSONB,
+    outcome_15m     JSONB,
+    outcome_ttl     JSONB,
+    mfe             DOUBLE PRECISION,
+    mae             DOUBLE PRECISION,
+    final_status    TEXT
+);
+
+-- ============================================================
 -- TABLA DE CALIBRACIONES
 -- ============================================================
 CREATE TABLE IF NOT EXISTS calibration_log (
@@ -235,6 +277,18 @@ CREATE INDEX IF NOT EXISTS idx_regime_history_time
 
 CREATE INDEX IF NOT EXISTS idx_calibration_regime
     ON calibration_log(regime, calibrated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_lab_signals_strategy
+    ON lab_signals(strategy_id, timestamp_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_lab_signals_status
+    ON lab_signals(status, strategy_id);
+
+CREATE INDEX IF NOT EXISTS idx_lab_outcomes_signal
+    ON lab_outcomes(signal_id);
+
+CREATE INDEX IF NOT EXISTS idx_lab_outcomes_strategy
+    ON lab_outcomes(strategy_id, final_status);
 
 -- ============================================================
 -- VISTA ANALÍTICA PRINCIPAL

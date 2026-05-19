@@ -244,6 +244,7 @@ mod tests {
                     level(99_480.0, -25.0),
                     level(99_560.0, 10.0),
                 ],
+                oi_delta_zscore: None,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.10),
@@ -266,6 +267,7 @@ mod tests {
             order_blocks: None,
             fvg: None,
             leverage: 1.0,
+            prev_obi_l5: None,
         }
     }
 

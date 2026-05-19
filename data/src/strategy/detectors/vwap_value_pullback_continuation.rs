@@ -60,10 +60,12 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     let long_flow = flow.cvd_slope.unwrap_or(0.0) >= 0.0
         && flow.delta.unwrap_or(0.0) > 0.0
         && flow.cvd.unwrap_or(0.0) > -200.0
+        && flow.taker_imbalance.unwrap_or(0.0) > 0.0
         && !flow.failed_acceptance;
 
     let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps
-        && ob.microprice.map(|m| m >= px * 0.9998).unwrap_or(true);
+        && ob.microprice.map(|m| m >= px * 0.9998).unwrap_or(true)
+        && ob.obi_l5.unwrap_or(0.0) >= 0.0;
 
     // Funding gate: block longs when funding is elevated/extreme long side.
     // If institutional data is absent, block by default (conservative — feed failure
@@ -114,6 +116,8 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             "pullback_into_value".into(),
             "positive_delta_reentry".into(),
             "cvd_aligned".into(),
+            "taker_imbalance_positive".into(),
+            "obi_l5_positive".into(),
         ];
         // Fase A — OB logging (peso 0, solo evidencia)
         if let Some(ref obs) = ctx.order_blocks {
@@ -162,10 +166,12 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     let short_flow = flow.cvd_slope.unwrap_or(0.0) <= 0.0
         && flow.delta.unwrap_or(0.0) < 0.0
         && flow.cvd.unwrap_or(0.0) < 200.0
+        && flow.taker_imbalance.unwrap_or(0.0) < 0.0
         && !flow.failed_acceptance;
 
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps
-        && ob.microprice.map(|m| m <= px * 1.0002).unwrap_or(true);
+        && ob.microprice.map(|m| m <= px * 1.0002).unwrap_or(true)
+        && ob.obi_l5.unwrap_or(0.0) <= 0.0;
 
     if short_context && short_flow && short_book && adapter::basis_ok(flow.basis, false) {
         let entry = px;
@@ -195,6 +201,8 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             "pullback_into_value".into(),
             "negative_delta_reentry".into(),
             "cvd_aligned".into(),
+            "taker_imbalance_negative".into(),
+            "obi_l5_negative".into(),
         ];
         // Fase A — OB logging (peso 0, solo evidencia)
         if let Some(ref obs) = ctx.order_blocks {
@@ -436,6 +444,7 @@ mod tests {
                 price_action_clean: true,
                 fast_slope: None,
                 footprint_levels: vec![],
+                oi_delta_zscore: None,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.03),
@@ -458,6 +467,7 @@ mod tests {
             order_blocks: None,
             fvg: None,
             leverage: 1.0,
+            prev_obi_l5: None,
         }
     }
 
@@ -546,6 +556,8 @@ mod tests {
         ctx.flow.cvd = Some(-300.0);
         ctx.flow.cvd_slope = Some(-0.4);
         ctx.flow.delta = Some(-80.0);
+        ctx.flow.taker_imbalance = Some(-0.08);
+        ctx.orderbook.obi_l5 = Some(-0.03);
         ctx.orderbook.microprice = Some(99790.0);
         // stop = min(100100, 99800+250) = min(100100, 100050) = 100050 (ATR closer)
         // risk = 100050-99800 = 250
@@ -646,6 +658,8 @@ mod tests {
         ctx.flow.cvd = Some(-300.0);
         ctx.flow.cvd_slope = Some(-0.4);
         ctx.flow.delta = Some(-80.0);
+        ctx.flow.taker_imbalance = Some(-0.08);
+        ctx.orderbook.obi_l5 = Some(-0.03);
         ctx.orderbook.microprice = Some(99790.0);
         ctx.institutional = Some(base_inst(FundingRegime::ExtremeLong)); // extreme long = supports shorts
         let cfg = StrategyConfig::default();

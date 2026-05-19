@@ -156,6 +156,10 @@ pub struct OrderFlowContext {
     /// Delta real agrupado por nivel de precio del footprint de la vela actual.
     #[serde(default)]
     pub footprint_levels: Vec<FootprintLevel>,
+    /// Z-score del OI delta actual vs la ventana rolling de 20 barras.
+    /// None hasta que OiTracker tenga ≥3 deltas acumulados (~15 min).
+    #[serde(default)]
+    pub oi_delta_zscore: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,6 +225,11 @@ pub struct StrategyMarketContext {
     /// calibrar si el edge depende del leverage usado durante la captura de datos.
     #[serde(default)]
     pub leverage: f64,
+
+    /// OBI L5 de la barra anterior — usado por DIB para condición de persistencia.
+    /// None durante la primera barra (sin historial previo).
+    #[serde(default)]
+    pub prev_obi_l5: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -5,23 +5,51 @@ use super::types::{OiHistSnapshot, OiTrend, OiTrendDir};
 const MAX_SAMPLES: usize = 30; // 150 minutes at 5-minute intervals
 const SAMPLES_30M: usize = 6;  // 30 minutes
 const SLOPE_WINDOW: usize = 5;
+const ZSCORE_WINDOW: usize = 20; // ~100 min rolling window for delta z-score
 
 pub struct OiTracker {
     history: VecDeque<OiHistSnapshot>,
+    /// Rolling bar-to-bar OI deltas (USD) for z-score computation.
+    deltas: VecDeque<f64>,
 }
 
 impl OiTracker {
     pub fn new() -> Self {
         Self {
             history: VecDeque::new(),
+            deltas: VecDeque::with_capacity(ZSCORE_WINDOW + 1),
         }
     }
 
     pub fn push(&mut self, snap: OiHistSnapshot) {
+        if let Some(prev) = self.history.back() {
+            let delta = snap.open_interest_usd - prev.open_interest_usd;
+            self.deltas.push_back(delta);
+            if self.deltas.len() > ZSCORE_WINDOW {
+                self.deltas.pop_front();
+            }
+        }
         self.history.push_back(snap);
         if self.history.len() > MAX_SAMPLES {
             self.history.pop_front();
         }
+    }
+
+    /// Z-score of the most recent OI delta vs the rolling window.
+    /// None until at least 3 deltas are available.
+    pub fn delta_zscore(&self) -> Option<f64> {
+        let n = self.deltas.len();
+        if n < 3 {
+            return None;
+        }
+        let last = *self.deltas.back()?;
+        let mean = self.deltas.iter().sum::<f64>() / n as f64;
+        let variance = self.deltas.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / n as f64;
+        let std = variance.sqrt();
+        if std < 1.0 {
+            return None; // avoid division by near-zero when OI is flat
+        }
+        Some((last - mean) / std)
     }
 
     pub fn snapshot(&self) -> OiTrend {

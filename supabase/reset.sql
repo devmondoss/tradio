@@ -12,6 +12,8 @@
 
 DROP VIEW  IF EXISTS v_signals_with_outcomes;
 
+DROP TABLE IF EXISTS lab_outcomes;
+DROP TABLE IF EXISTS lab_signals;
 DROP TABLE IF EXISTS signal_outcomes;
 DROP TABLE IF EXISTS intrabar_outcomes;
 DROP TABLE IF EXISTS deployed_params;
@@ -221,6 +223,47 @@ CREATE TABLE calibration_log (
     deployed_at         TIMESTAMPTZ
 );
 
+-- Señales del Strategy Lab (todas las hipótesis, todos los estados)
+CREATE TABLE lab_signals (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    strategy_id     TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    maturity        TEXT NOT NULL,
+    timestamp_ms    BIGINT NOT NULL,
+    action          TEXT,
+    side            TEXT,
+    entry_price     DOUBLE PRECISION,
+    target          DOUBLE PRECISION,
+    stop            DOUBLE PRECISION,
+    rr              DOUBLE PRECISION,
+    confidence      DOUBLE PRECISION,
+    missing_data    TEXT[],
+    block_reason    TEXT,
+    snapshot        JSONB NOT NULL
+);
+
+-- Outcomes del Lab por horizonte temporal
+CREATE TABLE lab_outcomes (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    signal_id       UUID REFERENCES lab_signals(id) ON DELETE CASCADE,
+    strategy_id     TEXT NOT NULL,
+    entry_price     DOUBLE PRECISION NOT NULL,
+    target          DOUBLE PRECISION NOT NULL,
+    stop            DOUBLE PRECISION NOT NULL,
+    side            TEXT NOT NULL,
+    outcome_30s     JSONB,
+    outcome_1m      JSONB,
+    outcome_3m      JSONB,
+    outcome_5m      JSONB,
+    outcome_15m     JSONB,
+    outcome_ttl     JSONB,
+    mfe             DOUBLE PRECISION,
+    mae             DOUBLE PRECISION,
+    final_status    TEXT
+);
+
 -- Parámetros activos por régimen (leídos por el monitor Rust)
 CREATE TABLE deployed_params (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -252,6 +295,11 @@ CREATE INDEX idx_intrabar_source        ON intrabar_outcomes(source, signal_ms D
 CREATE INDEX idx_snapshots_time         ON institutional_snapshots(timestamp_ms DESC);
 CREATE INDEX idx_regime_history_time    ON regime_history(timestamp_ms DESC);
 CREATE INDEX idx_calibration_regime     ON calibration_log(regime, calibrated_at DESC);
+
+CREATE INDEX idx_lab_signals_strategy   ON lab_signals(strategy_id, timestamp_ms DESC);
+CREATE INDEX idx_lab_signals_status     ON lab_signals(status, strategy_id);
+CREATE INDEX idx_lab_outcomes_signal    ON lab_outcomes(signal_id);
+CREATE INDEX idx_lab_outcomes_strategy  ON lab_outcomes(strategy_id, final_status);
 
 -- ============================================================
 -- 4. VISTA ANALÍTICA

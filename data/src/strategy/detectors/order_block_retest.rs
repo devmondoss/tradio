@@ -198,6 +198,7 @@ mod tests {
                 price_action_clean: true,
                 fast_slope: Some(0.05),
                 footprint_levels: vec![],
+                oi_delta_zscore: None,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.10),
@@ -225,6 +226,7 @@ mod tests {
             }),
             fvg: None,
             leverage: 1.0,
+            prev_obi_l5: None,
         }
     }
 

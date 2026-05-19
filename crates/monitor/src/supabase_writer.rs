@@ -1,4 +1,4 @@
-/// Writes signals, closed trades, and regime changes to Supabase via REST API.
+/// Writes signals, closed trades, regime changes, and lab signals to Supabase via REST API.
 ///
 /// Uses fire-and-forget tokio tasks — never blocks the bar-close path.
 /// Failures are logged to stderr but do not crash the monitor.
@@ -7,8 +7,12 @@
 ///   SUPABASE_URL  — https://[PROJECT].supabase.co
 ///   SUPABASE_KEY  — service_role key (bypasses RLS)
 use data::strategy::{
+    lab::types::{
+        BlockReason, HorizonOutcome, LabOutcome, LabSignal, OutcomeStatus,
+        StrategyRuntimeStatus,
+    },
     paper::ClosedTrade,
-    types::{StrategyMarketContext, StrategySignal, StrategyAction},
+    types::{StrategyAction, StrategyMarketContext, StrategySignal},
 };
 use serde_json::{json, Value};
 
@@ -194,6 +198,61 @@ impl SupabaseWriter {
         }
     }
 
+    // ── Lab tables ────────────────────────────────────────────────────────────
+
+    /// Inserts a LabSignal into lab_signals. Returns the Supabase UUID on success.
+    /// The UUID is needed to link lab_outcomes rows (signal_id FK).
+    /// Returns None on failure — the signal is lost but the monitor keeps running.
+    pub async fn write_lab_signal(&self, signal: &LabSignal) -> Option<String> {
+        let body = build_lab_signal_row(signal);
+        let url = format!("{}/rest/v1/lab_signals", self.url);
+        let result = self
+            .client
+            .post(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&body)
+            .send()
+            .await;
+
+        match result {
+            Err(e) => {
+                eprintln!("[supabase] POST lab_signals failed: {e}");
+                None
+            }
+            Ok(r) if !r.status().is_success() => {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                eprintln!("[supabase] POST lab_signals error {status}: {text}");
+                None
+            }
+            Ok(r) => {
+                let json: Value = r.json().await.unwrap_or(Value::Null);
+                json.as_array()
+                    .and_then(|arr| arr.first())
+                    .and_then(|row| row.get("id"))
+                    .and_then(|id| id.as_str())
+                    .map(|s| s.to_string())
+            }
+        }
+    }
+
+    /// Inserts a completed LabOutcome into lab_outcomes. Fire-and-forget.
+    /// signal_uuid links this outcome to its lab_signals row (FK).
+    pub fn write_lab_outcome(&self, outcome: &LabOutcome, signal_uuid: Option<String>) {
+        let Some(uuid) = signal_uuid else {
+            eprintln!("[supabase] write_lab_outcome skipped — no signal_uuid");
+            return;
+        };
+        let body = build_lab_outcome_row(outcome, &uuid);
+        let writer = self.clone();
+        tokio::spawn(async move {
+            writer.post("lab_outcomes", &body).await;
+        });
+    }
+
     async fn post(&self, table: &str, body: &Value) {
         let url = format!("{}/rest/v1/{}", self.url, table);
         let result = self
@@ -292,6 +351,86 @@ fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Val
         "funding_current":      inst.map(|i| i.funding.current),
         "funding_regime":       inst.map(|i| format!("{:?}", i.funding.regime)),
         "taker_imbalance":      inst.and_then(|i| i.taker_ratio.as_ref().map(|t| t.taker_imbalance)),
+    })
+}
+
+fn build_lab_signal_row(signal: &LabSignal) -> Value {
+    let snap = &signal.snapshot;
+
+    let status_str = match &signal.status {
+        StrategyRuntimeStatus::Asleep => "Asleep".to_string(),
+        StrategyRuntimeStatus::Observed => "Observed".to_string(),
+        StrategyRuntimeStatus::ShadowSignal => "ShadowSignal".to_string(),
+        StrategyRuntimeStatus::Blocked { .. } => "Blocked".to_string(),
+    };
+    let block_reason = match &signal.status {
+        StrategyRuntimeStatus::Blocked { reason } => Some(match reason {
+            BlockReason::SessionFilter => "SessionFilter".to_string(),
+            BlockReason::DataQuality { .. } => "DataQuality".to_string(),
+            BlockReason::SpreadGate => "SpreadGate".to_string(),
+            BlockReason::RegimeStress => "RegimeStress".to_string(),
+            BlockReason::CooldownActive => "CooldownActive".to_string(),
+            BlockReason::RRTooLow { .. } => "RRTooLow".to_string(),
+            BlockReason::LiqInstability => "LiqInstability".to_string(),
+        }),
+        _ => None,
+    };
+
+    // Serialize the full snapshot as jsonb
+    let snapshot_value = serde_json::to_value(snap).unwrap_or(Value::Null);
+
+    json!({
+        "strategy_id":   signal.strategy_id.as_str(),
+        "status":        status_str,
+        "maturity":      format!("{:?}", signal.maturity),
+        "timestamp_ms":  signal.timestamp_ms,
+        "action":        signal.action.map(|a| format!("{a:?}")),
+        "entry_price":   signal.entry_price,
+        "target":        signal.target,
+        "stop":          signal.stop,
+        "rr":            signal.rr,
+        "confidence":    signal.confidence,
+        "missing_data":  signal.missing_data,
+        "block_reason":  block_reason,
+        "snapshot":      snapshot_value,
+    })
+}
+
+fn build_lab_outcome_row(outcome: &LabOutcome, signal_uuid: &str) -> Value {
+    fn horizon_json(h: &Option<HorizonOutcome>) -> Value {
+        match h {
+            None => Value::Null,
+            Some(h) => json!({
+                "price": h.price_at_horizon,
+                "r":     h.r_achieved,
+                "correct": h.direction_correct,
+            }),
+        }
+    }
+
+    let final_status = outcome.final_status.as_ref().map(|s| match s {
+        OutcomeStatus::TargetHit => "TargetHit".to_string(),
+        OutcomeStatus::StopHit => "StopHit".to_string(),
+        OutcomeStatus::TtlExpired { .. } => "TtlExpired".to_string(),
+        OutcomeStatus::StillOpen => "StillOpen".to_string(),
+    });
+
+    json!({
+        "signal_id":     signal_uuid,
+        "strategy_id":   outcome.strategy_id.as_str(),
+        "entry_price":   outcome.entry_price,
+        "target":        outcome.target,
+        "stop":          outcome.stop,
+        "side":          format!("{:?}", outcome.side),
+        "outcome_30s":   horizon_json(&outcome.outcome_30s),
+        "outcome_1m":    horizon_json(&outcome.outcome_1m),
+        "outcome_3m":    horizon_json(&outcome.outcome_3m),
+        "outcome_5m":    horizon_json(&outcome.outcome_5m),
+        "outcome_15m":   horizon_json(&outcome.outcome_15m),
+        "outcome_ttl":   horizon_json(&outcome.outcome_ttl),
+        "mfe":           outcome.mfe,
+        "mae":           outcome.mae,
+        "final_status":  final_status,
     })
 }
 

@@ -1379,6 +1379,7 @@ impl KlineChart {
             mss_active,
             sweep_confirmed,
             None, // fast_slope — not available in GUI chart
+            None, // oi_delta_zscore — not available in GUI chart
         );
 
         // Alimentar trackers con la vela cerrada y obtener sus snapshots
@@ -1488,6 +1489,7 @@ impl KlineChart {
             order_blocks,
             fvg,
             leverage: 0.0,
+            prev_obi_l5: None,
         };
 
         let cfg = StrategyConfig {

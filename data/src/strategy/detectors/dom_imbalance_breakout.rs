@@ -46,6 +46,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     let has_lvn = lvn_near_price(&vp.lvn_nearby, px, atr);
 
     let long_setup = ob.obi_l5.unwrap_or(0.0) > MIN_OBI_L5
+        && ctx.prev_obi_l5.unwrap_or(0.0) > 0.10
         && ob.thin_zone_above
         && has_lvn
         && vw.vwap_session.map(|v| px > v).unwrap_or(false)
@@ -93,6 +94,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     }
 
     let short_setup = ob.obi_l5.unwrap_or(0.0) < -MIN_OBI_L5
+        && ctx.prev_obi_l5.unwrap_or(0.0) < -0.10
         && ob.thin_zone_below
         && has_lvn
         && vw.vwap_session.map(|v| px < v).unwrap_or(false)
@@ -195,6 +197,7 @@ mod tests {
                 price_action_clean: true,
                 fast_slope: Some(0.05),
                 footprint_levels: vec![],
+                oi_delta_zscore: None,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.45),
@@ -217,6 +220,7 @@ mod tests {
             order_blocks: None,
             fvg: None,
             leverage: 1.0,
+            prev_obi_l5: Some(0.15),
         }
     }
 
@@ -256,6 +260,7 @@ mod tests {
         ctx.flow.taker_imbalance = Some(-0.20);
         ctx.flow.stacked_imbalance = ImbalanceSide::Bearish;
         ctx.flow.fast_slope = Some(-0.05);
+        ctx.prev_obi_l5 = Some(-0.15);
 
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &cfg).expect("expected DIB short");

@@ -52,6 +52,7 @@ use data::strategy::{
         derive_stacked_imbalance_from_levels, wall_nearby,
     },
     intent_logger::collect_near_misses,
+    lab::{LabConfig, LabTracker, run_strategy_lab},
     paper::PaperAccount,
     router::route_strategy,
     types::{
@@ -558,6 +559,11 @@ struct BarState {
     // Forward horizon tracker: populated when a trade closes, patched over the next 12 bars
     bar_counter: u64,
     pending_horizons: Vec<PendingHorizon>,
+    // OBI L5 from the previous bar — injected into StrategyMarketContext for DIB persistence gate
+    prev_obi_l5: f64,
+    // Lab outcome tracker — tracks open LabSignals and resolves them bar by bar
+    lab_tracker: LabTracker,
+    lab_cfg: LabConfig,
 }
 
 impl BarState {
@@ -615,6 +621,9 @@ impl BarState {
             intrabar_signal_fired: false,
             bar_counter: 0,
             pending_horizons: Vec::new(),
+            prev_obi_l5: 0.0,
+            lab_tracker: LabTracker::new(50),
+            lab_cfg: LabConfig::default(),
         }
     }
 
@@ -919,6 +928,7 @@ impl BarState {
             frozen.mss_active,
             frozen.sweep_confirmed,
             Some(frozen.fast_slope),
+            None, // oi_delta_zscore — intrabar uses frozen snapshot, not updated here
         );
         flow.footprint_levels = frozen.footprint_levels.clone();
 
@@ -971,6 +981,7 @@ impl BarState {
             order_blocks: Some(frozen.order_blocks.clone()),
             fvg: Some(frozen.fvg.clone()),
             leverage: self.paper.config.leverage,
+            prev_obi_l5: Some(self.prev_obi_l5),
         }
     }
 
@@ -1327,6 +1338,7 @@ impl BarState {
             mss_active,
             sweep_confirmed,
             Some(fast_slope),
+            self.oi_tracker.delta_zscore(),
         );
         flow.footprint_levels = footprint_levels.clone();
 
@@ -1405,6 +1417,7 @@ impl BarState {
             (None, None)
         };
 
+        let current_obi_l5 = ob_ctx.obi_l5.unwrap_or(0.0);
         let ctx = StrategyMarketContext {
             symbol: symbol.to_string(),
             timestamp_ms: bar_ms,
@@ -1423,7 +1436,9 @@ impl BarState {
             order_blocks: Some(order_blocks.clone()),
             fvg: Some(fvg.clone()),
             leverage: self.paper.config.leverage,
+            prev_obi_l5: Some(self.prev_obi_l5),
         };
+        self.prev_obi_l5 = current_obi_l5;
 
         let signal = route_strategy(&ctx, &cfg);
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
@@ -1437,6 +1452,26 @@ impl BarState {
 
         // Resolve outcomes that are at least one bar (5m) old
         self.resolve_outcomes(bar_ms, c);
+
+        // ── Strategy Lab ─────────────────────────────────────────────────────
+        let lab_signals = run_strategy_lab(&ctx, &cfg, &self.lab_cfg);
+        for lab_sig in &lab_signals {
+            if let Some(ref sb) = self.supabase {
+                let sig_clone = lab_sig.clone();
+                let sb_clone = sb.clone();
+                tokio::spawn(async move {
+                    sb_clone.write_lab_signal(&sig_clone).await;
+                });
+            }
+            self.lab_tracker.push(lab_sig);
+        }
+        let completed_outcomes = self.lab_tracker.on_bar(h, l, c);
+        for outcome in &completed_outcomes {
+            if let Some(ref sb) = self.supabase {
+                let uuid_str = outcome.signal_id.to_string();
+                sb.write_lab_outcome(outcome, Some(uuid_str));
+            }
+        }
 
         let near_misses = collect_near_misses(&ctx, &cfg, signal_fired);
 

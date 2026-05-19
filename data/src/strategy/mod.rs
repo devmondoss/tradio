@@ -3,6 +3,7 @@ pub mod context;
 pub mod cooldown;
 pub mod detectors;
 pub mod intent_logger;
+pub mod lab;
 pub mod logger;
 pub mod paper;
 pub mod router;
