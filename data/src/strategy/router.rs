@@ -1,7 +1,8 @@
 use crate::session::{TradingSession, classify_session};
 
 use super::detectors::{
-    funding_exhaustion_reversal, liquidation_hunt, lvn_liquidity_vacuum_breakout,
+    dom_imbalance_breakout, footprint_absorption_reversal, funding_exhaustion_reversal,
+    liquidation_hunt, lvn_liquidity_vacuum_breakout, order_block_retest, session_open_breakout,
     smart_money_divergence, toxic_flow_gate::toxic_flow_gate, value_area_failed_auction,
     vwap_value_pullback_continuation,
 };
@@ -27,16 +28,31 @@ fn session_valid_for(id: StrategyId, session: TradingSession) -> bool {
             session,
             TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
         ),
+        StrategyId::DomImbalanceBreakout => matches!(
+            session,
+            TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
+        ),
+        StrategyId::SessionOpenBreakout => matches!(
+            session,
+            TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
+        ),
+        StrategyId::OrderBlockRetest => matches!(
+            session,
+            TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
+        ),
+        StrategyId::FootprintAbsorptionReversal => matches!(
+            session,
+            TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
+        ),
         // Liquidaciones masivas ocurren en aperturas de Londres y NY
         StrategyId::LiquidationHunt => matches!(
             session,
             TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
         ),
         // Funding extremo se acumula en rangos lentos (Asia y pre-London)
-        StrategyId::FundingExhaustionReversal => matches!(
-            session,
-            TradingSession::Asia | TradingSession::London
-        ),
+        StrategyId::FundingExhaustionReversal => {
+            matches!(session, TradingSession::Asia | TradingSession::London)
+        }
         // SMD necesita volumen de sesión para confirmar divergencia
         StrategyId::SmartMoneyDivergence => matches!(
             session,
@@ -122,15 +138,59 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Stra
         };
     }
 
-    try_detect!("VAFA", StrategyId::ValueAreaFailedAuction, value_area_failed_auction::detect(ctx, cfg));
-    try_detect!("LVN", StrategyId::LvnLiquidityVacuumBreakout, lvn_liquidity_vacuum_breakout::detect(ctx, cfg));
-    try_detect!("VWAP", StrategyId::VwapValuePullbackContinuation, vwap_value_pullback_continuation::detect(ctx, cfg));
+    try_detect!(
+        "VAFA",
+        StrategyId::ValueAreaFailedAuction,
+        value_area_failed_auction::detect(ctx, cfg)
+    );
+    try_detect!(
+        "LVN",
+        StrategyId::LvnLiquidityVacuumBreakout,
+        lvn_liquidity_vacuum_breakout::detect(ctx, cfg)
+    );
+    try_detect!(
+        "DIB",
+        StrategyId::DomImbalanceBreakout,
+        dom_imbalance_breakout::detect(ctx, cfg)
+    );
+    try_detect!(
+        "SOB",
+        StrategyId::SessionOpenBreakout,
+        session_open_breakout::detect(ctx, cfg)
+    );
+    try_detect!(
+        "OBR",
+        StrategyId::OrderBlockRetest,
+        order_block_retest::detect(ctx, cfg)
+    );
+    try_detect!(
+        "FAR",
+        StrategyId::FootprintAbsorptionReversal,
+        footprint_absorption_reversal::detect(ctx, cfg)
+    );
+    try_detect!(
+        "VWAP",
+        StrategyId::VwapValuePullbackContinuation,
+        vwap_value_pullback_continuation::detect(ctx, cfg)
+    );
 
     // Institutional detectors — only run when institutional data is available
     if let Some(inst) = &ctx.institutional {
-        try_detect!("LIQ", StrategyId::LiquidationHunt, liquidation_hunt::detect(ctx, inst, cfg));
-        try_detect!("FER", StrategyId::FundingExhaustionReversal, funding_exhaustion_reversal::detect(ctx, inst, cfg));
-        try_detect!("SMD", StrategyId::SmartMoneyDivergence, smart_money_divergence::detect(ctx, inst, cfg));
+        try_detect!(
+            "LIQ",
+            StrategyId::LiquidationHunt,
+            liquidation_hunt::detect(ctx, inst, cfg)
+        );
+        try_detect!(
+            "FER",
+            StrategyId::FundingExhaustionReversal,
+            funding_exhaustion_reversal::detect(ctx, inst, cfg)
+        );
+        try_detect!(
+            "SMD",
+            StrategyId::SmartMoneyDivergence,
+            smart_money_divergence::detect(ctx, inst, cfg)
+        );
     } else {
         rejections.push("INST:NULL".into());
     }
@@ -148,7 +208,9 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Stra
     };
 
     match best {
-        Some(ref signal) if signal.score >= effective_min_score(signal.strategy_id) => best.unwrap(),
+        Some(ref signal) if signal.score >= effective_min_score(signal.strategy_id) => {
+            best.unwrap()
+        }
         Some(signal) => StrategySignal {
             action: StrategyAction::Wait,
             regime: signal.regime,

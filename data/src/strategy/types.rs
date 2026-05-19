@@ -15,6 +15,10 @@ pub enum StrategyId {
     ValueAreaFailedAuction,
     VwapValuePullbackContinuation,
     LvnLiquidityVacuumBreakout,
+    DomImbalanceBreakout,
+    SessionOpenBreakout,
+    OrderBlockRetest,
+    FootprintAbsorptionReversal,
     LiquidationHunt,
     FundingExhaustionReversal,
     SmartMoneyDivergence,
@@ -87,6 +91,14 @@ pub enum ImbalanceSide {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FootprintLevel {
+    pub price: f64,
+    pub buy_volume: f64,
+    pub sell_volume: f64,
+    pub delta: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeProfileContext {
     pub poc: Option<f64>,
     pub vah: Option<f64>,
@@ -141,6 +153,9 @@ pub struct OrderFlowContext {
     /// Pendiente rápida (últimas 5 barras) del precio normalizado por ATR.
     /// Negativo fuerte indica momentum bajista incluso si regime=TrendUp.
     pub fast_slope: Option<f64>,
+    /// Delta real agrupado por nivel de precio del footprint de la vela actual.
+    #[serde(default)]
+    pub footprint_levels: Vec<FootprintLevel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,7 +197,6 @@ pub struct StrategyMarketContext {
     pub swing_low_20: Option<f64>,
 
     // ── Nuevos contextos de Fase 1 ────────────────────────────────────────────
-
     /// Estructura de precio HTF (BOS/CHoCH, sesgo, zona premium/discount).
     /// None hasta que MarketStructureTracker haya procesado suficientes barras HTF.
     #[serde(default)]
@@ -264,7 +278,6 @@ pub struct StrategyConfig {
     pub smd_ttl_ms: i64,
 
     // ── Fase 1: nuevas opciones ───────────────────────────────────────────────
-
     /// Filtrar señales según la sesión de trading activa.
     /// Si false, se omite el filtro y todas las sesiones son válidas.
     pub session_filter_enabled: bool,
@@ -298,7 +311,7 @@ impl Default for StrategyConfig {
             default_ttl_ms: 250 * 60 * 1000,
             min_rr: 1.5,
             max_rr_m5: 8.0,
-            liq_hunt_min_usd: 500_000.0,
+            liq_hunt_min_usd: 25_000.0,
             liq_cascade_threshold: 5_000_000.0,
             liq_ttl_ms: 10 * 60 * 1000,
             funding_extreme_threshold: 0.0006,

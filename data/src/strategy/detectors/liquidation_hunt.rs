@@ -39,7 +39,12 @@ pub fn detect(
     // Gate: cascade activa de longs (tarde para entrar long)
     let no_long_cascade = inst.liquidations.long_liq_usd_5m < cfg.liq_cascade_threshold;
 
-    if liq_confirms_long && momentum_long && path_clear_long && funding_gate_ok_long && no_long_cascade {
+    if liq_confirms_long
+        && momentum_long
+        && path_clear_long
+        && funding_gate_ok_long
+        && no_long_cascade
+    {
         let entry = px;
         let stop = entry - 1.0 * atr;
 
@@ -65,7 +70,9 @@ pub fn detect(
             ];
             // Fase A — LiqMap logging (peso 0, sin cambio de gate)
             if let Some(ref lm) = inst.liq_map {
-                if lm.primary_target_above.is_some() { evidence.push("liq_target_above".into()); }
+                if lm.primary_target_above.is_some() {
+                    evidence.push("liq_target_above".into());
+                }
                 if lm.density_above.iter().any(|d| d.density > 0.5) {
                     evidence.push("high_liq_density_above".into());
                 }
@@ -82,10 +89,7 @@ pub fn detect(
                 ttl_ms: cfg.liq_ttl_ms,
                 evidence,
                 missing: vec![],
-                invalidation: vec![
-                    "cvd_turns_negative".into(),
-                    "liq_cascade_reverses".into(),
-                ],
+                invalidation: vec!["cvd_turns_negative".into(), "liq_cascade_reverses".into()],
                 created_at_ms: ctx.timestamp_ms,
             });
         }
@@ -115,7 +119,12 @@ pub fn detect(
 
     let no_short_cascade = inst.liquidations.short_liq_usd_5m < cfg.liq_cascade_threshold;
 
-    if liq_confirms_short && momentum_short && path_clear_short && funding_gate_ok_short && no_short_cascade {
+    if liq_confirms_short
+        && momentum_short
+        && path_clear_short
+        && funding_gate_ok_short
+        && no_short_cascade
+    {
         let entry = px;
         let stop = entry + 1.0 * atr;
 
@@ -141,7 +150,9 @@ pub fn detect(
             ];
             // Fase A — LiqMap logging (peso 0)
             if let Some(ref lm) = inst.liq_map {
-                if lm.primary_target_below.is_some() { evidence.push("liq_target_below".into()); }
+                if lm.primary_target_below.is_some() {
+                    evidence.push("liq_target_below".into());
+                }
                 if lm.density_below.iter().any(|d| d.density > 0.5) {
                     evidence.push("high_liq_density_below".into());
                 }
@@ -158,10 +169,7 @@ pub fn detect(
                 ttl_ms: cfg.liq_ttl_ms,
                 evidence,
                 missing: vec![],
-                invalidation: vec![
-                    "cvd_turns_positive".into(),
-                    "liq_cascade_reverses".into(),
-                ],
+                invalidation: vec!["cvd_turns_positive".into(), "liq_cascade_reverses".into()],
                 created_at_ms: ctx.timestamp_ms,
             });
         }
@@ -226,6 +234,7 @@ mod tests {
                 ask_wall_nearby: false,
                 price_action_clean: true,
                 fast_slope: None,
+                footprint_levels: vec![],
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.10),
@@ -307,7 +316,7 @@ mod tests {
     fn blocked_when_liq_below_threshold() {
         let ctx = base_ctx();
         let mut inst = base_inst_long();
-        inst.liquidations.short_liq_usd_5m = 100_000.0; // below 500K threshold
+        inst.liquidations.short_liq_usd_5m = 10_000.0; // below 25K threshold
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &inst, &cfg);
         assert!(signal.is_none());

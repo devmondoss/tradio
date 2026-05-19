@@ -2,7 +2,6 @@ use crate::strategy::{adapter, types::*};
 
 // Note: toxic_flow_gate is evaluated once in the router before calling any detector.
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
-
     let px = ctx.price;
     let atr = ctx.atr.unwrap_or(0.0);
     let vp = &ctx.volume_profile;
@@ -47,9 +46,9 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     // LONG: trend up, pullback into value, flow realigns.
     // BelowVal is excluded: price below VAL is a breakdown of support, not a pullback.
-    // fast_slope gate: if bar momentum is strongly bearish (< -0.20), suppress even in
+    // fast_slope gate: if bar momentum is bearish (< -0.08), suppress even in
     // TrendUp — slow_slope can lag while price is already dropping hard intrabar.
-    let fast_slope_ok_long = flow.fast_slope.map(|fs| fs > -0.20).unwrap_or(true);
+    let fast_slope_ok_long = flow.fast_slope.map(|fs| fs > -0.08).unwrap_or(true);
     let long_context = matches!(ctx.regime, Regime::TrendUp | Regime::Expansion)
         && long_anchor_ok
         && vp.value_location == ValueLocation::InValue
@@ -81,7 +80,12 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         })
         .unwrap_or(false);
 
-    if long_context && long_flow && long_book && funding_ok_long && adapter::basis_ok(flow.basis, true) {
+    if long_context
+        && long_flow
+        && long_book
+        && funding_ok_long
+        && adapter::basis_ok(flow.basis, true)
+    {
         let entry = px;
         // max() → closest of (VAL structural level, 1×ATR floor).
         // Original min() was choosing the farthest, creating R:R ~0.2 in production.
@@ -92,7 +96,17 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             return None;
         }
 
-        let target = find_structural_target(entry, risk, Side::Long, vp, ob, atr, ctx.swing_high_20, ctx.swing_low_20, cfg)?;
+        let target = find_structural_target(
+            entry,
+            risk,
+            Side::Long,
+            vp,
+            ob,
+            atr,
+            ctx.swing_high_20,
+            ctx.swing_low_20,
+            cfg,
+        )?;
 
         let mut evidence = vec![
             "trend_up".into(),
@@ -103,10 +117,14 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         ];
         // Fase A — OB logging (peso 0, solo evidencia)
         if let Some(ref obs) = ctx.order_blocks {
-            if obs.nearest_bullish.is_some() { evidence.push("bullish_ob_in_pullback_zone".into()); }
+            if obs.nearest_bullish.is_some() {
+                evidence.push("bullish_ob_in_pullback_zone".into());
+            }
         }
         if let Some(ref fvg_ctx) = ctx.fvg {
-            if fvg_ctx.nearest_bullish.is_some() { evidence.push("bullish_fvg_nearby".into()); }
+            if fvg_ctx.nearest_bullish.is_some() {
+                evidence.push("bullish_fvg_nearby".into());
+            }
         }
         return Some(StrategySignal {
             action: StrategyAction::ShadowSignal,
@@ -133,9 +151,9 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     // Expansion is accepted symmetrically with the long side; delta/cvd_slope/value_location
     // already filter direction, so Expansion alone does not create false shorts.
     // AboveVah is excluded: price above VAH is a breakout above value, not a pullback into it.
-    // fast_slope gate: suppress shorts when bar momentum is strongly bullish (> +0.20) —
+    // fast_slope gate: suppress shorts when bar momentum is bullish (> +0.08) —
     // mirrors the long-side gate and avoids entering short into a fast regime flip.
-    let fast_slope_ok_short = flow.fast_slope.map(|fs| fs < 0.20).unwrap_or(true);
+    let fast_slope_ok_short = flow.fast_slope.map(|fs| fs < 0.08).unwrap_or(true);
     let short_context = matches!(ctx.regime, Regime::TrendDown | Regime::Expansion)
         && short_anchor_ok
         && vp.value_location == ValueLocation::InValue
@@ -159,7 +177,17 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             return None;
         }
 
-        let target = find_structural_target(entry, risk, Side::Short, vp, ob, atr, ctx.swing_high_20, ctx.swing_low_20, cfg)?;
+        let target = find_structural_target(
+            entry,
+            risk,
+            Side::Short,
+            vp,
+            ob,
+            atr,
+            ctx.swing_high_20,
+            ctx.swing_low_20,
+            cfg,
+        )?;
 
         let mut evidence = vec![
             "trend_down".into(),
@@ -170,10 +198,14 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         ];
         // Fase A — OB logging (peso 0, solo evidencia)
         if let Some(ref obs) = ctx.order_blocks {
-            if obs.nearest_bearish.is_some() { evidence.push("bearish_ob_in_pullback_zone".into()); }
+            if obs.nearest_bearish.is_some() {
+                evidence.push("bearish_ob_in_pullback_zone".into());
+            }
         }
         if let Some(ref fvg_ctx) = ctx.fvg {
-            if fvg_ctx.nearest_bearish.is_some() { evidence.push("bearish_fvg_nearby".into()); }
+            if fvg_ctx.nearest_bearish.is_some() {
+                evidence.push("bearish_fvg_nearby".into());
+            }
         }
         return Some(StrategySignal {
             action: StrategyAction::ShadowSignal,
@@ -214,8 +246,11 @@ fn find_structural_target(
     swing_low: Option<f64>,
     cfg: &StrategyConfig,
 ) -> Option<f64> {
-    let min_reward = risk * cfg.min_rr;
-    let max_reward = risk * cfg.max_rr_m5;
+    let min_reward = f64::max(risk * cfg.min_rr, atr);
+    let max_reward = f64::min(risk * cfg.max_rr_m5, 2.0 * atr);
+    if max_reward < min_reward {
+        return None;
+    }
 
     let mut candidates: Vec<f64> = Vec::new();
 
@@ -224,22 +259,32 @@ fn find_structural_target(
             let lo = entry + min_reward;
             let hi = entry + max_reward;
 
-            candidates.extend(vp.hvn_nearby.iter().copied().filter(|&h| h > lo && h < hi));
+            candidates.extend(
+                vp.hvn_nearby
+                    .iter()
+                    .copied()
+                    .filter(|&h| h >= lo && h <= hi),
+            );
             if let Some(vah) = vp.vah {
-                if vah > lo && vah < hi {
+                if vah >= lo && vah <= hi {
                     candidates.push(vah);
                 }
             }
             if let Some(sh) = swing_high {
-                if sh > lo && sh < hi {
+                if sh >= lo && sh <= hi {
                     candidates.push(sh);
                 }
             }
-            candidates.extend(ob.walls_above.iter().copied().filter(|&w| w > lo && w < hi));
+            candidates.extend(
+                ob.walls_above
+                    .iter()
+                    .copied()
+                    .filter(|&w| w >= lo && w <= hi),
+            );
 
             if candidates.is_empty() {
-                let fallback = entry + 3.0 * atr;
-                if fallback > lo && fallback < hi {
+                let fallback = entry + 2.0 * atr;
+                if fallback >= lo && fallback <= hi {
                     candidates.push(fallback);
                 }
             }
@@ -255,22 +300,32 @@ fn find_structural_target(
             let hi = entry - min_reward;
             let lo = entry - max_reward;
 
-            candidates.extend(vp.hvn_nearby.iter().copied().filter(|&h| h < hi && h > lo));
+            candidates.extend(
+                vp.hvn_nearby
+                    .iter()
+                    .copied()
+                    .filter(|&h| h <= hi && h >= lo),
+            );
             if let Some(val) = vp.val {
-                if val < hi && val > lo {
+                if val <= hi && val >= lo {
                     candidates.push(val);
                 }
             }
             if let Some(sl) = swing_low {
-                if sl < hi && sl > lo {
+                if sl <= hi && sl >= lo {
                     candidates.push(sl);
                 }
             }
-            candidates.extend(ob.walls_below.iter().copied().filter(|&w| w < hi && w > lo));
+            candidates.extend(
+                ob.walls_below
+                    .iter()
+                    .copied()
+                    .filter(|&w| w <= hi && w >= lo),
+            );
 
             if candidates.is_empty() {
-                let fallback = entry - 3.0 * atr;
-                if fallback < hi && fallback > lo {
+                let fallback = entry - 2.0 * atr;
+                if fallback <= hi && fallback >= lo {
                     candidates.push(fallback);
                 }
             }
@@ -380,6 +435,7 @@ mod tests {
                 ask_wall_nearby: false,
                 price_action_clean: true,
                 fast_slope: None,
+                footprint_levels: vec![],
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.03),
@@ -419,9 +475,18 @@ mod tests {
         assert!(signal.is_some());
         let s = signal.unwrap();
         assert_eq!(s.side, Some(Side::Long));
-        assert_eq!(s.strategy_id, Some(StrategyId::VwapValuePullbackContinuation));
-        assert!((s.stop_price.unwrap() - 99000.0).abs() < 1.0, "stop should be VAL=99000");
-        assert!(s.target_price.unwrap() > 99500.0, "target must satisfy min_rr=1.5");
+        assert_eq!(
+            s.strategy_id,
+            Some(StrategyId::VwapValuePullbackContinuation)
+        );
+        assert!(
+            (s.stop_price.unwrap() - 99000.0).abs() < 1.0,
+            "stop should be VAL=99000"
+        );
+        assert!(
+            s.target_price.unwrap() >= 99500.0,
+            "target must satisfy min_rr=1.5"
+        );
         assert_eq!(s.ttl_ms, 250 * 60 * 1000);
     }
 
@@ -435,7 +500,10 @@ mod tests {
         assert!(signal.is_some());
         let s = signal.unwrap();
         let expected_stop = 99200.0 - 250.0; // 98950
-        assert!((s.stop_price.unwrap() - expected_stop).abs() < 1.0, "stop should be ATR floor");
+        assert!(
+            (s.stop_price.unwrap() - expected_stop).abs() < 1.0,
+            "stop should be ATR floor"
+        );
     }
 
     #[test]
@@ -447,24 +515,24 @@ mod tests {
         let signal = detect(&ctx, &cfg);
         assert!(signal.is_some());
         let s = signal.unwrap();
-        assert!((s.stop_price.unwrap() - 99100.0).abs() < 1.0, "stop should be VAL=99100");
+        assert!(
+            (s.stop_price.unwrap() - 99100.0).abs() < 1.0,
+            "stop should be VAL=99100"
+        );
     }
 
     #[test]
     fn no_signal_when_no_structural_target_exists() {
-        // VAH too close, no HVNs, no walls — fallback 3×ATR must fit in max_rr window
-        // entry=99200, risk=200, fallback=99200+750=99950
-        // fallback_rr = 750/200 = 3.75 < max_rr=8.0 → signal with fallback target
+        // VAH too close, no HVNs, no walls — fallback 2×ATR keeps target in the 1-2 ATR band.
         let mut ctx = base_long_ctx();
         ctx.volume_profile.hvn_nearby = vec![]; // no HVNs
         ctx.volume_profile.vah = Some(99350.0); // only 150 reward < min_reward=300 → filtered
         ctx.orderbook.walls_above = vec![];
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &cfg);
-        // fallback 3×ATR = 99200+750 = 99950 → R:R = 750/200 = 3.75 ≥ 1.5 → signal fires
         assert!(signal.is_some());
         let s = signal.unwrap();
-        let expected_target = 99200.0 + 3.0 * 250.0; // 99950
+        let expected_target = 99200.0 + 2.0 * 250.0; // 99700
         assert!((s.target_price.unwrap() - expected_target).abs() < 1.0);
     }
 
@@ -482,15 +550,20 @@ mod tests {
         // stop = min(100100, 99800+250) = min(100100, 100050) = 100050 (ATR closer)
         // risk = 100050-99800 = 250
         // min_reward = 250*1.5 = 375 → target must be < 99800-375 = 99425
-        // val=99000: 99000 < 99425 ✓ → candidate; walls_below=[98800] → candidate
-        // max(99000, 98800) = 99000 → target=99000
+        // VAL is outside the 1-2 ATR target band, so fallback target is entry - 2×ATR.
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &cfg);
         assert!(signal.is_some());
         let s = signal.unwrap();
         assert_eq!(s.side, Some(Side::Short));
-        assert!((s.stop_price.unwrap() - 100050.0).abs() < 1.0, "stop should be ATR ceiling");
-        assert!((s.target_price.unwrap() - 99000.0).abs() < 1.0, "target should be VAL");
+        assert!(
+            (s.stop_price.unwrap() - 100050.0).abs() < 1.0,
+            "stop should be ATR ceiling"
+        );
+        assert!(
+            (s.target_price.unwrap() - 99300.0).abs() < 1.0,
+            "target should be 2×ATR fallback"
+        );
     }
 
     #[test]
@@ -510,11 +583,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_long_when_fast_slope_is_bearish() {
+        let mut ctx = base_long_ctx();
+        ctx.flow.fast_slope = Some(-0.10);
+        let cfg = StrategyConfig::default();
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "fast_slope <= -0.08 should block longs"
+        );
+    }
+
+    #[test]
     fn rejects_long_when_funding_extreme_long() {
         let mut ctx = base_long_ctx();
         ctx.institutional = Some(base_inst(FundingRegime::ExtremeLong));
         let cfg = StrategyConfig::default();
-        assert!(detect(&ctx, &cfg).is_none(), "ExtremeLong funding should block long entries");
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "ExtremeLong funding should block long entries"
+        );
     }
 
     #[test]
@@ -522,7 +609,10 @@ mod tests {
         let mut ctx = base_long_ctx();
         ctx.institutional = Some(base_inst(FundingRegime::ElevatedLong));
         let cfg = StrategyConfig::default();
-        assert!(detect(&ctx, &cfg).is_none(), "ElevatedLong funding should block long entries");
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "ElevatedLong funding should block long entries"
+        );
     }
 
     #[test]
@@ -530,7 +620,10 @@ mod tests {
         let mut ctx = base_long_ctx();
         ctx.institutional = None; // feed failure — conservative: block
         let cfg = StrategyConfig::default();
-        assert!(detect(&ctx, &cfg).is_none(), "no inst data should block longs (conservative)");
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "no inst data should block longs (conservative)"
+        );
     }
 
     #[test]
@@ -557,7 +650,10 @@ mod tests {
         ctx.institutional = Some(base_inst(FundingRegime::ExtremeLong)); // extreme long = supports shorts
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &cfg);
-        assert!(signal.is_some(), "ExtremeLong funding should not block shorts");
+        assert!(
+            signal.is_some(),
+            "ExtremeLong funding should not block shorts"
+        );
         assert_eq!(signal.unwrap().side, Some(Side::Short));
     }
 }

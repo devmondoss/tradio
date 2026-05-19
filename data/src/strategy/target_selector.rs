@@ -149,6 +149,7 @@ mod tests {
                 ask_wall_nearby: false,
                 price_action_clean: true,
                 fast_slope: None,
+                footprint_levels: vec![],
             },
             orderbook: OrderBookContext {
                 obi_l5: None,

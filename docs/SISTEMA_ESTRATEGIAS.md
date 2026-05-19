@@ -1,7 +1,7 @@
 # Sistema de Estrategias — FlowSurface
 
 > Documento de referencia completo. Cubre arquitectura, módulos, condiciones, scoring, gates y estado de implementación.
-> Última actualización: 2026-05-18
+> Última actualización: 2026-05-18 (rev 2 — swing pivots, stacked_imbalance, MSS/sweep, Regime::Stress/Aftermath)
 
 ---
 
@@ -116,6 +116,7 @@ Las estrategias **deciden** si hay señal. Cada una combina condiciones de las 4
 - Precio entre VAL y VWAP (zona de valor)
 - Precio > AVWAP de último BOS (estructura sana)
 - CVD slope > 0.10
+- `fast_slope > -0.20` (gate: si fast_slope < -0.20 el impulso se opone al long)
 - No `sweep_confirmed` reciente opuesto
 - OBI favorable (bid > ask)
 
@@ -125,6 +126,7 @@ Las estrategias **deciden** si hay señal. Cada una combina condiciones de las 4
 - Precio entre VWAP y VAH
 - Precio < AVWAP de último BOS
 - CVD slope < -0.10
+- `fast_slope < 0.20` (gate: si fast_slope > +0.20 el impulso se opone al short)
 - OBI favorable (ask > bid)
 
 **Target**: Extremo del rango diario o swing estructural.
@@ -229,6 +231,22 @@ Las estrategias **deciden** si hay señal. Cada una combina condiciones de las 4
 | LiqHunt    | Institutional | Cualquiera       | 10 min  | Baja                |
 | FER        | Institutional | Stress/Aftermath | 30 min  | Muy baja            |
 | SMD        | Institutional | Cualquiera       | 20 min  | Baja                |
+
+### Clasificación de Régimen
+
+El régimen se calcula con `derive_regime_with_stress()` en cada cierre de vela (kline.rs). La función ejecuta la detección en este orden de prioridad:
+
+1. **Stress**: Último rango (high-low) > 2× promedio de barras anteriores **Y** |slow_slope| > 0.15 → mercado en spike de volatilidad con dirección
+2. **Aftermath**: Régimen anterior era Stress **Y** rango < 1.5× promedio **Y** |slow_slope| < 0.10 → volatilidad normalizando, precio digiriendo
+3. **Compression**: Rango del precio en ventana / ATR < 0.8 → acumulación / coil
+4. **Expansion**: Rango / ATR > 4.0 Y |slow_slope| > 0.10 → movimiento explosivo en curso
+5. **TrendUp**: slow > 0.10 **o** fast > 0.25
+6. **TrendDown**: slow < -0.10 **o** fast < -0.25
+7. **Chop**: ninguno de los anteriores
+
+Para TrendUp/Down se aplica **histéresis**: una vez en tendencia, el régimen se mantiene hasta que slow salga de ±0.05 **y** fast de ±0.15 (exit thresholds más bajos que entry). Evita flip-flop en mercados choppy.
+
+`last_regime_enum` se persiste en `KlineChart` para que Aftermath pueda detectarse en el bar siguiente al Stress.
 
 
 ---
@@ -752,10 +770,10 @@ pub struct InstitutionalContext {
 | `vpin`                     | Volume-synchronized Probability of Informed Trading (0–1)          |
 | `cvd_divergence`           | `BearishAbsorption` o `BullishAbsorption`                          |
 | `footprint_absorption`     | Absorción detectada en el footprint (Bid/Ask/None)                 |
-| `stacked_imbalance`        | Desequilibrio apilado en dirección (Bullish/Bearish/None)          |
+| `stacked_imbalance`        | 3+ barras consecutivas en la misma dirección delta (Bullish/Bearish/None) — derivado de `recent_deltas` |
 | `failed_acceptance`        | Precio intentó establecerse fuera del rango y regresó              |
-| `sweep_confirmed`          | Barrido de swing confirmado y regresado                            |
-| `mss_active`               | Market Structure Shift post-sweep activo                           |
+| `sweep_confirmed`          | Wick intrabar cruzó swing extremo en las últimas 3 barras pero cerró dentro — derivado por `derive_mss_and_sweep()` |
+| `mss_active`               | Cierre actual superó el swing high/low previo (break de estructura) — derivado por `derive_mss_and_sweep()` |
 | `funding_rate`             | Funding rate del perp (también en InstitutionalContext)            |
 | `basis`                    | Basis perp-spot en %                                               |
 | `oi_delta`                 | OI delta acumulado del período                                     |
@@ -819,10 +837,14 @@ Bonus de scoring: +5% si long en discount, +5% si short en premium.
 
 ### 11.5 Swing Highs/Lows Estructurales
 
-El sistema trackea `swing_high_20` y `swing_low_20` (el high/low más alto/bajo de las últimas 20 barras) para:
+El sistema trackea `swing_high_20` y `swing_low_20` calculados por `derive_swing_highs_lows()` en `adapter.rs`:
 
-- Seleccionar targets estructurales en `find_structural_target`
-- Alimentar al LiqMapTracker
+- **Método**: max(highs[0..n-1]) y min(lows[0..n-1]) sobre las últimas 20 barras, excluyendo la barra actual
+- **Usos**:
+  - Seleccionar targets estructurales en `find_structural_target` (VVPC, VAFA)
+  - Base para `derive_mss_and_sweep()` — MSS y sweep se computan contra estos extremos
+  - Alimentar al LiqMapTracker
+- **En kline.rs**: Highs/lows se extraen a 20 barras (antes eran 5). Esto también expande la ventana de `derive_failed_acceptance_and_absorption` y `derive_stacked_imbalance` al mismo tamaño.
 
 ---
 
@@ -874,27 +896,31 @@ StrategyConfig {
 ### 13.1 Estado Actual (completado)
 
 
-| Módulo                 | Estado     | Notas                                      |
-| ---------------------- | ---------- | ------------------------------------------ |
-| OrderBlockDetector     | ✅ Completo | volume_ratio, swings_broken, mid threshold |
-| FvgDetector            | ✅ Completo | Bullish/Bearish FVGs                       |
-| MarketStructureTracker | ✅ Completo | BOS/CHoCH, HTF bias, premium/discount      |
-| SessionTracker         | ✅ Completo | 4 fases incluyendo OpeningRush             |
-| FundingTracker         | ✅ Completo | velocity + peak_confirmed                  |
-| LiqMapTracker          | ✅ Completo | confidence + data_source                   |
-| LiquidationTracker     | ✅ Completo |                                            |
-| OiTracker              | ✅ Completo |                                            |
-| LsRatioTracker         | ✅ Completo |                                            |
-| SmartMoneyScore        | ✅ Completo |                                            |
-| CooldownRegistry       | ✅ Completo | Bar-based cooldown                         |
-| VAFA                   | ✅ Completo | Con chop gates estrictos                   |
-| VVPC                   | ✅ Completo |                                            |
-| LVN                    | ✅ Completo |                                            |
-| LiqHunt                | ✅ Completo | LiqMap evidence                            |
-| FER                    | ✅ Completo | velocity/peak evidencia                    |
-| SMD                    | ✅ Completo | OI delta + OB confluence                   |
-| SpoofDetector          | ⚠️ Wired   | Requiere L2 tick data para activar         |
-| Outcome Tracker        | ✅ Completo | MFE/MAE/RR intrabar + bar-close            |
+| Módulo                            | Estado     | Notas                                                                 |
+| --------------------------------- | ---------- | --------------------------------------------------------------------- |
+| OrderBlockDetector                | ✅ Completo | volume_ratio, swings_broken, mid threshold                            |
+| FvgDetector                       | ✅ Completo | Bullish/Bearish FVGs                                                  |
+| MarketStructureTracker            | ✅ Completo | BOS/CHoCH, HTF bias, premium/discount                                 |
+| SessionTracker                    | ✅ Completo | 4 fases incluyendo OpeningRush                                        |
+| FundingTracker                    | ✅ Completo | velocity + peak_confirmed                                             |
+| LiqMapTracker                     | ✅ Completo | confidence + data_source                                              |
+| LiquidationTracker                | ✅ Completo |                                                                       |
+| OiTracker                         | ✅ Completo |                                                                       |
+| LsRatioTracker                    | ✅ Completo |                                                                       |
+| SmartMoneyScore                   | ✅ Completo |                                                                       |
+| CooldownRegistry                  | ✅ Completo | Bar-based cooldown                                                    |
+| VAFA                              | ✅ Completo | Con chop gates estrictos                                              |
+| VVPC                              | ✅ Completo | fast_slope gate ±0.20 activo para long y short                        |
+| LVN                               | ✅ Completo |                                                                       |
+| LiqHunt                           | ✅ Completo | LiqMap evidence                                                       |
+| FER                               | ✅ Completo | velocity/peak evidencia                                               |
+| SMD                               | ✅ Completo | OI delta + OB confluence                                              |
+| SpoofDetector                     | ⚠️ Wired   | Requiere L2 tick data para activar                                    |
+| Outcome Tracker                   | ✅ Completo | MFE/MAE/RR intrabar + bar-close                                       |
+| `swing_high_20` / `swing_low_20`  | ✅ Completo | `derive_swing_highs_lows()` — max/min 20 barras excluyendo actual     |
+| `mss_active` / `sweep_confirmed`  | ✅ Completo | `derive_mss_and_sweep()` — ya no hardcodeado a false                  |
+| `stacked_imbalance`               | ✅ Completo | `derive_stacked_imbalance()` — 3+ barras consecutivas mismo delta     |
+| `Regime::Stress` / `Aftermath`    | ✅ Completo | `derive_regime_with_stress()` — ATR spike + slope / normalización     |
 
 
 ### 13.2 Gaps Pendientes (Fase B+)
@@ -904,13 +930,16 @@ StrategyConfig {
 | ---------------------------------- | --------- | -------------------------------- | --------------------------------------- |
 | **Institutional data en GUI**      | Alta      | Connector wiring                 | `institutional = None` en kline.rs      |
 | **CVD multi-timeframe (SMD)**      | Media     | Pipeline de velas 1H separado    | Requiere tracker de candles HTF         |
-| **AVWAP multi-anchor**             | Media     | Lógica en kline.rs               | Session AVWAP + last-swing AVWAP        |
+| **AVWAP multi-anchor manual**      | Media     | Lógica UI (clic en canvas)       | Capturar coord X → timestamp → anclar   |
+| **Session VWAPs**                  | Media     | Lógica en indicador              | Asia 00-08 / London 08-16 / NY 13-21 UTC|
+| **Funding rate panel**             | Media     | Endpoint REST por exchange       | Nuevo `KlineIndicator::FundingRate`     |
+| **OI z-score + spike markers**     | Baja      | Sin fetch adicional              | Dentro de `OpenInterestIndicator`       |
 | **SpoofDetector activo**           | Media     | L2 tick data feed                | spoof_gate_enabled = false              |
 | **OB Fase B**                      | Baja      | 20+ señales con ≥60% correlación | Promover weight a 0.08                  |
 | **LiqMap Fase B**                  | Baja      | 50+ predicciones hit_rate ≥0.55  | Integrar como target alternativo        |
 | **Funding velocity en producción** | Media     | Connector histórico              | FundingTracker calcula, falta alimentar |
 | **min_score calibración**          | Alta      | Dataset de señales reales        | Fase D — no optimizar antes             |
-| **Regime mejorado**                | Media     | Backtesting                      | Chop/Compression/Expansion más precisos |
+| **stacked_imbalance en monitor**   | Baja      | Delta history buffer             | Monitor pasa `Unknown`; mejorar cuando haya buffer de deltas por barra |
 
 
 ### 13.3 Flags de Producción
@@ -939,15 +968,21 @@ KlineChart::on_tick(price, volume, timestamp)
      └── Si barra cerrada:
              ├── update_indicators() → VolumeProfile, VWAP, OI Delta
              ├── update_detectors()  → OB, FVG, Structure, Session, Funding
+             ├── Extraer últimas 20 barras: closes, highs, lows, deltas (oldest-first)
+             ├── derive_regime_with_stress(closes, highs, lows, atr, last_regime_enum)
+             │       → Stress / Aftermath / TrendUp / TrendDown / Chop / Compression / Expansion
+             ├── derive_stacked_imbalance(recent_deltas)  → ImbalanceSide
+             ├── derive_mss_and_sweep(highs, lows, closes) → (mss_active, sweep_confirmed)
+             ├── derive_swing_highs_lows(highs, lows)      → (swing_high_20, swing_low_20)
              ├── build_context()     → StrategyMarketContext
              ├── run_strategy_detection()
              │       ├── bar_index += 1
              │       ├── router.evaluate(ctx)
              │       └── cooldown checks + signal registration
+             ├── self.last_regime_enum = ctx.regime  (persiste para Aftermath)
              └── update_chart_state() → render triggers
 ```
 
 ---
 
-*Documento generado automáticamente a partir del estado del codebase en 2026-05-18.*
-*Para actualizar: editar secciones modificadas después de cada sprint.*
+*Documento de referencia del codebase. Actualizado tras cada sprint de implementación.*

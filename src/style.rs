@@ -756,35 +756,35 @@ pub fn dashed_line(theme: &'_ Theme) -> Stroke<'_> {
 
     Stroke::with_color(
         Stroke {
-            width: 1.0,
+            width: 0.8,
             line_dash: LineDash {
-                segments: &[4.0, 4.0],
+                segments: &[3.0, 4.0],
                 offset: 8,
             },
             ..Default::default()
         },
-        palette
-            .secondary
-            .strong
-            .color
-            .scale_alpha(if palette.is_dark { 0.8 } else { 1.0 }),
+        if palette.is_dark {
+            iced::Color::from_rgba(1.0, 1.0, 1.0, 0.25)
+        } else {
+            iced::Color::from_rgba(0.0, 0.0, 0.0, 0.30)
+        },
     )
 }
 
 pub fn dashed_line_from_palette(palette: &'_ Extended) -> Stroke<'_> {
     Stroke::with_color(
         Stroke {
-            width: 1.0,
+            width: 0.8,
             line_dash: LineDash {
-                segments: &[4.0, 4.0],
+                segments: &[3.0, 4.0],
                 offset: 8,
             },
             ..Default::default()
         },
-        palette
-            .secondary
-            .strong
-            .color
-            .scale_alpha(if palette.is_dark { 0.8 } else { 1.0 }),
+        if palette.is_dark {
+            iced::Color::from_rgba(1.0, 1.0, 1.0, 0.25)
+        } else {
+            iced::Color::from_rgba(0.0, 0.0, 0.0, 0.30)
+        },
     )
 }

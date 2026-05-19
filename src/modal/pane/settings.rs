@@ -589,9 +589,33 @@ pub fn kline_cfg_view<'a>(
                 .label("Session Lines (Asia / London / New York)")
                 .on_toggle(move |_| Message::PaneEvent(pane, Event::ToggleSessionLines));
 
+            let order_blocks = checkbox(cfg.show_order_blocks)
+                .label("Order Blocks (Bullish / Bearish zones)")
+                .on_toggle(move |_| Message::PaneEvent(pane, Event::ToggleOrderBlocks));
+
+            let fvgs = checkbox(cfg.show_fvgs)
+                .label("Fair Value Gaps (Imbalance zones)")
+                .on_toggle(move |_| Message::PaneEvent(pane, Event::ToggleFvgs));
+
+            let structure = checkbox(cfg.show_structure)
+                .label("Market Structure (BOS / CHoCH + Premium/Discount)")
+                .on_toggle(move |_| Message::PaneEvent(pane, Event::ToggleStructure));
+
+            let liq_map = checkbox(cfg.show_liq_map)
+                .label("Liquidity Map (Stop cluster levels)")
+                .on_toggle(move |_| Message::PaneEvent(pane, Event::ToggleLiqMap));
+
             column![
                 text("Display Options").size(14),
-                column![key_levels, session_lines].spacing(6),
+                column![
+                    key_levels,
+                    session_lines,
+                    order_blocks,
+                    fvgs,
+                    structure,
+                    liq_map
+                ]
+                .spacing(6),
             ]
             .spacing(8)
         }

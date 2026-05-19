@@ -338,6 +338,18 @@ pub struct Config {
     pub show_session_lines: bool,
     #[serde(default)]
     pub strategy_overlay_enabled: bool,
+    #[serde(default = "default_true")]
+    pub show_order_blocks: bool,
+    #[serde(default = "default_true")]
+    pub show_fvgs: bool,
+    #[serde(default = "default_true")]
+    pub show_structure: bool,
+    #[serde(default = "default_true")]
+    pub show_liq_map: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -346,6 +358,10 @@ impl Default for Config {
             show_key_levels: true,
             show_session_lines: true,
             strategy_overlay_enabled: false,
+            show_order_blocks: true,
+            show_fvgs: true,
+            show_structure: true,
+            show_liq_map: true,
         }
     }
 }

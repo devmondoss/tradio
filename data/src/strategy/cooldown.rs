@@ -38,15 +38,22 @@ fn strategy_key(id: StrategyId) -> u8 {
         StrategyId::ValueAreaFailedAuction => 0,
         StrategyId::VwapValuePullbackContinuation => 1,
         StrategyId::LvnLiquidityVacuumBreakout => 2,
-        StrategyId::LiquidationHunt => 3,
-        StrategyId::FundingExhaustionReversal => 4,
-        StrategyId::SmartMoneyDivergence => 5,
+        StrategyId::DomImbalanceBreakout => 3,
+        StrategyId::SessionOpenBreakout => 4,
+        StrategyId::OrderBlockRetest => 5,
+        StrategyId::FootprintAbsorptionReversal => 6,
+        StrategyId::LiquidationHunt => 7,
+        StrategyId::FundingExhaustionReversal => 8,
+        StrategyId::SmartMoneyDivergence => 9,
     }
 }
 
 impl CooldownRegistry {
     pub fn new(cooldown_bars: u64) -> Self {
-        Self { entries: HashMap::new(), cooldown_bars }
+        Self {
+            entries: HashMap::new(),
+            cooldown_bars,
+        }
     }
 
     /// Registra que una estrategia emitió en `bar_index`.
@@ -59,7 +66,11 @@ impl CooldownRegistry {
     ) {
         self.entries.insert(
             strategy_key(id),
-            CooldownEntry { last_signal_bar: bar_index, last_signal_side: side, last_signal_price: price },
+            CooldownEntry {
+                last_signal_bar: bar_index,
+                last_signal_side: side,
+                last_signal_price: price,
+            },
         );
     }
 
@@ -89,6 +100,10 @@ impl CooldownRegistry {
             ValueAreaFailedAuction,
             VwapValuePullbackContinuation,
             LvnLiquidityVacuumBreakout,
+            DomImbalanceBreakout,
+            SessionOpenBreakout,
+            OrderBlockRetest,
+            FootprintAbsorptionReversal,
             LiquidationHunt,
             FundingExhaustionReversal,
             SmartMoneyDivergence,

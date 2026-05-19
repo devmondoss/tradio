@@ -21,16 +21,20 @@ fn nearest_below(levels: &[f64], price: f64) -> Option<f64> {
 
 // Note: toxic_flow_gate is evaluated once in the router before calling any detector.
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
-
     let px = ctx.price;
     let atr = ctx.atr.unwrap_or(0.0);
     let vp = &ctx.volume_profile;
     let vw = &ctx.vwap;
     let flow = &ctx.flow;
     let ob = &ctx.orderbook;
+    let lvn_nearby = vp
+        .lvn_nearby
+        .iter()
+        .any(|&lvl| lvl.is_finite() && atr > 0.0 && (lvl - px).abs() <= atr);
 
     // LONG: thin zone above, flow confirms
     let long_location = ob.thin_zone_above
+        && lvn_nearby
         && matches!(vw.price_vs_vwap, PriceRelation::Above | PriceRelation::At)
         && matches!(
             vp.value_location,
@@ -81,6 +85,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                     score: 0.0,
                     ttl_ms: cfg.default_ttl_ms,
                     evidence: vec![
+                        "lvn_nearby".into(),
                         "thin_zone_above".into(),
                         "vwap_reclaim_or_above".into(),
                         "positive_delta".into(),
@@ -101,6 +106,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     // SHORT: thin zone below, flow confirms
     let short_location = ob.thin_zone_below
+        && lvn_nearby
         && matches!(vw.price_vs_vwap, PriceRelation::Below | PriceRelation::At)
         && matches!(
             vp.value_location,
@@ -151,6 +157,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                     score: 0.0,
                     ttl_ms: cfg.default_ttl_ms,
                     evidence: vec![
+                        "lvn_nearby".into(),
                         "thin_zone_below".into(),
                         "vwap_loss_or_below".into(),
                         "negative_delta".into(),
@@ -224,6 +231,7 @@ mod tests {
                 ask_wall_nearby: false,
                 price_action_clean: true,
                 fast_slope: None,
+                footprint_levels: vec![],
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.10),
@@ -273,6 +281,7 @@ mod tests {
         // With vwap_session=3460 and atr=30: stop = min(max(3460, 3452.5), 3475) = 3460, risk=30.
         ctx.vwap.vwap_session = Some(3460.0);
         ctx.volume_profile.value_location = ValueLocation::BelowVal;
+        ctx.volume_profile.lvn_nearby = vec![3425.0];
         // Set val below entry so target = 3390, reward = 40 → R:R = 40/30 = 1.33 ≥ 1.0.
         ctx.volume_profile.val = Some(3390.0);
         ctx.flow.delta = Some(-250.0);
@@ -295,6 +304,17 @@ mod tests {
     }
 
     #[test]
+    fn rejects_if_no_lvn_near_price() {
+        let mut ctx = base_long_ctx();
+        ctx.volume_profile.lvn_nearby = vec![];
+        let cfg = StrategyConfig::default();
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "LVN breakout requires nearby LVN"
+        );
+    }
+
+    #[test]
     fn rejects_if_cvd_contradicts() {
         let mut ctx = base_long_ctx();
         ctx.flow.cvd_slope = Some(-0.3);
@@ -307,7 +327,10 @@ mod tests {
         let mut ctx = base_long_ctx();
         ctx.flow.ask_wall_nearby = true;
         let cfg = StrategyConfig::default();
-        assert!(detect(&ctx, &cfg).is_none(), "ask wall above = resistance, long blocked");
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "ask wall above = resistance, long blocked"
+        );
     }
 
     #[test]
@@ -320,12 +343,16 @@ mod tests {
         ctx.vwap.price_vs_vwap = PriceRelation::Below;
         ctx.vwap.vwap_session = Some(3460.0);
         ctx.volume_profile.value_location = ValueLocation::BelowVal;
+        ctx.volume_profile.lvn_nearby = vec![3425.0];
         ctx.volume_profile.val = Some(3390.0);
         ctx.flow.delta = Some(-250.0);
         ctx.flow.cvd_slope = Some(-0.5);
         ctx.flow.stacked_imbalance = ImbalanceSide::Bearish;
         ctx.flow.bid_wall_nearby = true; // bid wall below = support = blocks breakdown
         let cfg = StrategyConfig::default();
-        assert!(detect(&ctx, &cfg).is_none(), "bid wall below = support, short blocked");
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "bid wall below = support, short blocked"
+        );
     }
 }

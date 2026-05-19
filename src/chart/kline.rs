@@ -58,15 +58,34 @@ impl Chart for KlineChart {
         }
 
         let market = chart_state.ticker_info.market_type();
-        let mut elements = vec![];
 
-        for selected_indicator in enabled {
-            if !KlineIndicator::for_market(market).contains(selected_indicator) {
-                continue;
+        // Canonical sub-panel display order
+        fn display_priority(k: KlineIndicator) -> u8 {
+            match k {
+                KlineIndicator::CumulativeDelta => 0,
+                KlineIndicator::Volume => 1,
+                KlineIndicator::OpenInterest => 2,
+                KlineIndicator::OiDelta => 3,
+                KlineIndicator::OiZScore => 4,
+                KlineIndicator::FundingRate => 5,
+                KlineIndicator::RelativeVolume => 6,
+                KlineIndicator::Atr => 7,
+                _ => 255, // overlays — won't reach render
             }
-            if indicator::kline::is_overlay_indicator(*selected_indicator) {
-                continue;
-            }
+        }
+
+        let mut sorted: Vec<KlineIndicator> = enabled
+            .iter()
+            .copied()
+            .filter(|k| {
+                KlineIndicator::for_market(market).contains(k)
+                    && !indicator::kline::is_overlay_indicator(*k)
+            })
+            .collect();
+        sorted.sort_by_key(|k| display_priority(*k));
+
+        let mut elements = vec![];
+        for selected_indicator in &sorted {
             if let Some(indi) = self.indicators[*selected_indicator].as_ref() {
                 elements.push(indi.element(chart_state, earliest..=latest));
             }
@@ -174,14 +193,96 @@ pub struct KlineChart {
     pub strategy_overlay_enabled: bool,
     pub last_depth: Option<exchange::depth::Depth>,
     pub last_regime: String,
+    last_regime_enum: crate::strategy::types::Regime,
     pub config: data::chart::kline::Config,
     outcome_tracker: crate::strategy::tracker::OutcomeTracker,
     paper_account: crate::strategy::paper::PaperAccount,
     ms_tracker: data::structure::MarketStructureTracker,
+    ms_context: Option<data::structure::MarketStructureContext>,
+    structure_breaks: Vec<data::structure::StructureBreak>,
     ob_detector: data::detectors::OrderBlockDetector,
+    ob_context: Option<data::detectors::OrderBlockContext>,
     fvg_detector: data::detectors::FvgDetector,
+    fvg_context: Option<data::detectors::FvgContext>,
+    liq_map_tracker: data::institutional::LiqMapTracker,
+    liq_map_snapshot: Option<data::institutional::LiqMapSnapshot>,
+    funding_tracker: data::institutional::FundingTracker,
+    oi_tracker: data::institutional::OiTracker,
     cooldown_registry: data::strategy::cooldown::CooldownRegistry,
     bar_index: u64,
+}
+
+struct DetectorBootstrap {
+    ms_tracker: data::structure::MarketStructureTracker,
+    ms_context: Option<data::structure::MarketStructureContext>,
+    structure_breaks: Vec<data::structure::StructureBreak>,
+    ob_detector: data::detectors::OrderBlockDetector,
+    ob_context: Option<data::detectors::OrderBlockContext>,
+    fvg_detector: data::detectors::FvgDetector,
+    fvg_context: Option<data::detectors::FvgContext>,
+    liq_map_tracker: data::institutional::LiqMapTracker,
+    liq_map_snapshot: Option<data::institutional::LiqMapSnapshot>,
+}
+
+fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
+    let mut ms_tracker = data::structure::MarketStructureTracker::new(200, 3);
+    let mut ob_detector = data::detectors::OrderBlockDetector::new(100);
+    let mut fvg_detector = data::detectors::FvgDetector::new(100);
+
+    for kline in klines {
+        let o = kline.open.to_f32() as f64;
+        let h = kline.high.to_f32() as f64;
+        let l = kline.low.to_f32() as f64;
+        let c = kline.close.to_f32() as f64;
+        let v = kline.volume.total().to_f32_lossy() as f64;
+        let ts = kline.time.as_u64() as i64;
+        ms_tracker.push_bar(o, h, l, c, ts);
+        ob_detector.push_bar(o, h, l, c, v, ts);
+        fvg_detector.push_bar(h, l, ts);
+    }
+
+    let last_price = klines
+        .last()
+        .map(|k| k.close.to_f32() as f64)
+        .unwrap_or(0.0);
+    let last_ts = klines.last().map(|k| k.time.as_u64() as i64).unwrap_or(0);
+
+    let ms_snap = ms_tracker.snapshot();
+    let mut structure_breaks = Vec::new();
+    if let Some(ref ms) = ms_snap {
+        if let Some(ref b) = ms.last_event {
+            structure_breaks.push(b.clone());
+        }
+    }
+
+    let ob_context = if last_price > 0.0 {
+        Some(ob_detector.snapshot(last_price))
+    } else {
+        None
+    };
+    let fvg_context = if last_price > 0.0 {
+        Some(fvg_detector.snapshot(last_price))
+    } else {
+        None
+    };
+
+    let mut liq_map_tracker = data::institutional::LiqMapTracker::new();
+    if let (Some(ms), true) = (&ms_snap, last_price > 0.0) {
+        liq_map_tracker.update(last_price, ms.range_high, ms.range_low, 0.0, last_ts);
+    }
+    let liq_map_snapshot = Some(liq_map_tracker.snapshot().clone());
+
+    DetectorBootstrap {
+        ms_context: ms_snap,
+        structure_breaks,
+        ms_tracker,
+        ob_detector,
+        ob_context,
+        fvg_detector,
+        fvg_context,
+        liq_map_tracker,
+        liq_map_snapshot,
+    }
 }
 
 impl KlineChart {
@@ -265,6 +366,8 @@ impl KlineChart {
                     indicators[i] = Some(indi);
                 }
 
+                let boot = bootstrap_detectors(klines_raw);
+
                 KlineChart {
                     chart,
                     data_source,
@@ -279,12 +382,21 @@ impl KlineChart {
                     strategy_overlay_enabled: config.strategy_overlay_enabled,
                     last_depth: None,
                     last_regime: String::new(),
+                    last_regime_enum: crate::strategy::types::Regime::Unknown,
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
-                    ms_tracker: data::structure::MarketStructureTracker::new(200, 3),
-                    ob_detector: data::detectors::OrderBlockDetector::new(100),
-                    fvg_detector: data::detectors::FvgDetector::new(100),
+                    ms_tracker: boot.ms_tracker,
+                    ms_context: boot.ms_context,
+                    structure_breaks: boot.structure_breaks,
+                    ob_detector: boot.ob_detector,
+                    ob_context: boot.ob_context,
+                    fvg_detector: boot.fvg_detector,
+                    fvg_context: boot.fvg_context,
+                    liq_map_tracker: boot.liq_map_tracker,
+                    liq_map_snapshot: boot.liq_map_snapshot,
+                    funding_tracker: data::institutional::FundingTracker::new(),
+                    oi_tracker: data::institutional::OiTracker::new(),
                     cooldown_registry: data::strategy::cooldown::CooldownRegistry::new(5),
                     bar_index: 0,
                 }
@@ -333,6 +445,8 @@ impl KlineChart {
                     indicators[i] = Some(indi);
                 }
 
+                let boot = bootstrap_detectors(klines_raw);
+
                 KlineChart {
                     chart,
                     data_source,
@@ -347,12 +461,21 @@ impl KlineChart {
                     strategy_overlay_enabled: config.strategy_overlay_enabled,
                     last_depth: None,
                     last_regime: String::new(),
+                    last_regime_enum: crate::strategy::types::Regime::Unknown,
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
-                    ms_tracker: data::structure::MarketStructureTracker::new(200, 3),
-                    ob_detector: data::detectors::OrderBlockDetector::new(100),
-                    fvg_detector: data::detectors::FvgDetector::new(100),
+                    ms_tracker: boot.ms_tracker,
+                    ms_context: boot.ms_context,
+                    structure_breaks: boot.structure_breaks,
+                    ob_detector: boot.ob_detector,
+                    ob_context: boot.ob_context,
+                    fvg_detector: boot.fvg_detector,
+                    fvg_context: boot.fvg_context,
+                    liq_map_tracker: boot.liq_map_tracker,
+                    liq_map_snapshot: boot.liq_map_snapshot,
+                    funding_tracker: data::institutional::FundingTracker::new(),
+                    oi_tracker: data::institutional::OiTracker::new(),
                     cooldown_registry: data::strategy::cooldown::CooldownRegistry::new(5),
                     bar_index: 0,
                 }
@@ -736,6 +859,20 @@ impl KlineChart {
                         .mark_failed(req_id, "No data received".to_string());
                 } else {
                     self.request_handler.mark_completed(req_id);
+                    // Bootstrap OB/FVG/Structure detectors on first historical load.
+                    // Chart is created with &[] so detectors have no context until here.
+                    if self.ob_context.is_none() {
+                        let boot = bootstrap_detectors(klines_raw);
+                        self.ms_tracker = boot.ms_tracker;
+                        self.ms_context = boot.ms_context;
+                        self.structure_breaks = boot.structure_breaks;
+                        self.ob_detector = boot.ob_detector;
+                        self.ob_context = boot.ob_context;
+                        self.fvg_detector = boot.fvg_detector;
+                        self.fvg_context = boot.fvg_context;
+                        self.liq_map_tracker = boot.liq_map_tracker;
+                        self.liq_map_snapshot = boot.liq_map_snapshot;
+                    }
                 }
                 self.invalidate(None);
             }
@@ -753,10 +890,22 @@ impl KlineChart {
             }
         }
 
-        for key in [KlineIndicator::OpenInterest, KlineIndicator::OiDelta, KlineIndicator::OiZScore] {
+        for key in [
+            KlineIndicator::OpenInterest,
+            KlineIndicator::OiDelta,
+            KlineIndicator::OiZScore,
+        ] {
             if let Some(indi) = self.indicators[key].as_mut() {
                 indi.on_open_interest(oi_data);
             }
+        }
+
+        // Alimentar OiTracker institucional
+        for oi in oi_data {
+            self.oi_tracker.push(data::institutional::OiHistSnapshot {
+                timestamp_ms: oi.time.as_u64() as i64,
+                open_interest_usd: oi.value as f64,
+            });
         }
     }
 
@@ -772,6 +921,15 @@ impl KlineChart {
 
         if let Some(indi) = self.indicators[KlineIndicator::FundingRate].as_mut() {
             indi.on_funding_rate(data);
+        }
+
+        // Alimentar FundingTracker institucional
+        for fr in data {
+            self.funding_tracker
+                .push(data::institutional::FundingRateSample {
+                    timestamp_ms: fr.time.as_u64() as i64,
+                    rate: fr.rate as f64,
+                });
         }
     }
 
@@ -1086,9 +1244,10 @@ impl KlineChart {
             .map(|(b, s)| (Some(b), Some(s)))
             .unwrap_or((None, None));
 
-        // Extract recent candles for regime + failed-acceptance detection
+        // Extract recent candles: REGIME_N bars for closes, highs, lows (oldest-first).
+        // Highs/lows expanded to REGIME_N for swing pivot detection, MSS, sweep, and stress regime.
+        // Delta slice aligned index-for-index with recent_highs/recent_lows.
         const REGIME_N: usize = 20;
-        const FA_N: usize = 5;
         let (recent_closes, recent_highs, recent_lows): (Vec<f64>, Vec<f64>, Vec<f64>) =
             match &self.data_source {
                 PlotData::TimeBased(ts) => {
@@ -1106,7 +1265,7 @@ impl KlineChart {
                         .datapoints
                         .values()
                         .rev()
-                        .take(FA_N)
+                        .take(REGIME_N)
                         .map(|dp| dp.kline.high.to_f32() as f64)
                         .collect::<Vec<_>>()
                         .into_iter()
@@ -1116,7 +1275,7 @@ impl KlineChart {
                         .datapoints
                         .values()
                         .rev()
-                        .take(FA_N)
+                        .take(REGIME_N)
                         .map(|dp| dp.kline.low.to_f32() as f64)
                         .collect::<Vec<_>>()
                         .into_iter()
@@ -1139,7 +1298,7 @@ impl KlineChart {
                         .datapoints
                         .iter()
                         .rev()
-                        .take(FA_N)
+                        .take(REGIME_N)
                         .map(|dp| dp.kline.high.to_f32() as f64)
                         .collect::<Vec<_>>()
                         .into_iter()
@@ -1149,7 +1308,7 @@ impl KlineChart {
                         .datapoints
                         .iter()
                         .rev()
-                        .take(FA_N)
+                        .take(REGIME_N)
                         .map(|dp| dp.kline.low.to_f32() as f64)
                         .collect::<Vec<_>>()
                         .into_iter()
@@ -1159,11 +1318,21 @@ impl KlineChart {
                 }
             };
 
-        let regime = adapter::derive_regime(&recent_closes, atr.unwrap_or(0.0));
-        // Delta slice aligned index-for-index with recent_highs/recent_lows (oldest-first).
+        let atr_f64 = atr.unwrap_or(0.0);
+        let regime = adapter::derive_regime_with_stress(
+            &recent_closes,
+            &recent_highs,
+            &recent_lows,
+            atr_f64,
+            self.last_regime_enum,
+        );
+
+        // Delta slice oldest-first, aligned index-for-index with recent_highs/recent_lows.
+        // Only the most recent REGIME_N bars are available; absorption falls back to Unknown
+        // for bars where the delta slice is shorter than the highs/lows slice.
         let recent_deltas: Vec<f64> = self.indicators[KlineIndicator::CumulativeDelta]
             .as_ref()
-            .map(|i| i.recent_delta_slice(FA_N))
+            .map(|i| i.recent_delta_slice(REGIME_N))
             .unwrap_or_default();
         let (failed_acceptance, footprint_absorption) =
             adapter::derive_failed_acceptance_and_absorption(
@@ -1177,7 +1346,6 @@ impl KlineChart {
             );
         let cvd_divergence = adapter::derive_cvd_divergence(&recent_highs, &recent_lows, cvd_slope);
 
-        let atr_f64 = atr.unwrap_or(0.0);
         let bid_wall_nearby = adapter::wall_nearby(&orderbook.walls_below, price, atr_f64);
         let ask_wall_nearby = adapter::wall_nearby(&orderbook.walls_above, price, atr_f64);
         let price_action_clean = {
@@ -1185,6 +1353,10 @@ impl KlineChart {
             let recent_5 = &recent_closes[n.saturating_sub(5)..];
             adapter::count_price_reversals(recent_5) <= 2
         };
+
+        let stacked_imbalance = adapter::derive_stacked_imbalance(&recent_deltas);
+        let (mss_active, sweep_confirmed) =
+            adapter::derive_mss_and_sweep(&recent_highs, &recent_lows, &recent_closes);
 
         let flow = adapter::build_flow_context(
             cvd,
@@ -1203,21 +1375,100 @@ impl KlineChart {
             bid_wall_nearby,
             ask_wall_nearby,
             price_action_clean,
-            false, // mss_active — not tracked in GUI chart
-            false, // sweep_confirmed — not tracked in GUI chart
+            stacked_imbalance,
+            mss_active,
+            sweep_confirmed,
             None, // fast_slope — not available in GUI chart
         );
 
         // Alimentar trackers con la vela cerrada y obtener sus snapshots
-        self.ms_tracker.push_bar(bar_open, bar_high, bar_low, bar_close, bar_ts_ms);
+        self.ms_tracker
+            .push_bar(bar_open, bar_high, bar_low, bar_close, bar_ts_ms);
         let bar_volume = buy_vol.unwrap_or(0.0) + sell_vol.unwrap_or(0.0);
-        self.ob_detector.push_bar(bar_open, bar_high, bar_low, bar_close, bar_volume, bar_ts_ms);
+        self.ob_detector.push_bar(
+            bar_open, bar_high, bar_low, bar_close, bar_volume, bar_ts_ms,
+        );
         self.fvg_detector.push_bar(bar_high, bar_low, bar_ts_ms);
 
         let market_structure = self.ms_tracker.snapshot();
-        let order_blocks = Some(self.ob_detector.snapshot(price));
-        let fvg = Some(self.fvg_detector.snapshot(price));
+
+        // Guardar contexto de estructura y acumular breaks históricos (max 30)
+        if let Some(ref ms) = market_structure {
+            if let Some(ref new_break) = ms.last_event {
+                let already_recorded = self
+                    .structure_breaks
+                    .last()
+                    .map(|b| b.timestamp_ms == new_break.timestamp_ms)
+                    .unwrap_or(false);
+                if !already_recorded {
+                    self.structure_breaks.push(new_break.clone());
+                    if self.structure_breaks.len() > 30 {
+                        self.structure_breaks.remove(0);
+                    }
+                }
+            }
+            self.ms_context = Some(ms.clone());
+        }
+
+        let ob_snap = self.ob_detector.snapshot(price);
+        self.ob_context = Some(ob_snap.clone());
+        let order_blocks = Some(ob_snap);
+
+        let fvg_snap = self.fvg_detector.snapshot(price);
+        self.fvg_context = Some(fvg_snap.clone());
+        let fvg = Some(fvg_snap);
+
+        // Alimentar LiqMapTracker con swings del ms_context y OI actual
+        {
+            let swing_high = self.ms_context.as_ref().and_then(|ms| ms.range_high);
+            let swing_low = self.ms_context.as_ref().and_then(|ms| ms.range_low);
+            let oi_current = self.indicators[KlineIndicator::OpenInterest]
+                .as_ref()
+                .and_then(|i| i.oi_snapshot())
+                .and_then(|v| v.last().map(|o| o.value as f64))
+                .unwrap_or(0.0);
+            self.liq_map_tracker
+                .update(price, swing_high, swing_low, oi_current, bar_ts_ms);
+            self.liq_map_snapshot = Some(self.liq_map_tracker.snapshot().clone());
+        }
         let session = Some(classify_session(bar_ts_ms));
+
+        // Construir InstitutionalContext con los trackers disponibles.
+        // L/S ratios y liquidaciones quedan en Default (sin connector wired aún).
+        let institutional = {
+            let funding = self.funding_tracker.snapshot();
+            let oi_trend = self.oi_tracker.snapshot();
+            let ls_ratio = data::institutional::LsRatioContext::default();
+            let liquidations = data::institutional::LiquidationSnapshot::default();
+
+            let quality = if funding.current != 0.0 && oi_trend.current > 0.0 {
+                data::strategy::types::DataQuality::Degraded // Partial — missing L/S + liqs
+            } else {
+                data::strategy::types::DataQuality::Missing
+            };
+
+            let sms = data::institutional::compute_smart_money_score(
+                &ls_ratio,
+                &oi_trend,
+                &funding,
+                &liquidations,
+            );
+
+            Some(data::institutional::InstitutionalContext {
+                timestamp_ms: bar_ts_ms,
+                liquidations,
+                ls_ratio,
+                oi_trend,
+                taker_ratio: None,
+                funding,
+                quality,
+                smart_money_score: Some(sms),
+                liq_map: self.liq_map_snapshot.clone(),
+            })
+        };
+
+        let (swing_high_20, swing_low_20) =
+            adapter::derive_swing_highs_lows(&recent_highs, &recent_lows);
 
         let ctx = StrategyMarketContext {
             symbol: self.chart.ticker_info.ticker.to_string(),
@@ -1229,13 +1480,14 @@ impl KlineChart {
             vwap,
             flow,
             orderbook,
-            institutional: None,
-            swing_high_20: None,
-            swing_low_20: None,
+            institutional,
+            swing_high_20,
+            swing_low_20,
             market_structure,
             session,
             order_blocks,
             fvg,
+            leverage: 0.0,
         };
 
         let cfg = StrategyConfig {
@@ -1247,6 +1499,7 @@ impl KlineChart {
         };
 
         self.last_regime = format!("{:?}", ctx.regime);
+        self.last_regime_enum = ctx.regime;
 
         self.bar_index += 1;
         let current_bar = self.bar_index;
@@ -1260,7 +1513,9 @@ impl KlineChart {
                 if !self.cooldown_registry.is_available(id, current_bar) {
                     let remaining = self.cooldown_registry.bars_remaining(id, current_bar);
                     signal.action = StrategyAction::Wait;
-                    signal.missing.push(format!("COOLDOWN_ACTIVE:{remaining}_bars_remaining"));
+                    signal
+                        .missing
+                        .push(format!("COOLDOWN_ACTIVE:{remaining}_bars_remaining"));
                 } else {
                     let side = match signal.side {
                         Some(Side::Long) => data::strategy::cooldown::SignalSide::Long,
@@ -1315,14 +1570,26 @@ impl KlineChart {
         use crate::strategy::snapshot::{PositionSnap, SignalSnap, StrategySnapshot, TradeSnap};
 
         let paper = &self.paper_account;
-        let wins = paper.closed_trades.iter().filter(|t| t.net_pnl > 0.0).count();
-        let losses = paper.closed_trades.iter().filter(|t| t.net_pnl <= 0.0).count();
+        let wins = paper
+            .closed_trades
+            .iter()
+            .filter(|t| t.net_pnl > 0.0)
+            .count();
+        let losses = paper
+            .closed_trades
+            .iter()
+            .filter(|t| t.net_pnl <= 0.0)
+            .count();
 
-        let current_price = self.chart.last_price.map(|lp| match lp {
-            crate::chart::scale::linear::PriceInfoLabel::Up(p) |
-            crate::chart::scale::linear::PriceInfoLabel::Down(p) |
-            crate::chart::scale::linear::PriceInfoLabel::Neutral(p) => p.to_f32() as f64,
-        }).unwrap_or(0.0);
+        let current_price = self
+            .chart
+            .last_price
+            .map(|lp| match lp {
+                crate::chart::scale::linear::PriceInfoLabel::Up(p)
+                | crate::chart::scale::linear::PriceInfoLabel::Down(p)
+                | crate::chart::scale::linear::PriceInfoLabel::Neutral(p) => p.to_f32() as f64,
+            })
+            .unwrap_or(0.0);
 
         let open_positions = paper
             .open_positions
@@ -1330,8 +1597,12 @@ impl KlineChart {
             .map(|p| {
                 let upnl_pct = if p.balance_at_open > 0.0 {
                     let upnl = match p.side {
-                        crate::strategy::types::Side::Long => p.size * (current_price - p.entry_price),
-                        crate::strategy::types::Side::Short => p.size * (p.entry_price - current_price),
+                        crate::strategy::types::Side::Long => {
+                            p.size * (current_price - p.entry_price)
+                        }
+                        crate::strategy::types::Side::Short => {
+                            p.size * (p.entry_price - current_price)
+                        }
                     };
                     upnl / p.balance_at_open * 100.0
                 } else {
@@ -1343,7 +1614,9 @@ impl KlineChart {
                     } else {
                         "Short".into()
                     },
-                    strategy_name: p.strategy_id.map_or("Unknown".into(), |id| format!("{id:?}")),
+                    strategy_name: p
+                        .strategy_id
+                        .map_or("Unknown".into(), |id| format!("{id:?}")),
                     entry_price: p.entry_price,
                     stop_price: p.stop_price,
                     target_price: p.target_price,
@@ -1360,15 +1633,13 @@ impl KlineChart {
                 strategy_name: s
                     .strategy_id
                     .map_or("Unknown".into(), |id| format!("{id:?}")),
-                side: s
-                    .side
-                    .map_or("?".into(), |side| {
-                        if side == crate::strategy::types::Side::Long {
-                            "Long".into()
-                        } else {
-                            "Short".into()
-                        }
-                    }),
+                side: s.side.map_or("?".into(), |side| {
+                    if side == crate::strategy::types::Side::Long {
+                        "Long".into()
+                    } else {
+                        "Short".into()
+                    }
+                }),
                 score: s.score,
                 evidence: s.evidence.clone(),
                 missing: s.missing.clone(),
@@ -1380,10 +1651,7 @@ impl KlineChart {
             .rev()
             .take(5)
             .map(|t| TradeSnap {
-                strategy_name: t
-                    .strategy_id
-                    .clone()
-                    .unwrap_or_else(|| "Unknown".into()),
+                strategy_name: t.strategy_id.clone().unwrap_or_else(|| "Unknown".into()),
                 side: t.side.clone(),
                 close_reason: t.close_reason.clone(),
                 net_pnl: t.net_pnl,
@@ -1573,7 +1841,10 @@ impl KlineChart {
                 frame.stroke(
                     &path,
                     Stroke::with_color(
-                        Stroke { width: 1.5, ..Default::default() },
+                        Stroke {
+                            width: 1.5,
+                            ..Default::default()
+                        },
                         color,
                     ),
                 );
@@ -1670,6 +1941,428 @@ impl KlineChart {
                     );
                 }
             }
+        }
+    }
+
+    fn draw_liq_map(
+        &self,
+        frame: &mut canvas::Frame,
+        region: &Rectangle,
+        price_to_y: impl Fn(Price) -> f32,
+    ) {
+        let Some(ref snap) = self.liq_map_snapshot else {
+            return;
+        };
+
+        let right_x = region.x + region.width;
+        // Density threshold — skip noise below this
+        const MIN_DENSITY: f32 = 0.15;
+
+        for level in snap.density_above.iter().chain(snap.density_below.iter()) {
+            if level.density < MIN_DENSITY {
+                continue;
+            }
+
+            let y = price_to_y(Price::from_f32(level.price as f32));
+            if !y.is_finite() {
+                continue;
+            }
+
+            let is_primary = snap
+                .primary_target_above
+                .map(|p| (p - level.price).abs() < 0.01)
+                .unwrap_or(false)
+                || snap
+                    .primary_target_below
+                    .map(|p| (p - level.price).abs() < 0.01)
+                    .unwrap_or(false);
+
+            // Opacity y grosor escalan con densidad; primario = más visible
+            let alpha = if is_primary {
+                0.85
+            } else {
+                (level.density * 0.70).clamp(0.15, 0.65)
+            };
+            let width = if is_primary { 1.5 } else { 0.8 };
+
+            let color = Color::from_rgba(1.0, 0.82, 0.10, alpha); // gold
+
+            let stroke = Stroke {
+                style: canvas::stroke::Style::Solid(color),
+                width,
+                line_dash: LineDash {
+                    segments: &[6.0, 3.0],
+                    offset: 0,
+                },
+                ..Default::default()
+            };
+            frame.stroke(
+                &Path::line(Point::new(region.x, y), Point::new(right_x, y)),
+                stroke,
+            );
+
+            // Etiqueta en el target principal
+            if is_primary {
+                let label = if snap
+                    .primary_target_above
+                    .map(|p| (p - level.price).abs() < 0.01)
+                    .unwrap_or(false)
+                {
+                    "LIQ↑"
+                } else {
+                    "LIQ↓"
+                };
+                frame.fill_text(canvas::Text {
+                    content: label.to_string(),
+                    position: Point::new(right_x - 4.0, y - 2.0),
+                    size: iced::Pixels(TEXT_SIZE * 0.78),
+                    color,
+                    align_x: iced::alignment::Horizontal::Right.into(),
+                    align_y: iced::alignment::Vertical::Bottom,
+                    font: style::AZERET_MONO,
+                    ..canvas::Text::default()
+                });
+            }
+        }
+    }
+
+    fn draw_fvgs(
+        &self,
+        frame: &mut canvas::Frame,
+        region: &Rectangle,
+        earliest: u64,
+        interval_to_x: impl Fn(u64) -> f32,
+        price_to_y: impl Fn(Price) -> f32,
+    ) {
+        let Some(ref ctx) = self.fvg_context else {
+            return;
+        };
+
+        let right_x = region.x + region.width;
+
+        let all_fvgs = ctx.bullish_fvgs.iter().chain(ctx.bearish_fvgs.iter());
+
+        for fvg in all_fvgs {
+            let (fill_color, border_color) = match (&fvg.fvg_type, &fvg.status) {
+                (data::detectors::FvgType::Bullish, data::detectors::FvgStatus::Unfilled) => (
+                    Color::from_rgba(0.10, 0.78, 0.80, 0.14),
+                    Color::from_rgba(0.10, 0.78, 0.80, 0.60),
+                ),
+                (
+                    data::detectors::FvgType::Bullish,
+                    data::detectors::FvgStatus::PartiallyFilled,
+                ) => (
+                    Color::from_rgba(0.10, 0.78, 0.80, 0.07),
+                    Color::from_rgba(0.10, 0.78, 0.80, 0.30),
+                ),
+                (data::detectors::FvgType::Bearish, data::detectors::FvgStatus::Unfilled) => (
+                    Color::from_rgba(0.95, 0.55, 0.10, 0.14),
+                    Color::from_rgba(0.95, 0.55, 0.10, 0.60),
+                ),
+                (
+                    data::detectors::FvgType::Bearish,
+                    data::detectors::FvgStatus::PartiallyFilled,
+                ) => (
+                    Color::from_rgba(0.95, 0.55, 0.10, 0.07),
+                    Color::from_rgba(0.95, 0.55, 0.10, 0.30),
+                ),
+                _ => continue, // Filled — skip
+            };
+
+            let ts = fvg.timestamp_ms as u64;
+            let x_left = if ts >= earliest {
+                interval_to_x(ts).max(region.x)
+            } else {
+                region.x
+            };
+            let y_top = price_to_y(Price::from_f32(fvg.high as f32));
+            let y_bottom = price_to_y(Price::from_f32(fvg.low as f32));
+
+            let width = right_x - x_left;
+            let height = y_bottom - y_top;
+
+            if width <= 0.0 || height <= 0.0 || !y_top.is_finite() || !y_bottom.is_finite() {
+                continue;
+            }
+
+            frame.fill_rectangle(
+                Point::new(x_left, y_top),
+                Size::new(width, height),
+                fill_color,
+            );
+
+            let stroke = Stroke {
+                style: canvas::stroke::Style::Solid(border_color),
+                width: 0.8,
+                ..Default::default()
+            };
+            frame.stroke(
+                &Path::line(Point::new(x_left, y_top), Point::new(right_x, y_top)),
+                stroke.clone(),
+            );
+            frame.stroke(
+                &Path::line(Point::new(x_left, y_bottom), Point::new(right_x, y_bottom)),
+                stroke,
+            );
+
+            // FVG label
+            let fvg_tag = match &fvg.status {
+                data::detectors::FvgStatus::Unfilled => "FVG",
+                data::detectors::FvgStatus::PartiallyFilled => "FVG~",
+                _ => "FVG",
+            };
+            frame.fill_text(canvas::Text {
+                content: fvg_tag.to_string(),
+                position: Point::new(right_x - 4.0, y_top + 2.0),
+                size: iced::Pixels(TEXT_SIZE * 0.72),
+                color: border_color,
+                align_x: iced::alignment::Horizontal::Right.into(),
+                align_y: iced::alignment::Vertical::Top,
+                font: style::AZERET_MONO,
+                ..canvas::Text::default()
+            });
+        }
+    }
+
+    fn draw_structure(
+        &self,
+        frame: &mut canvas::Frame,
+        region: &Rectangle,
+        earliest: u64,
+        latest: u64,
+        interval_to_x: impl Fn(u64) -> f32,
+        price_to_y: impl Fn(Price) -> f32,
+    ) {
+        let right_x = region.x + region.width;
+
+        // Premium / Discount zones from current ms_context
+        if let Some(ref ms) = self.ms_context {
+            // HTF bias label in top-right corner
+            let (bias_label, bias_color) = match ms.htf_bias {
+                data::structure::HtfBias::Bullish => {
+                    ("HTF: Bull", Color::from_rgba(0.25, 0.85, 0.45, 0.85))
+                }
+                data::structure::HtfBias::Bearish => {
+                    ("HTF: Bear", Color::from_rgba(0.90, 0.30, 0.30, 0.85))
+                }
+                data::structure::HtfBias::Neutral => {
+                    ("HTF: Neutral", Color::from_rgba(0.70, 0.70, 0.70, 0.70))
+                }
+            };
+            frame.fill_text(canvas::Text {
+                content: bias_label.to_string(),
+                position: Point::new(right_x - 8.0, region.y + 6.0),
+                size: iced::Pixels(TEXT_SIZE * 0.78),
+                color: bias_color,
+                align_x: iced::alignment::Horizontal::Right.into(),
+                align_y: iced::alignment::Vertical::Top,
+                font: style::AZERET_MONO,
+                ..canvas::Text::default()
+            });
+
+            if let (Some(rh), Some(premium), Some(discount), Some(rl)) = (
+                ms.range_high,
+                ms.premium_threshold,
+                ms.discount_threshold,
+                ms.range_low,
+            ) {
+                // Premium zone: price_range_high → premium_threshold
+                let y_rh = price_to_y(Price::from_f32(rh as f32));
+                let y_premium = price_to_y(Price::from_f32(premium as f32));
+                let premium_h = y_premium - y_rh;
+                if premium_h > 0.0 && y_rh.is_finite() && y_premium.is_finite() {
+                    frame.fill_rectangle(
+                        Point::new(region.x, y_rh),
+                        Size::new(region.width, premium_h),
+                        Color::from_rgba(0.90, 0.20, 0.20, 0.08),
+                    );
+                }
+
+                // Discount zone: discount_threshold → range_low
+                let y_discount = price_to_y(Price::from_f32(discount as f32));
+                let y_rl = price_to_y(Price::from_f32(rl as f32));
+                let discount_h = y_rl - y_discount;
+                if discount_h > 0.0 && y_discount.is_finite() && y_rl.is_finite() {
+                    frame.fill_rectangle(
+                        Point::new(region.x, y_discount),
+                        Size::new(region.width, discount_h),
+                        Color::from_rgba(0.20, 0.80, 0.30, 0.08),
+                    );
+                }
+            }
+        }
+
+        // BOS / CHoCH markers
+        for sb in &self.structure_breaks {
+            let ts = sb.timestamp_ms as u64;
+            if ts < earliest || ts > latest {
+                continue;
+            }
+
+            let x = interval_to_x(ts);
+            let y = price_to_y(Price::from_f32(sb.broken_level as f32));
+
+            if !x.is_finite() || !y.is_finite() {
+                continue;
+            }
+
+            let (label, color) = match (&sb.event, &sb.direction) {
+                (data::structure::StructureEvent::Bos, data::structure::HtfBias::Bullish) => {
+                    ("BOS", Color::from_rgba(0.25, 0.85, 0.45, 0.90))
+                }
+                (data::structure::StructureEvent::Bos, _) => {
+                    ("BOS", Color::from_rgba(0.90, 0.30, 0.30, 0.90))
+                }
+                (data::structure::StructureEvent::Choch, data::structure::HtfBias::Bullish) => {
+                    ("CHoCH", Color::from_rgba(0.35, 0.60, 1.0, 0.90))
+                }
+                (data::structure::StructureEvent::Choch, _) => {
+                    ("CHoCH", Color::from_rgba(0.85, 0.45, 1.0, 0.90))
+                }
+            };
+
+            // Línea horizontal punteada en el nivel roto
+            let h_stroke = Stroke {
+                style: canvas::stroke::Style::Solid(color.scale_alpha(0.40)),
+                width: 0.8,
+                line_dash: LineDash {
+                    segments: &[5.0, 3.0],
+                    offset: 0,
+                },
+                ..Default::default()
+            };
+            frame.stroke(
+                &Path::line(Point::new(x, y), Point::new(right_x, y)),
+                h_stroke,
+            );
+
+            // Label en el punto de ruptura
+            frame.fill_text(canvas::Text {
+                content: label.to_string(),
+                position: Point::new(x + 4.0, y - 2.0),
+                size: iced::Pixels(TEXT_SIZE * 0.80),
+                color,
+                align_x: iced::alignment::Horizontal::Left.into(),
+                align_y: iced::alignment::Vertical::Bottom,
+                font: style::AZERET_MONO,
+                ..canvas::Text::default()
+            });
+        }
+    }
+
+    fn draw_order_blocks(
+        &self,
+        frame: &mut canvas::Frame,
+        region: &Rectangle,
+        earliest: u64,
+        interval_to_x: impl Fn(u64) -> f32,
+        price_to_y: impl Fn(Price) -> f32,
+    ) {
+        let Some(ref ctx) = self.ob_context else {
+            return;
+        };
+
+        let right_x = region.x + region.width;
+
+        let all_obs = ctx.bullish_obs.iter().chain(ctx.bearish_obs.iter());
+
+        for ob in all_obs {
+            let (fill_color, border_color) = match (&ob.ob_type, &ob.status) {
+                (data::detectors::OBType::Bullish, data::detectors::OBStatus::Active) => (
+                    Color::from_rgba(0.20, 0.80, 0.40, 0.18),
+                    Color::from_rgba(0.20, 0.80, 0.40, 0.70),
+                ),
+                (data::detectors::OBType::Bullish, data::detectors::OBStatus::Tested) => (
+                    Color::from_rgba(0.20, 0.80, 0.40, 0.10),
+                    Color::from_rgba(0.20, 0.80, 0.40, 0.40),
+                ),
+                (data::detectors::OBType::Bullish, data::detectors::OBStatus::Mitigated) => (
+                    Color::from_rgba(0.20, 0.80, 0.40, 0.05),
+                    Color::from_rgba(0.20, 0.80, 0.40, 0.18),
+                ),
+                (data::detectors::OBType::Bearish, data::detectors::OBStatus::Active) => (
+                    Color::from_rgba(0.90, 0.28, 0.28, 0.18),
+                    Color::from_rgba(0.90, 0.28, 0.28, 0.70),
+                ),
+                (data::detectors::OBType::Bearish, data::detectors::OBStatus::Tested) => (
+                    Color::from_rgba(0.90, 0.28, 0.28, 0.10),
+                    Color::from_rgba(0.90, 0.28, 0.28, 0.40),
+                ),
+                (data::detectors::OBType::Bearish, data::detectors::OBStatus::Mitigated) => (
+                    Color::from_rgba(0.90, 0.28, 0.28, 0.05),
+                    Color::from_rgba(0.90, 0.28, 0.28, 0.18),
+                ),
+                _ => continue, // Invalidated — skip
+            };
+
+            let ts = ob.timestamp_ms as u64;
+            let x_left = if ts >= earliest {
+                interval_to_x(ts)
+            } else {
+                region.x
+            };
+            let x_left = x_left.max(region.x);
+            let y_top = price_to_y(Price::from_f32(ob.high as f32));
+            let y_bottom = price_to_y(Price::from_f32(ob.low as f32));
+
+            let width = right_x - x_left;
+            let height = y_bottom - y_top;
+
+            if width <= 0.0 || height <= 0.0 || !y_top.is_finite() || !y_bottom.is_finite() {
+                continue;
+            }
+
+            // Fill
+            frame.fill_rectangle(
+                Point::new(x_left, y_top),
+                Size::new(width, height),
+                fill_color,
+            );
+
+            // Border (top and bottom lines only — sides would look noisy)
+            let stroke = Stroke {
+                style: canvas::stroke::Style::Solid(border_color),
+                width: 1.0,
+                ..Default::default()
+            };
+            let top_line = Path::line(Point::new(x_left, y_top), Point::new(right_x, y_top));
+            let bot_line = Path::line(Point::new(x_left, y_bottom), Point::new(right_x, y_bottom));
+            frame.stroke(&top_line, stroke.clone());
+            frame.stroke(&bot_line, stroke);
+
+            // Mid-line (50% mitigation level) — dashed, very subtle
+            let y_mid = price_to_y(Price::from_f32(ob.mid as f32));
+            if y_mid.is_finite() {
+                let mid_stroke = Stroke {
+                    style: canvas::stroke::Style::Solid(border_color.scale_alpha(0.5)),
+                    width: 0.5,
+                    line_dash: LineDash {
+                        segments: &[4.0, 4.0],
+                        offset: 0,
+                    },
+                    ..Default::default()
+                };
+                let mid_line = Path::line(Point::new(x_left, y_mid), Point::new(right_x, y_mid));
+                frame.stroke(&mid_line, mid_stroke);
+            }
+
+            // OB label in top-right corner
+            let status_tag = match &ob.status {
+                data::detectors::OBStatus::Active => "OB",
+                data::detectors::OBStatus::Tested => "OB~",
+                data::detectors::OBStatus::Mitigated => "OB×",
+                _ => "OB",
+            };
+            frame.fill_text(canvas::Text {
+                content: status_tag.to_string(),
+                position: Point::new(right_x - 4.0, y_top + 2.0),
+                size: iced::Pixels(TEXT_SIZE * 0.72),
+                color: border_color,
+                align_x: iced::alignment::Horizontal::Right.into(),
+                align_y: iced::alignment::Vertical::Top,
+                font: style::AZERET_MONO,
+                ..canvas::Text::default()
+            });
         }
     }
 
@@ -1772,7 +2465,6 @@ impl KlineChart {
             );
         }
     }
-
 }
 
 impl canvas::Program<Message> for KlineChart {
@@ -1964,6 +2656,31 @@ impl canvas::Program<Message> for KlineChart {
                 price_to_y,
             );
 
+            if matches!(self.kind, KlineChartKind::Candles) {
+                if self.config.show_liq_map {
+                    self.draw_liq_map(frame, &region, price_to_y);
+                }
+
+                if self.config.show_fvgs {
+                    self.draw_fvgs(frame, &region, earliest, interval_to_x, price_to_y);
+                }
+
+                if self.config.show_structure {
+                    self.draw_structure(
+                        frame,
+                        &region,
+                        earliest,
+                        latest,
+                        interval_to_x,
+                        price_to_y,
+                    );
+                }
+
+                if self.config.show_order_blocks {
+                    self.draw_order_blocks(frame, &region, earliest, interval_to_x, price_to_y);
+                }
+            }
+
             if self.strategy_overlay_enabled {
                 Self::draw_strategy_overlay(
                     &self.strategy_signals,
@@ -2082,7 +2799,7 @@ fn draw_candle_dp(
     frame: &mut canvas::Frame,
     price_to_y: impl Fn(Price) -> f32,
     candle_width: f32,
-    palette: &Extended,
+    _palette: &Extended,
     x_position: f32,
     kline: &Kline,
 ) {
@@ -2091,26 +2808,23 @@ fn draw_candle_dp(
     let y_low = price_to_y(kline.low);
     let y_close = price_to_y(kline.close);
 
-    let body_color = if kline.close >= kline.open {
-        palette.success.base.color
+    let is_bull = kline.close >= kline.open;
+    let body_color = if is_bull {
+        iced::Color::from_rgb(0.149, 0.651, 0.604) // #26a69a
     } else {
-        palette.danger.base.color
+        iced::Color::from_rgb(0.937, 0.325, 0.314) // #ef5350
     };
-    frame.fill_rectangle(
-        Point::new(x_position - (candle_width / 2.0), y_open.min(y_close)),
-        Size::new(candle_width, (y_open - y_close).abs()),
-        body_color,
-    );
 
-    let wick_color = if kline.close >= kline.open {
-        palette.success.base.color
-    } else {
-        palette.danger.base.color
-    };
+    // Wick drawn first so body sits on top
     frame.fill_rectangle(
         Point::new(x_position - (candle_width / 8.0), y_high),
         Size::new(candle_width / 4.0, (y_high - y_low).abs()),
-        wick_color,
+        body_color,
+    );
+    frame.fill_rectangle(
+        Point::new(x_position - (candle_width / 2.0), y_open.min(y_close)),
+        Size::new(candle_width, (y_open - y_close).abs().max(1.0)),
+        body_color,
     );
 }
 
@@ -2549,37 +3263,62 @@ fn draw_session_lines(
     const SESSIONS: &[(&str, i64, i64, Color, bool)] = &[
         (
             "Asia",
-            -(1 * 3600 * 1000),  // 23:00 prev day
-            8 * 3600 * 1000,     // 08:00 current day
-            Color { r: 0.1, g: 0.22, b: 0.36, a: 0.2 },
+            -(1 * 3600 * 1000), // 23:00 prev day
+            8 * 3600 * 1000,    // 08:00 current day
+            Color {
+                r: 0.1,
+                g: 0.22,
+                b: 0.36,
+                a: 0.2,
+            },
             false,
         ),
         (
             "London",
             7 * 3600 * 1000,
             16 * 3600 * 1000,
-            Color { r: 0.1, g: 0.24, b: 0.17, a: 0.2 },
+            Color {
+                r: 0.1,
+                g: 0.24,
+                b: 0.17,
+                a: 0.2,
+            },
             false,
         ),
         (
             "New York",
             13 * 3600 * 1000,
             21 * 3600 * 1000,
-            Color { r: 0.24, g: 0.16, b: 0.1, a: 0.2 },
+            Color {
+                r: 0.24,
+                g: 0.16,
+                b: 0.1,
+                a: 0.2,
+            },
             false,
         ),
         (
             "LON+NY",
             13 * 3600 * 1000,
             16 * 3600 * 1000,
-            Color { r: 0.24, g: 0.23, b: 0.1, a: 0.25 },
-            true,  // same open as NY — put label at bottom, skip border
+            Color {
+                r: 0.24,
+                g: 0.23,
+                b: 0.1,
+                a: 0.25,
+            },
+            true, // same open as NY — put label at bottom, skip border
         ),
         (
             "Dead zone",
             21 * 3600 * 1000,
             23 * 3600 * 1000,
-            Color { r: 0.24, g: 0.1, b: 0.1, a: 0.15 },
+            Color {
+                r: 0.24,
+                g: 0.1,
+                b: 0.1,
+                a: 0.15,
+            },
             false,
         ),
     ];
@@ -2655,18 +3394,19 @@ fn draw_session_lines(
                     iced::alignment::Vertical::Bottom,
                 )
             } else {
-                (
-                    x_left + 4.0,
-                    y_top + 4.0,
-                    iced::alignment::Vertical::Top,
-                )
+                (x_left + 4.0, y_top + 4.0, iced::alignment::Vertical::Top)
             };
             if label_y.is_finite() && label_x.is_finite() {
                 frame.fill_text(canvas::Text {
                     content: label.to_string(),
                     position: Point::new(label_x, label_y),
                     size: iced::Pixels(10.0),
-                    color: Color { r: 0.9, g: 0.9, b: 0.9, a: 0.9 },
+                    color: Color {
+                        r: 0.9,
+                        g: 0.9,
+                        b: 0.9,
+                        a: 0.9,
+                    },
                     align_x: iced::alignment::Horizontal::Left.into(),
                     align_y,
                     font: style::AZERET_MONO,
