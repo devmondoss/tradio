@@ -13,7 +13,8 @@
 | 0 | Tipos base + módulo Lab + tablas Supabase | ✅ COMPLETA |
 | 1 | VVPC gates + VWAPRejection + DIB persistencia | ✅ COMPLETA |
 | 2 | Lab detectors + runner + writer | ✅ COMPLETA |
-| 3 | OI z-score + footprint por nivel + order blocks | 🔶 PARCIAL |
+| 3 | OI z-score + footprint por nivel + order blocks | ✅ COMPLETA |
+| 3b | Bug FK lab_outcomes + limpieza LabStrategyId enum | ✅ COMPLETA |
 | 4 | Análisis Python + primera evaluación de promoción | 🔶 PARCIAL |
 
 ---
@@ -77,40 +78,32 @@ Todo construido. El Lab corre en paralelo al Core sin bloquearlo.
 
 ---
 
-## Fase 3 — Datos más finos 🔶 PARCIAL
+## Fase 3 — Datos más finos ✅ COMPLETA
 
 | Entregable | Impacto | Estado |
 |---|---|---|
-| OI z-score en `OiTracker` (`delta_zscore()`) | PositioningExpansion mejora | ✅ DONE |
-| `oi_delta_zscore` en `OrderFlowContext` + `LabFeatureSnapshot` | wired through adapter, types, monitor, lab | ✅ DONE |
-| **Footprint por nivel en monitor** | AbsorptionTrap + FAR salen de Asleep | ❌ PENDIENTE |
-| **OrderBlockDetector conectado en monitor** | OBR sale de Asleep | ❌ PENDIENTE |
-| Funding rate panel multi-exchange (UI) | FER mejora en el Lab | ❌ PENDIENTE |
+| OI z-score en `OiTracker` (`delta_zscore()`) | Scoring institucional más preciso | ✅ |
+| `oi_delta_zscore` en `OrderFlowContext` + `LabFeatureSnapshot` | wired through adapter, types, monitor, lab | ✅ |
+| Footprint por nivel en monitor | AbsorptionTrap + FAR usan datos reales | ✅ ya existía |
+| OrderBlockDetector conectado en monitor | OBR usa datos reales | ✅ ya existía |
+| Funding rate panel multi-exchange (UI) | FER mejora en el Lab | ❌ fuera de scope actual |
 
-### Footprint por nivel (pendiente)
+**Nota**: footprint_levels y order_blocks ya estaban completamente implementados.
+- `bar_footprint.add_trade_to_nearest_bin()` acumula en cada trade WS (`main.rs:650`)
+- `current_footprint_levels()` convierte a `Vec<FootprintLevel>` y se asigna en `main.rs:1343`
+- `ob_detector.push_bar()` + `ob_detector.snapshot(c)` se llaman en `main.rs:1347-1348`
+- `order_blocks: Some(order_blocks)` se pasa al contexto en `main.rs:1436`
 
-El monitor recibe trades individuales del WebSocket de Binance. Para construir
-`footprint_levels` hay que acumular esos trades por precio dentro de cada kline M5:
+## Fase 3b — Bug FK + limpieza enum ✅ COMPLETA
 
-```
-Cada trade WS → bucket por precio (redondear al tick)
-Al cerrar la barra → Vec<FootprintLevel> { price, buy_volume, sell_volume, delta }
-→ inject en OrderFlowContext.footprint_levels
-```
+| Entregable | Estado |
+|---|---|
+| FK bug corregido: `"id"` incluido en `build_lab_signal_row` | ✅ |
+| `LabStrategyId::PositioningExpansion` eliminado del enum | ✅ |
+| `LabStrategyId` limpio: 5 variants activos (VwapRejection + 4 ObserveOnly) | ✅ |
+| `positioning_adjustment()` permanece como función auxiliar en `positioning_expansion.rs` | ✅ |
 
-Impacto: `AbsorptionTrapReversal` y `FootprintAbsorptionReversal` salen de Asleep.
-
-Esfuerzo estimado: 3–5 días.
-Archivo: `crates/monitor/src/main.rs` — `BarState` + acumulación en `on_trade`.
-
-### OrderBlockDetector (pendiente)
-
-`order_block_retest.rs` existe en Core pero `ctx.order_blocks` llega `None` en el monitor.
-Hay que detectar order blocks (últimas velas con delta extremo + precio que retestea)
-y popularlo en `StrategyMarketContext.order_blocks`.
-
-Esfuerzo estimado: 3–4 días.
-Archivo: nuevo `data/src/strategy/order_block_detector.rs` + wiring en monitor.
+**El bug**: `build_lab_signal_row` no enviaba `"id"` en el body → Supabase generaba su propio UUID → `lab_outcomes.signal_id` referenciaba un UUID inexistente → FK violation silenciosa → outcomes nunca linkados a sus señales.
 
 ---
 
@@ -220,20 +213,19 @@ signal_outcomes   lab_outcomes
 ## Resumen — qué falta
 
 ```
-INMEDIATO (para que el Lab empiece a funcionar):
-  1. Ejecutar reset.sql en Supabase SQL Editor
-  2. Cambiar lab_cfg.enabled = true en el monitor
-  3. Redeploy en Railway
+COMPLETADO:
+  ✅ Fases 0–3b completas
+  ✅ FK bug corregido (signal_id ahora se linkea correctamente en lab_outcomes)
+  ✅ LabStrategyId enum limpio (5 variants activos)
+  ✅ Lab activo en Railway (LAB_ENABLED=true + redeploy)
+  ✅ SQL ejecutado en Supabase
 
-CORTO PLAZO (Fase 3 completa):
-  4. Footprint por nivel en monitor (3–5 días)
-     → AbsorptionTrap + FAR salen de Asleep
-  5. OrderBlockDetector en monitor (3–4 días)
-     → OrderBlockFlowRetest sale de Asleep
-
-MEDIO PLAZO (Fase 4 completa):
-  6. Primera evaluación de VwapRejection (después de 2 semanas de datos)
-     → python scripts/analysis/analyze_lab_outcomes.py --strategy VwapRejection
+LO ÚNICO PENDIENTE (Fase 4):
+  1. Redeploy en Railway para que el fix de FK entre en producción
+  2. Esperar ~2 semanas de datos acumulados en lab_signals
+  3. Primera evaluación de VwapRejection con 100+ señales:
+     → python scripts/analysis/analyze_lab_outcomes.py --strategy VwapRejection --days 14
      → python scripts/analysis/score_decay.py --strategy VwapRejection
-  7. Si RR >= 1.3 y 100+ señales → promover a PaperCandidate
+     → python scripts/analysis/session_filter_analysis.py --strategy VwapRejection
+  4. Si RR >= 1.3, MFE/MAE > 1.5 y 100+ señales → promover a PaperCandidate
 ```

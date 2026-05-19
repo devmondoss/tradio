@@ -49,30 +49,22 @@ pub enum BlockReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LabStrategyId {
-    // Core — detectores existentes con wrapper Lab
-    VwapContinuation,
+    // Lab ShadowLab — candidata activa
     VwapRejection,
-    LvnDisplacement,
-    OfiContinuation,
-    // Lab observe-only
+    // Lab ObserveOnly
     AbsorptionTrapReversal,
     SessionImbalanceBreakout,
     LiquidityMagnet,
-    PositioningExpansion,
     OrderBlockFlowRetest,
 }
 
 impl LabStrategyId {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::VwapContinuation => "VwapContinuation",
             Self::VwapRejection => "VwapRejection",
-            Self::LvnDisplacement => "LvnDisplacement",
-            Self::OfiContinuation => "OfiContinuation",
             Self::AbsorptionTrapReversal => "AbsorptionTrapReversal",
             Self::SessionImbalanceBreakout => "SessionImbalanceBreakout",
             Self::LiquidityMagnet => "LiquidityMagnet",
-            Self::PositioningExpansion => "PositioningExpansion",
             Self::OrderBlockFlowRetest => "OrderBlockFlowRetest",
         }
     }

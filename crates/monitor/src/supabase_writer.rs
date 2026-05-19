@@ -380,6 +380,7 @@ fn build_lab_signal_row(signal: &LabSignal) -> Value {
     let snapshot_value = serde_json::to_value(snap).unwrap_or(Value::Null);
 
     json!({
+        "id":            signal.signal_id.to_string(),
         "strategy_id":   signal.strategy_id.as_str(),
         "status":        status_str,
         "maturity":      format!("{:?}", signal.maturity),
