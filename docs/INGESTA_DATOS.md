@@ -1,7 +1,7 @@
 # FlowSurface — Ingesta de Datos
 
 > Referencia completa de todas las fuentes de datos externas: WebSockets, REST APIs, contratos de datos, structs de configuración Rust y esquema de escritura a Supabase.
-> Última actualización: 2026-05-19
+> Última actualización: 2026-05-19 (rev 2 — sección 13: raw vs derivado con fórmulas)
 
 ---
 
@@ -13,6 +13,7 @@
 4. [REST APIs — Datos de Mercado](#4-rest-apis--datos-de-mercado)
 5. [REST APIs — Datos Institucionales](#5-rest-apis--datos-institucionales)
 6. [REST APIs — Histórico (Startup)](#6-rest-apis--histórico-startup)
+13. [Raw vs Derivado — Fórmulas completas](#13-raw-vs-derivado--fórmulas-completas)
 7. [Supabase — Config y Escritura](#7-supabase--config-y-escritura)
 8. [Adaptadores disponibles vs activos](#8-adaptadores-disponibles-vs-activos)
 9. [Frecuencias y Frescura](#9-frecuencias-y-frescura)
@@ -885,4 +886,226 @@ fn parse_config_from_json(params: &Value) -> StrategyConfig {
 
 ---
 
-*Documento de referencia del codebase. Actualizar cuando cambien URLs, frecuencias de polling, structs de datos o esquema de Supabase.*
+---
+
+## 13. Raw vs Derivado — Fórmulas completas
+
+Esta sección distingue qué campos vienen directamente de una API externa (raw) y cuáles se calculan internamente (derivados), con la fórmula o lógica exacta de cada uno.
+
+**Leyenda**: 🟢 Raw (viene de API) | 🔵 Derivado (calculado internamente) | 🟡 Semi-derivado (raw transformado)
+
+---
+
+### 13.1 OrderFlowContext — Raw vs Derivado
+
+| Campo | Origen | Fórmula / Fuente |
+|-------|--------|-----------------|
+| `buy_volume` | 🟢 Raw | `k.V` del kline WS (`taker_buy_base_asset_volume`) |
+| `sell_volume` | 🟡 Semi | `k.v - k.V` (volumen total − taker buy) |
+| `delta` | 🔵 Derivado | `buy_volume - sell_volume` por barra |
+| `taker_imbalance` | 🔵 Derivado | `(buy_vol - sell_vol) / (buy_vol + sell_vol)` → rango `[-1, +1]` |
+| `cvd` | 🔵 Derivado | Suma acumulada de `delta` barra a barra (no se resetea) |
+| `cvd_slope` | 🔵 Derivado | OLS slope del CVD sobre ventana de N barras, normalizado por ATR |
+| `fast_slope` | 🔵 Derivado | OLS slope de últimas **5** barras de precio, normalizado por ATR |
+| `funding_rate` | 🟢 Raw | `lastFundingRate` de `/premiumIndex` (REST 60s) |
+| `basis` | 🔵 Derivado | `(precio_perp / precio_spot - 1) × 100` — requiere ambos feeds |
+| `oi_delta` | 🔵 Derivado | `OI_actual - OI_anterior` (contratos) — de polling REST 5m |
+| `oi_momentum_aligned` | 🔵 Derivado | `true` si (precio↑ ∧ OI↑) ∨ (precio↓ ∧ OI↑ con short momentum) |
+| `oi_delta_zscore` | 🔵 Derivado | `(delta_actual - media_20) / std_20` — ventana rolling de 20 OI deltas |
+| `vpin` | 🔵 Derivado | Volume-synchronized PIN: `abs(buy_vol - sell_vol) / total_vol` rolling |
+| `footprint_levels` | 🔵 Derivado | Acumulación de trades WS (`aggTrade`) por nivel de precio en la barra actual → `Vec<FootprintLevel>` al cerrar barra |
+| `footprint_absorption` | 🔵 Derivado | Detectado desde `footprint_levels`: delta negativo en zona VAL (bid absorption) o positivo en VAH (ask absorption) con CVD slope opuesto |
+| `stacked_imbalance` | 🔵 Derivado | 3+ barras consecutivas con mismo signo de delta (oldest-first, rev-scan) |
+| `failed_acceptance` | 🔵 Derivado | Wick cruzó VAH/VAL en las últimas 3 barras pero el cierre más reciente volvió al value area |
+| `sweep_confirmed` | 🔵 Derivado | Alguna de las últimas 3 barras: wick cruzó swing H/L previo pero cerró dentro del rango |
+| `mss_active` | 🔵 Derivado | Cierre actual > prior_swing_high ∨ cierre actual < prior_swing_low (ventana N-1 barras) |
+| `cvd_divergence` | 🔵 Derivado | Precio hizo HH pero CVD slope < −0.5 (BearishAbsorption) ∨ precio hizo LL pero CVD slope > +0.5 (BullishAbsorption) — ventana 10 barras |
+| `bid_wall_nearby` | 🔵 Derivado | Alguna wall en `walls_below` dentro de `1×ATR` del precio |
+| `ask_wall_nearby` | 🔵 Derivado | Alguna wall en `walls_above` dentro de `1×ATR` del precio |
+| `price_action_clean` | 🔵 Derivado | Reversiones en últimas 5 velas `≤ 2` (conteo de cambios de signo en movimientos consecutivos) |
+
+---
+
+### 13.2 OrderBookContext — Raw vs Derivado
+
+| Campo | Origen | Fórmula / Fuente |
+|-------|--------|-----------------|
+| Bids/asks L2 local | 🟢 Raw | Depth WS `@depth@100ms` (actualizaciones incrementales) + REST `/depth` (snapshot inicial y re-syncs) |
+| `spread_bps` | 🔵 Derivado | `(ask1 - bid1) / mid × 10_000` donde `mid = (bid1 + ask1) / 2` |
+| `microprice` | 🔵 Derivado | `(bid1_price × ask1_qty + ask1_price × bid1_qty) / (bid1_qty + ask1_qty)` — precio ponderado por tamaño del top del libro |
+| `obi_l5` | 🔵 Derivado | `(sum_bid_qty_5 - sum_ask_qty_5) / (sum_bid_qty_5 + sum_ask_qty_5)` — rango `[-1, +1]` |
+| `obi_l10` | 🔵 Derivado | Mismo para 10 niveles |
+| `obi_l20` | 🔵 Derivado | Mismo para 20 niveles |
+| `walls_above` | 🔵 Derivado | Niveles ask en top 30 con qty > `5× promedio_qty_top20` |
+| `walls_below` | 🔵 Derivado | Niveles bid en top 30 con qty > `5× promedio_qty_top20` |
+| `thin_zone_above` | 🔵 Derivado | ≥3 de los top 10 niveles ask con qty < `0.3× promedio_qty_top10` |
+| `thin_zone_below` | 🔵 Derivado | ≥3 de los top 10 niveles bid con qty < `0.3× promedio_qty_top10` |
+
+---
+
+### 13.3 VolumeProfileContext — Raw vs Derivado
+
+| Campo | Origen | Fórmula / Fuente |
+|-------|--------|-----------------|
+| OHLCV per barra | 🟢 Raw | Kline WS `@kline_5m` + histórico REST `/klines` |
+| `poc` | 🔵 Derivado | Nivel de precio con mayor volumen acumulado — histograma 150 bins sobre 300 barras |
+| `vah` | 🔵 Derivado | Límite superior del value area (70% del volumen total) — expand desde POC hacia arriba |
+| `val` | 🔵 Derivado | Límite inferior del value area (70% del volumen total) — expand desde POC hacia abajo |
+| `hvn_nearby` | 🔵 Derivado | Bins con volumen > umbral local — múltiples picos en el histograma |
+| `lvn_nearby` | 🔵 Derivado | Bins con volumen < umbral local — valles en el histograma |
+| `value_location` | 🔵 Derivado | `AboveVah` si precio > VAH, `BelowVal` si precio < VAL, `InValue` si dentro |
+
+---
+
+### 13.4 VwapContext — Raw vs Derivado
+
+| Campo | Origen | Fórmula / Fuente |
+|-------|--------|-----------------|
+| `vwap_session` | 🔵 Derivado | `sum(precio_típico × volumen) / sum(volumen)` — reset a 00:00 UTC. Precio típico = `(H + L + C) / 3` |
+| `avwap_bos` | 🔵 Derivado | VWAP anclado desde la barra del último BOS detectado por `MarketStructureTracker` |
+| `price_vs_vwap` | 🔵 Derivado | Comparación simple: `Above` / `Below` / `At` |
+
+---
+
+### 13.5 Regime — Raw vs Derivado
+
+El regime es completamente derivado — ningún campo viene de API.
+
+```
+Inputs: recent_closes[] (últimas 14 barras), recent_highs[], recent_lows[], ATR, prev_regime
+
+Cálculo:
+  slow_slope = OLS(recent_closes, 14 barras) / ATR
+  fast_slope = OLS(recent_closes[-5:], 5 barras) / ATR
+  range_atr  = (max(closes) - min(closes)) / ATR
+
+Clasificación base:
+  range_atr < 0.8                        → Compression
+  range_atr > 4.0 AND |slow| > 0.10     → Expansion
+  slow > 0.10 OR fast > 0.25            → TrendUp
+  slow < -0.10 OR fast < -0.25          → TrendDown
+  else                                  → Chop
+
+Extensiones (sobre la base):
+  last_bar_range > 2× avg_bar_range
+    AND |slow| > 0.15                   → Stress
+  prev_regime ∈ {Stress, Aftermath}
+    AND last_bar_range < 1.5× avg
+    AND |slow| < 0.10                   → Aftermath
+
+Histéresis (evita flipping rápido TrendUp↔Chop):
+  En TrendUp: permanece si slow > 0.05 OR fast > 0.15
+  En TrendDown: permanece si slow < -0.05 OR fast < -0.15
+```
+
+---
+
+### 13.6 InstitutionalContext — Raw vs Derivado
+
+| Campo | Origen | Fórmula / Fuente |
+|-------|--------|-----------------|
+| `liquidations.long_usd_5m` | 🟡 Semi | Eventos WS `@forceOrder` con `S=SELL`: `sum(qty × ap)` en ventana deslizante 5m |
+| `liquidations.short_usd_5m` | 🟡 Semi | Eventos `@forceOrder` con `S=BUY`: `sum(qty × ap)` en ventana 5m |
+| `liquidations.long_usd_60s` | 🟡 Semi | Mismo, ventana 60s |
+| `liquidations.short_usd_60s` | 🟡 Semi | Mismo, ventana 60s |
+| `ls_ratio.top_traders_long_pct` | 🟢 Raw | `longAccount` de `/topLongShortPositionRatio` (REST 5m) |
+| `ls_ratio.retail_long_pct` | 🟢 Raw | `longAccount` de `/globalLongShortAccountRatio` (REST 5m) |
+| `ls_ratio.divergence` | 🔵 Derivado | `retail_long_pct - top_traders_long_pct` |
+| `oi.current` | 🟢 Raw | `openInterest` de `/openInterest` (REST 5m) |
+| `oi.delta` | 🔵 Derivado | `oi_actual - oi_anterior` (contratos) |
+| `oi.momentum_aligned` | 🔵 Derivado | `true` si (precio↑ ∧ OI↑) = longs frescos, o (precio↓ ∧ OI↑) = shorts frescos |
+| `oi.delta_zscore` | 🔵 Derivado | `(delta - mean(deltas[-20:])) / std(deltas[-20:])` |
+| `funding.rate` | 🟢 Raw | `lastFundingRate` de `/premiumIndex` (REST 60s) |
+| `funding.avg` | 🔵 Derivado | Media de las últimas N tasas acumuladas en `FundingTracker` |
+| `funding.velocity` | 🔵 Derivado | `rate_actual - rate_anterior` (tendencia de cambio) |
+| `funding.regime` | 🔵 Derivado | `abs(rate) > 0.0006` → Extreme; `abs(rate) > 0.0003` → Elevated; else Neutral. Signo determina Long/Short |
+| `funding.peak_confirmed` | 🔵 Derivado | Velocity cambió de signo mientras regime era Extreme (reversión detectada) |
+| `liq_map.density_above` | 🔵 Derivado | Estimación heurística: stops de shorts sobre swing highs, densidad proporcional al OI, decaimiento half-life 4h |
+| `liq_map.density_below` | 🔵 Derivado | Stops de longs bajo swing lows — misma metodología |
+| `liq_map.primary_target_above/below` | 🔵 Derivado | Precio con mayor densidad estimada en cada lado |
+| `liq_map.confidence` | 🔵 Derivado | Función de la antigüedad del OI y del número de swing points disponibles |
+
+---
+
+### 13.7 swing_high_20 / swing_low_20 — Derivado
+
+```
+swing_high_20 = max(highs[0..n-1])   // excluye la barra actual
+swing_low_20  = min(lows[0..n-1])    // excluye la barra actual
+Ventana: últimas 20 barras (o las disponibles si < 20)
+Archivo: adapter.rs — derive_swing_highs_lows()
+```
+
+---
+
+### 13.8 Resumen visual: pipeline de transformación
+
+```
+Binance WS / REST
+        │
+        ▼
+┌───────────────────────────────┐
+│        DATOS RAW              │
+│  kline: O,H,L,C,V,taker_V    │
+│  depth: bids[], asks[]        │
+│  aggTrade: price,qty,m        │
+│  forceOrder: S,z,ap,T         │
+│  premiumIndex: fundingRate    │
+│  openInterest: OI             │
+│  topLongShort: longAccount    │
+│  globalLongShort: longAccount │
+└──────────────┬────────────────┘
+               │
+               ▼
+┌───────────────────────────────┐
+│      TRANSFORMACIÓN L1        │  (un solo paso, sin acumulación)
+│  delta = buy_vol - sell_vol   │
+│  taker_imbalance = Δ/total    │
+│  spread_bps = (a-b)/mid×10k  │
+│  microprice = weighted mid    │
+│  obi_l5/10/20 = (B-A)/(B+A)  │
+│  liq_usd = qty × ap           │
+│  oi_delta = OI[n] - OI[n-1]  │
+└──────────────┬────────────────┘
+               │
+               ▼
+┌───────────────────────────────┐
+│      TRANSFORMACIÓN L2        │  (requiere historia acumulada)
+│  cvd = Σ delta                │
+│  cvd_slope = OLS(cvd, N)/ATR  │
+│  fast_slope = OLS(close,5)/ATR│
+│  vpin = rolling abs(Δ)/total  │
+│  vwap = Σ(típico×vol)/Σvol    │
+│  poc/vah/val = histograma 300 │
+│  regime = OLS + range + stress│
+│  funding_regime = threshold   │
+│  oi_zscore = z-score rolling  │
+│  walls/thin = umbral ×avg_qty │
+└──────────────┬────────────────┘
+               │
+               ▼
+┌───────────────────────────────┐
+│      TRANSFORMACIÓN L3        │  (cross-field, múltiples inputs)
+│  failed_acceptance = vah/val  │
+│    + breach_window + cierre   │
+│  sweep_confirmed = swing H/L  │
+│    + wick + cierre            │
+│  mss_active = close vs prior  │
+│    swing_high / swing_low     │
+│  stacked_imbalance = 3+ barras│
+│    mismo signo delta          │
+│  footprint_absorption = Σdelta│
+│    en zona ±0.35×ATR de val/vah│
+│  cvd_divergence = HH/LL vs    │
+│    slope (10 barras)          │
+│  liq_map = OI + swings + decay│
+└──────────────┬────────────────┘
+               │
+               ▼
+     StrategyMarketContext
+     (input de los detectores)
+```
+
+---
+
+*Documento de referencia del codebase. Actualizar cuando cambien URLs, frecuencias de polling, structs de datos, esquema de Supabase o fórmulas de derivación.*
