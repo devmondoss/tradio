@@ -40,9 +40,17 @@ impl FundingTracker {
         let rank = self.samples.iter().filter(|s| s.rate < current).count() as f64;
         let percentile = rank / n * 100.0;
 
+        // Absolute floor: if current rate is ≥30% above rolling average, classify
+        // as ElevatedLong regardless of percentile. Prevents the percentile window
+        // from staying Neutral when the whole window shifts upward together.
+        let above_avg = avg > 0.0 && current >= avg * 1.3;
         let regime = match (current, percentile) {
             (r, p) if r > 0.0 && p > 85.0 => FundingRegime::ExtremeLong,
-            (r, p) if r > 0.0 && p > 65.0 => FundingRegime::ElevatedLong,
+            (r, p) if r > 0.0 && (p > 65.0 || above_avg) => {
+                // Percentile gate OR absolute-vs-avg gate
+                let _ = p;
+                FundingRegime::ElevatedLong
+            }
             (r, p) if r < 0.0 && p < 15.0 => FundingRegime::ExtremeShort,
             (r, p) if r < 0.0 && p < 35.0 => FundingRegime::ElevatedShort,
             _ => FundingRegime::Neutral,
@@ -92,6 +100,23 @@ mod tests {
         let ctx = t.snapshot();
         assert_eq!(ctx.regime, FundingRegime::ExtremeLong);
         assert!((ctx.current - 0.001).abs() < 1e-9);
+    }
+
+    #[test]
+    fn elevated_long_when_30pct_above_avg_despite_low_percentile() {
+        // Scenario: old bull-run window (10e-5) keeps avg high; recent recovery (3-4e-5)
+        // then a new rise to 8e-5. Percentile = 57% (< 65%) but current = 1.33× avg.
+        // The absolute-vs-avg gate should classify as ElevatedLong.
+        let mut t = FundingTracker::new();
+        let mut samples: Vec<_> = (0..8).map(|_| sample(0.00010)).collect(); // old high
+        samples.extend((0..10).map(|_| sample(0.00003)));                     // recovery
+        samples.extend((0..2).map(|_| sample(0.00004)));                      // rising
+        samples.push(sample(0.00008));                                         // current
+        // avg = (8×10e-5 + 10×3e-5 + 2×4e-5 + 8e-5) / 21 = 6e-5
+        // current/avg = 8e-5/6e-5 = 1.33 > 1.3 → ElevatedLong despite percentile=57%
+        t.load(samples);
+        let ctx = t.snapshot();
+        assert_eq!(ctx.regime, FundingRegime::ElevatedLong, "30%+ above avg should be ElevatedLong");
     }
 
     #[test]

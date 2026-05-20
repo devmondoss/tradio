@@ -556,6 +556,7 @@ struct BarState {
     last_intrabar_eval_ms: i64,
     intrabar_eval_count: u32,
     intrabar_signal_fired: bool,
+    last_intrabar_signal_ms: i64,
     // Forward horizon tracker: populated when a trade closes, patched over the next 12 bars
     bar_counter: u64,
     pending_horizons: Vec<PendingHorizon>,
@@ -619,6 +620,7 @@ impl BarState {
             last_intrabar_eval_ms: 0,
             intrabar_eval_count: 0,
             intrabar_signal_fired: false,
+            last_intrabar_signal_ms: 0,
             bar_counter: 0,
             pending_horizons: Vec::new(),
             prev_obi_l5: 0.0,
@@ -831,6 +833,10 @@ impl BarState {
         if self.intrabar_signal_fired {
             return false;
         }
+        let ms_since_signal = (now_ms - self.last_intrabar_signal_ms).max(0) as u64;
+        if ms_since_signal < cfg.signal_cooldown_ms {
+            return false;
+        }
         if self.intrabar_eval_count >= cfg.max_evals_per_bar {
             return false;
         }
@@ -1017,6 +1023,8 @@ impl BarState {
 
         // Track outcome regardless of mode — measures suppressed signals too
         self.push_outcome(&signal, OutcomeSource::Intrabar, now_ms);
+        // Always record signal timestamp so the cross-bar cooldown applies in all modes.
+        self.last_intrabar_signal_ms = now_ms;
 
         match self.intrabar_cfg.mode {
             IntrabarMode::ObserveOnly => {

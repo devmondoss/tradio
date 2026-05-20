@@ -46,9 +46,13 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     // LONG: trend up, pullback into value, flow realigns.
     // BelowVal is excluded: price below VAL is a breakdown of support, not a pullback.
-    // fast_slope gate: if bar momentum is bearish (< -0.08), suppress even in
-    // TrendUp — slow_slope can lag while price is already dropping hard intrabar.
-    let fast_slope_ok_long = flow.fast_slope.map(|fs| fs > -0.08).unwrap_or(true);
+    // fast_slope gate: block if momentum is bearish (< -0.08) OR exhaustion-bullish
+    // (>= 0.50). Audit 2026-05-20: fast_slope=0.924/1.114 produced 0% win-rate longs —
+    // extreme positive slope signals momentum exhaustion, not continuation.
+    let fast_slope_ok_long = flow
+        .fast_slope
+        .map(|fs| fs > -0.08 && fs < 0.50)
+        .unwrap_or(true);
     let long_context = matches!(ctx.regime, Regime::TrendUp | Regime::Expansion)
         && long_anchor_ok
         && vp.value_location == ValueLocation::InValue
@@ -613,6 +617,21 @@ mod tests {
         ctx.flow.delta = Some(-100.0);
         let cfg = StrategyConfig::default();
         assert!(detect(&ctx, &cfg).is_none());
+    }
+
+    #[test]
+    fn rejects_long_when_fast_slope_exhaustion_bullish() {
+        // Audit 2026-05-20: fast_slope=0.924/1.114 produced 0% WR longs (exhaustion).
+        let mut ctx = base_long_ctx();
+        ctx.flow.fast_slope = Some(0.924);
+        assert!(detect(&ctx, &StrategyConfig::default()).is_none());
+    }
+
+    #[test]
+    fn allows_long_when_fast_slope_moderate_bullish() {
+        let mut ctx = base_long_ctx();
+        ctx.flow.fast_slope = Some(0.30);
+        assert!(detect(&ctx, &StrategyConfig::default()).is_some());
     }
 
     #[test]

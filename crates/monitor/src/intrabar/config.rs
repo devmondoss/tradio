@@ -15,6 +15,10 @@ pub struct IntrabarConfig {
     pub price_move_atr_k: f64,
     pub time_fallback_ms: u64,
 
+    // Signal cooldown: minimum ms between two emitted signals (cross-bar).
+    // Prevents the same bad market context from generating N identical outcomes.
+    pub signal_cooldown_ms: u64,
+
     // VWAP detector
     pub vwap_near_bps: f64,
     pub min_rr: f64,
@@ -65,6 +69,7 @@ impl IntrabarConfig {
             price_move_atr_k: env_f64("TRADIO_INTRABAR_PRICE_MOVE_ATR_K", 0.25),
             time_fallback_ms: env_u64("TRADIO_INTRABAR_TIME_FALLBACK_MS", 60_000),
             vwap_near_bps: env_f64("TRADIO_INTRABAR_VWAP_NEAR_BPS", 8.0),
+            signal_cooldown_ms: env_u64("TRADIO_INTRABAR_SIGNAL_COOLDOWN_MS", 120_000),
             min_rr: env_f64("TRADIO_INTRABAR_MIN_RR", 1.2),
             liq_min_notional_usd: env_f64("TRADIO_INTRABAR_LIQ_MIN_NOTIONAL_USD", 20_000.0),
             liq_event_max_age_ms: env_u64("TRADIO_INTRABAR_LIQ_EVENT_MAX_AGE_MS", 10_000),
