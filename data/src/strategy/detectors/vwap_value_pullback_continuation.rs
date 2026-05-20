@@ -155,9 +155,9 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     // Expansion is accepted symmetrically with the long side; delta/cvd_slope/value_location
     // already filter direction, so Expansion alone does not create false shorts.
     // AboveVah is excluded: price above VAH is a breakout above value, not a pullback into it.
-    // fast_slope gate: suppress shorts when bar momentum is bullish (> +0.08) —
-    // mirrors the long-side gate and avoids entering short into a fast regime flip.
-    let fast_slope_ok_short = flow.fast_slope.map(|fs| fs < 0.08).unwrap_or(true);
+    // fast_slope gate: require bearish bar momentum (<= -0.10). Audit 2026-05-19:
+    // fast_slope=-0.067 passed the old gate (< 0.08) producing 4 losing short signals.
+    let fast_slope_ok_short = flow.fast_slope.map(|fs| fs <= -0.10).unwrap_or(true);
     let short_context = matches!(ctx.regime, Regime::TrendDown | Regime::Expansion)
         && short_anchor_ok
         && vp.value_location == ValueLocation::InValue
@@ -173,7 +173,28 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && ob.microprice.map(|m| m <= px * 1.0002).unwrap_or(true)
         && ob.obi_l5.unwrap_or(0.0) <= 0.0;
 
-    if short_context && short_flow && short_book && adapter::basis_ok(flow.basis, false) {
+    // BullishAbsorption: price making lower lows but CVD rising — buyers absorbing.
+    // Do not enter SHORT when the market is actively defending against selling.
+    if flow.cvd_divergence == Some(CvdDivergence::BullishAbsorption) {
+        return None;
+    }
+
+    // Funding gate: block shorts when long-side funding is elevated/extreme.
+    // High positive funding compresses short positions and signals structural long bias.
+    // No inst data → allow shorts (opposite of longs which block on missing data).
+    let funding_ok_short = ctx
+        .institutional
+        .as_ref()
+        .map(|inst| {
+            !matches!(
+                inst.funding.regime,
+                crate::institutional::FundingRegime::ExtremeLong
+                    | crate::institutional::FundingRegime::ElevatedLong
+            )
+        })
+        .unwrap_or(true);
+
+    if short_context && short_flow && short_book && funding_ok_short && adapter::basis_ok(flow.basis, false) {
         let entry = px;
         // min() → closest of (VAH structural level, 1×ATR ceiling).
         let stop = f64::min(vah, entry + 1.0 * atr);
@@ -648,8 +669,18 @@ mod tests {
     }
 
     #[test]
-    fn funding_gate_does_not_affect_shorts() {
-        // Even with ExtremeLong funding (bad for longs), shorts should still be evaluated
+    fn rejects_short_when_funding_extreme_long() {
+        // Audit 2026-05-19: funding=0.71-0.79% (ElevatedLong) — should block SHORT entries.
+        let mut ctx = make_short_ctx();
+        ctx.institutional = Some(base_inst(FundingRegime::ExtremeLong));
+        let cfg = StrategyConfig::default();
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "ExtremeLong funding should block shorts"
+        );
+    }
+
+    fn make_short_ctx() -> StrategyMarketContext {
         let mut ctx = base_long_ctx();
         ctx.regime = Regime::TrendDown;
         ctx.price = 99800.0;
@@ -659,15 +690,46 @@ mod tests {
         ctx.flow.cvd_slope = Some(-0.4);
         ctx.flow.delta = Some(-80.0);
         ctx.flow.taker_imbalance = Some(-0.08);
+        ctx.flow.fast_slope = Some(-0.15);
         ctx.orderbook.obi_l5 = Some(-0.03);
         ctx.orderbook.microprice = Some(99790.0);
-        ctx.institutional = Some(base_inst(FundingRegime::ExtremeLong)); // extreme long = supports shorts
-        let cfg = StrategyConfig::default();
-        let signal = detect(&ctx, &cfg);
-        assert!(
-            signal.is_some(),
-            "ExtremeLong funding should not block shorts"
-        );
-        assert_eq!(signal.unwrap().side, Some(Side::Short));
+        ctx.institutional = Some(base_inst(FundingRegime::Neutral));
+        ctx
+    }
+
+    #[test]
+    fn rejects_short_when_fast_slope_weak_negative() {
+        // fast_slope=-0.067 was the audit value — must be blocked after fix.
+        let mut ctx = make_short_ctx();
+        ctx.flow.fast_slope = Some(-0.067);
+        assert!(detect(&ctx, &StrategyConfig::default()).is_none());
+    }
+
+    #[test]
+    fn allows_short_when_fast_slope_sufficiently_bearish() {
+        let mut ctx = make_short_ctx();
+        ctx.flow.fast_slope = Some(-0.15);
+        assert!(detect(&ctx, &StrategyConfig::default()).is_some());
+    }
+
+    #[test]
+    fn rejects_short_on_bullish_absorption() {
+        let mut ctx = make_short_ctx();
+        ctx.flow.cvd_divergence = Some(CvdDivergence::BullishAbsorption);
+        assert!(detect(&ctx, &StrategyConfig::default()).is_none());
+    }
+
+    #[test]
+    fn rejects_short_when_funding_elevated_long() {
+        let mut ctx = make_short_ctx();
+        ctx.institutional = Some(base_inst(FundingRegime::ElevatedLong));
+        assert!(detect(&ctx, &StrategyConfig::default()).is_none());
+    }
+
+    #[test]
+    fn allows_short_when_no_institutional_data() {
+        let mut ctx = make_short_ctx();
+        ctx.institutional = None; // data gap → allow shorts (conservative opposite of longs)
+        assert!(detect(&ctx, &StrategyConfig::default()).is_some());
     }
 }

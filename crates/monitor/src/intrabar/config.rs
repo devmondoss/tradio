@@ -66,8 +66,8 @@ impl IntrabarConfig {
             time_fallback_ms: env_u64("TRADIO_INTRABAR_TIME_FALLBACK_MS", 60_000),
             vwap_near_bps: env_f64("TRADIO_INTRABAR_VWAP_NEAR_BPS", 8.0),
             min_rr: env_f64("TRADIO_INTRABAR_MIN_RR", 1.2),
-            liq_min_notional_usd: env_f64("TRADIO_INTRABAR_LIQ_MIN_NOTIONAL_USD", 50_000.0),
-            liq_event_max_age_ms: env_u64("TRADIO_INTRABAR_LIQ_EVENT_MAX_AGE_MS", 5_000),
+            liq_min_notional_usd: env_f64("TRADIO_INTRABAR_LIQ_MIN_NOTIONAL_USD", 20_000.0),
+            liq_event_max_age_ms: env_u64("TRADIO_INTRABAR_LIQ_EVENT_MAX_AGE_MS", 10_000),
         }
     }
 
