@@ -103,7 +103,8 @@ struct PipelineMetrics {
     bars_since_signal: u64,
     signals_today: u64,
     liq_events_today: u64,
-    liq_raw_messages: u64, // text frames received by forceOrder WS (parsed or not)
+    liq_raw_messages: u64,        // text frames from btcusdt@forceOrder (BTC-specific)
+    liq_global_raw_messages: u64, // text frames from !forceOrder@arr (all-market diagnostic)
     ws_reconnects: u64,
 }
 
@@ -422,7 +423,7 @@ impl PipelineMetrics {
 
         let (inst_ok, inst_total) = freshness.quality(self.liq_raw_messages);
         println!(
-            "[metrics] bars={} signals={} liq_events={} liq_raw={} ws_reconnects={} | \
+            "[metrics] bars={} signals={} liq_events={} liq_raw={} liq_global_raw={} ws_reconnects={} | \
              kline_ticks={} trades={} depth_updates={} | \
              bar_latency_avg={:.0}ms max={max_lat}ms | \
              depth_age={depth_age_ms}ms trade_age={trade_age_ms}ms | \
@@ -432,6 +433,7 @@ impl PipelineMetrics {
             self.signals_today,
             self.liq_events_today,
             self.liq_raw_messages,
+            self.liq_global_raw_messages,
             self.ws_reconnects,
             self.kline_ticks,
             self.trade_count,
@@ -523,7 +525,8 @@ struct BarState {
     depth: Option<Depth>,
     paper: PaperAccount,
     metrics: PipelineMetrics,
-    liq_raw_counter: Arc<AtomicU64>, // shared with forceOrder WS task
+    liq_raw_counter: Arc<AtomicU64>,        // shared with btcusdt@forceOrder task
+    liq_global_raw_counter: Arc<AtomicU64>, // shared with !forceOrder@arr diagnostic task
     // Crypto-native context
     funding_rate: Option<f64>,
     spot_price: Option<f64>,
@@ -579,7 +582,7 @@ struct BarState {
 }
 
 impl BarState {
-    fn new(mongo: MongoWriter, supabase: Option<SupabaseWriter>, config_loader: MongoConfigLoader, footprint_step: PriceStep, liq_raw_counter: Arc<AtomicU64>) -> Self {
+    fn new(mongo: MongoWriter, supabase: Option<SupabaseWriter>, config_loader: MongoConfigLoader, footprint_step: PriceStep, liq_raw_counter: Arc<AtomicU64>, liq_global_raw_counter: Arc<AtomicU64>) -> Self {
         Self {
             bars: VecDeque::with_capacity(VP_WINDOW + 1),
             cvd: 0.0,
@@ -597,6 +600,7 @@ impl BarState {
             paper: PaperAccount::load_or_new(),
             metrics: PipelineMetrics::default(),
             liq_raw_counter,
+            liq_global_raw_counter,
             funding_rate: None,
             spot_price: None,
             oi_history: VecDeque::with_capacity(7),
@@ -1608,6 +1612,7 @@ impl BarState {
         self.metrics.processing_ms.push(processing_ms);
         if self.metrics.bars_processed % 10 == 0 {
             self.metrics.liq_raw_messages = self.liq_raw_counter.load(Ordering::Relaxed);
+            self.metrics.liq_global_raw_messages = self.liq_global_raw_counter.load(Ordering::Relaxed);
             let freshness = &self.freshness;
             let streams = &self.streams;
             self.metrics.report(freshness, streams);
@@ -2031,6 +2036,58 @@ fn spawn_force_order_stream(
     });
 }
 
+/// Spawns a diagnostic-only task that connects to `!forceOrder@arr` (all-market
+/// liquidations). Does not parse or forward events — only increments `raw_counter`
+/// so [metrics] can show `liq_global_raw`. Useful to distinguish:
+///   liq_raw=0 + liq_global_raw>0 → BTC was quiet, stream works
+///   liq_raw=0 + liq_global_raw=0 → endpoint or parser broken
+fn spawn_global_liq_counter(raw_counter: Arc<AtomicU64>) {
+    tokio::spawn(async move {
+        loop {
+            let domain = "fstream.binance.com";
+            let path = "/market/ws/!forceOrder@arr";
+            let addr = format!("{domain}:443");
+            let Ok(tcp) = tokio::net::TcpStream::connect(&addr).await else {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            };
+            let Ok(sn) = ServerName::try_from(domain.to_string()) else { break };
+            let Ok(tls) = LIQ_TLS.connect(sn, tcp).await else {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            };
+            let Ok(req) = Request::builder()
+                .method("GET")
+                .uri(path)
+                .header("Host", domain)
+                .header(UPGRADE, "websocket")
+                .header(CONNECTION, "upgrade")
+                .header("Sec-WebSocket-Key", fastwebsockets::handshake::generate_key())
+                .header("Sec-WebSocket-Version", "13")
+                .body(Empty::<Bytes>::new())
+            else { break };
+            let Ok((ws, _)) = fastwebsockets::handshake::client(&TokioExecutor::new(), req, tls).await
+            else {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            };
+            println!("[liq-global] !forceOrder@arr connected");
+            let mut ws = FragmentCollector::new(ws);
+            loop {
+                match ws.read_frame().await {
+                    Err(_) | Ok(fastwebsockets::Frame { opcode: OpCode::Close, .. }) => break,
+                    Ok(frame) if frame.opcode == OpCode::Text => {
+                        raw_counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                    _ => {}
+                }
+            }
+            eprintln!("[liq-global] !forceOrder@arr disconnected — retry in 5s");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
+}
+
 /// Fetches recent funding rate history for the FundingTracker (last 21 samples).
 async fn fetch_funding_history(symbol: &str) -> Vec<FundingRateSample> {
     let url = format!(
@@ -2309,7 +2366,8 @@ async fn main() {
 
     let footprint_step: PriceStep = ticker_info.min_ticksize.into();
     let liq_raw_counter = Arc::new(AtomicU64::new(0));
-    let mut state = BarState::new(mongo, supabase, config_loader, footprint_step, Arc::clone(&liq_raw_counter));
+    let liq_global_raw_counter = Arc::new(AtomicU64::new(0));
+    let mut state = BarState::new(mongo, supabase, config_loader, footprint_step, Arc::clone(&liq_raw_counter), Arc::clone(&liq_global_raw_counter));
     state.intrabar_cfg.log_boot();
 
     // Seed bar history from REST before the live stream starts
@@ -2365,6 +2423,8 @@ async fn main() {
     let (liq_tx, mut liq_rx) = tokio::sync::mpsc::channel::<Vec<LiquidationEvent>>(16);
     let (liq_health_tx, mut liq_health_rx) = tokio::sync::mpsc::channel::<bool>(4);
     spawn_force_order_stream(symbol_str.clone(), liq_tx, liq_health_tx, Arc::clone(&liq_raw_counter));
+    // Diagnostic: all-market liquidations — proves the /market/ws/ endpoint works even when BTC is quiet
+    spawn_global_liq_counter(Arc::clone(&liq_global_raw_counter));
 
     // L/S ratios (top traders + global): every 5 min
     type LsPayload = (Option<LongShortSnapshot>, Option<LongShortSnapshot>);
@@ -2565,6 +2625,7 @@ async fn main() {
 
         if last_metrics_print.elapsed() >= metrics_interval {
             state.metrics.liq_raw_messages = liq_raw_counter.load(Ordering::Relaxed);
+            state.metrics.liq_global_raw_messages = liq_global_raw_counter.load(Ordering::Relaxed); // already cloned into state
             state.metrics.report(&state.freshness, &state.streams);
             last_metrics_print = Instant::now();
         }
