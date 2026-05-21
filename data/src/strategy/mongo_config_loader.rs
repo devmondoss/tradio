@@ -33,7 +33,7 @@ use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
 
 // Misma instancia dedicada que el writer; ver mongo_writer.rs.
-const DEFAULT_URI: &str = "mongodb://localhost:27018";
+// Solo activo en local cuando MONGODB_URI está seteada.
 const DEFAULT_DB: &str = "flowsurface";
 
 enum LoaderCmd {
@@ -50,12 +50,21 @@ pub struct MongoConfigLoader {
 }
 
 impl MongoConfigLoader {
-    /// Lanza el loader leyendo `MONGODB_URI` / `MONGODB_DB` del entorno, con
-    /// el `StrategyConfig` base (típicamente `StrategyConfig::load()`).
+    /// Lanza el loader si `MONGODB_URI` está en el entorno.
+    /// Sin esa variable retorna un loader estático con `base` (Railway usa Supabase, no Mongo).
     pub fn from_env(base: StrategyConfig) -> Self {
-        let uri = std::env::var("MONGODB_URI").unwrap_or_else(|_| DEFAULT_URI.into());
-        let db = std::env::var("MONGODB_DB").unwrap_or_else(|_| DEFAULT_DB.into());
-        Self::spawn(uri, db, base)
+        match std::env::var("MONGODB_URI") {
+            Ok(uri) => {
+                let db = std::env::var("MONGODB_DB").unwrap_or_else(|_| DEFAULT_DB.into());
+                Self::spawn(uri, db, base)
+            }
+            Err(_) => {
+                eprintln!("[mongo-cfg] MONGODB_URI not set — config loader disabled (using base only)");
+                let current = Arc::new(RwLock::new(base));
+                let (tx, _rx) = mpsc::channel::<LoaderCmd>();
+                Self { current, tx }
+            }
+        }
     }
 
     /// Lanza el loader con URI/db explícitos. Siempre retorna un handle; si la

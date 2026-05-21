@@ -33,10 +33,9 @@ use mongodb::Client;
 use std::sync::mpsc;
 use std::thread;
 
-// Instancia dedicada en puerto 27018 (no comparte espacio con otras
-// herramientas que usan el :27017 por defecto). Datapath aislado en
+// Puerto 27018 aislado del :27017 por defecto. Datapath en
 // %LOCALAPPDATA%\flowsurface\mongo-data — ver start-mongo.bat.
-const DEFAULT_URI: &str = "mongodb://localhost:27018";
+// Solo activo en local cuando MONGODB_URI está seteada.
 const DEFAULT_DB: &str = "flowsurface";
 
 enum MongoMsg {
@@ -52,11 +51,20 @@ pub struct MongoWriter {
 }
 
 impl MongoWriter {
-    /// Lanza el thread escritor leyendo `MONGODB_URI` / `MONGODB_DB` del entorno.
+    /// Lanza el thread escritor si `MONGODB_URI` está en el entorno.
+    /// Sin esa variable retorna un writer noop (Railway usa Supabase, no Mongo).
     pub fn from_env() -> Self {
-        let uri = std::env::var("MONGODB_URI").unwrap_or_else(|_| DEFAULT_URI.into());
-        let db = std::env::var("MONGODB_DB").unwrap_or_else(|_| DEFAULT_DB.into());
-        Self::spawn(uri, db)
+        match std::env::var("MONGODB_URI") {
+            Ok(uri) => {
+                let db = std::env::var("MONGODB_DB").unwrap_or_else(|_| DEFAULT_DB.into());
+                Self::spawn(uri, db)
+            }
+            Err(_) => {
+                eprintln!("[mongo] MONGODB_URI not set — writer disabled (Supabase only)");
+                let (tx, _rx) = mpsc::channel::<MongoMsg>();
+                Self { tx }
+            }
+        }
     }
 
     /// Lanza el thread escritor con URI y base explícitos. Siempre retorna un
