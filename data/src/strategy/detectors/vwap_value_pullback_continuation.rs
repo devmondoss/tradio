@@ -161,8 +161,19 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     // AboveVah is excluded: price above VAH is a breakout above value, not a pullback into it.
     // fast_slope gate: require bearish bar momentum (<= -0.10). Audit 2026-05-19:
     // fast_slope=-0.067 passed the old gate (< 0.08) producing 4 losing short signals.
+    //
+    // Bearish divergence in TrendUp: the 14-bar OLS can stay positive while the intraday
+    // flow is clearly bearish (CVD slope negative, price below session VWAP). This happens
+    // when price makes slightly higher lows on the 70-min window but sustained selling pressure
+    // continues — a "fake recovery" that resolves to the downside. All short_flow and
+    // fast_slope guards still apply; this only relaxes the regime gate.
+    let bearish_divergence_in_uptrend = ctx.regime == Regime::TrendUp
+        && matches!(vw.price_vs_vwap, PriceRelation::Below)
+        && flow.cvd_slope.map(|s| s < 0.0).unwrap_or(false);
+
     let fast_slope_ok_short = flow.fast_slope.map(|fs| fs <= -0.10).unwrap_or(true);
-    let short_context = matches!(ctx.regime, Regime::TrendDown | Regime::Expansion)
+    let short_context = (matches!(ctx.regime, Regime::TrendDown | Regime::Expansion)
+        || bearish_divergence_in_uptrend)
         && short_anchor_ok
         && vp.value_location == ValueLocation::InValue
         && fast_slope_ok_short;
@@ -220,8 +231,13 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             cfg,
         )?;
 
+        let regime_tag = if bearish_divergence_in_uptrend {
+            "bearish_divergence_in_uptrend"
+        } else {
+            "trend_down"
+        };
         let mut evidence = vec![
-            "trend_down".into(),
+            regime_tag.into(),
             short_anchor_label.into(),
             "pullback_into_value".into(),
             "negative_delta_reentry".into(),
