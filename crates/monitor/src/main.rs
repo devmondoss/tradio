@@ -11,9 +11,7 @@
 //!   PAPER_INITIAL_CAPITAL, PAPER_LEVERAGE, PAPER_MAX_POSITIONS,
 //!   PAPER_RISK_PCT, PAPER_SLIPPAGE_BPS, PAPER_TAKER_FEE, PAPER_FUNDING_RATE
 
-mod config_loader;
 mod intrabar;
-mod supabase_writer;
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -34,7 +32,6 @@ use tokio_rustls::{
     rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName},
 };
 
-use config_loader::ConfigLoader;
 use data::detectors::{FvgContext, FvgDetector, OrderBlockContext, OrderBlockDetector};
 use data::chart::kline::KlineTrades;
 use data::institutional::{
@@ -43,6 +40,8 @@ use data::institutional::{
     OiHistSnapshot, OiTracker, TakerRatioSnapshot, compute_smart_money_score,
 };
 use data::session::{SessionContext, classify_session};
+use data::strategy::mongo_config_loader::MongoConfigLoader;
+use data::strategy::mongo_writer::{MongoWriter, SignalOid};
 use data::strategy::{
     adapter::{
         build_flow_context, build_orderbook_context, build_volume_profile_context,
@@ -71,7 +70,6 @@ use exchange::{
 };
 use futures::StreamExt;
 use intrabar::{IntrabarConfig, IntrabarDetector, IntrabarMode};
-use supabase_writer::SupabaseWriter;
 
 // ── constants ───────────────────────────────────────────────────────────────
 
@@ -344,17 +342,6 @@ fn fmt_opt(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "-".into())
 }
 
-/// Tracks forward price horizons for a closed paper trade so we can PATCH
-/// signal_outcomes with price_5m/r_5m etc. after the appropriate bars elapse.
-#[derive(Clone)]
-struct PendingHorizon {
-    signal_uuid: String,
-    entry_price: f64,
-    stop_price: f64,
-    side: String,     // "Long" or "Short"
-    close_bar_n: u64, // bar_counter when trade closed
-}
-
 /// Bar-level state frozen at each 5m close, reused by the intrabar evaluator.
 /// Only bar-level fields go here; tick-level fields come from live BarState.
 #[derive(Clone)]
@@ -526,18 +513,13 @@ struct BarState {
     liq_map_tracker: LiqMapTracker,
     liq_map_snapshot: Option<LiqMapSnapshot>,
     last_taker_ratio: Option<TakerRatioSnapshot>,
-    // Supabase writer (None if SUPABASE_URL not set)
-    supabase: Option<SupabaseWriter>,
-    // UUID of the most recently written shadow_signals row — used to link signal_outcomes
-    pending_signal_uuid: Option<String>,
-    // Receives the UUID from an in-flight write_signal task (fire-and-forget, non-blocking)
-    pending_uuid_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
-    // Dynamic config loaded from Supabase
-    cfg: StrategyConfig,
-    config_loader: ConfigLoader,
-    // Sends detected regime string to the async loop for config reloading
-    regime_tx: Option<tokio::sync::mpsc::Sender<String>>,
-    // Last regime seen — used to detect regime changes and write regime_history
+    // MongoDB writer (fire-and-forget via dedicated thread)
+    mongo: MongoWriter,
+    // ObjectId of the most recently written shadow_signals document — used to link signal_outcomes
+    pending_signal_oid: Option<SignalOid>,
+    // Dynamic config loaded from MongoDB deployed_params
+    config_loader: MongoConfigLoader,
+    // Last regime seen — used to detect regime changes and trigger config reload
     last_regime: Option<String>,
     // Last regime as enum — used for hysteresis in derive_regime_with_hysteresis
     last_regime_enum: data::strategy::types::Regime,
@@ -557,9 +539,6 @@ struct BarState {
     intrabar_eval_count: u32,
     intrabar_signal_fired: bool,
     last_intrabar_signal_ms: i64,
-    // Forward horizon tracker: populated when a trade closes, patched over the next 12 bars
-    bar_counter: u64,
-    pending_horizons: Vec<PendingHorizon>,
     // OBI L5 from the previous bar — injected into StrategyMarketContext for DIB persistence gate
     prev_obi_l5: f64,
     // Lab outcome tracker — tracks open LabSignals and resolves them bar by bar
@@ -568,7 +547,7 @@ struct BarState {
 }
 
 impl BarState {
-    fn new(supabase: Option<SupabaseWriter>, footprint_step: PriceStep) -> Self {
+    fn new(mongo: MongoWriter, config_loader: MongoConfigLoader, footprint_step: PriceStep) -> Self {
         Self {
             bars: VecDeque::with_capacity(VP_WINDOW + 1),
             cvd: 0.0,
@@ -598,15 +577,9 @@ impl BarState {
             liq_map_tracker: LiqMapTracker::new(),
             liq_map_snapshot: None,
             last_taker_ratio: None,
-            supabase,
-            pending_signal_uuid: None,
-            pending_uuid_rx: None,
-            cfg: StrategyConfig {
-                enabled: true,
-                ..StrategyConfig::default()
-            },
-            config_loader: ConfigLoader::new(),
-            regime_tx: None,
+            mongo,
+            pending_signal_oid: None,
+            config_loader,
             last_regime: None,
             last_regime_enum: data::strategy::types::Regime::Unknown,
             regime_started_at_ms: None,
@@ -621,17 +594,9 @@ impl BarState {
             intrabar_eval_count: 0,
             intrabar_signal_fired: false,
             last_intrabar_signal_ms: 0,
-            bar_counter: 0,
-            pending_horizons: Vec::new(),
             prev_obi_l5: 0.0,
             lab_tracker: LabTracker::new(50),
             lab_cfg: LabConfig::from_env(),
-        }
-    }
-
-    fn notify_regime(&self, regime: &str) {
-        if let Some(tx) = &self.regime_tx {
-            let _ = tx.try_send(regime.to_string());
         }
     }
 
@@ -750,73 +715,6 @@ impl BarState {
                 o.rr_at_5m = Some(rr_final);
             }
             o.log(bar_close_ms);
-            if let Some(sb) = &self.supabase {
-                let age_ms = bar_close_ms - o.signal_ms;
-                sb.write_outcome(
-                    o.signal_ms,
-                    &o.source.to_string(),
-                    &o.strategy_id,
-                    if o.is_long { "L" } else { "S" },
-                    o.entry_px,
-                    o.stop_px,
-                    o.target_px,
-                    o.risk,
-                    o.mfe,
-                    o.mae,
-                    o.rr_at_1m,
-                    o.rr_at_3m,
-                    o.rr_at_5m,
-                    o.hit_target,
-                    o.hit_stop,
-                    age_ms,
-                );
-            }
-        }
-    }
-
-    // ── Forward horizon tracker ───────────────────────────────────────────────
-
-    /// Called at the start of each on_bar_close() with the previous bar's close price.
-    /// Checks all pending trades and patches signal_outcomes with price_Xm/r_Xm when
-    /// the corresponding bar horizon has elapsed.
-    async fn flush_pending_horizons(&mut self, bar_close: f64) {
-        // Horizons mapped to elapsed bars (5m bars): 5m=1, 15m=3, 30m=6, 1h=12
-        const HORIZONS: &[(&str, u64)] = &[("5m", 1), ("15m", 3), ("30m", 6), ("1h", 12)];
-
-        let mut completed: Vec<usize> = Vec::new();
-
-        for (idx, h) in self.pending_horizons.iter().enumerate() {
-            let elapsed = self.bar_counter.saturating_sub(h.close_bar_n);
-            let sign = if h.side == "Long" { 1.0 } else { -1.0 };
-            let risk = (h.entry_price - h.stop_price).abs();
-
-            for &(label, bars) in HORIZONS {
-                if elapsed == bars {
-                    let r = if risk > 0.0 {
-                        sign * (bar_close - h.entry_price) / risk
-                    } else {
-                        0.0
-                    };
-                    if let Some(sb) = &self.supabase {
-                        let sb = sb.clone();
-                        let uuid = h.signal_uuid.clone();
-                        let lbl = label.to_string();
-                        tokio::spawn(async move {
-                            sb.patch_horizon(&uuid, &lbl, bar_close, r).await;
-                        });
-                    }
-                }
-            }
-
-            // Mark complete once 1h horizon (12 bars) has passed
-            if elapsed > 12 {
-                completed.push(idx);
-            }
-        }
-
-        // Remove completed in reverse order to preserve indices
-        for idx in completed.into_iter().rev() {
-            self.pending_horizons.swap_remove(idx);
         }
     }
 
@@ -996,7 +894,7 @@ impl BarState {
             return;
         };
         let ctx = self.build_intrabar_ctx(&frozen, now_ms, symbol);
-        let cfg = self.cfg.clone();
+        let cfg = self.config_loader.current();
         let (signal, _) = route_strategy(&ctx, &cfg);
 
         self.last_intrabar_eval_price = self.current_price;
@@ -1041,13 +939,7 @@ impl BarState {
                 if let Ok(json) = serde_json::to_string(&signal) {
                     println!("{{\"event\":\"intrabar_signal\",\"data\":{json}}}");
                 }
-                if let Some(sb) = self.supabase.clone() {
-                    let signal_clone = signal.clone();
-                    let ctx_clone = ctx.clone();
-                    tokio::spawn(async move {
-                        sb.write_signal(&signal_clone, &ctx_clone).await;
-                    });
-                }
+                self.mongo.write_signal(&signal, &ctx);
             }
         }
     }
@@ -1059,13 +951,9 @@ impl BarState {
     }
 
     async fn on_bar_close(&mut self, bar: Kline, bar_close_ms: u64, symbol: &str) {
-        let cfg = self.cfg.clone();
+        let cfg = self.config_loader.current();
         let bar_ms = bar.time.as_u64() as i64;
         self.metrics.bars_processed += 1;
-
-        // --- Forward horizon check (runs before processing current bar) ---
-        let bar_c_prev = bar.open.to_f32() as f64; // use open of new bar = close of prev bar
-        self.flush_pending_horizons(bar_c_prev).await;
 
         let proc_start = Instant::now();
         let now_ms = SystemTime::now()
@@ -1125,21 +1013,10 @@ impl BarState {
         let regime_window = &closes[closes.len().saturating_sub(REGIME_WINDOW)..];
         let regime = derive_regime_with_hysteresis(regime_window, atr, self.last_regime_enum);
         let regime_str = format!("{regime:?}");
-        self.notify_regime(&regime_str);
 
-        // Detect regime changes and persist to regime_history
+        // Detect regime changes and trigger config reload
         if self.last_regime.as_deref() != Some(&regime_str) {
-            if let Some(sb) = &self.supabase {
-                let duration_ms = self.regime_started_at_ms.map(|start| bar_ms - start);
-                sb.write_regime_change(
-                    bar_ms,
-                    &regime_str,
-                    &regime_str,
-                    &regime_str,
-                    duration_ms,
-                    c,
-                );
-            }
+            self.config_loader.request_reload(&regime_str);
             self.regime_started_at_ms = Some(bar_ms);
             self.last_regime = Some(regime_str.clone());
             self.last_regime_enum = regime;
@@ -1464,22 +1341,9 @@ impl BarState {
         // ── Strategy Lab ─────────────────────────────────────────────────────
         let lab_signals = run_strategy_lab(&ctx, &cfg, &self.lab_cfg);
         for lab_sig in &lab_signals {
-            if let Some(ref sb) = self.supabase {
-                let sig_clone = lab_sig.clone();
-                let sb_clone = sb.clone();
-                tokio::spawn(async move {
-                    sb_clone.write_lab_signal(&sig_clone).await;
-                });
-            }
             self.lab_tracker.push(lab_sig);
         }
-        let completed_outcomes = self.lab_tracker.on_bar(h, l, c);
-        for outcome in &completed_outcomes {
-            if let Some(ref sb) = self.supabase {
-                let uuid_str = outcome.signal_id.to_string();
-                sb.write_lab_outcome(outcome, Some(uuid_str));
-            }
-        }
+        let _completed_outcomes = self.lab_tracker.on_bar(h, l, c);
 
         let near_misses = collect_near_misses(&ctx, &cfg, signal_fired);
 
@@ -1519,22 +1383,10 @@ impl BarState {
             }
         }
 
-        // Collect UUID from the previous bar's in-flight write (non-blocking try_recv).
-        if let Some(mut rx) = self.pending_uuid_rx.take() {
-            match rx.try_recv() {
-                Ok(uuid) => self.pending_signal_uuid = uuid,
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    // Write still in flight — trade linker will miss this one, acceptable.
-                    eprintln!("[supabase] UUID not ready by next bar — trade won't be linked");
-                }
-                Err(_) => {} // sender dropped (write failed), uuid stays None
-            }
-        }
-
-        // Snapshot the UUID that belongs to the currently open position BEFORE
-        // processing the new signal — a new signal clears pending_signal_uuid, which
-        // would cause write_trade to skip linking any trade that closes in this same bar.
-        let trade_uuid = self.pending_signal_uuid.clone();
+        // Take the OID of the currently open position BEFORE processing the new signal —
+        // a new signal clears pending_signal_oid, which would cause write_trade to skip
+        // linking any trade that closes in this same bar.
+        let trade_oid = self.pending_signal_oid.take();
 
         let prev_closed = self.paper.closed_trades.len();
         let paper_signal = if signal_fired { Some(&signal) } else { None };
@@ -1545,45 +1397,16 @@ impl BarState {
             if let Ok(json) = serde_json::to_string(trade) {
                 println!("{{\"event\":\"trade_closed\",\"data\":{json}}}");
             }
-            if let Some(sb) = &self.supabase {
-                sb.write_trade(trade, trade_uuid.clone());
-            }
-            // Register trade for forward horizon tracking (price_5m, price_15m, etc.)
-            if let Some(ref uuid) = trade_uuid {
-                if let Some(stop) = trade.stop_price {
-                    let h = PendingHorizon {
-                        signal_uuid: uuid.clone(),
-                        entry_price: trade.entry_price,
-                        stop_price: stop,
-                        side: trade.side.clone(),
-                        close_bar_n: self.bar_counter,
-                    };
-                    eprintln!(
-                        "[horizon_pending] uuid={} close_bar={} entry={} stop={} side={}",
-                        h.signal_uuid, h.close_bar_n, h.entry_price, h.stop_price, h.side
-                    );
-                    self.pending_horizons.push(h);
-                }
-            }
+            self.mongo.write_trade(trade, trade_oid);
         }
 
-        // Write the new signal to Supabase AFTER closing any trades, so the UUID
+        // Write the new signal to MongoDB AFTER closing any trades, so the OID
         // of the previous signal is still intact when write_trade runs above.
         if signal_fired {
             if let Ok(json) = serde_json::to_string(&signal) {
                 println!("{{\"event\":\"signal\",\"data\":{json}}}");
             }
-            if let Some(sb) = self.supabase.clone() {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                self.pending_uuid_rx = Some(rx);
-                self.pending_signal_uuid = None; // cleared until write completes
-                let signal_clone = signal.clone();
-                let ctx_clone = ctx.clone();
-                tokio::spawn(async move {
-                    let uuid = sb.write_signal(&signal_clone, &ctx_clone).await;
-                    let _ = tx.send(uuid);
-                });
-            }
+            self.pending_signal_oid = self.mongo.write_signal(&signal, &ctx);
         }
 
         let missing_str = signal
@@ -1673,7 +1496,6 @@ impl BarState {
             bar_close_price: c,
         });
         self.bar_footprint.clear();
-        self.bar_counter += 1;
         self.intrabar_signal_fired = false;
         self.intrabar_eval_count = 0;
         self.last_intrabar_eval_price = c;
@@ -2357,14 +2179,13 @@ async fn main() {
     let mut depth_stream = Box::pin(depth_stream);
     let mut trade_stream = Box::pin(trade_stream);
 
-    // ── Supabase writer (replaces MongoDB) ───────────────────────────────────
-    let supabase = SupabaseWriter::from_env();
-    if supabase.is_none() {
-        eprintln!("[supabase] SUPABASE_URL not set — signals/trades logged to stdout only");
-    }
+    // ── MongoDB writer + config loader (local, no cloud) ─────────────────────
+    let mongo = MongoWriter::from_env();
+    let base_cfg = StrategyConfig::load();
+    let config_loader = MongoConfigLoader::from_env(base_cfg);
 
     let footprint_step: PriceStep = ticker_info.min_ticksize.into();
-    let mut state = BarState::new(supabase, footprint_step);
+    let mut state = BarState::new(mongo, config_loader, footprint_step);
     state.intrabar_cfg.log_boot();
 
     // Seed bar history from REST before the live stream starts
@@ -2455,13 +2276,6 @@ async fn main() {
         let samples = fetch_funding_history(&fh_symbol).await;
         let _ = funding_hist_tx.send(samples).await;
     });
-
-    // Trigger config reloads whenever the regime changes (sent from on_bar_close).
-    // The reload HTTP fetch is done in a spawned task — result comes back via cfg_rx.
-    let (regime_tx, mut regime_rx) = tokio::sync::mpsc::channel::<String>(8);
-    let (cfg_tx, mut cfg_rx) =
-        tokio::sync::mpsc::channel::<data::strategy::types::StrategyConfig>(4);
-    state.regime_tx = Some(regime_tx);
 
     loop {
         tokio::select! {
@@ -2620,28 +2434,6 @@ async fn main() {
                 }
             }
 
-            Some(regime) = regime_rx.recv() => {
-                // Spawn the Supabase config fetch off the event loop.
-                if state.config_loader.should_reload(&regime) {
-                    let mut loader = ConfigLoader::new();
-                    loader.current_regime = state.config_loader.current_regime.clone();
-                    loader.last_reload = state.config_loader.last_reload;
-                    let tx = cfg_tx.clone();
-                    let regime_clone = regime.clone();
-                    tokio::spawn(async move {
-                        let cfg = loader.load_for_regime(&regime_clone).await;
-                        let _ = tx.send(cfg).await;
-                    });
-                    // Optimistically mark as reloaded so should_reload won't re-trigger
-                    // while the fetch is in flight.
-                    state.config_loader.current_regime = regime;
-                    state.config_loader.last_reload = Some(Instant::now());
-                }
-            }
-
-            Some(cfg) = cfg_rx.recv() => {
-                state.cfg = cfg;
-            }
         }
 
         if last_metrics_print.elapsed() >= metrics_interval {
