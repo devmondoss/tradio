@@ -9,6 +9,9 @@ homepage.workspace = true
 
 [dependencies]
 serde_json.workspace = true
+toml.workspace = true
+mongodb.workspace = true
+tokio.workspace = true
 serde.workspace = true
 iced_core.workspace = true
 chrono.workspace = true

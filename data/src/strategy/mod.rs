@@ -1,10 +1,13 @@
 pub mod adapter;
+pub mod config_file;
 pub mod context;
 pub mod cooldown;
 pub mod detectors;
 pub mod intent_logger;
 pub mod lab;
 pub mod logger;
+pub mod mongo_config_loader;
+pub mod mongo_writer;
 pub mod paper;
 pub mod router;
 pub mod scoring;

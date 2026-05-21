@@ -1,0 +1,44 @@
+# ============================================================================
+#  FUENTE ÚNICA DE VERDAD para los parámetros de estrategia (StrategyConfig).
+#
+#  La UI y el monitor cargan este archivo al arrancar (StrategyConfig::load()).
+#  Ya NO hay umbrales hardcodeados que diverjan entre UI y monitor: edita aquí.
+#
+#  Capas (de menor a mayor prioridad):
+#    1. impl Default en types.rs   → fallback de emergencia si este archivo falta
+#    2. config/strategy.toml       → este archivo (fuente base canónica)
+#    3. Mongo `deployed_params`    → override por régimen que produce la calibración
+#
+#  Los TTL se expresan en MINUTOS para legibilidad (se convierten a ms al cargar).
+# ============================================================================
+
+[general]
+enabled                  = true     # activar el motor de estrategias
+min_score                = 0.60     # umbral de score para emitir una señal
+min_score_institutional  = 0.55     # umbral para LiqHunt / FER / SMD (señales infrecuentes, alta convicción)
+max_spread_bps           = 2.0      # spread máximo aceptado (basis points)
+max_vpin                 = 0.75     # VPIN máximo (flujo tóxico) antes de bloquear
+min_rr                   = 1.5      # R:R mínimo para emitir señal
+max_rr_m5                = 8.0      # R:R máximo alcanzable en M5 BTC (filtra targets fantasía)
+default_ttl_min          = 250      # TTL por defecto de una señal (minutos)
+session_filter_enabled   = true     # filtrar señales según la sesión de trading activa
+htf_scoring_enabled      = true     # multiplicador HTF basado en MarketStructureContext
+spoof_gate_enabled       = false    # bloquear toxic_flow_gate cuando hay spoof en dirección de la señal
+cooldown_bars            = 5        # velas mínimas entre señales del mismo detector
+
+[liquidation_hunt]
+min_usd            = 25000          # USD liquidado en 5 min para confirmar hunt en progreso
+cascade_threshold  = 5000000        # USD en 60s que constituye una cascada (demasiado tarde para entrar)
+ttl_min            = 10             # TTL de la señal (minutos)
+
+[funding_exhaustion]
+extreme_threshold  = 0.0006         # funding absoluto que dispara régimen extremo (0.06%)
+top_long_min       = 0.46           # top traders long pct mínimo para FER Long
+retail_long_max    = 0.58           # retail long pct máximo para FER Long
+ttl_min            = 30             # TTL de la señal (minutos)
+
+[smart_money_divergence]
+short_threshold        = 0.45       # top traders long pct por debajo → smart money predominantemente short
+retail_long_threshold  = 0.60       # retail long pct por encima → retail predominantemente long
+min_divergence         = 0.10       # divergencia mínima (retail_long - top_long) para disparar
+ttl_min                = 20         # TTL de la señal (minutos)

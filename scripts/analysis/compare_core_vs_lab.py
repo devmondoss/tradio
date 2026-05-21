@@ -23,21 +23,21 @@ try:
 except ImportError:
     pass
 
+# supabase es opcional (solo si ANALYTICS_BACKEND=supabase); pymongo se carga
+# desde calibration.core.mongo_db. tabulate sigue siendo necesario para print.
 try:
-    from supabase import create_client
     from tabulate import tabulate
 except ImportError:
-    print("ERROR: pip install supabase python-dotenv tabulate")
+    print("ERROR: pip install tabulate (pymongo ya está en calibration/requirements.txt)")
     sys.exit(1)
 
 
 def get_client():
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    if not url or not key:
-        print("ERROR: SUPABASE_URL y SUPABASE_KEY requeridos")
-        sys.exit(1)
-    return create_client(url, key)
+    """Default backend Mongo; setea ANALYTICS_BACKEND=supabase para forzar Supabase."""
+    from pathlib import Path as _P
+    sys.path.insert(0, str(_P(__file__).resolve().parent.parent.parent))
+    from calibration.core.mongo_db import analytics_client
+    return analytics_client()
 
 
 def compare(days: int = 7, window_ms: int = 60_000):

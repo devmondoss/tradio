@@ -1,6 +1,8 @@
 # Estado Actual del Sistema — FlowSurface Monitor
 **Última actualización:** Mayo 2026
 
+> **🆕 2026-05-20**: Migración a operación **local con MongoDB**. La UI ahora corre el pipeline completo de detección + persistencia + config dinámica por régimen — paridad funcional con el monitor de Railway, más visualización en tiempo real. Doc canónica: [LOCAL_MONGO_SETUP.md](LOCAL_MONGO_SETUP.md).
+
 Este documento describe el estado real y funcional del sistema después de todos los fixes y mejoras aplicados. Es la referencia autoritativa para entender qué hace cada componente y cómo está configurado en producción.
 
 ---
