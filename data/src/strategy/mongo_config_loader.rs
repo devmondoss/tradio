@@ -59,7 +59,7 @@ impl MongoConfigLoader {
                 Self::spawn(uri, db, base)
             }
             Err(_) => {
-                eprintln!("[mongo-cfg] MONGODB_URI not set — config loader disabled (using base only)");
+                println!("[mongo-cfg] MONGODB_URI not set — config loader disabled (using base only)");
                 let current = Arc::new(RwLock::new(base));
                 let (tx, _rx) = mpsc::channel::<LoaderCmd>();
                 Self { current, tx }

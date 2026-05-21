@@ -78,7 +78,7 @@ impl IntrabarConfig {
 
     pub fn log_boot(&self) {
         if !self.enabled {
-            eprintln!(
+            println!(
                 "[intrabar] disabled — set TRADIO_INTRABAR_ENABLED=true to activate"
             );
             return;
@@ -91,7 +91,7 @@ impl IntrabarConfig {
                 IntrabarDetector::Liq => "LIQ",
             })
             .collect();
-        eprintln!(
+        println!(
             "[intrabar] enabled mode={:?} detectors={} allow_execution={} \
              write_events={} write_outcomes={} \
              price_move_atr_k={} time_fallback_ms={} vwap_near_bps={} min_rr={} \

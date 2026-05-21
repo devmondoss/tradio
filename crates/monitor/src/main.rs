@@ -1055,7 +1055,25 @@ impl BarState {
         let atr = compute_atr(&highs, &lows, &closes, ATR_WINDOW);
         let regime_window = &closes[closes.len().saturating_sub(REGIME_WINDOW)..];
         let regime = derive_regime_with_hysteresis(regime_window, atr, self.last_regime_enum);
-        let regime_str = format!("{regime:?}");
+
+        // Compute slow/fast slopes for diagnostics (mirrors derive_regime internals)
+        let slow_slope = compute_ols_slope(regime_window, atr);
+        let fast_slope =
+            compute_ols_slope(&regime_window[regime_window.len().saturating_sub(5)..], atr);
+
+        // Apply the same fast_slope override used in the intrabar evaluator so that
+        // bar-close detectors and intrabar detectors see the same effective regime.
+        // last_regime_enum stays on the canonical (pre-override) regime so hysteresis
+        // is not corrupted by transient fast_slope spikes.
+        let effective_regime = if fast_slope < -0.35 && regime == Regime::TrendUp {
+            Regime::TrendDown
+        } else if fast_slope > 0.35 && regime == Regime::TrendDown {
+            Regime::TrendUp
+        } else {
+            regime
+        };
+
+        let regime_str = format!("{effective_regime:?}");
 
         // Detect regime changes and trigger config reload
         if self.last_regime.as_deref() != Some(&regime_str) {
@@ -1072,10 +1090,6 @@ impl BarState {
             self.last_regime = Some(regime_str.clone());
             self.last_regime_enum = regime;
         }
-        // Compute slow/fast slopes for diagnostics (mirrors derive_regime internals)
-        let slow_slope = compute_ols_slope(regime_window, atr);
-        let fast_slope =
-            compute_ols_slope(&regime_window[regime_window.len().saturating_sub(5)..], atr);
         let cvd_slope = compute_cvd_slope(&self.cvd_history);
         let cvd_divergence = derive_cvd_divergence(&highs, &lows, cvd_slope);
 
@@ -1353,7 +1367,7 @@ impl BarState {
             symbol: symbol.to_string(),
             timestamp_ms: bar_ms,
             price: c,
-            regime,
+            regime: effective_regime,
             atr: if atr > 0.0 { Some(atr) } else { None },
             volume_profile: vp_ctx,
             vwap: vwap_ctx,
@@ -1506,7 +1520,7 @@ impl BarState {
         );
         let liq_age = self.freshness.liq_age_str();
         println!(
-            "[bar] ts={bar_ms} close={c:.2} regime={regime:?} \
+            "[bar] ts={bar_ms} close={c:.2} regime={effective_regime:?} \
              slow={slow_slope:.3} fast={fast_slope:.3} \
              funding={:.4} basis={:.3}% oi_delta={:.0} \
              vwap={:.2} cvd={:.1} ob={} \
@@ -1532,9 +1546,11 @@ impl BarState {
             self.paper.equity,
         );
 
-        // Freeze bar-level context for intrabar evaluation during the next bar
+        // Freeze bar-level context for intrabar evaluation during the next bar.
+        // Store effective_regime (with fast_slope override) so the intrabar evaluator
+        // sees the same regime as the bar-close detectors did.
         self.frozen = Some(FrozenBarCtx {
-            regime,
+            regime: effective_regime,
             fast_slope,
             atr,
             poc,

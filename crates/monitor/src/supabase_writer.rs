@@ -28,7 +28,7 @@ impl SupabaseWriter {
     pub fn from_env() -> Option<Self> {
         let url = std::env::var("SUPABASE_URL").ok()?;
         let key = std::env::var("SUPABASE_KEY").ok()?;
-        eprintln!("[supabase] writer initialized for {url}");
+        println!("[supabase] writer initialized for {url}");
         Some(Self {
             url,
             key,

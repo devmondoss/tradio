@@ -60,7 +60,7 @@ impl MongoWriter {
                 Self::spawn(uri, db)
             }
             Err(_) => {
-                eprintln!("[mongo] MONGODB_URI not set — writer disabled (Supabase only)");
+                println!("[mongo] MONGODB_URI not set — writer disabled (Supabase only)");
                 let (tx, _rx) = mpsc::channel::<MongoMsg>();
                 Self { tx }
             }
