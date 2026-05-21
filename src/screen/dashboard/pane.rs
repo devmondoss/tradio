@@ -156,6 +156,79 @@ impl State {
         })
     }
 
+    /// Junto a la suscripción Depth, el detector necesita los indicadores
+    /// `STRATEGY_INDICATORS` (ATR/VWAP/VolumeProfile/CVD/Volume) instanciados.
+    /// Sin ellos cada barra se rechaza con ATR_NOT_READY. Idempotente: solo
+    /// añade los que falten.
+    pub fn ensure_strategy_indicators(&mut self) -> bool {
+        if let Content::Kline {
+            chart: Some(c),
+            indicators,
+            ..
+        } = &mut self.content
+        {
+            let added = c.ensure_strategy_indicators();
+            let mut changed = false;
+            for ind in added {
+                if !indicators.contains(&ind) {
+                    indicators.push(ind);
+                    changed = true;
+                }
+            }
+            return changed;
+        }
+        false
+    }
+
+    /// El detector de estrategias (overlay) necesita el order book para
+    /// construir el `OrderBookContext`. Un kline pane normalmente solo suscribe
+    /// `Kline`/`Trades`, así que sin esto `last_depth` queda en None y la
+    /// detección aborta en su primera línea.
+    ///
+    /// Si este pane es un Kline chart con el overlay de estrategia activo y aún
+    /// no tiene un stream `Depth`, lo añade para su ticker. Devuelve `true` si
+    /// modificó los streams (el caller debe refrescar las suscripciones).
+    /// Idempotente: no hace nada si ya hay un Depth o el overlay está apagado.
+    pub fn ensure_strategy_depth_stream(&mut self) -> bool {
+        // Solo el chart Candlestick necesita Depth para detección de estrategia;
+        // el Footprint queda intacto (no corre detection).
+        let is_candle_with_overlay = matches!(
+            &self.content,
+            Content::Kline { chart: Some(c), .. }
+                if c.strategy_overlay_enabled
+                    && matches!(c.kind, data::chart::kline::KlineChartKind::Candles)
+        );
+        if !is_candle_with_overlay {
+            return false;
+        }
+
+        let has_depth = self
+            .streams
+            .ready_iter()
+            .map(|mut it| it.any(|s| matches!(s, StreamKind::Depth { .. })))
+            .unwrap_or(false);
+        if has_depth {
+            return false;
+        }
+
+        let Some(ticker_info) = self.stream_pair() else {
+            return false; // streams aún no resueltos; se reintenta en el próximo tick
+        };
+
+        let depth = StreamKind::Depth {
+            ticker_info,
+            depth_aggr: StreamTicksize::Client,
+            push_freq: exchange::PushFrequency::ServerDefault,
+        };
+
+        if let ResolvedStream::Ready(streams) = &mut self.streams {
+            streams.push(depth);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn stream_pair_kind(&self) -> Option<StreamPairKind> {
         let ready_streams = self.streams.ready_iter()?;
         let mut unique = vec![];
@@ -544,13 +617,14 @@ impl State {
         timezone: UserTimezone,
         tickers_table: &'a TickersTable,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
-        let mut top_left_buttons = if Content::Starter == self.content {
-            row![]
-        } else {
-            row![link_group_button(id, self.link_group, |id| {
-                Message::PaneEvent(id, Event::ShowModal(Modal::LinkGroup))
-            })]
-        };
+        let mut top_left_buttons =
+            if matches!(self.content, Content::Starter | Content::StrategyMonitor(_)) {
+                row![]
+            } else {
+                row![link_group_button(id, self.link_group, |id| {
+                    Message::PaneEvent(id, Event::ShowModal(Modal::LinkGroup))
+                })]
+            };
 
         if let Some(kind) = self.stream_pair_kind() {
             let (base_ti, extra) = match kind {
@@ -1254,7 +1328,7 @@ impl State {
                 self.content.toggle_indicator(ind);
             }
             Event::ToggleStrategyOverlay => {
-                if let Content::Kline {
+                let toggled_cfg = if let Content::Kline {
                     chart: Some(c),
                     indicators,
                     ..
@@ -1266,7 +1340,18 @@ impl State {
                             indicators.push(ind);
                         }
                     }
-                    return Some(Effect::PersistVisualConfig(VisualConfig::Kline(c.config)));
+                    Some(c.config)
+                } else {
+                    None
+                };
+
+                if let Some(cfg) = toggled_cfg {
+                    // Persistimos el estado del overlay inline y aseguramos que el
+                    // kline pane tenga un stream Depth (el detector lo necesita),
+                    // luego refrescamos suscripciones para que el Depth se abra.
+                    self.settings.visual_config = Some(VisualConfig::Kline(cfg));
+                    self.ensure_strategy_depth_stream();
+                    return Some(Effect::RefreshStreams);
                 }
                 if matches!(self.content, Content::StrategyMonitor(_)) {
                     return Some(Effect::ToggleLinkedStrategyOverlay);
@@ -2293,12 +2378,21 @@ impl Content {
                     return;
                 };
 
+                // When the strategy overlay is on and this indicator is required
+                // for detection, only toggle the visual list — keep the chart data
+                // alive so the strategy engine keeps computing it.
+                let is_strategy_required = chart.strategy_overlay_enabled
+                    && KlineChart::STRATEGY_INDICATORS.contains(&ind);
+
                 if indicators.contains(&ind) {
                     indicators.retain(|i| i != &ind);
                 } else {
                     indicators.push(ind);
                 }
-                chart.toggle_indicator(ind);
+
+                if !is_strategy_required {
+                    chart.toggle_indicator(ind);
+                }
             }
             (
                 Content::ShaderHeatmap {
@@ -2595,12 +2689,7 @@ fn strategy_monitor_view(
                     .style(|t: &Theme| text::Style {
                         color: Some(t.extended_palette().background.strong.color),
                     }),
-                text("Link to a Candlestick chart")
-                    .size(11)
-                    .style(|t: &Theme| text::Style {
-                        color: Some(t.extended_palette().background.strong.color),
-                    }),
-                text("using the same link group")
+                text("Waiting for data...")
                     .size(11)
                     .style(|t: &Theme| text::Style {
                         color: Some(t.extended_palette().background.strong.color),
@@ -2698,7 +2787,45 @@ fn strategy_monitor_view(
     ]
     .spacing(8);
 
-    let mut col = column![header, equity_row, stats].spacing(4).padding(8);
+    // ── Vital signs row: prueba visual de que el motor está vivo aunque no
+    // haya señales aprobadas todavía. Bars evaluated incrementa cada cierre.
+    let last_bar_label = match snap.last_bar_ms {
+        Some(ms) => {
+            let secs_in_day = (ms / 1000) % 86_400;
+            let h = secs_in_day / 3600;
+            let m = (secs_in_day % 3600) / 60;
+            let s = secs_in_day % 60;
+            format!("{h:02}:{m:02}:{s:02} UTC")
+        }
+        None => "—".into(),
+    };
+    let awaiting_label = snap
+        .last_missing
+        .as_deref()
+        .map(|m| format!("waiting: {m}"))
+        .unwrap_or_else(|| "warming up".into());
+    let vitals = row![
+        text(format!("{} bars", snap.bars_evaluated))
+            .size(10)
+            .style(|t: &Theme| text::Style {
+                color: Some(t.extended_palette().background.strong.color),
+            }),
+        text(last_bar_label)
+            .size(10)
+            .style(|t: &Theme| text::Style {
+                color: Some(t.extended_palette().background.strong.color),
+            }),
+        text(awaiting_label)
+            .size(10)
+            .style(|t: &Theme| text::Style {
+                color: Some(t.extended_palette().secondary.weak.color),
+            }),
+    ]
+    .spacing(10);
+
+    let mut col = column![header, equity_row, stats, vitals]
+        .spacing(4)
+        .padding(8);
 
     // ── Separator ─────────────────────────────────────────────────────────────
     col = col.push(
@@ -2840,6 +2967,158 @@ fn strategy_monitor_view(
                         color: Some(t.extended_palette().background.strong.color),
                     }),
             );
+        }
+    }
+
+    // ── Detector log ─────────────────────────────────────────────────────────
+    if !snap.detector_log.is_empty() {
+        use data::strategy::types::DetectorStatus;
+
+        col = col.push(
+            container(text("").size(1))
+                .height(1)
+                .width(Length::Fill)
+                .style(|t: &Theme| container::Style {
+                    background: Some(t.extended_palette().background.strong.color.into()),
+                    ..Default::default()
+                }),
+        );
+
+        col = col.push(
+            text("── Detectors ──")
+                .size(10)
+                .style(|t: &Theme| text::Style {
+                    color: Some(t.extended_palette().background.strong.color),
+                }),
+        );
+
+        for det in &snap.detector_log {
+            if det.name == "GLOBAL" {
+                continue;
+            }
+
+            let (status_icon, name_style): (&str, Box<dyn Fn(&Theme) -> text::Style>) =
+                match det.status {
+                    DetectorStatus::Active => (
+                        "●",
+                        Box::new(|t: &Theme| text::Style {
+                            color: Some(t.extended_palette().success.base.color),
+                        }),
+                    ),
+                    DetectorStatus::LowScore => (
+                        "◐",
+                        Box::new(|t: &Theme| text::Style {
+                            color: Some(t.extended_palette().secondary.base.color),
+                        }),
+                    ),
+                    DetectorStatus::Fired => (
+                        "○",
+                        Box::new(|t: &Theme| text::Style {
+                            color: Some(t.extended_palette().secondary.weak.color),
+                        }),
+                    ),
+                    DetectorStatus::Skip => (
+                        "·",
+                        Box::new(|t: &Theme| text::Style {
+                            color: Some(t.extended_palette().background.strong.color),
+                        }),
+                    ),
+                    DetectorStatus::SessionInvalid => (
+                        "ø",
+                        Box::new(|t: &Theme| text::Style {
+                            color: Some(t.extended_palette().background.strong.color),
+                        }),
+                    ),
+                    DetectorStatus::GlobalBlocked => (
+                        "■",
+                        Box::new(|t: &Theme| text::Style {
+                            color: Some(t.extended_palette().background.strong.color),
+                        }),
+                    ),
+                };
+
+            let side_str = match det.side {
+                Some(data::strategy::types::Side::Long) => " L",
+                Some(data::strategy::types::Side::Short) => " S",
+                None => "  ",
+            };
+            let is_long = matches!(det.side, Some(data::strategy::types::Side::Long));
+            let is_short = matches!(det.side, Some(data::strategy::types::Side::Short));
+            let has_side = det.side.is_some();
+
+            let score_str = if det.score > 0.0 {
+                format!(" {:.0}%", det.score * 100.0)
+            } else {
+                String::new()
+            };
+
+            let mut det_row = row![
+                text(status_icon).size(11).style(name_style),
+                text(det.name.clone()).size(11),
+            ]
+            .spacing(4);
+
+            if has_side {
+                det_row = det_row.push(
+                    text(side_str).size(10).style(move |t: &Theme| {
+                        let p = t.extended_palette();
+                        text::Style {
+                            color: Some(if is_long {
+                                p.success.weak.color
+                            } else if is_short {
+                                p.danger.weak.color
+                            } else {
+                                p.background.strong.color
+                            }),
+                        }
+                    }),
+                );
+            }
+
+            if !score_str.is_empty() {
+                let score_val = det.score;
+                det_row = det_row.push(
+                    text(score_str).size(10).style(move |t: &Theme| {
+                        let p = t.extended_palette();
+                        text::Style {
+                            color: Some(if score_val >= 0.7 {
+                                p.success.weak.color
+                            } else if score_val >= 0.5 {
+                                p.secondary.weak.color
+                            } else {
+                                p.danger.weak.color
+                            }),
+                        }
+                    }),
+                );
+            }
+
+            col = col.push(det_row);
+
+            // Evidence lines (only for fired/active/low-score detectors)
+            if matches!(
+                det.status,
+                DetectorStatus::Active | DetectorStatus::LowScore | DetectorStatus::Fired
+            ) {
+                for ev in &det.evidence {
+                    col = col.push(
+                        text(format!("  ✓ {ev}"))
+                            .size(9)
+                            .style(|t: &Theme| text::Style {
+                                color: Some(t.extended_palette().success.weak.color),
+                            }),
+                    );
+                }
+                for m in &det.missing {
+                    col = col.push(
+                        text(format!("  ✗ {m}"))
+                            .size(9)
+                            .style(|t: &Theme| text::Style {
+                                color: Some(t.extended_palette().danger.weak.color),
+                            }),
+                    );
+                }
+            }
         }
     }
 

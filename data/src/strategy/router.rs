@@ -9,6 +9,20 @@ use super::detectors::{
 use super::scoring::{StrategyProfile, score_signal};
 use super::types::*;
 
+fn blocked_log(missing_reason: &str) -> Vec<DetectorSnap> {
+    let names = ["VAFA","LVN","DIB","SOB","OBR","FAR","VWAP","LIQ","FER","SMD"];
+    names.iter().map(|&n| DetectorSnap {
+        name: n.into(),
+        status: DetectorStatus::GlobalBlocked,
+        ..Default::default()
+    }).chain(std::iter::once(DetectorSnap {
+        name: "GLOBAL".into(),
+        status: DetectorStatus::GlobalBlocked,
+        missing: vec![missing_reason.into()],
+        ..Default::default()
+    })).collect()
+}
+
 /// Sesiones válidas hardcodeadas por estrategia según la propuesta de integración.
 /// Retorna `true` si la sesión activa es válida para ejecutar esa estrategia.
 fn session_valid_for(id: StrategyId, session: TradingSession) -> bool {
@@ -61,9 +75,9 @@ fn session_valid_for(id: StrategyId, session: TradingSession) -> bool {
     }
 }
 
-pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> StrategySignal {
+pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (StrategySignal, Vec<DetectorSnap>) {
     if !cfg.enabled {
-        return StrategySignal {
+        return (StrategySignal {
             action: StrategyAction::Wait,
             strategy_id: None,
             side: None,
@@ -77,12 +91,12 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Stra
             missing: vec!["STRATEGY_DISABLED".into()],
             invalidation: vec![],
             created_at_ms: ctx.timestamp_ms,
-        };
+        }, blocked_log("STRATEGY_DISABLED"));
     }
 
     // ATR guard: if ATR is unavailable or < $1, stops and R:R are unreliable.
     if ctx.atr.map(|a| a < 1.0).unwrap_or(true) {
-        return StrategySignal {
+        return (StrategySignal {
             action: StrategyAction::Wait,
             strategy_id: None,
             side: None,
@@ -96,11 +110,11 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Stra
             missing: vec!["ATR_NOT_READY".into()],
             invalidation: vec![],
             created_at_ms: ctx.timestamp_ms,
-        };
+        }, blocked_log("ATR_NOT_READY"));
     }
 
     if let Err(reason) = toxic_flow_gate(ctx, cfg) {
-        return StrategySignal {
+        return (StrategySignal {
             action: StrategyAction::Blocked,
             strategy_id: None,
             side: None,
@@ -111,28 +125,52 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Stra
             score: 0.0,
             ttl_ms: 0,
             evidence: vec![],
-            missing: vec![reason],
+            missing: vec![reason.clone()],
             invalidation: vec![],
             created_at_ms: ctx.timestamp_ms,
-        };
+        }, blocked_log(&reason));
     }
 
     // Sesión activa para filtrado opcional
     let current_session = classify_session(ctx.timestamp_ms).session;
 
-    let mut candidates = Vec::new();
+    let mut candidates: Vec<StrategySignal> = Vec::new();
     // Rejection reasons per detector — populated when a detector returns None
     let mut rejections: Vec<String> = Vec::new();
+    let mut detector_log: Vec<DetectorSnap> = Vec::new();
 
     macro_rules! try_detect {
         ($name:literal, $id:expr, $expr:expr) => {
             // Filtro de sesión: descartar antes de pasar al scoring
             if cfg.session_filter_enabled && !session_valid_for($id, current_session) {
                 rejections.push(format!("{}:SESSION_INVALID", $name));
+                detector_log.push(DetectorSnap {
+                    name: $name.into(),
+                    status: DetectorStatus::SessionInvalid,
+                    ..Default::default()
+                });
             } else {
                 match $expr {
-                    Some(s) => candidates.push(score_signal(ctx, s)),
-                    None => rejections.push(format!("{}:SKIP", $name)),
+                    Some(s) => {
+                        let scored = score_signal(ctx, s);
+                        detector_log.push(DetectorSnap {
+                            name: $name.into(),
+                            status: DetectorStatus::Fired,
+                            score: scored.score,
+                            side: scored.side,
+                            evidence: scored.evidence.clone(),
+                            missing: scored.missing.clone(),
+                        });
+                        candidates.push(scored);
+                    }
+                    None => {
+                        rejections.push(format!("{}:SKIP", $name));
+                        detector_log.push(DetectorSnap {
+                            name: $name.into(),
+                            status: DetectorStatus::Skip,
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         };
@@ -193,11 +231,21 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Stra
         );
     } else {
         rejections.push("INST:NULL".into());
+        for name in ["LIQ", "FER", "SMD"] {
+            detector_log.push(DetectorSnap {
+                name: name.into(),
+                status: DetectorStatus::GlobalBlocked,
+                missing: vec!["INST:NULL".into()],
+                ..Default::default()
+            });
+        }
     }
 
-    let best = candidates
-        .into_iter()
-        .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
+    let best_idx = candidates
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.score.partial_cmp(&b.score).unwrap())
+        .map(|(i, _)| i);
 
     // min_score diferenciado por perfil de estrategia
     let effective_min_score = |id: Option<StrategyId>| -> f64 {
@@ -207,29 +255,52 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Stra
         }
     };
 
-    match best {
-        Some(ref signal) if signal.score >= effective_min_score(signal.strategy_id) => {
-            best.unwrap()
+    // Mark detector_log entries for candidates that fired
+    // (they were added with Fired status; we now promote winner to Active or LowScore)
+    let result = match best_idx {
+        Some(idx) => {
+            let signal = candidates.remove(idx);
+            let min_score = effective_min_score(signal.strategy_id);
+            if signal.score >= min_score {
+                // Mark the winning detector as Active
+                if let Some(snap) = detector_log.iter_mut().find(|d| {
+                    d.status == DetectorStatus::Fired
+                        && d.score == signal.score
+                        && d.side == signal.side
+                }) {
+                    snap.status = DetectorStatus::Active;
+                }
+                signal
+            } else {
+                // Mark it as LowScore
+                if let Some(snap) = detector_log.iter_mut().find(|d| {
+                    d.status == DetectorStatus::Fired
+                        && d.score == signal.score
+                        && d.side == signal.side
+                }) {
+                    snap.status = DetectorStatus::LowScore;
+                }
+                StrategySignal {
+                    action: StrategyAction::Wait,
+                    regime: signal.regime,
+                    entry_price: None,
+                    stop_price: None,
+                    target_price: None,
+                    missing: {
+                        let mut m = signal.missing.clone();
+                        m.push("LOW_SCORE".into());
+                        m
+                    },
+                    strategy_id: signal.strategy_id,
+                    side: signal.side,
+                    score: signal.score,
+                    ttl_ms: signal.ttl_ms,
+                    evidence: signal.evidence,
+                    invalidation: vec![],
+                    created_at_ms: signal.created_at_ms,
+                }
+            }
         }
-        Some(signal) => StrategySignal {
-            action: StrategyAction::Wait,
-            regime: signal.regime,
-            entry_price: None,
-            stop_price: None,
-            target_price: None,
-            missing: {
-                let mut m = signal.missing.clone();
-                m.push("LOW_SCORE".into());
-                m
-            },
-            strategy_id: signal.strategy_id,
-            side: signal.side,
-            score: signal.score,
-            ttl_ms: signal.ttl_ms,
-            evidence: signal.evidence,
-            invalidation: vec![],
-            created_at_ms: signal.created_at_ms,
-        },
         None => StrategySignal {
             action: StrategyAction::Wait,
             strategy_id: None,
@@ -245,5 +316,7 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Stra
             invalidation: vec![],
             created_at_ms: ctx.timestamp_ms,
         },
-    }
+    };
+
+    (result, detector_log)
 }

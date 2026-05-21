@@ -4,6 +4,29 @@ use crate::detectors::{FvgContext, OrderBlockContext, SpoofContext};
 use crate::session::SessionContext;
 use crate::structure::MarketStructureContext;
 
+// ── Detector debug log ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum DetectorStatus {
+    #[default]
+    Skip,           // Returned None — conditions not met
+    SessionInvalid, // Filtered by session gate
+    Fired,          // Passed detection and was scored
+    LowScore,       // Was best candidate but score < threshold
+    Active,         // Selected — emitted as ShadowSignal
+    GlobalBlocked,  // Never ran — global gate (ATR / toxic_flow) stopped evaluation
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DetectorSnap {
+    pub name: String,
+    pub status: DetectorStatus,
+    pub score: f64,
+    pub side: Option<Side>,
+    pub evidence: Vec<String>,
+    pub missing: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
     Long,

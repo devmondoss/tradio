@@ -433,10 +433,13 @@ impl Dashboard {
                                                         c.config,
                                                     ));
                                             }
+                                            // El detector necesita Depth; asegúralo en el pane vinculado.
+                                            s.ensure_strategy_depth_stream();
                                         }
                                     });
                             }
-                            return (Task::none(), None);
+                            // Refrescar suscripciones para abrir los Depth recién añadidos.
+                            return (self.refresh_streams(main_window.id), None);
                         }
 
                         let task = match effect {
@@ -1084,17 +1087,18 @@ impl Dashboard {
                 }
             });
 
-        // Pass 2: push snapshots to linked StrategyMonitor panes.
+        // Pass 2: push snapshots to StrategyMonitor panes.
+        // Prefer a link-group match; fall back to the first snapshot so the
+        // monitor works even when no link group is configured.
         if !snapshots.is_empty() {
             self.iter_all_panes_mut(main_window)
                 .for_each(|(_, _, pane_state)| {
                     if matches!(pane_state.content, pane::Content::StrategyMonitor(_)) {
-                        for (link_group, snapshot) in &snapshots {
-                            if link_group.is_some() && pane_state.link_group == *link_group {
-                                pane_state.push_strategy_snapshot(snapshot.clone());
-                                break;
-                            }
-                        }
+                        let matched = snapshots.iter().find(|(lg, _)| {
+                            lg.is_some() && pane_state.link_group == *lg
+                        });
+                        let (_, snapshot) = matched.unwrap_or(&snapshots[0]);
+                        pane_state.push_strategy_snapshot(snapshot.clone());
                     }
                 });
         }
@@ -1214,7 +1218,7 @@ impl Dashboard {
         &mut self,
         handles: &AdapterHandles,
         now: Instant,
-        _main_window: window::Id,
+        main_window: window::Id,
     ) -> Task<Message> {
         let mut tasks = vec![];
 
@@ -1287,6 +1291,30 @@ impl Dashboard {
             for (_, state) in popout_state.iter_mut() {
                 tick_state(state);
             }
+        }
+
+        // Auto-cura para overlay de estrategia: los kline panes con overlay
+        // activo necesitan (a) un stream Depth para `OrderBookContext` y
+        // (b) los STRATEGY_INDICATORS (ATR/VWAP/VolumeProfile/CVD/Volume)
+        // instanciados — sin ATR cada barra se rechaza con ATR_NOT_READY.
+        // Ambos checks son idempotentes; solo refrescamos si algo cambió.
+        let mut added_depth = false;
+        for (_, state) in self.panes.iter_mut() {
+            if state.ensure_strategy_depth_stream() {
+                added_depth = true;
+            }
+            state.ensure_strategy_indicators();
+        }
+        for (popout_state, _) in self.popout.values_mut() {
+            for (_, state) in popout_state.iter_mut() {
+                if state.ensure_strategy_depth_stream() {
+                    added_depth = true;
+                }
+                state.ensure_strategy_indicators();
+            }
+        }
+        if added_depth {
+            tasks.push(self.refresh_streams(main_window));
         }
 
         Task::batch(tasks)

@@ -997,7 +997,7 @@ impl BarState {
         };
         let ctx = self.build_intrabar_ctx(&frozen, now_ms, symbol);
         let cfg = self.cfg.clone();
-        let signal = route_strategy(&ctx, &cfg);
+        let (signal, _) = route_strategy(&ctx, &cfg);
 
         self.last_intrabar_eval_price = self.current_price;
         self.last_intrabar_eval_ms = now_ms;
@@ -1448,7 +1448,7 @@ impl BarState {
         };
         self.prev_obi_l5 = current_obi_l5;
 
-        let signal = route_strategy(&ctx, &cfg);
+        let (signal, _) = route_strategy(&ctx, &cfg);
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
         if signal_fired {
             self.metrics.signals_today += 1;

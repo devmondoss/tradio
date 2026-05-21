@@ -210,6 +210,14 @@ pub struct KlineChart {
     oi_tracker: data::institutional::OiTracker,
     cooldown_registry: data::strategy::cooldown::CooldownRegistry,
     bar_index: u64,
+    /// Timestamp ms UTC de la última barra que el detector evaluó. Sirve para
+    /// el panel Strategy Monitor (vitals "last HH:MM:SS UTC").
+    last_evaluated_bar_ms: Option<i64>,
+    /// Oid de la última señal escrita a Mongo; se preserva entre barras para
+    /// poder enlazar el trade cerrado correspondiente con su señal vía FK.
+    pending_signal_oid: Option<data::strategy::mongo_writer::SignalOid>,
+    /// Estado por-detector de la última barra evaluada — para el panel debug.
+    pub last_detector_log: Vec<data::strategy::types::DetectorSnap>,
 }
 
 struct DetectorBootstrap {
@@ -398,6 +406,9 @@ impl KlineChart {
                     funding_tracker: data::institutional::FundingTracker::new(),
                     oi_tracker: data::institutional::OiTracker::new(),
                     cooldown_registry: data::strategy::cooldown::CooldownRegistry::new(5),
+                    last_evaluated_bar_ms: None,
+                    pending_signal_oid: None,
+                    last_detector_log: Vec::new(),
                     bar_index: 0,
                 }
             }
@@ -477,6 +488,9 @@ impl KlineChart {
                     funding_tracker: data::institutional::FundingTracker::new(),
                     oi_tracker: data::institutional::OiTracker::new(),
                     cooldown_registry: data::strategy::cooldown::CooldownRegistry::new(5),
+                    last_evaluated_bar_ms: None,
+                    pending_signal_oid: None,
+                    last_detector_log: Vec::new(),
                     bar_index: 0,
                 }
             }
@@ -526,8 +540,14 @@ impl KlineChart {
             PlotData::TickBased(_) => {}
         }
 
+        // El overlay puede forzarse vía env var FLOWSURFACE_FORCE_STRATEGY (cualquier
+        // valor distinto de "0"/""). Útil para ejecutar la detección sin tocar el
+        // toggle de la UI cuando un layout persistido tiene el flag en false.
+        let force_overlay = std::env::var("FLOWSURFACE_FORCE_STRATEGY")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false);
         if is_new_bar
-            && self.strategy_overlay_enabled
+            && (self.strategy_overlay_enabled || force_overlay)
             && let Some((close, high, low, open, ts_ms)) = closed_bar
         {
             self.run_strategy_detection(close, high, low, open, ts_ms);
@@ -1166,10 +1186,51 @@ impl KlineChart {
     pub fn toggle_strategy_overlay(&mut self) -> Vec<KlineIndicator> {
         self.strategy_overlay_enabled = !self.strategy_overlay_enabled;
         self.config.strategy_overlay_enabled = self.strategy_overlay_enabled;
-        if !self.strategy_overlay_enabled {
+        if self.strategy_overlay_enabled {
+            // Al encender, instanciamos los indicadores necesarios para que
+            // run_strategy_detection tenga ATR / regime / VWAP / VP / CVD.
+            // Sin esto el detector rechaza cada barra con ATR_NOT_READY.
+            self.ensure_strategy_indicators()
+        } else {
             self.strategy_signals.clear();
+            vec![]
         }
-        vec![]
+    }
+
+    /// Garantiza que los `STRATEGY_INDICATORS` estén instanciados cuando el
+    /// overlay está activo, sin tocar el flag. Útil al arrancar la UI con un
+    /// layout que tiene `strategy_overlay_enabled=true` por default pero la
+    /// lista de indicadores vacía. Devuelve los recién añadidos (el pane
+    /// debe agregarlos a su `indicators` Vec).
+    pub fn ensure_strategy_indicators(&mut self) -> Vec<KlineIndicator> {
+        // Solo el chart Candlestick recibe los indicadores de estrategia; el
+        // Footprint queda limpio para orderflow.
+        if !self.strategy_overlay_enabled || !matches!(self.kind, KlineChartKind::Candles) {
+            return vec![];
+        }
+        let mut added = vec![];
+        let prev_indi_count = self.indicators.values().filter(|v| v.is_some()).count();
+        for &ind in Self::STRATEGY_INDICATORS {
+            if self.indicators[ind].is_some() {
+                continue;
+            }
+            let mut box_indi = indicator::kline::make_empty(ind);
+            box_indi.rebuild_from_source(&self.data_source);
+            self.indicators[ind] = Some(box_indi);
+            added.push(ind);
+        }
+        if !added.is_empty()
+            && let Some(main_split) = self.chart.layout.splits.first()
+        {
+            let current_indi_count =
+                self.indicators.values().filter(|v| v.is_some()).count();
+            self.chart.layout.splits = data::util::calc_panel_splits(
+                *main_split,
+                current_indi_count,
+                Some(prev_indi_count),
+            );
+        }
+        added
     }
 
     pub fn update_depth(&mut self, depth: &exchange::depth::Depth) {
@@ -1186,6 +1247,14 @@ impl KlineChart {
     ) {
         use crate::strategy::{adapter, logger, router, types::*};
         use data::session::classify_session;
+
+        // Las estrategias y su overlay viven SOLO en el pane Candlestick.
+        // El Footprint es para orderflow puro y no debe contaminarse con
+        // indicadores ni cajas TP/SL (el usuario tampoco podría quitarlos
+        // porque el auto-heal los reinstanciaría).
+        if !matches!(self.kind, KlineChartKind::Candles) {
+            return;
+        }
 
         let Some(depth) = &self.last_depth else {
             return;
@@ -1492,21 +1561,29 @@ impl KlineChart {
             prev_obi_l5: None,
         };
 
+        // Capas: TOML base → Mongo override por régimen (vía mongo_handles).
+        // Único override en runtime: default_ttl_ms = TTL_BARS × interval del chart,
+        // que depende del timeframe activo y por eso no vive en archivo ni en BD.
+        let mongo = crate::strategy::mongo_handles();
         let cfg = StrategyConfig {
-            enabled: true,
             default_ttl_ms: ttl_ms,
-            htf_scoring_enabled: true,
-            session_filter_enabled: true,
-            ..Default::default()
+            ..mongo.loader.current()
         };
 
+        // Al cambiar de régimen, solicitamos al loader de Mongo que recargue
+        // deployed_params; el override se aplica a partir de la próxima barra.
+        if ctx.regime != self.last_regime_enum {
+            mongo.loader.request_reload(&format!("{:?}", ctx.regime));
+        }
         self.last_regime = format!("{:?}", ctx.regime);
         self.last_regime_enum = ctx.regime;
 
         self.bar_index += 1;
+        self.last_evaluated_bar_ms = Some(bar_ts_ms);
         let current_bar = self.bar_index;
 
-        let mut signal = router::route_strategy(&ctx, &cfg);
+        let (mut signal, detector_log) = router::route_strategy(&ctx, &cfg);
+        self.last_detector_log = detector_log;
 
         // Cooldown: suppress repeat signals from the same strategy within cooldown_bars.
         // Only the winning strategy enters cooldown — others remain available.
@@ -1538,6 +1615,12 @@ impl KlineChart {
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
         crate::strategy::intent_logger::log_near_misses(&ctx, &cfg, signal_fired);
 
+        // Snapshot del oid ANTES de paper.on_bar_close: un trade que se cierra
+        // en esta barra pertenece a la señal previa, no a la nueva que pueda
+        // dispararse aquí. Mismo orden que el monitor de Railway.
+        let trade_oid_for_close = self.pending_signal_oid;
+        let prev_closed = self.paper_account.closed_trades.len();
+
         let paper_sig = if signal_fired { Some(&signal) } else { None };
         self.paper_account.on_bar_close(
             &ctx.symbol,
@@ -1549,7 +1632,15 @@ impl KlineChart {
             Some(&ctx),
         );
 
+        // Persistir a Mongo los trades que se cerraron en esta barra.
+        for trade in &self.paper_account.closed_trades[prev_closed..] {
+            mongo.writer.write_trade(trade, trade_oid_for_close);
+        }
+
         if signal.action == StrategyAction::ShadowSignal {
+            // Generar oid síncrono y persistir la señal antes de mover `signal`.
+            // El oid queda como `pending_signal_oid` para enlazar trades futuros.
+            self.pending_signal_oid = mongo.writer.write_signal(&signal, &ctx);
             self.outcome_tracker
                 .push_signal(&ctx.symbol, &signal, bar_close);
             self.push_strategy_signal(signal);
@@ -1664,6 +1755,15 @@ impl KlineChart {
         let last_score = self.strategy_signals.last().map(|s| s.score).unwrap_or(0.0);
         let regime = self.last_regime.clone();
 
+        // Señales vitales para feedback visual mientras los detectores aún no
+        // aprueban: cuántas barras se evaluaron desde que arrancó la UI,
+        // timestamp de la última, y el primer motivo de rechazo más reciente
+        // (lo que le falta al detector ahora mismo).
+        let last_missing = self
+            .strategy_signals
+            .last()
+            .and_then(|s| s.missing.first().cloned());
+
         StrategySnapshot {
             symbol: self.chart.ticker_info.ticker.display_symbol_and_type().0,
             equity: paper.equity,
@@ -1677,6 +1777,10 @@ impl KlineChart {
             open_positions,
             active_signal,
             recent_trades,
+            bars_evaluated: self.bar_index,
+            last_bar_ms: self.last_evaluated_bar_ms,
+            last_missing,
+            detector_log: self.last_detector_log.clone(),
         }
     }
 
@@ -2452,19 +2556,51 @@ impl KlineChart {
                 target_stroke,
             );
 
-            // Semi-transparent zone between entry and target
-            let zone_top = f32::min(entry_y, target_y);
-            let zone_height = (entry_y - target_y).abs();
-            let zone_color = if is_long {
-                Color::from_rgba(0.2, 0.8, 0.4, 0.05)
-            } else {
-                Color::from_rgba(0.9, 0.3, 0.3, 0.05)
-            };
+            // Cajas estilo TradingView: verde para zona TP (entry↔target),
+            // rojo para zona SL (entry↔stop). Alpha lo bastante alto para
+            // verse sobre las velas pero no taparlas.
+            let tp_top = f32::min(entry_y, target_y);
+            let tp_height = (entry_y - target_y).abs();
+            let tp_color = Color::from_rgba(0.20, 0.80, 0.45, 0.22);
             frame.fill_rectangle(
-                Point::new(0.0, zone_top),
-                Size::new(line_width, zone_height),
-                zone_color,
+                Point::new(0.0, tp_top),
+                Size::new(line_width, tp_height),
+                tp_color,
             );
+
+            let sl_top = f32::min(entry_y, stop_y);
+            let sl_height = (entry_y - stop_y).abs();
+            let sl_color = Color::from_rgba(0.90, 0.25, 0.30, 0.22);
+            frame.fill_rectangle(
+                Point::new(0.0, sl_top),
+                Size::new(line_width, sl_height),
+                sl_color,
+            );
+
+            // Etiqueta lateral con la estrategia y el R:R alcanzable
+            let risk = (entry - stop).abs();
+            let reward = (target - entry).abs();
+            let rr = if risk > 0.0 { reward / risk } else { 0.0 };
+            let strat_tag = signal
+                .strategy_id
+                .map(|s| format!("{s:?}"))
+                .unwrap_or_default();
+            let label = format!(
+                "{} {} · RR {:.2}",
+                if is_long { "LONG" } else { "SHORT" },
+                strat_tag,
+                rr
+            );
+            frame.fill_text(canvas::Text {
+                content: label,
+                position: Point::new(region.x + 6.0, entry_y - 2.0),
+                size: iced::Pixels(TEXT_SIZE * 0.75),
+                color: entry_color,
+                align_x: iced::alignment::Horizontal::Left.into(),
+                align_y: iced::alignment::Vertical::Bottom,
+                font: style::AZERET_MONO,
+                ..canvas::Text::default()
+            });
         }
     }
 }
@@ -2683,7 +2819,11 @@ impl canvas::Program<Message> for KlineChart {
                 }
             }
 
-            if self.strategy_overlay_enabled {
+            // Overlay de estrategia solo en Candlestick (mismo criterio que
+            // run_strategy_detection y ensure_strategy_indicators).
+            if self.strategy_overlay_enabled
+                && matches!(self.kind, KlineChartKind::Candles)
+            {
                 Self::draw_strategy_overlay(
                     &self.strategy_signals,
                     frame,

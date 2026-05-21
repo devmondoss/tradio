@@ -1,3 +1,5 @@
+use data;
+
 #[derive(Debug, Clone, Default)]
 pub struct StrategySnapshot {
     pub symbol: String,
@@ -12,6 +14,16 @@ pub struct StrategySnapshot {
     pub open_positions: Vec<PositionSnap>,
     pub active_signal: Option<SignalSnap>,
     pub recent_trades: Vec<TradeSnap>,
+
+    /// Barras evaluadas desde que arrancó la UI (cada `run_strategy_detection`).
+    pub bars_evaluated: u64,
+    /// Timestamp ms UTC de la última barra que el detector procesó.
+    pub last_bar_ms: Option<i64>,
+    /// Motivo del último rechazo (primer ítem de `missing`). Útil para ver
+    /// "qué le falta" al detector en tiempo real cuando aún no aprueba.
+    pub last_missing: Option<String>,
+    /// Estado per-detector de la última barra evaluada.
+    pub detector_log: Vec<data::strategy::types::DetectorSnap>,
 }
 
 #[derive(Debug, Clone)]
