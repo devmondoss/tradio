@@ -955,7 +955,7 @@ impl BarState {
             }
             IntrabarMode::ShadowEvent => {
                 if let Ok(json) = serde_json::to_string(&signal) {
-                    println!("{{\"event\":\"intrabar_signal\",\"data\":{json}}}");
+                    println!("[intrabar_signal] {json}");
                 }
                 // Write to persistence even in ShadowEvent mode — for observability.
                 // Paper trader is NOT affected (intrabar_signal_fired stays false).
@@ -970,7 +970,7 @@ impl BarState {
                 self.intrabar_signal_fired = true;
                 self.metrics.signals_today += 1;
                 if let Ok(json) = serde_json::to_string(&signal) {
-                    println!("{{\"event\":\"intrabar_signal\",\"data\":{json}}}");
+                    println!("[intrabar_signal] {json}");
                 }
                 self.mongo.write_signal(&signal, &ctx);
                 if let Some(sb) = self.supabase.clone() {
@@ -1451,7 +1451,7 @@ impl BarState {
 
         for nm in &near_misses {
             if let Ok(json) = serde_json::to_string(nm) {
-                println!("{{\"event\":\"near_miss\",\"data\":{json}}}");
+                println!("[near_miss] {json}");
             }
         }
 
@@ -1467,7 +1467,7 @@ impl BarState {
 
         for trade in self.paper.closed_trades[prev_closed..].iter() {
             if let Ok(json) = serde_json::to_string(trade) {
-                println!("{{\"event\":\"trade_closed\",\"data\":{json}}}");
+                println!("[trade_closed] {json}");
             }
             self.mongo.write_trade(trade, trade_oid);
             if let Some(sb) = self.supabase.clone() {
@@ -1481,7 +1481,7 @@ impl BarState {
         // signal is still intact when write_trade runs above.
         if signal_fired {
             if let Ok(json) = serde_json::to_string(&signal) {
-                println!("{{\"event\":\"signal\",\"data\":{json}}}");
+                println!("[signal] {json}");
             }
             // MongoDB: sync, returns ObjectId for trade linking
             self.pending_signal_oid = self.mongo.write_signal(&signal, &ctx);
