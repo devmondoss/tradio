@@ -206,3 +206,63 @@ if market == MarketKind::InversePerps {
 ```
 
 **Archivo:** `exchange/src/adapter/hub/binance/fetch.rs`
+
+---
+
+## 13. LiquidationHunt — target filter ignoraba `cfg.min_rr`
+
+**Síntoma:** Si `min_rr` se tuneaba por encima de 1.5 desde `deployed_params` en Supabase, las señales de LiquidationHunt podían dispararse con R:R por debajo del mínimo configurado.
+
+**Causa raíz:** El filtro de candidatos de target usaba `1.5 * atr` hardcodeado en lugar de `cfg.min_rr * atr`. El detector ignoraba el campo configurable.
+
+```rust
+// ANTES — hardcodeado, no respeta config tuneable:
+.filter(|&t| t.is_finite() && t > entry + 1.5 * atr)
+
+// AHORA — usa el R:R mínimo configurado:
+.filter(|&t| t.is_finite() && t > entry + cfg.min_rr * atr)
+```
+
+**Commit:** `95e9908`
+**Archivo:** `data/src/strategy/detectors/liquidation_hunt.rs`
+
+---
+
+## 14. Swing20 off-by-one — 19 barras en lugar de 20
+
+**Síntoma:** Los niveles de swing usados como targets en `find_structural_target` miraban 19 barras históricas en lugar de las 20 que indica el nombre de la constante `SWING20`.
+
+**Causa raíz:** El range `highs[n - SWING20..n - 1]` con `SWING20 = 20` produce 19 elementos (índices `n-20` a `n-2` inclusive). El guard `n >= SWING20` era también insuficiente.
+
+```rust
+// ANTES — 19 barras, guard insuficiente:
+if n >= SWING20 {
+    let sh = highs[n - SWING20..n - 1]  // solo 19 barras
+
+// AHORA — 20 barras exactas, excluyendo la barra actual:
+if n >= SWING20 + 1 {
+    let sh = highs[n - SWING20 - 1..n - 1]  // 20 barras
+```
+
+**Commit:** `95e9908`
+**Archivo:** `crates/monitor/src/main.rs`
+
+---
+
+## 15. SmartMoneyDivergence — evidencia LONG usaba lógica del branch SHORT
+
+**Síntoma:** En señales LONG de SMD, la evidencia `"oi_accumulation_on_dip"` se añadía cuando OI subía **y** delta era negativo — flujo vendedor durante una señal compradora. Esto era incorrecto y contaminaba el análisis de outcomes.
+
+**Causa raíz:** La variable `oi_by_delta_long` (nombre engañoso) se computaba con `delta < -0.20 * atr` y se reutilizaba en ambos branches. Para el LONG branch, la condición correcta es `delta > +0.20 * atr` (confirmación directa de acumulación).
+
+```rust
+// ANTES — misma variable en ambos branches:
+let oi_by_delta_long = oi_delta > 0.0 && delta < -0.20 * atr;  // incorrecto para LONG
+
+// AHORA — variables separadas por semántica:
+let oi_rising_on_negative_delta = oi_delta > 0.0 && delta < -0.20 * atr;  // SHORT branch
+let oi_rising_on_positive_delta  = oi_delta > 0.0 && delta > +0.20 * atr;  // LONG branch
+```
+
+**Commit:** `95e9908`
+**Archivo:** `data/src/strategy/detectors/smart_money_divergence.rs`

@@ -1,7 +1,7 @@
 # Sistema de Estrategias — FlowSurface
 
 > Documento de referencia completo. Cubre arquitectura, módulos, condiciones, scoring, gates y estado de implementación.
-> Última actualización: 2026-05-19 (rev 4 — bug FK corregido, PositioningExpansion removido del enum)
+> Última actualización: 2026-05-21 (rev 5 — bugs de revisión estrategia corregidos, indicadores UI verificados como completos)
 
 ---
 
@@ -759,15 +759,26 @@ python scripts/analysis/session_filter_analysis.py --strategy VwapRejection
 | Scripts análisis Python | analyze_lab_outcomes, compare_core_vs_lab, score_decay, session_filter_analysis |
 | Supabase lab_signals + lab_outcomes | reset.sql + schema.sql |
 | LabStrategyId enum limpio | 5 variants activos: VwapRejection + 4 ObserveOnly |
+| Funding rate panel (UI) | `src/chart/indicator/kline/funding_rate.rs` — fetch + render completo |
+| AVWAP manual (click canvas) | `src/chart.rs` — `PlacingAvwapAnchor` → `SetAvwapAnchor` → `on_avwap_anchor_set()` |
+| Session VWAPs separados | `src/chart/indicator/kline/vwap.rs` — Asia/London/NY via `compute_session_vwap()` |
+| OI z-score | `data/src/institutional/oi_tracker.rs` — `delta_zscore()` rolling 20 barras |
+
+### Bugs corregidos en revisión 2026-05-21
+
+| Bug | Archivo | Fix |
+|-----|---------|-----|
+| LiqHunt target filter hardcodeado 1.5×ATR | `liquidation_hunt.rs` | `cfg.min_rr * atr` — respeta R:R configurable |
+| Swing20 off-by-one (19 barras) | `main.rs` | guard `n >= 21`, range `[n-21..n-1]` |
+| SMD evidencia LONG con lógica SHORT | `smart_money_divergence.rs` | variables separadas por side |
+| progress_to_target usaba `.abs()` | `trade_manager.rs` | `.max(0.0)` por Side — corregido sesión anterior |
+| max_by tie-break no determinístico | `router.rs` | `strategy_id as u8` — corregido sesión anterior |
 
 ### Fuera de scope actual ⏸️
 
 | Item | Motivo |
 |------|--------|
 | SpoofDetector activo | Requiere L2 tick data |
-| Funding rate panel (UI) | Trabajo de UI |
-| AVWAP manual (click canvas) | Trabajo de UI |
-| Session VWAPs separados | Trabajo de indicador |
 | min_score calibración | Requiere dataset real (Fase 4) |
 
 ---
