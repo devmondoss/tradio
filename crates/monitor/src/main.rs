@@ -937,6 +937,14 @@ impl BarState {
                 if let Ok(json) = serde_json::to_string(&signal) {
                     println!("{{\"event\":\"intrabar_signal\",\"data\":{json}}}");
                 }
+                // Write to persistence even in ShadowEvent mode — for observability.
+                // Paper trader is NOT affected (intrabar_signal_fired stays false).
+                self.mongo.write_signal(&signal, &ctx);
+                if let Some(sb) = self.supabase.clone() {
+                    let s = signal.clone();
+                    let c = ctx.clone();
+                    tokio::spawn(async move { sb.write_signal(&s, &c).await; });
+                }
             }
             IntrabarMode::ShadowSignal => {
                 self.intrabar_signal_fired = true;
