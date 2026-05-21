@@ -12,6 +12,7 @@
 //!   PAPER_RISK_PCT, PAPER_SLIPPAGE_BPS, PAPER_TAKER_FEE, PAPER_FUNDING_RATE
 
 mod intrabar;
+mod supabase_writer;
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -70,6 +71,7 @@ use exchange::{
 };
 use futures::StreamExt;
 use intrabar::{IntrabarConfig, IntrabarDetector, IntrabarMode};
+use supabase_writer::SupabaseWriter;
 
 // ── constants ───────────────────────────────────────────────────────────────
 
@@ -513,10 +515,12 @@ struct BarState {
     liq_map_tracker: LiqMapTracker,
     liq_map_snapshot: Option<LiqMapSnapshot>,
     last_taker_ratio: Option<TakerRatioSnapshot>,
-    // MongoDB writer (fire-and-forget via dedicated thread)
+    // MongoDB writer — local persistence, signal↔trade linking via ObjectId
     mongo: MongoWriter,
     // ObjectId of the most recently written shadow_signals document — used to link signal_outcomes
     pending_signal_oid: Option<SignalOid>,
+    // Supabase writer — cloud persistence (Railway); None if SUPABASE_URL not set
+    supabase: Option<SupabaseWriter>,
     // Dynamic config loaded from MongoDB deployed_params
     config_loader: MongoConfigLoader,
     // Last regime seen — used to detect regime changes and trigger config reload
@@ -547,7 +551,7 @@ struct BarState {
 }
 
 impl BarState {
-    fn new(mongo: MongoWriter, config_loader: MongoConfigLoader, footprint_step: PriceStep) -> Self {
+    fn new(mongo: MongoWriter, supabase: Option<SupabaseWriter>, config_loader: MongoConfigLoader, footprint_step: PriceStep) -> Self {
         Self {
             bars: VecDeque::with_capacity(VP_WINDOW + 1),
             cvd: 0.0,
@@ -579,6 +583,7 @@ impl BarState {
             last_taker_ratio: None,
             mongo,
             pending_signal_oid: None,
+            supabase,
             config_loader,
             last_regime: None,
             last_regime_enum: data::strategy::types::Regime::Unknown,
@@ -940,6 +945,11 @@ impl BarState {
                     println!("{{\"event\":\"intrabar_signal\",\"data\":{json}}}");
                 }
                 self.mongo.write_signal(&signal, &ctx);
+                if let Some(sb) = self.supabase.clone() {
+                    let s = signal.clone();
+                    let c = ctx.clone();
+                    tokio::spawn(async move { sb.write_signal(&s, &c).await; });
+                }
             }
         }
     }
@@ -1400,13 +1410,20 @@ impl BarState {
             self.mongo.write_trade(trade, trade_oid);
         }
 
-        // Write the new signal to MongoDB AFTER closing any trades, so the OID
-        // of the previous signal is still intact when write_trade runs above.
+        // Write the new signal AFTER closing any trades, so the OID of the previous
+        // signal is still intact when write_trade runs above.
         if signal_fired {
             if let Ok(json) = serde_json::to_string(&signal) {
                 println!("{{\"event\":\"signal\",\"data\":{json}}}");
             }
+            // MongoDB: sync, returns ObjectId for trade linking
             self.pending_signal_oid = self.mongo.write_signal(&signal, &ctx);
+            // Supabase: async fire-and-forget (Railway persistence)
+            if let Some(sb) = self.supabase.clone() {
+                let s = signal.clone();
+                let c = ctx.clone();
+                tokio::spawn(async move { sb.write_signal(&s, &c).await; });
+            }
         }
 
         let missing_str = signal
@@ -2179,8 +2196,16 @@ async fn main() {
     let mut depth_stream = Box::pin(depth_stream);
     let mut trade_stream = Box::pin(trade_stream);
 
-    // ── MongoDB writer + config loader (local, no cloud) ─────────────────────
+    // ── Persistence: MongoDB (local) + Supabase (Railway) ────────────────────
+    // Each writer is fire-and-forget and fails silently when unavailable.
+    // MongoDB handles full signal↔trade linking via ObjectId.
+    // Supabase provides cloud visibility on Railway when SUPABASE_URL is set.
     let mongo = MongoWriter::from_env();
+    let supabase = SupabaseWriter::from_env();
+    if supabase.is_none() {
+        eprintln!("[supabase] SUPABASE_URL not set — cloud persistence disabled");
+    }
+
     // The monitor always runs with strategy enabled — override the default (false)
     // so Railway deployments without a config/strategy.toml still work correctly.
     let mut base_cfg = StrategyConfig::load();
@@ -2188,7 +2213,7 @@ async fn main() {
     let config_loader = MongoConfigLoader::from_env(base_cfg);
 
     let footprint_step: PriceStep = ticker_info.min_ticksize.into();
-    let mut state = BarState::new(mongo, config_loader, footprint_step);
+    let mut state = BarState::new(mongo, supabase, config_loader, footprint_step);
     state.intrabar_cfg.log_boot();
 
     // Seed bar history from REST before the live stream starts
