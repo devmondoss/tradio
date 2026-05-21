@@ -48,9 +48,14 @@ pub fn detect(
     // CVD no confirmando el precio (debilidad)
     let cvd_weak = flow.cvd_slope.unwrap_or(0.0) <= 0.0;
 
-    // Sprint 2 — OI by delta: OI rising + negative delta = institucionales comprando en caídas
-    let oi_by_delta_long = flow.oi_delta.unwrap_or(0.0) > 0.0
+    // Sprint 2 — OI rising on negative delta = someone adding positions while sellers are active.
+    // Used in SHORT branch: institutions absorbing dip-sells (bullish-ish undercurrent in a short).
+    let oi_rising_on_negative_delta = flow.oi_delta.unwrap_or(0.0) > 0.0
         && flow.delta.unwrap_or(0.0) < -0.20 * atr;
+
+    // For LONG: OI rising on positive delta = direct accumulation confirmation.
+    let oi_rising_on_positive_delta = flow.oi_delta.unwrap_or(0.0) > 0.0
+        && flow.delta.unwrap_or(0.0) > 0.20 * atr;
 
     if strong_divergence_short && funding_confirms_short && oi_confirms && at_resistance && cvd_weak
     {
@@ -77,7 +82,7 @@ pub fn detect(
                     if lm.primary_target_below.is_some() { evidence.push("liq_target_below".into()); }
                 }
             }
-            if oi_by_delta_long { evidence.push("oi_accumulation_on_dip".into()); }
+            if oi_rising_on_negative_delta { evidence.push("oi_rising_on_negative_delta".into()); }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::SmartMoneyDivergence),
@@ -157,7 +162,7 @@ pub fn detect(
                     if lm.primary_target_above.is_some() { evidence.push("liq_target_above".into()); }
                 }
             }
-            if oi_by_delta_long { evidence.push("oi_accumulation_on_dip".into()); }
+            if oi_rising_on_positive_delta { evidence.push("oi_accumulation_confirmed".into()); }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::SmartMoneyDivergence),

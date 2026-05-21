@@ -1320,14 +1320,14 @@ impl BarState {
             liq_map: self.liq_map_snapshot.clone(),
         });
 
-        // 20-bar swing high/low for structural target selection.
+        // 20-bar swing high/low (excluding current bar) for structural target selection.
         const SWING20: usize = 20;
-        let (swing_high_20, swing_low_20) = if n >= SWING20 {
-            let sh = highs[n - SWING20..n - 1]
+        let (swing_high_20, swing_low_20) = if n >= SWING20 + 1 {
+            let sh = highs[n - SWING20 - 1..n - 1]
                 .iter()
                 .copied()
                 .fold(f64::NEG_INFINITY, f64::max);
-            let sl = lows[n - SWING20..n - 1]
+            let sl = lows[n - SWING20 - 1..n - 1]
                 .iter()
                 .copied()
                 .fold(f64::INFINITY, f64::min);

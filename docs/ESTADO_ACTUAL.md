@@ -416,7 +416,16 @@ Con los fixes de hoy (stop correcto, target estructural, TTL 250min), los trades
 | ~~Alta~~  | ~~`write_trade` Supabase no llamado — RESUELTO~~                    | `main.rs` — oneshot UUID + write_trade          |
 | ~~Media~~ | ~~Lab outcomes/signals ignorados — RESUELTO~~                       | `main.rs` — `completed_outcomes` + Supabase     |
 | ~~Baja~~  | ~~`write_regime_change` no llamado — RESUELTO~~                     | `main.rs` — bloque regime change                |
-| Media     | Swing high/low en `find_structural_target` (necesita barras en ctx) | `detectors/vwap_value_pullback_continuation.rs` |
+| ~~Alta~~  | ~~`progress_to_target()` con `.abs()` activaba trailing con precio adverso — RESUELTO~~ | `trade_manager.rs` — `.max(0.0)` por Side |
+| ~~Alta~~  | ~~`max_by` tie-break no determinístico en router — RESUELTO~~       | `router.rs` — `strategy_id as u8` secundario   |
+| ~~Media~~ | ~~`range == 0.0` → NaN/Infinity en scale.rs — RESUELTO~~            | `src/chart/scale.rs` — early return guard       |
+| ~~Media~~ | ~~`is_sell` case-sensitive en Bybit parser — RESUELTO~~             | `bybit/stream.rs` — `eq_ignore_ascii_case`      |
+| ~~Baja~~  | ~~Escritura de estado no atómica (corrupción en crash) — RESUELTO~~ | `data/src/lib.rs` — `.tmp` + rename             |
+| ~~Baja~~  | ~~Dockerfile sin fail-fast si SUPABASE_URL/KEY ausentes — RESUELTO~~ | `Dockerfile` — check en CMD                  |
+| ~~Media~~ | ~~Swing high/low en `find_structural_target` — RESUELTO~~           | `vwap_value_pullback_continuation.rs` líneas 112-114, 363-366 |
+| ~~Media~~ | ~~LiqHunt target hardcodeado 1.5×ATR ignora `cfg.min_rr` — RESUELTO~~ | `liquidation_hunt.rs` — `cfg.min_rr * atr`  |
+| ~~Baja~~  | ~~Swing20 off-by-one (19 barras, no 20) — RESUELTO~~                | `main.rs` — guard `n >= 21`, range `[n-21..n-1]` |
+| ~~Baja~~  | ~~SMD evidencia LONG incorrecta (`oi_by_delta_long` reutilizado) — RESUELTO~~ | `smart_money_divergence.rs` — variables separadas por side |
 | Media     | HVN levels en Supabase para análisis offline                        | Schema migration                                |
 | Baja      | `cargo-audit` en CI                                                 | `.github/workflows/`                            |
 | Baja      | `write_outcome` / `patch_horizon` intrabar outcomes (no integrados) | `supabase_writer.rs`                            |
@@ -424,13 +433,14 @@ Con los fixes de hoy (stop correcto, target estructural, TTL 250min), los trades
 
 ### Pendientes de indicadores
 
+Todos implementados (verificado 2026-05-21).
 
-| Item               | Descripción                            |
-| ------------------ | -------------------------------------- |
-| Funding rate panel | Fetch + panel de línea en UI           |
-| OI z-score         | Rolling z-score para cambios anormales |
-| AVWAP manual       | Click en chart para anclar AVWAP       |
-| Session VWAPs      | Asia/London/NY separados               |
+| Item                      | Archivo                                              | Estado |
+| ------------------------- | ---------------------------------------------------- | ------ |
+| ~~Funding rate panel~~    | `src/chart/indicator/kline/funding_rate.rs`          | DONE   |
+| ~~OI z-score~~            | `data/src/institutional/oi_tracker.rs` → `delta_zscore()` | DONE   |
+| ~~AVWAP manual~~          | `src/chart.rs` — `PlacingAvwapAnchor` → `SetAvwapAnchor` | DONE   |
+| ~~Session VWAPs~~         | `src/chart/indicator/kline/vwap.rs` → `compute_session_vwap()` | DONE   |
 
 
 ---
@@ -452,5 +462,6 @@ Con los fixes de hoy (stop correcto, target estructural, TTL 250min), los trades
 | `4916be6` | config_loader: campos min_rr y max_rr_m5 (fix build Railway)           |
 | `88b651e` | Dockerfile: builder rust:1.95-slim                                     |
 | `eac7221` | Dockerfile: runtime debian:trixie-slim (fix GLIBC 2.38)                |
+| —         | fix: progress_to_target, router tie-break, scale NaN, Bybit is_sell, atomic write, Dockerfile fail-fast, Supabase partial index |
 
 

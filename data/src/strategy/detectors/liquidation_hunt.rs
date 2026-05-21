@@ -57,7 +57,7 @@ pub fn detect(
         let target = candidates
             .iter()
             .copied()
-            .filter(|&t| t.is_finite() && t > entry + 1.5 * atr)
+            .filter(|&t| t.is_finite() && t > entry + cfg.min_rr * atr)
             .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))?;
 
         if target > entry && stop < entry {
@@ -137,7 +137,7 @@ pub fn detect(
         let target = candidates
             .iter()
             .copied()
-            .filter(|&t| t.is_finite() && t < entry - 1.5 * atr)
+            .filter(|&t| t.is_finite() && t < entry - cfg.min_rr * atr)
             .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))?;
 
         if target < entry && stop > entry {
