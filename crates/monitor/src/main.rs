@@ -157,14 +157,15 @@ impl DataFreshness {
     }
 
     /// Returns (sources_ok, total_sources). A source is "ok" if updated within 10 min.
-    /// Liq is counted as ok when the forceOrder stream is connected (events are 0 on quiet markets).
-    fn quality(&self) -> (u8, u8) {
+    /// Liq requires stream connected AND at least one raw message received ever.
+    /// Connected-but-silent = unvalidated, does not count toward ok.
+    fn quality(&self, liq_raw_total: u64) -> (u8, u8) {
         let threshold = Duration::from_secs(10 * 60);
         let fresh = |t: Option<Instant>| t.map(|i| i.elapsed() < threshold).unwrap_or(false);
         let mut ok = 0u8;
-        if self.liq_stream_ok {
+        if self.liq_stream_ok && liq_raw_total > 0 {
             ok += 1;
-        } // stream connected = liq ok
+        } // connected + has delivered data = validated
         if fresh(self.ls_fetched_at) {
             ok += 1;
         }
@@ -419,7 +420,7 @@ impl PipelineMetrics {
             .map(|t| t.elapsed().as_millis())
             .unwrap_or(999_999);
 
-        let (inst_ok, inst_total) = freshness.quality();
+        let (inst_ok, inst_total) = freshness.quality(self.liq_raw_messages);
         println!(
             "[metrics] bars={} signals={} liq_events={} liq_raw={} ws_reconnects={} | \
              kline_ticks={} trades={} depth_updates={} | \
@@ -468,10 +469,20 @@ impl PipelineMetrics {
         if streams.liq == StreamHealth::Disc {
             eprintln!("[WARN] forceOrder stream disconnected — liq data unavailable");
         } else if let Some(age) = freshness.liq_last_event_at.map(|t| t.elapsed().as_secs()) {
-            // Only warn if we previously had events and now they've stopped (liq=never is normal on quiet markets)
+            // Had events before, now stopped
             if age > 300 {
                 eprintln!(
                     "[WARN] forceOrder stream: no liquidation events for {age}s — market very quiet or stream issue"
+                );
+            }
+        } else if self.liq_raw_messages == 0 {
+            // Never received a single message — warn after 30 min connected
+            let connected_secs = freshness.liq_ws_connected_at
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0);
+            if connected_secs > 1800 {
+                eprintln!(
+                    "[WARN] forceOrder stream: connected {connected_secs}s but liq_raw=0 — market extremely quiet or endpoint issue"
                 );
             }
         }
@@ -1504,13 +1515,18 @@ impl BarState {
 
         let processing_ms = proc_start.elapsed().as_millis();
         let inst_ref = ctx.institutional.as_ref();
-        let (inst_ok, inst_total) = self.freshness.quality();
+        let (inst_ok, inst_total) = self.freshness.quality(self.metrics.liq_raw_messages);
+        let liq_silent = self.freshness.liq_stream_ok && self.metrics.liq_raw_messages == 0;
         let inst_label = if inst_ref.is_none() {
             "null".to_string()
         } else if inst_ok == inst_total {
             format!("Live({inst_ok}/{inst_total})")
         } else if inst_ok > 0 {
-            format!("Partial({inst_ok}/{inst_total})")
+            if liq_silent {
+                format!("Partial({inst_ok}/{inst_total})+LiqSilent")
+            } else {
+                format!("Partial({inst_ok}/{inst_total})")
+            }
         } else {
             format!("Stale(0/{inst_total})")
         };
@@ -1914,7 +1930,8 @@ async fn connect_force_order_ws(
     symbol: &str,
 ) -> Result<FragmentCollector<TokioIo<Upgraded>>, Box<dyn std::error::Error + Send + Sync>> {
     let domain = "fstream.binance.com";
-    let path = format!("/ws/{}@forceOrder", symbol.to_lowercase());
+    // Binance migrated market streams from /ws/ to /market/ws/ (deadline Apr 2026).
+    let path = format!("/market/ws/{}@forceOrder", symbol.to_lowercase());
     let addr = format!("{domain}:443");
 
     let tcp = tokio::net::TcpStream::connect(&addr).await?;
