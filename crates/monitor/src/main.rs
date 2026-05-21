@@ -2181,7 +2181,10 @@ async fn main() {
 
     // ── MongoDB writer + config loader (local, no cloud) ─────────────────────
     let mongo = MongoWriter::from_env();
-    let base_cfg = StrategyConfig::load();
+    // The monitor always runs with strategy enabled — override the default (false)
+    // so Railway deployments without a config/strategy.toml still work correctly.
+    let mut base_cfg = StrategyConfig::load();
+    base_cfg.enabled = true;
     let config_loader = MongoConfigLoader::from_env(base_cfg);
 
     let footprint_step: PriceStep = ticker_info.min_ticksize.into();
