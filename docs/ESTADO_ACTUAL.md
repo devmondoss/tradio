@@ -1,4 +1,5 @@
 # Estado Actual del Sistema — FlowSurface Monitor
+
 **Última actualización:** Mayo 2026
 
 > **🆕 2026-05-20**: Migración a operación **local con MongoDB**. La UI ahora corre el pipeline completo de detección + persistencia + config dinámica por régimen — paridad funcional con el monitor de Railway, más visualización en tiempo real. Doc canónica: [LOCAL_MONGO_SETUP.md](LOCAL_MONGO_SETUP.md).
@@ -70,15 +71,18 @@ La latencia de entrega de Binance es normal e inherente al protocolo — no es u
 
 ### Optimizaciones de performance aplicadas
 
-| Commit | Optimización | Impacto |
-|--------|-------------|---------|
+
+| Commit    | Optimización                                             | Impacto                                |
+| --------- | -------------------------------------------------------- | -------------------------------------- |
 | `09e0d7e` | `write_signal` movido a tokio::spawn con oneshot channel | Elimina await de Supabase del hot path |
-| `be6a0bf` | Config reload movido a mpsc channel | Elimina fetch HTTP del hot path |
-| `8a4f30d` | AVWAP-BOS: O(n²) → O(n) con prefix max/min arrays | Elimina loop nested por bar-close |
+| `be6a0bf` | Config reload movido a mpsc channel                      | Elimina fetch HTTP del hot path        |
+| `8a4f30d` | AVWAP-BOS: O(n²) → O(n) con prefix max/min arrays        | Elimina loop nested por bar-close      |
+
 
 ### Historical warm-up
 
 Al arrancar, el monitor fetchea 50 klines históricas de `fapi.binance.com/fapi/v1/klines` para primar:
+
 - VWAP acumuladores
 - ATR (14 períodos necesita 14+ barras)
 - Regime inicial
@@ -324,6 +328,7 @@ route_strategy(ctx, cfg):
 ### Rejection tags en logs
 
 Cuando un detector no genera señal, el router loguea la razón:
+
 ```
 VAFA:SKIP, LVN:SKIP, VWAP:SKIP  — detector no encontró setup
 LIQ:SKIP, FER:SKIP, SMD:SKIP    — detector institucional no encontró setup
@@ -338,11 +343,13 @@ ATR_NOT_READY                    — ATR < $1 o no calculado aún
 
 ### Tablas activas
 
-| Tabla | Descripción |
-|-------|-------------|
-| `shadow_signals` | Una fila por señal emitida (ShadowSignal o Blocked) |
-| `paper_trades` | Una fila por trade cerrado con PnL completo |
+
+| Tabla             | Descripción                                                    |
+| ----------------- | -------------------------------------------------------------- |
+| `shadow_signals`  | Una fila por señal emitida (ShadowSignal o Blocked)            |
+| `paper_trades`    | Una fila por trade cerrado con PnL completo                    |
 | `deployed_params` | Configuración calibrada por regime (cargada por config_loader) |
+
 
 ### Campos de shadow_signals
 
@@ -402,37 +409,48 @@ Con los fixes de hoy (stop correcto, target estructural, TTL 250min), los trades
 
 ### Pendientes de código
 
-| Prioridad | Item | Archivo |
-|-----------|------|---------|
-| Alta | `mss_active` y `sweep_confirmed` hardcodeados a `false` en kline.rs | `exchange/src/kline.rs` |
-| Media | Swing high/low en `find_structural_target` (necesita barras en ctx) | `detectors/vwap_value_pullback_continuation.rs` |
-| Media | HVN levels en Supabase para análisis offline | Schema migration |
-| Baja | `cargo-audit` en CI | `.github/workflows/` |
+
+| Prioridad | Item                                                                | Archivo                                         |
+| --------- | ------------------------------------------------------------------- | ----------------------------------------------- |
+| ~~Alta~~  | ~~`mss_active` y `sweep_confirmed` hardcodeados — RESUELTO~~        | `main.rs:1121`, `src/chart/kline.rs:1427`       |
+| ~~Alta~~  | ~~`write_trade` Supabase no llamado — RESUELTO~~                    | `main.rs` — oneshot UUID + write_trade          |
+| ~~Media~~ | ~~Lab outcomes/signals ignorados — RESUELTO~~                       | `main.rs` — `completed_outcomes` + Supabase     |
+| ~~Baja~~  | ~~`write_regime_change` no llamado — RESUELTO~~                     | `main.rs` — bloque regime change                |
+| Media     | Swing high/low en `find_structural_target` (necesita barras en ctx) | `detectors/vwap_value_pullback_continuation.rs` |
+| Media     | HVN levels en Supabase para análisis offline                        | Schema migration                                |
+| Baja      | `cargo-audit` en CI                                                 | `.github/workflows/`                            |
+| Baja      | `write_outcome` / `patch_horizon` intrabar outcomes (no integrados) | `supabase_writer.rs`                            |
+
 
 ### Pendientes de indicadores
 
-| Item | Descripción |
-|------|-------------|
-| Funding rate panel | Fetch + panel de línea en UI |
-| OI z-score | Rolling z-score para cambios anormales |
-| AVWAP manual | Click en chart para anclar AVWAP |
-| Session VWAPs | Asia/London/NY separados |
+
+| Item               | Descripción                            |
+| ------------------ | -------------------------------------- |
+| Funding rate panel | Fetch + panel de línea en UI           |
+| OI z-score         | Rolling z-score para cambios anormales |
+| AVWAP manual       | Click en chart para anclar AVWAP       |
+| Session VWAPs      | Asia/London/NY separados               |
+
 
 ---
 
 ## 10. Commits de Esta Sesión
 
-| Commit | Descripción |
-|--------|-------------|
+
+| Commit    | Descripción                                                            |
+| --------- | ---------------------------------------------------------------------- |
 | `daee74e` | Warm-up histórico, regime hysteresis, inst logging, detector breakdown |
-| `09e0d7e` | `write_signal` off hot path (oneshot channel) |
-| `be6a0bf` | Config reload off hot path (mpsc channel) |
-| `8a4f30d` | AVWAP-BOS O(n²) → O(n) |
-| `29535bf` | Timing por sección en bar-close log |
-| `9a906c1` | Separación delivery lag vs processing time en métricas |
-| `ccb5f99` | Fix VWAP: stop correcto, target estructural, TTL, sizing |
-| `aff54d6` | Paper: leverage=10× |
-| `6fda4e2` | Paper: capital $300 |
-| `4916be6` | config_loader: campos min_rr y max_rr_m5 (fix build Railway) |
-| `88b651e` | Dockerfile: builder rust:1.95-slim |
-| `eac7221` | Dockerfile: runtime debian:trixie-slim (fix GLIBC 2.38) |
+| `09e0d7e` | `write_signal` off hot path (oneshot channel)                          |
+| `be6a0bf` | Config reload off hot path (mpsc channel)                              |
+| `8a4f30d` | AVWAP-BOS O(n²) → O(n)                                                 |
+| `29535bf` | Timing por sección en bar-close log                                    |
+| `9a906c1` | Separación delivery lag vs processing time en métricas                 |
+| `ccb5f99` | Fix VWAP: stop correcto, target estructural, TTL, sizing               |
+| `aff54d6` | Paper: leverage=10×                                                    |
+| `6fda4e2` | Paper: capital $300                                                    |
+| `4916be6` | config_loader: campos min_rr y max_rr_m5 (fix build Railway)           |
+| `88b651e` | Dockerfile: builder rust:1.95-slim                                     |
+| `eac7221` | Dockerfile: runtime debian:trixie-slim (fix GLIBC 2.38)                |
+
+

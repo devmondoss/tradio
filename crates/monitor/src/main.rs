@@ -521,6 +521,10 @@ struct BarState {
     pending_signal_oid: Option<SignalOid>,
     // Supabase writer — cloud persistence (Railway); None if SUPABASE_URL not set
     supabase: Option<SupabaseWriter>,
+    // UUID returned by Supabase write_signal — used to link signal_outcomes rows.
+    // Resolved via oneshot channel one bar after the signal fires (Supabase is async).
+    pending_supabase_uuid_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
+    pending_supabase_uuid: Option<String>,
     // Dynamic config loaded from MongoDB deployed_params
     config_loader: MongoConfigLoader,
     // Last regime seen — used to detect regime changes and trigger config reload
@@ -584,6 +588,8 @@ impl BarState {
             mongo,
             pending_signal_oid: None,
             supabase,
+            pending_supabase_uuid_rx: None,
+            pending_supabase_uuid: None,
             config_loader,
             last_regime: None,
             last_regime_enum: data::strategy::types::Regime::Unknown,
@@ -969,6 +975,11 @@ impl BarState {
     }
 
     async fn on_bar_close(&mut self, bar: Kline, bar_close_ms: u64, symbol: &str) {
+        // Resolve Supabase UUID from the previous bar's write_signal (should be ready by now).
+        if let Some(mut rx) = self.pending_supabase_uuid_rx.take() {
+            self.pending_supabase_uuid = rx.try_recv().unwrap_or(None);
+        }
+
         let cfg = self.config_loader.current();
         let bar_ms = bar.time.as_u64() as i64;
         self.metrics.bars_processed += 1;
@@ -1035,6 +1046,14 @@ impl BarState {
         // Detect regime changes and trigger config reload
         if self.last_regime.as_deref() != Some(&regime_str) {
             self.config_loader.request_reload(&regime_str);
+            let duration_ms = self.regime_started_at_ms.map(|t| bar_ms - t);
+            // Bug #4 fix: persist regime changes to Supabase regime_history table
+            if let Some(sb) = self.supabase.clone() {
+                let rs = regime_str.clone();
+                tokio::spawn(async move {
+                    sb.write_regime_change(bar_ms, &rs, &rs, &rs, duration_ms, c);
+                });
+            }
             self.regime_started_at_ms = Some(bar_ms);
             self.last_regime = Some(regime_str.clone());
             self.last_regime_enum = regime;
@@ -1360,8 +1379,20 @@ impl BarState {
         let lab_signals = run_strategy_lab(&ctx, &cfg, &self.lab_cfg);
         for lab_sig in &lab_signals {
             self.lab_tracker.push(lab_sig);
+            // Bug #3 fix: persist ShadowSignals to Supabase lab_signals table
+            if let Some(sb) = self.supabase.clone() {
+                let sig = lab_sig.clone();
+                tokio::spawn(async move { sb.write_lab_signal(&sig).await; });
+            }
         }
-        let _completed_outcomes = self.lab_tracker.on_bar(h, l, c);
+        let completed_outcomes = self.lab_tracker.on_bar(h, l, c);
+        // Bug #2 fix: persist completed lab outcomes to Supabase lab_outcomes table
+        for outcome in completed_outcomes {
+            if let Some(sb) = self.supabase.clone() {
+                let uuid = Some(outcome.signal_id.to_string());
+                tokio::spawn(async move { sb.write_lab_outcome(&outcome, uuid); });
+            }
+        }
 
         let near_misses = collect_near_misses(&ctx, &cfg, signal_fired);
 
@@ -1416,6 +1447,11 @@ impl BarState {
                 println!("{{\"event\":\"trade_closed\",\"data\":{json}}}");
             }
             self.mongo.write_trade(trade, trade_oid);
+            if let Some(sb) = self.supabase.clone() {
+                let supabase_uuid = self.pending_supabase_uuid.clone();
+                let t = trade.clone();
+                tokio::spawn(async move { sb.write_trade(&t, supabase_uuid); });
+            }
         }
 
         // Write the new signal AFTER closing any trades, so the OID of the previous
@@ -1426,11 +1462,13 @@ impl BarState {
             }
             // MongoDB: sync, returns ObjectId for trade linking
             self.pending_signal_oid = self.mongo.write_signal(&signal, &ctx);
-            // Supabase: async fire-and-forget (Railway persistence)
+            // Supabase: async — capture UUID via oneshot for trade linking
             if let Some(sb) = self.supabase.clone() {
                 let s = signal.clone();
                 let c = ctx.clone();
-                tokio::spawn(async move { sb.write_signal(&s, &c).await; });
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.pending_supabase_uuid_rx = Some(rx);
+                tokio::spawn(async move { let _ = tx.send(sb.write_signal(&s, &c).await); });
             }
         }
 
