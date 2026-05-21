@@ -22,4 +22,8 @@ RUN mkdir -p /app/logs
 ENV SYMBOL=BTCUSDT
 ENV TIMEFRAME_MIN=5
 
-CMD ["monitor"]
+# Fail fast if critical Railway env vars are missing instead of silently running disabled.
+CMD ["sh", "-c", "\
+  if [ -z \"$SUPABASE_URL\" ]; then echo '[ERROR] SUPABASE_URL not set — aborting'; exit 1; fi; \
+  if [ -z \"$SUPABASE_KEY\" ]; then echo '[ERROR] SUPABASE_KEY not set — aborting'; exit 1; fi; \
+  exec monitor"]

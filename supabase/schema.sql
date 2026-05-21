@@ -278,6 +278,12 @@ CREATE INDEX IF NOT EXISTS idx_regime_history_time
 CREATE INDEX IF NOT EXISTS idx_calibration_regime
     ON calibration_log(regime, calibrated_at DESC);
 
+-- Supports: WHERE approved_for_deploy = TRUE AND regime = ? AND calibrated_at > NOW() - interval
+-- Used by MongoConfigLoader to fetch active deployed params per regime without full table scan.
+CREATE INDEX IF NOT EXISTS idx_calibration_deploy_active
+    ON calibration_log(approved_for_deploy, regime, calibrated_at DESC)
+    WHERE approved_for_deploy = TRUE;
+
 CREATE INDEX IF NOT EXISTS idx_lab_signals_strategy
     ON lab_signals(strategy_id, timestamp_ms DESC);
 

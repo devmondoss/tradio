@@ -44,8 +44,14 @@ pub fn write_json_to_file(json: &str, file_name: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut file = File::create(path)?;
-    file.write_all(json.as_bytes())?;
+    // Atomic write: write to .tmp then rename to avoid corruption on crash/power loss.
+    let tmp_path = path.with_extension("tmp");
+    {
+        let mut file = File::create(&tmp_path)?;
+        file.write_all(json.as_bytes())?;
+        file.flush()?;
+    }
+    std::fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 

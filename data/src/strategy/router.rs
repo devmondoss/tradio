@@ -244,7 +244,12 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (Str
     let best_idx = candidates
         .iter()
         .enumerate()
-        .max_by(|(_, a), (_, b)| a.score.partial_cmp(&b.score).unwrap())
+        .max_by(|(_, a), (_, b)| {
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.strategy_id.map(|s| s as u8).cmp(&b.strategy_id.map(|s| s as u8)))
+        })
         .map(|(i, _)| i);
 
     // min_score diferenciado por perfil de estrategia

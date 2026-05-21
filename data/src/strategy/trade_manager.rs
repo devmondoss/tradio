@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use super::trade_state::{CloseReason, StopState, StructuralLevels, TradePhase};
 use super::types::Side;
 
+/// Breakeven stop offset — entry ± 8bps to clear round-trip fees before locking in.
+/// Must be ≥ fees_pct in TradeConfig to guarantee positive net PnL at BE exit.
+const BE_OFFSET: f64 = 0.0008;
+
 #[derive(Debug, Clone, Copy)]
 pub struct TradeConfig {
     pub risk_pct: f64,
@@ -144,8 +148,8 @@ impl ActiveTrade {
             };
             if in_profit && matches!(self.stop_state, StopState::Original) {
                 let be_price = match self.side {
-                    Side::Long => self.entry_price * (1.0 + 0.0008),
-                    Side::Short => self.entry_price * (1.0 - 0.0008),
+                    Side::Long => self.entry_price * (1.0 + BE_OFFSET),
+                    Side::Short => self.entry_price * (1.0 - BE_OFFSET),
                 };
                 self.stop_price = be_price;
                 self.stop_state = StopState::BreakEven { confirmed_level: close };
@@ -176,8 +180,8 @@ impl ActiveTrade {
                     };
                     if confirmed {
                         let be_price = match self.side {
-                            Side::Long => self.entry_price * (1.0 + 0.0008),
-                            Side::Short => self.entry_price * (1.0 - 0.0008),
+                            Side::Long => self.entry_price * (1.0 + BE_OFFSET),
+                            Side::Short => self.entry_price * (1.0 - BE_OFFSET),
                         };
                         self.stop_price = be_price;
                         self.stop_state = StopState::BreakEven { confirmed_level: intermediate };
@@ -185,8 +189,8 @@ impl ActiveTrade {
                     }
                 } else if self.progress_to_target(close) > 0.60 {
                     let be_price = match self.side {
-                        Side::Long => self.entry_price * 1.0008,
-                        Side::Short => self.entry_price * 0.9992,
+                        Side::Long => self.entry_price * (1.0 + BE_OFFSET),
+                        Side::Short => self.entry_price * (1.0 - BE_OFFSET),
                     };
                     self.stop_price = be_price;
                     self.stop_state = StopState::BreakEven { confirmed_level: close };
@@ -256,7 +260,11 @@ impl ActiveTrade {
         if total == 0.0 {
             return 0.0;
         }
-        ((price - self.entry_price).abs() / total).min(1.0)
+        let traveled = match self.side {
+            Side::Long => (price - self.entry_price).max(0.0),
+            Side::Short => (self.entry_price - price).max(0.0),
+        };
+        (traveled / total).min(1.0)
     }
 
     /// R realized relative to the original stop distance.

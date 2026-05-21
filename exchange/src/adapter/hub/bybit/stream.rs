@@ -477,7 +477,7 @@ pub fn connect_trade_stream(
 
                                         let trade = Trade {
                                             time: de_trade.time.into(),
-                                            is_sell: de_trade.is_sell == "Sell",
+                                            is_sell: de_trade.is_sell.eq_ignore_ascii_case("sell"),
                                             price,
                                             qty: qty_norm
                                                 .normalize_qty(de_trade.qty, de_trade.price),

@@ -683,6 +683,9 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
             let lowest = self.y_to_price(region.y + region.height);
 
             let range = highest - lowest;
+            if range == 0.0 {
+                return;
+            }
 
             let mut all_labels = linear::generate_labels(
                 bounds,
