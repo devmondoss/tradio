@@ -1029,11 +1029,25 @@ Histéresis (evita flipping rápido TrendUp↔Chop):
 
 ### 13.7 swing_high_20 / swing_low_20 — Derivado
 
+Pivot estructural confirmado bilateralmente. **No** es un simple max/min — requiere que N barras a la izquierda y N barras a la derecha del pivot sean estrictamente menores/mayores.
+
 ```
-swing_high_20 = max(highs[0..n-1])   // excluye la barra actual
-swing_low_20  = min(lows[0..n-1])    // excluye la barra actual
-Ventana: últimas 20 barras (o las disponibles si < 20)
-Archivo: adapter.rs — derive_swing_highs_lows()
+Algoritmo: derive_confirmed_swings(highs, lows, n_confirm=2)
+
+Un swing high en el índice i se confirma cuando:
+  highs[i] > highs[i-k]  para todo k en 1..=2  (left confirmation)
+  highs[i] > highs[i+k]  para todo k en 1..=2  (right confirmation)
+
+Ventana: últimas 25 barras
+Lag mínimo: 2 barras (el pivot más reciente posible está 2 barras antes del cierre actual)
+Resultado: el pivot confirmado MÁS RECIENTE dentro de la ventana
+
+Por qué confirmación bilateral:
+  - max/min simple devuelve el pico absoluto, que puede ser un spike de una barra
+  - El pivot confirmado es un nivel estructural real (soporte/resistencia válido)
+  - Filtrar spikes evita targets irreales en find_structural_target
+
+Archivo: adapter.rs — derive_confirmed_swings() / SWING_CONFIRM_BARS = 2
 ```
 
 ---

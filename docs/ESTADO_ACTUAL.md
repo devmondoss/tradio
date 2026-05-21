@@ -375,25 +375,43 @@ paper_trade_id uuid
 
 ## 8. Métricas en Logs
 
-Cada bar-close loguea una línea completa:
+### Separación stdout / stderr
+
+Los logs operacionales van a **stdout** (`println!`) y los errores reales a **stderr** (`eprintln!`). En Railway esto separa el noise operacional de las alertas reales.
+
+| stdout (`println!`)                   | stderr (`eprintln!`)                    |
+|---------------------------------------|-----------------------------------------|
+| `[bar]`, `[metrics]`, `[intrabar]`    | `[WARN]` (stream stale, sin datos)      |
+| `[outcome]`, `[warmup]`, boot msgs    | `[fetch] failed`, `[liq] WS connect failed` |
+| `[liq] connected`, `[kline] connected`| `[kline] DISCONNECTED`, `[liq] parse_failure` |
+
+### Formato del [bar] log
 
 ```
-[bar] BTCUSDT M5 close=104000 vol=12.3 ts=1747500000000
-  regime=TrendUp atr=250.0 vwap=103850 cvd=1240 delta=45.2
-  vpin=0.41 spread=0.6bps loc=InValue poc=103900 vah=104800 val=103500
-  inst=Live ls_top=49.9%/55.6% liq=0$
-  delivery=423ms proc=4ms
-
-[signal] VWAP ShadowSignal Long score=0.72
-  entry=104000 stop=103750 target=104800 ttl=15000000ms
-  evidence=[trend_up, anchor_avwap_bos, pullback_into_value, ...]
-
-[paper] opened Long BTCUSDT size=0.012 notional=1248 margin=124.80
-  balance=175.20 (free) equity=300.00
-
-[metrics] bars=144 delivery_avg=430ms delivery_max=812ms
-          proc_avg=4ms proc_max=11ms signals=3 trades_open=1
+[bar] ts=1747500000000 close=104000.00 regime=TrendUp
+  slow=0.012 fast=0.008 funding=0.0001 basis=0.020% oi_delta=120
+  vwap=103850.00 cvd=1240.0 ob=live
+  inst=Live(4/5) ls_top=49.9%/55.6% liq=0$ liq_age=never
+  ws=[kline:Ok depth:Ok trades:ok liq:Ok]
+  action=ShadowSignal score=0.720 delivery=423ms proc=4ms equity=300.00
+  missing=[] skip=[]
 ```
+
+### Formato del [metrics] log (cada 10 bars y cada 60s)
+
+```
+[metrics] bars=12 signals=0 liq_events=0 liq_raw=47 ws_reconnects=0 |
+  kline_ticks=73 trades=1840 depth_updates=245 |
+  bar_latency_avg=430ms max=812ms |
+  depth_age=120ms trade_age=95ms |
+  inst=4/5 liq_age=never liq_connected=5m30s ls_age=4m12s taker_age=2m01s oi_age=3m45s funding_age=0m12s |
+  ws=[kline:Ok depth:Ok trades:ok liq:Ok]
+```
+
+**Diagnóstico liquidaciones:**
+- `liq_raw=0` + `liq_connected` reciente → mercado quieto, normal
+- `liq_raw > 0` + `liq_events=0` → buscar `[liq] parse_failure:` en logs
+- `liq_connected=never` → WS nunca estableció conexión TLS
 
 ---
 
@@ -426,6 +444,8 @@ Con los fixes de hoy (stop correcto, target estructural, TTL 250min), los trades
 | ~~Media~~ | ~~LiqHunt target hardcodeado 1.5×ATR ignora `cfg.min_rr` — RESUELTO~~ | `liquidation_hunt.rs` — `cfg.min_rr * atr`  |
 | ~~Baja~~  | ~~Swing20 off-by-one (19 barras, no 20) — RESUELTO~~                | `main.rs` — guard `n >= 21`, range `[n-21..n-1]` |
 | ~~Baja~~  | ~~SMD evidencia LONG incorrecta (`oi_by_delta_long` reutilizado) — RESUELTO~~ | `smart_money_divergence.rs` — variables separadas por side |
+| ~~Alta~~  | ~~`liq_age=never`: sin distinción entre mercado quieto y stream roto — RESUELTO~~ | `main.rs` — `liq_raw_messages` + `liq_ws_connected_at` + log parse_failure |
+| ~~Media~~ | ~~Todos los logs en stderr → Railway marca operacionales como errores — RESUELTO~~ | `main.rs` — `println!` para operacionales, `eprintln!` para errores |
 | Media     | HVN levels en Supabase para análisis offline                        | Schema migration                                |
 | Baja      | `cargo-audit` en CI                                                 | `.github/workflows/`                            |
 | Baja      | `write_outcome` / `patch_horizon` intrabar outcomes (no integrados) | `supabase_writer.rs`                            |
@@ -450,6 +470,7 @@ Todos implementados (verificado 2026-05-21).
 
 | Commit    | Descripción                                                            |
 | --------- | ---------------------------------------------------------------------- |
+| —         | fix(monitor): liq_raw counter + stdout/stderr separation |
 | `daee74e` | Warm-up histórico, regime hysteresis, inst logging, detector breakdown |
 | `09e0d7e` | `write_signal` off hot path (oneshot channel)                          |
 | `be6a0bf` | Config reload off hot path (mpsc channel)                              |

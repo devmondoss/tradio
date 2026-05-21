@@ -15,6 +15,10 @@ mod intrabar;
 mod supabase_writer;
 
 use std::collections::VecDeque;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -99,6 +103,7 @@ struct PipelineMetrics {
     bars_since_signal: u64,
     signals_today: u64,
     liq_events_today: u64,
+    liq_raw_messages: u64, // text frames received by forceOrder WS (parsed or not)
     ws_reconnects: u64,
 }
 
@@ -109,6 +114,7 @@ struct PipelineMetrics {
 #[derive(Default)]
 struct DataFreshness {
     liq_last_event_at: Option<Instant>,
+    liq_ws_connected_at: Option<Instant>, // when the forceOrder WS last connected
     liq_stream_ok: bool, // true while forceOrder WS is connected
     ls_fetched_at: Option<Instant>,
     taker_fetched_at: Option<Instant>,
@@ -133,6 +139,9 @@ impl DataFreshness {
 
     fn liq_age_str(&self) -> String {
         Self::age_str(self.liq_last_event_at)
+    }
+    fn liq_connected_age_str(&self) -> String {
+        Self::age_str(self.liq_ws_connected_at)
     }
     fn ls_age_str(&self) -> String {
         Self::age_str(self.ls_fetched_at)
@@ -317,7 +326,7 @@ impl PendingOutcome {
 
     fn log(&self, bar_close_ms: i64) {
         let age_ms = bar_close_ms - self.signal_ms;
-        eprintln!(
+        println!(
             "[outcome] src={} id={} side={} entry={:.1} stop={:.1} target={:.1} \
              risk={:.1} mfe={:.1} mae={:.1} \
              rr_1m={} rr_3m={} rr_5m={} \
@@ -411,22 +420,24 @@ impl PipelineMetrics {
             .unwrap_or(999_999);
 
         let (inst_ok, inst_total) = freshness.quality();
-        eprintln!(
-            "[metrics] bars={} signals={} liq_events={} ws_reconnects={} | \
+        println!(
+            "[metrics] bars={} signals={} liq_events={} liq_raw={} ws_reconnects={} | \
              kline_ticks={} trades={} depth_updates={} | \
              bar_latency_avg={:.0}ms max={max_lat}ms | \
              depth_age={depth_age_ms}ms trade_age={trade_age_ms}ms | \
-             inst={inst_ok}/{inst_total} liq_age={} ls_age={} taker_age={} oi_age={} funding_age={} | \
+             inst={inst_ok}/{inst_total} liq_age={} liq_connected={} ls_age={} taker_age={} oi_age={} funding_age={} | \
              ws=[kline:{} depth:{} trades:ok liq:{}]",
             self.bars_processed,
             self.signals_today,
             self.liq_events_today,
+            self.liq_raw_messages,
             self.ws_reconnects,
             self.kline_ticks,
             self.trade_count,
             self.depth_updates,
             avg_lat,
             freshness.liq_age_str(),
+            freshness.liq_connected_age_str(),
             freshness.ls_age_str(),
             freshness.taker_age_str(),
             freshness.oi_age_str(),
@@ -475,7 +486,7 @@ impl PipelineMetrics {
             self.processing_ms.iter().sum::<u128>() as f64 / self.processing_ms.len() as f64
         };
         let max_proc = self.processing_ms.iter().max().copied().unwrap_or(0);
-        eprintln!(
+        println!(
             "[metrics] proc_avg={avg_proc:.0}ms proc_max={max_proc}ms bars_since_signal={}",
             self.bars_since_signal
         );
@@ -501,6 +512,7 @@ struct BarState {
     depth: Option<Depth>,
     paper: PaperAccount,
     metrics: PipelineMetrics,
+    liq_raw_counter: Arc<AtomicU64>, // shared with forceOrder WS task
     // Crypto-native context
     funding_rate: Option<f64>,
     spot_price: Option<f64>,
@@ -556,7 +568,7 @@ struct BarState {
 }
 
 impl BarState {
-    fn new(mongo: MongoWriter, supabase: Option<SupabaseWriter>, config_loader: MongoConfigLoader, footprint_step: PriceStep) -> Self {
+    fn new(mongo: MongoWriter, supabase: Option<SupabaseWriter>, config_loader: MongoConfigLoader, footprint_step: PriceStep, liq_raw_counter: Arc<AtomicU64>) -> Self {
         Self {
             bars: VecDeque::with_capacity(VP_WINDOW + 1),
             cvd: 0.0,
@@ -573,6 +585,7 @@ impl BarState {
             depth: None,
             paper: PaperAccount::load_or_new(),
             metrics: PipelineMetrics::default(),
+            liq_raw_counter,
             funding_rate: None,
             spot_price: None,
             oi_history: VecDeque::with_capacity(7),
@@ -914,7 +927,7 @@ impl BarState {
         self.intrabar_eval_count += 1;
 
         let fired = signal.action == StrategyAction::ShadowSignal;
-        eprintln!(
+        println!(
             "[intrabar] ts={now_ms} px={:.2} regime={:?} fast_slope={:.3} trigger={triggered_by} \
              eval={}/{} action={:?} score={:.3} id={:?}",
             ctx.price,
@@ -938,7 +951,7 @@ impl BarState {
 
         match self.intrabar_cfg.mode {
             IntrabarMode::ObserveOnly => {
-                eprintln!("[intrabar] signal suppressed — mode=ObserveOnly");
+                println!("[intrabar] signal suppressed — mode=ObserveOnly");
             }
             IntrabarMode::ShadowEvent => {
                 if let Ok(json) = serde_json::to_string(&signal) {
@@ -1492,7 +1505,7 @@ impl BarState {
             self.streams.klines, self.streams.depth, self.streams.liq
         );
         let liq_age = self.freshness.liq_age_str();
-        eprintln!(
+        println!(
             "[bar] ts={bar_ms} close={c:.2} regime={regime:?} \
              slow={slow_slope:.3} fast={fast_slope:.3} \
              funding={:.4} basis={:.3}% oi_delta={:.0} \
@@ -1562,6 +1575,7 @@ impl BarState {
 
         self.metrics.processing_ms.push(processing_ms);
         if self.metrics.bars_processed % 10 == 0 {
+            self.metrics.liq_raw_messages = self.liq_raw_counter.load(Ordering::Relaxed);
             let freshness = &self.freshness;
             let streams = &self.streams;
             self.metrics.report(freshness, streams);
@@ -1931,10 +1945,12 @@ fn parse_force_order_event(text: &str) -> Option<LiquidationEvent> {
 
 /// Spawns a task that streams @forceOrder events into `tx` with auto-reconnect.
 /// Sends `true` to `health_tx` on connect and `false` on disconnect.
+/// Increments `raw_counter` for every text frame received (parsed or not).
 fn spawn_force_order_stream(
     symbol: String,
     tx: tokio::sync::mpsc::Sender<Vec<LiquidationEvent>>,
     health_tx: tokio::sync::mpsc::Sender<bool>,
+    raw_counter: Arc<AtomicU64>,
 ) {
     tokio::spawn(async move {
         loop {
@@ -1945,7 +1961,7 @@ fn spawn_force_order_stream(
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
                 Ok(mut ws) => {
-                    eprintln!("[liq] forceOrder WS connected for {symbol}");
+                    println!("[liq] forceOrder WS connected for {symbol}");
                     let _ = health_tx.send(true).await;
                     loop {
                         match ws.read_frame().await {
@@ -1966,8 +1982,12 @@ fn spawn_force_order_stream(
                                     Ok(s) => s,
                                     Err(_) => continue,
                                 };
+                                raw_counter.fetch_add(1, Ordering::Relaxed);
                                 if let Some(ev) = parse_force_order_event(text) {
                                     let _ = tx.send(vec![ev]).await;
+                                } else {
+                                    let preview = &text[..text.len().min(160)];
+                                    eprintln!("[liq] parse_failure (not a liquidation?): {preview}");
                                 }
                             }
                         }
@@ -2057,7 +2077,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
 
     // Skip last entry — it's the still-open current bar
     let closed = &arr[..arr.len() - 1];
-    eprintln!(
+    println!(
         "[warmup] seeding {} historical bars ({})",
         closed.len(),
         interval_str
@@ -2156,7 +2176,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
     let regime = derive_regime(regime_window, atr);
     state.last_regime_enum = regime;
     state.last_regime = Some(format!("{regime:?}"));
-    eprintln!(
+    println!(
         "[warmup] complete — {} bars loaded, atr={atr:.2}, regime={regime:?}",
         state.bars.len()
     );
@@ -2166,7 +2186,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
 
 #[tokio::main]
 async fn main() {
-    eprintln!("monitor: starting up");
+    println!("monitor: starting up");
 
     let symbol_str = std::env::var("SYMBOL").unwrap_or_else(|_| "BTCUSDT".to_string());
     let tf_min: u64 = std::env::var("TIMEFRAME_MIN")
@@ -2190,7 +2210,7 @@ async fn main() {
     let handles = AdapterHandles::spawn_selected(AdapterNetworkConfig::default(), [Venue::Binance])
         .expect("monitor: failed to spawn Binance adapter");
 
-    eprintln!("monitor: fetching {symbol_str} LinearPerps metadata…");
+    println!("monitor: fetching {symbol_str} LinearPerps metadata…");
     let metadata = handles
         .fetch_ticker_metadata(Venue::Binance, &[MarketKind::LinearPerps])
         .await
@@ -2211,7 +2231,7 @@ async fn main() {
             TickerInfo::new(ticker, 0.1, 0.001, None)
         });
 
-    eprintln!("monitor: streaming {symbol_str} at {timeframe}");
+    println!("monitor: streaming {symbol_str} at {timeframe}");
 
     let kline_stream = handles.kline_stream(&StreamConfig::new(
         vec![(ticker_info, timeframe)],
@@ -2245,7 +2265,7 @@ async fn main() {
     let mongo = MongoWriter::from_env();
     let supabase = SupabaseWriter::from_env();
     if supabase.is_none() {
-        eprintln!("[supabase] SUPABASE_URL not set — cloud persistence disabled");
+        println!("[supabase] SUPABASE_URL not set — cloud persistence disabled");
     }
 
     // The monitor always runs with strategy enabled — override the default (false)
@@ -2255,7 +2275,8 @@ async fn main() {
     let config_loader = MongoConfigLoader::from_env(base_cfg);
 
     let footprint_step: PriceStep = ticker_info.min_ticksize.into();
-    let mut state = BarState::new(mongo, supabase, config_loader, footprint_step);
+    let liq_raw_counter = Arc::new(AtomicU64::new(0));
+    let mut state = BarState::new(mongo, supabase, config_loader, footprint_step, Arc::clone(&liq_raw_counter));
     state.intrabar_cfg.log_boot();
 
     // Seed bar history from REST before the live stream starts
@@ -2310,7 +2331,7 @@ async fn main() {
     // Liquidations: real-time via @forceOrder WebSocket (public stream, no auth needed)
     let (liq_tx, mut liq_rx) = tokio::sync::mpsc::channel::<Vec<LiquidationEvent>>(16);
     let (liq_health_tx, mut liq_health_rx) = tokio::sync::mpsc::channel::<bool>(4);
-    spawn_force_order_stream(symbol_str.clone(), liq_tx, liq_health_tx);
+    spawn_force_order_stream(symbol_str.clone(), liq_tx, liq_health_tx, Arc::clone(&liq_raw_counter));
 
     // L/S ratios (top traders + global): every 5 min
     type LsPayload = (Option<LongShortSnapshot>, Option<LongShortSnapshot>);
@@ -2379,7 +2400,7 @@ async fn main() {
                         }
                     }
                     Event::Connected(ex) => {
-                        eprintln!("[kline] connected ({ex:?})");
+                        println!("[kline] connected ({ex:?})");
                         state.streams.klines = StreamHealth::Ok;
                     }
                     Event::Disconnected(ex, reason) => {
@@ -2494,12 +2515,15 @@ async fn main() {
             Some(connected) = liq_health_rx.recv() => {
                 state.streams.liq = if connected { StreamHealth::Ok } else { StreamHealth::Disc };
                 state.freshness.liq_stream_ok = connected;
+                if connected {
+                    state.freshness.liq_ws_connected_at = Some(Instant::now());
+                }
                 if !connected { state.metrics.ws_reconnects += 1; }
             }
 
             Some(samples) = funding_hist_rx.recv() => {
                 if !samples.is_empty() {
-                    eprintln!("[inst] loaded {} funding rate history samples", samples.len());
+                    println!("[inst] loaded {} funding rate history samples", samples.len());
                     state.funding_tracker.load(samples);
                 }
             }
@@ -2507,6 +2531,7 @@ async fn main() {
         }
 
         if last_metrics_print.elapsed() >= metrics_interval {
+            state.metrics.liq_raw_messages = liq_raw_counter.load(Ordering::Relaxed);
             state.metrics.report(&state.freshness, &state.streams);
             last_metrics_print = Instant::now();
         }
