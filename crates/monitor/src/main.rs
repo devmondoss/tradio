@@ -106,6 +106,8 @@ struct PipelineMetrics {
     liq_raw_messages: u64,        // text frames from btcusdt@forceOrder (BTC-specific)
     liq_global_raw_messages: u64, // text frames from !forceOrder@arr (all-market diagnostic)
     ws_reconnects: u64,
+    // Throttle: timestamp of last liq-silence warning emitted (avoid repeating every minute)
+    liq_warn_emitted_at: Option<Instant>,
 }
 
 // ── data freshness ────────────────────────────────────────────────────────────
@@ -404,7 +406,7 @@ struct FrozenBarCtx {
 }
 
 impl PipelineMetrics {
-    fn report(&self, freshness: &DataFreshness, streams: &StreamStates) {
+    fn report(&mut self, freshness: &DataFreshness, streams: &StreamStates) {
         let avg_lat = if self.latencies_ms.is_empty() {
             0.0
         } else {
@@ -468,16 +470,23 @@ impl PipelineMetrics {
                 eprintln!("[WARN] {label}: no data received yet");
             }
         };
+        // Liq silence warnings — throttled to once per 30 min to avoid flooding.
+        // Re-arms automatically when a new liquidation event arrives (liq_last_event_at resets).
+        let warn_cooldown = Duration::from_secs(30 * 60);
+        let warn_due = self.liq_warn_emitted_at
+            .map(|t| t.elapsed() >= warn_cooldown)
+            .unwrap_or(true);
         if streams.liq == StreamHealth::Disc {
             eprintln!("[WARN] forceOrder stream disconnected — liq data unavailable");
         } else if let Some(age) = freshness.liq_last_event_at.map(|t| t.elapsed().as_secs()) {
             // Had events before, now stopped
-            if age > 300 {
+            if age > 300 && warn_due {
                 eprintln!(
                     "[WARN] forceOrder stream: no liquidation events for {age}s — market very quiet or stream issue"
                 );
+                self.liq_warn_emitted_at = Some(Instant::now());
             }
-        } else if self.liq_raw_messages == 0 {
+        } else if self.liq_raw_messages == 0 && warn_due {
             // Never received a single message — warn after 30 min connected
             let connected_secs = freshness.liq_ws_connected_at
                 .map(|t| t.elapsed().as_secs())
@@ -486,6 +495,7 @@ impl PipelineMetrics {
                 eprintln!(
                     "[WARN] forceOrder stream: connected {connected_secs}s but liq_raw=0 — market extremely quiet or endpoint issue"
                 );
+                self.liq_warn_emitted_at = Some(Instant::now());
             }
         }
         warn_age("LS ratio fetch", freshness.ls_fetched_at, 600);
@@ -643,6 +653,7 @@ impl BarState {
     fn on_liquidation(&mut self, event: LiquidationEvent) {
         self.freshness.liq_last_event_at = Some(Instant::now());
         self.metrics.liq_events_today += 1;
+        self.metrics.liq_warn_emitted_at = None; // re-arm silence warning after activity resumes
         self.liq_tracker.push(event);
     }
 
