@@ -46,10 +46,11 @@ use data::strategy::mongo_writer::{MongoWriter, SignalOid};
 use data::strategy::{
     adapter::{
         build_flow_context, build_orderbook_context, build_volume_profile_context,
-        build_vwap_context, count_price_reversals, derive_cvd_divergence,
-        derive_failed_acceptance_and_absorption, derive_footprint_absorption_at_value_edge,
-        derive_regime, derive_regime_with_hysteresis, derive_stacked_imbalance,
-        derive_stacked_imbalance_from_levels, wall_nearby,
+        build_vwap_context, count_price_reversals, derive_confirmed_swings,
+        derive_cvd_divergence, derive_failed_acceptance_and_absorption,
+        derive_footprint_absorption_at_value_edge, derive_regime,
+        derive_regime_with_hysteresis, derive_stacked_imbalance,
+        derive_stacked_imbalance_from_levels, wall_nearby, SWING_CONFIRM_BARS,
     },
     intent_logger::collect_near_misses,
     lab::{LabConfig, LabTracker, run_strategy_lab},
@@ -1320,20 +1321,15 @@ impl BarState {
             liq_map: self.liq_map_snapshot.clone(),
         });
 
-        // 20-bar swing high/low (excluding current bar) for structural target selection.
-        const SWING20: usize = 20;
-        let (swing_high_20, swing_low_20) = if n >= SWING20 + 1 {
-            let sh = highs[n - SWING20 - 1..n - 1]
-                .iter()
-                .copied()
-                .fold(f64::NEG_INFINITY, f64::max);
-            let sl = lows[n - SWING20 - 1..n - 1]
-                .iter()
-                .copied()
-                .fold(f64::INFINITY, f64::min);
-            (
-                if sh.is_finite() { Some(sh) } else { None },
-                if sl.is_finite() { Some(sl) } else { None },
+        // Confirmed swing high/low: pivot with 2-bar bilateral confirmation.
+        // Window = 25 bars gives enough history to find at least one pivot in normal markets.
+        const SWING_WINDOW: usize = 25;
+        let sw_n = n.min(SWING_WINDOW);
+        let (swing_high_20, swing_low_20) = if sw_n >= 2 * SWING_CONFIRM_BARS + 1 {
+            derive_confirmed_swings(
+                &highs[n - sw_n..n],
+                &lows[n - sw_n..n],
+                SWING_CONFIRM_BARS,
             )
         } else {
             (None, None)

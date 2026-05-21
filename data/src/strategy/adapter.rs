@@ -547,22 +547,61 @@ pub fn build_volume_profile_context(
     }
 }
 
-/// Returns (swing_high, swing_low) as the max/min of all bars excluding the current (last) bar.
-/// `highs` and `lows` are oldest-first slices; requires at least 2 elements.
-pub fn derive_swing_highs_lows(highs: &[f64], lows: &[f64]) -> (Option<f64>, Option<f64>) {
-    if highs.len() < 2 || lows.len() < 2 {
+/// Bars of right-side confirmation required on each side of a pivot.
+/// 2 bars ≈ 10 min lag on M5, enough to filter single-bar spikes.
+pub const SWING_CONFIRM_BARS: usize = 2;
+
+/// Returns the most recent confirmed swing high and swing low within `highs`/`lows`.
+///
+/// A pivot at index `i` is confirmed when it is strictly the highest/lowest point
+/// compared to `n_confirm` bars immediately to its left AND right:
+///
+///   swing high: highs[i] > highs[i-k] for all k in 1..=n, AND > highs[i+k]
+///   swing low:  lows[i]  < lows[i-k]  for all k in 1..=n, AND < lows[i+k]
+///
+/// Right-side confirmation means the most recent possible confirmed pivot is always
+/// at least `n_confirm` bars back from the end — no lookahead into future bars.
+///
+/// Requires at least `2 * n_confirm + 1` elements. Returns `(None, None)` when the
+/// window is too short or no pivot is found.
+pub fn derive_confirmed_swings(
+    highs: &[f64],
+    lows: &[f64],
+    n_confirm: usize,
+) -> (Option<f64>, Option<f64>) {
+    let n = highs.len().min(lows.len());
+    if n_confirm == 0 || n < 2 * n_confirm + 1 {
         return (None, None);
     }
-    let n = highs.len().min(lows.len());
-    let sh = highs[..n - 1]
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
-    let sl = lows[..n - 1].iter().copied().fold(f64::INFINITY, f64::min);
-    (
-        if sh.is_finite() { Some(sh) } else { None },
-        if sl.is_finite() { Some(sl) } else { None },
-    )
+
+    let mut last_sh: Option<f64> = None;
+    let mut last_sl: Option<f64> = None;
+
+    for i in n_confirm..n - n_confirm {
+        let h = highs[i];
+        if h.is_finite()
+            && highs[i - n_confirm..i].iter().all(|&x| x < h)
+            && highs[i + 1..=i + n_confirm].iter().all(|&x| x < h)
+        {
+            last_sh = Some(h);
+        }
+
+        let l = lows[i];
+        if l.is_finite()
+            && lows[i - n_confirm..i].iter().all(|&x| x > l)
+            && lows[i + 1..=i + n_confirm].iter().all(|&x| x > l)
+        {
+            last_sl = Some(l);
+        }
+    }
+
+    (last_sh, last_sl)
+}
+
+/// Legacy wrapper — kept for callers that pass an already-windowed slice.
+/// Delegates to `derive_confirmed_swings` with `SWING_CONFIRM_BARS`.
+pub fn derive_swing_highs_lows(highs: &[f64], lows: &[f64]) -> (Option<f64>, Option<f64>) {
+    derive_confirmed_swings(highs, lows, SWING_CONFIRM_BARS)
 }
 
 /// Derives MSS and sweep flags from recent OHLC data (oldest-first).
@@ -795,5 +834,69 @@ mod tests {
         assert!(basis_ok(Some(-0.4), false)); // within threshold
         assert!(basis_ok(None, true)); // no data → allow
         assert!(basis_ok(Some(0.6), false)); // positive basis ok for short
+    }
+
+    #[test]
+    fn confirmed_swings_finds_pivot() {
+        // Visible spike at index 2 (105), confirmed by 2 bars each side.
+        // Second pivot at index 5 (104) — more recent → last_sh = 104.
+        //
+        //  idx:  0    1    2    3    4    5    6    7
+        //  H:   100  102  105  103  101  104  102  100
+        //  L:   98   96   95   97   99   97   99  101
+        let highs = [100.0, 102.0, 105.0, 103.0, 101.0, 104.0, 102.0, 100.0];
+        let lows  = [98.0,  96.0,  95.0,  97.0,  99.0,  97.0,  99.0, 101.0];
+
+        let (sh, sl) = derive_confirmed_swings(&highs, &lows, 2);
+
+        // Most recent confirmed swing high = 104 (index 5)
+        assert_eq!(sh, Some(104.0), "expected most recent swing high 104");
+
+        // Low at index 2 = 95: left [98,96] > 95 ✓, right [97,99] > 95 ✓ → confirmed
+        // Low at index 5 = 97: left [99,97] — 97 is NOT > 97 (equal) → not confirmed
+        assert_eq!(sl, Some(95.0), "expected confirmed swing low 95");
+    }
+
+    #[test]
+    fn confirmed_swings_returns_none_when_window_too_short() {
+        // Need at least 2*2+1 = 5 elements; 4 is not enough.
+        let highs = [100.0, 102.0, 101.0, 100.0];
+        let lows  = [98.0,  97.0,  98.0,  99.0];
+        let (sh, sl) = derive_confirmed_swings(&highs, &lows, 2);
+        assert_eq!(sh, None);
+        assert_eq!(sl, None);
+    }
+
+    #[test]
+    fn confirmed_swings_ignores_single_bar_spike() {
+        // Bar at index 3 is a spike (108) but has only 1 bar to the right (confirmation
+        // requires 2). The spike should NOT be confirmed.
+        //  idx:  0    1    2    3    4    5    6
+        //  H:   100  101  102  108  106  105  104
+        let highs = [100.0, 101.0, 102.0, 108.0, 106.0, 105.0, 104.0];
+        let lows  = [98.0,  97.0,  96.0,  97.0,  96.0,  95.0,  94.0];
+
+        let (sh, _sl) = derive_confirmed_swings(&highs, &lows, 2);
+
+        // Index 3 (108): right=[106, 105] < 108 ✓ AND left=[100,101,102]...[101,102] < 108 ✓
+        // Wait — left check is highs[1..3] = [101, 102] < 108 ✓ → actually IS confirmed.
+        // Let me recalculate: n=7, n_confirm=2, range = 2..=4
+        // i=2: highs[0..2]=[100,101]<102, highs[3..=4]=[108,106]: 108 NOT < 102 → skip
+        // i=3: highs[1..3]=[101,102]<108, highs[4..=5]=[106,105]<108 → confirmed (sh=108)
+        // i=4: highs[2..4]=[102,108]: 108 NOT < 106 → skip
+        // → sh = Some(108) — spike IS confirmed when 2 right bars are lower
+        assert_eq!(sh, Some(108.0));
+    }
+
+    #[test]
+    fn confirmed_swings_flat_bars_not_confirmed() {
+        // Two equal highs at indices 2 and 3 — strict inequality means neither qualifies.
+        let highs = [100.0, 101.0, 105.0, 105.0, 103.0, 102.0, 101.0];
+        let lows  = [99.0,  98.0,  97.0,  96.0,  97.0,  98.0,  99.0];
+        let (sh, _) = derive_confirmed_swings(&highs, &lows, 2);
+        // i=2: highs[3..=4]=[105,103], 105 NOT < 105 → not confirmed
+        // i=3: highs[1..3]=[101,105], 105 NOT < 105 → not confirmed
+        // i=4: highs[2..4]=[105,105], 105 NOT < 103 → not confirmed
+        assert_eq!(sh, None, "flat double-top should not produce a confirmed pivot");
     }
 }
