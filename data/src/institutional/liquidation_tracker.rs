@@ -21,6 +21,24 @@ impl LiquidationTracker {
         }
     }
 
+    /// Pre-seed bar_totals with historical baseline values so z-score is available
+    /// from bar 1 on startup. Binance does not expose historical liquidation data via
+    /// REST, so we use a realistic quiet-market distribution (M5 BTC, ~$20K–$500K range).
+    /// Real data displaces seed values over time as bars accumulate.
+    pub fn seed_bar_history(&mut self) {
+        // 20 samples spanning quiet ($20K), moderate ($100K), and one active spike ($500K).
+        // Mean ≈ $78K, std ≈ $105K → z-score for a $5M crash ≈ 46, for $500K bar ≈ 4.0.
+        const SEED: [f64; 20] = [
+            30_000.0, 45_000.0, 20_000.0,  80_000.0, 35_000.0,
+            60_000.0, 25_000.0, 150_000.0, 40_000.0, 30_000.0,
+            55_000.0, 70_000.0, 28_000.0,  90_000.0, 35_000.0,
+           500_000.0, 45_000.0, 30_000.0,  65_000.0, 40_000.0,
+        ];
+        for v in SEED {
+            self.bar_totals.push_back(v);
+        }
+    }
+
     /// Record the total USD liquidated at bar close. Call once per bar after `snapshot()`.
     pub fn record_bar_total(&mut self, total_usd: f64) {
         self.bar_totals.push_back(total_usd);

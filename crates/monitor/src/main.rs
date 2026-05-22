@@ -627,7 +627,7 @@ impl BarState {
             funding_rate: None,
             spot_price: None,
             oi_history: VecDeque::with_capacity(7),
-            liq_tracker: LiquidationTracker::new(),
+            liq_tracker: { let mut t = LiquidationTracker::new(); t.seed_bar_history(); t },
             ls_tracker: LsRatioTracker::new(),
             oi_tracker: OiTracker::new(),
             funding_tracker: FundingTracker::new(),
