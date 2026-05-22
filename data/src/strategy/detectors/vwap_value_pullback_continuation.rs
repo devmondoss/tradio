@@ -46,17 +46,37 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     // LONG: trend up, pullback into value, flow realigns.
     // BelowVal is excluded: price below VAL is a breakdown of support, not a pullback.
-    // fast_slope gate: block if momentum is bearish (< -0.08) OR exhaustion-bullish
-    // (>= 0.50). Audit 2026-05-20: fast_slope=0.924/1.114 produced 0% win-rate longs —
-    // extreme positive slope signals momentum exhaustion, not continuation.
+    //
+    // fast_slope gate: require mild positive momentum (> -0.05) but block exhaustion (>= 0.50).
+    // Tightened lower bound from -0.08 to -0.05 for symmetry with short gate (-0.10).
+    // Audit 2026-05-20: fast_slope=0.924/1.114 produced 0% win-rate longs (exhaustion).
     let fast_slope_ok_long = flow
         .fast_slope
-        .map(|fs| fs > -0.08 && fs < 0.50)
+        .map(|fs| fs > -0.05 && fs < 0.50)
         .unwrap_or(true);
+
+    // Slow slope strength gate: avoid entering trend-continuation when slope is marginal.
+    // A slope barely above the 0.10 entry threshold is chop — the regime could flip in 1-2 bars.
+    // Require slow_slope > 0.20 so we're firmly in trend, not at the chop/trend boundary.
+    let slow_slope_ok_long = ctx.slow_slope.map(|s| s > 0.20).unwrap_or(true);
+
+    // VAL proximity gate: "in value" at the midpoint is NOT a pullback.
+    // Require price to be in the lower 40% of the value range (closer to VAL = structural support).
+    // At 21:30 the rejected trade had price at 55% of range — this gate blocks that case.
+    let val_proximity_ok_long = match (vp.val, vp.vah) {
+        (Some(val_level), Some(vah_level)) => {
+            let range = vah_level - val_level;
+            range > 0.0 && (px - val_level) / range <= 0.40
+        }
+        _ => true, // no VP data → don't block
+    };
+
     let long_context = matches!(ctx.regime, Regime::TrendUp | Regime::Expansion)
         && long_anchor_ok
         && vp.value_location == ValueLocation::InValue
-        && fast_slope_ok_long;
+        && fast_slope_ok_long
+        && slow_slope_ok_long
+        && val_proximity_ok_long;
 
     // CVD level gate: a single bar of positive delta cannot override strongly adverse
     // cumulative flow. Threshold -200 was chosen after observing CVD=-471 triggering
@@ -172,11 +192,32 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && flow.cvd_slope.map(|s| s < 0.0).unwrap_or(false);
 
     let fast_slope_ok_short = flow.fast_slope.map(|fs| fs <= -0.10).unwrap_or(true);
+
+    // Slow slope strength gate: symmetric with long gate — require slope < -0.20 for shorts.
+    // bearish_divergence_in_uptrend bypasses this since it's a divergence scenario, not pure trend.
+    let slow_slope_ok_short = if bearish_divergence_in_uptrend {
+        true
+    } else {
+        ctx.slow_slope.map(|s| s < -0.20).unwrap_or(true)
+    };
+
+    // VAH proximity gate: for shorts, price should be in the upper 40% of the value range
+    // (closer to VAH = structural resistance). Midpoint entries have no edge.
+    let vah_proximity_ok_short = match (vp.val, vp.vah) {
+        (Some(val_level), Some(vah_level)) => {
+            let range = vah_level - val_level;
+            range > 0.0 && (vah_level - px) / range <= 0.40
+        }
+        _ => true,
+    };
+
     let short_context = (matches!(ctx.regime, Regime::TrendDown | Regime::Expansion)
         || bearish_divergence_in_uptrend)
         && short_anchor_ok
         && vp.value_location == ValueLocation::InValue
-        && fast_slope_ok_short;
+        && fast_slope_ok_short
+        && slow_slope_ok_short
+        && vah_proximity_ok_short;
 
     let short_flow = flow.cvd_slope.unwrap_or(0.0) <= 0.0
         && flow.delta.unwrap_or(0.0) < 0.0
@@ -509,6 +550,7 @@ mod tests {
             fvg: None,
             leverage: 1.0,
             prev_obi_l5: None,
+            slow_slope: None,
         }
     }
 
@@ -543,9 +585,11 @@ mod tests {
 
     #[test]
     fn stop_long_uses_atr_when_val_is_far() {
-        // val very far → stop = entry - 1×ATR
+        // val farther than 1×ATR but still within lower 40% of value range → stop = ATR floor.
+        // val=98800: range=100100-98800=1300, (99200-98800)/1300=0.31 → passes val_proximity gate.
+        // stop = max(98800, 99200-250) = max(98800, 98950) = 98950 (ATR floor wins).
         let mut ctx = base_long_ctx();
-        ctx.volume_profile.val = Some(97000.0); // far below
+        ctx.volume_profile.val = Some(98800.0);
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &cfg);
         assert!(signal.is_some());
@@ -574,16 +618,21 @@ mod tests {
 
     #[test]
     fn no_signal_when_no_structural_target_exists() {
-        // VAH too close, no HVNs, no walls — fallback 2×ATR keeps target in the 1-2 ATR band.
+        // No HVNs, no walls — fallback 2×ATR target fires when price is in the lower value zone.
+        // price=99120 → gate: (99120-99000)/(99350-99000)=0.343 ≤ 0.40 → passes.
+        // stop=max(99000, 99120-250)=99000, risk=120.
+        // min_reward=max(180, 250)=250 → reward(vah=99350)=230 < 250 → VAH filtered.
+        // fallback=99120+500=99620, fits within [99370, 99620] → selected.
         let mut ctx = base_long_ctx();
-        ctx.volume_profile.hvn_nearby = vec![]; // no HVNs
-        ctx.volume_profile.vah = Some(99350.0); // only 150 reward < min_reward=300 → filtered
+        ctx.price = 99120.0;
+        ctx.volume_profile.hvn_nearby = vec![];
+        ctx.volume_profile.vah = Some(99350.0);
         ctx.orderbook.walls_above = vec![];
         let cfg = StrategyConfig::default();
         let signal = detect(&ctx, &cfg);
         assert!(signal.is_some());
         let s = signal.unwrap();
-        let expected_target = 99200.0 + 2.0 * 250.0; // 99700
+        let expected_target = 99120.0 + 2.0 * 250.0; // 99620
         assert!((s.target_price.unwrap() - expected_target).abs() < 1.0);
     }
 

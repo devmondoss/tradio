@@ -221,6 +221,7 @@ mod tests {
             fvg: None,
             leverage: 1.0,
             prev_obi_l5: Some(0.15),
+            slow_slope: None,
         }
     }
 

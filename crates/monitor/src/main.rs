@@ -363,6 +363,7 @@ fn fmt_opt(v: Option<f64>) -> String {
 #[derive(Clone)]
 struct FrozenBarCtx {
     regime: Regime,
+    slow_slope: f64,
     fast_slope: f64,
     atr: f64,
     // Volume profile
@@ -937,6 +938,7 @@ impl BarState {
             fvg: Some(frozen.fvg.clone()),
             leverage: self.paper.config.leverage,
             prev_obi_l5: Some(self.prev_obi_l5),
+            slow_slope: Some(frozen.slow_slope),
         }
     }
 
@@ -1158,7 +1160,10 @@ impl BarState {
             None
         };
 
-        // OI momentum alignment: price direction matches OI delta direction
+        // OI momentum alignment: OI must be EXPANDING (new positions) AND align with price.
+        // Declining OI (delta ≤ 0) = positions closing (covering/liquidation), never trend fuel.
+        // Bug fix: old code (price_rising == (delta > 0.0)) gave true when both were false,
+        // i.e., OI declining while price falls — that's not conviction, it's distribution.
         let oi_momentum_aligned = oi_delta.map(|delta| {
             let bars_back = self.bars.len().saturating_sub(6);
             let px_5bars_ago = self
@@ -1167,9 +1172,7 @@ impl BarState {
                 .map(|b| b.close.to_f32() as f64)
                 .unwrap_or(c);
             let price_rising = c > px_5bars_ago;
-            // Aligned for long if price rising AND oi growing (new longs)
-            // We'll store raw — scoring layer interprets per direction
-            price_rising == (delta > 0.0)
+            delta > 0.0 && (price_rising == (delta > 0.0))
         });
 
         // --- Market structure: MSS, sweep, AVWAP-BOS ---
@@ -1408,6 +1411,7 @@ impl BarState {
             fvg: Some(fvg.clone()),
             leverage: self.paper.config.leverage,
             prev_obi_l5: Some(self.prev_obi_l5),
+            slow_slope: Some(slow_slope),
         };
         self.prev_obi_l5 = current_obi_l5;
 
@@ -1582,6 +1586,7 @@ impl BarState {
         // sees the same regime as the bar-close detectors did.
         self.frozen = Some(FrozenBarCtx {
             regime: effective_regime,
+            slow_slope,
             fast_slope,
             atr,
             poc,

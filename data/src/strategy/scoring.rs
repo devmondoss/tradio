@@ -45,8 +45,10 @@ const W_RR_INST: f64 = 0.15;
 const W_INSTITUTIONAL: f64 = 0.35;
 
 // --- Rampas: cvd_slope (signed, aligned with side) ---
+// Real BTC slopes range 0–15 normalized by ATR. Max=1.0 saturated immediately,
+// making all strong-flow signals indistinguishable. Raised to 10.0 to spread the ramp.
 const CVD_SLOPE_MIN: f64 = 0.0;
-const CVD_SLOPE_MAX: f64 = 1.0;
+const CVD_SLOPE_MAX: f64 = 10.0;
 
 // --- Rampas: taker_imbalance (signed, aligned with side, range -1..+1) ---
 const TAKER_IMBAL_MIN: f64 = 0.0;
@@ -407,6 +409,7 @@ mod tests {
             fvg: None,
             leverage: 1.0,
             prev_obi_l5: None,
+            slow_slope: None,
         }
     }
 

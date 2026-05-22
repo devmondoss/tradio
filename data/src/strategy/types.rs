@@ -253,6 +253,12 @@ pub struct StrategyMarketContext {
     /// None durante la primera barra (sin historial previo).
     #[serde(default)]
     pub prev_obi_l5: Option<f64>,
+
+    /// Slow OLS slope (14-bar, normalized by ATR). Passed to detectors so they can gate
+    /// on minimum trend strength — a marginally positive slope near the 0.10 entry threshold
+    /// is chop, not trend. None during warmup (<14 bars).
+    #[serde(default)]
+    pub slow_slope: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
