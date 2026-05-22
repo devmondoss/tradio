@@ -1,5 +1,6 @@
 use crate::session::{TradingSession, classify_session};
 
+use super::auction_state::{AuctionState, AuctionStateContext};
 use super::detectors::{
     dom_imbalance_breakout, footprint_absorption_reversal, funding_exhaustion_reversal,
     liquidation_hunt, lvn_liquidity_vacuum_breakout, order_block_retest, session_open_breakout,
@@ -72,6 +73,101 @@ fn session_valid_for(id: StrategyId, session: TradingSession) -> bool {
             session,
             TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
         ),
+    }
+}
+
+fn detector_name_for(id: Option<StrategyId>) -> &'static str {
+    match id {
+        Some(StrategyId::ValueAreaFailedAuction) => "VAFA",
+        Some(StrategyId::LvnLiquidityVacuumBreakout) => "LVN",
+        Some(StrategyId::DomImbalanceBreakout) => "DIB",
+        Some(StrategyId::SessionOpenBreakout) => "SOB",
+        Some(StrategyId::OrderBlockRetest) => "OBR",
+        Some(StrategyId::FootprintAbsorptionReversal) => "FAR",
+        Some(StrategyId::VwapValuePullbackContinuation) => "VWAP",
+        Some(StrategyId::LiquidationHunt) => "LIQ",
+        Some(StrategyId::FundingExhaustionReversal) => "FER",
+        Some(StrategyId::SmartMoneyDivergence) => "SMD",
+        None => "UNKNOWN",
+    }
+}
+
+fn apply_auction_state_gate(
+    candidates: &mut Vec<StrategySignal>,
+    auction: Option<&AuctionStateContext>,
+    rejections: &mut Vec<String>,
+    detector_log: &mut Vec<DetectorSnap>,
+) {
+    let Some(ac) = auction else { return };
+
+    let is_trend_continuation = |id: Option<StrategyId>| {
+        matches!(
+            id,
+            Some(StrategyId::VwapValuePullbackContinuation)
+                | Some(StrategyId::DomImbalanceBreakout)
+                | Some(StrategyId::SessionOpenBreakout)
+                | Some(StrategyId::LvnLiquidityVacuumBreakout)
+        )
+    };
+
+    let is_vwap_dib = |id: Option<StrategyId>| {
+        matches!(
+            id,
+            Some(StrategyId::VwapValuePullbackContinuation) | Some(StrategyId::DomImbalanceBreakout)
+        )
+    };
+
+    let blocked: Vec<(usize, &'static str)> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| {
+            let reason = match ac.state {
+                AuctionState::Distribution if ac.confidence >= 50 => {
+                    if s.side == Some(Side::Long) && is_trend_continuation(s.strategy_id) {
+                        Some("AUCTION:DISTRIBUTION_BLOCKS_LONG_CONTINUATION")
+                    } else {
+                        None
+                    }
+                }
+                AuctionState::Accumulation if ac.confidence >= 50 => {
+                    if s.side == Some(Side::Short) && is_trend_continuation(s.strategy_id) {
+                        Some("AUCTION:ACCUMULATION_BLOCKS_SHORT_CONTINUATION")
+                    } else {
+                        None
+                    }
+                }
+                AuctionState::UpImbalance if ac.confidence >= 70 => {
+                    if s.side == Some(Side::Short) && is_vwap_dib(s.strategy_id) {
+                        Some("AUCTION:UP_IMBALANCE_BLOCKS_SHORT")
+                    } else {
+                        None
+                    }
+                }
+                AuctionState::DownImbalance if ac.confidence >= 70 => {
+                    if s.side == Some(Side::Long) && is_vwap_dib(s.strategy_id) {
+                        Some("AUCTION:DOWN_IMBALANCE_BLOCKS_LONG")
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            reason.map(|r| (i, r))
+        })
+        .collect();
+
+    // Remove in reverse order to preserve indices
+    for (i, reason) in blocked.into_iter().rev() {
+        let removed = candidates.remove(i);
+        rejections.push(format!("{}:{}", detector_name_for(removed.strategy_id), reason));
+        let name = detector_name_for(removed.strategy_id);
+        if let Some(snap) = detector_log
+            .iter_mut()
+            .find(|d| d.name == name && d.status == DetectorStatus::Fired && d.score == removed.score)
+        {
+            snap.status = DetectorStatus::Skip;
+            snap.missing.push(reason.into());
+        }
     }
 }
 
@@ -240,6 +336,8 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (Str
             });
         }
     }
+
+    apply_auction_state_gate(&mut candidates, ctx.auction_state.as_ref(), &mut rejections, &mut detector_log);
 
     let best_idx = candidates
         .iter()
