@@ -27,7 +27,8 @@ spoof_gate_enabled       = false    # bloquear toxic_flow_gate cuando hay spoof 
 cooldown_bars            = 5        # velas mínimas entre señales del mismo detector
 
 [liquidation_hunt]
-min_usd            = 25000          # USD liquidado en 5 min para confirmar hunt en progreso
+min_usd            = 100000         # USD liquidado en 5 min para confirmar hunt en progreso
+                                    # (era 25k — demasiado bajo, filtraba ruido normal de mercado)
 cascade_threshold  = 5000000        # USD en 60s que constituye una cascada (demasiado tarde para entrar)
 ttl_min            = 10             # TTL de la señal (minutos)
 

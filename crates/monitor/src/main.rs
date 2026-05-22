@@ -82,7 +82,11 @@ use supabase_writer::SupabaseWriter;
 
 const VP_WINDOW: usize = 300;
 const VP_BINS: usize = 150;
-const REGIME_WINDOW: usize = 14;
+// 20 bars = 100 min at M5. Was 14 (70 min) — too reactive, caused flip-flop in chop.
+// Wider window smooths the OLS slope and reduces false regime changes.
+// Note: slow_slope gate (> 0.20 / < -0.20) was calibrated at 14 bars; with 20 bars
+// slopes are smaller in magnitude — if signals dry up, lower the gate to 0.15.
+const REGIME_WINDOW: usize = 20;
 const CVD_WINDOW: usize = 50;
 const ATR_WINDOW: usize = 14;
 
@@ -401,6 +405,7 @@ struct FrozenBarCtx {
     order_blocks: OrderBlockContext,
     fvg: FvgContext,
     liq_map: Option<LiqMapSnapshot>,
+    bar_vpin: Option<f64>,
     // Timing
     bar_close_ms: i64,
     bar_close_price: f64,
@@ -853,6 +858,11 @@ impl BarState {
         };
 
         let live_delta = self.bar_buy_vol - self.bar_sell_vol;
+        let live_vpin = if self.bar_buy_vol + self.bar_sell_vol > 0.0 {
+            Some(((self.bar_buy_vol - self.bar_sell_vol) / (self.bar_buy_vol + self.bar_sell_vol)).abs())
+        } else {
+            frozen.bar_vpin
+        };
         let bid_wall = wall_nearby(&ob_ctx.walls_below, px, frozen.atr);
         let ask_wall = wall_nearby(&ob_ctx.walls_above, px, frozen.atr);
         let oi_delta = if self.oi_history.len() >= 2 {
@@ -869,7 +879,7 @@ impl BarState {
             Some(live_delta),
             Some(self.bar_buy_vol),
             Some(self.bar_sell_vol),
-            None,
+            live_vpin,
             frozen.failed_acceptance,
             frozen.footprint_absorption,
             frozen.cvd_divergence,
@@ -1059,6 +1069,11 @@ impl BarState {
         let bar_buy = self.bar_buy_vol;
         let bar_sell = self.bar_sell_vol;
         let bar_delta = bar_buy - bar_sell;
+        let bar_vpin = if bar_buy + bar_sell > 0.0 {
+            Some(((bar_buy - bar_sell) / (bar_buy + bar_sell)).abs())
+        } else {
+            None
+        };
         self.bar_buy_vol = 0.0;
         self.bar_sell_vol = 0.0;
 
@@ -1125,10 +1140,10 @@ impl BarState {
             compute_volume_profile(&self.bars, VP_BINS, c);
 
         let footprint_levels = self.current_footprint_levels();
-        let deltas = [bar_delta];
+        let recent_deltas_fa: Vec<f64> = self.bar_delta_history.iter().copied().collect();
         let (failed_acceptance, footprint_absorption_estimate) =
             derive_failed_acceptance_and_absorption(
-            &highs, &lows, &closes, vah, val, &deltas, cvd_slope,
+            &highs, &lows, &closes, vah, val, &recent_deltas_fa, cvd_slope,
         );
         let footprint_absorption_real = derive_footprint_absorption_at_value_edge(
             &footprint_levels,
@@ -1302,7 +1317,7 @@ impl BarState {
             Some(bar_delta),
             Some(bar_buy),
             Some(bar_sell),
-            None,
+            bar_vpin,
             failed_acceptance,
             footprint_absorption,
             cvd_divergence,
@@ -1616,6 +1631,7 @@ impl BarState {
             order_blocks,
             fvg,
             liq_map: self.liq_map_snapshot.clone(),
+            bar_vpin,
             bar_close_ms: bar_ms,
             bar_close_price: c,
         });

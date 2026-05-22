@@ -1,7 +1,6 @@
 use crate::strategy::{adapter, types::*};
 
 const MAX_STOP_ATR_MULT: f64 = 1.5;
-const MIN_RR: f64 = 1.0;
 
 fn nearest_above(levels: &[f64], price: f64) -> Option<f64> {
     levels
@@ -71,7 +70,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             if target > entry && stop < entry {
                 let risk = entry - stop;
                 let reward = target - entry;
-                if reward / risk < MIN_RR {
+                if reward / risk < cfg.min_rr {
                     return None;
                 }
                 return Some(StrategySignal {
@@ -143,7 +142,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             if target < entry && stop > entry {
                 let risk = stop - entry;
                 let reward = entry - target;
-                if reward / risk < MIN_RR {
+                if reward / risk < cfg.min_rr {
                     return None;
                 }
                 return Some(StrategySignal {
@@ -285,8 +284,8 @@ mod tests {
         ctx.vwap.vwap_session = Some(3460.0);
         ctx.volume_profile.value_location = ValueLocation::BelowVal;
         ctx.volume_profile.lvn_nearby = vec![3425.0];
-        // Set val below entry so target = 3390, reward = 40 → R:R = 40/30 = 1.33 ≥ 1.0.
-        ctx.volume_profile.val = Some(3390.0);
+        // val=3375: reward=3430-3375=55, risk=30 (1 ATR), R:R=1.83 ≥ cfg.min_rr=1.5.
+        ctx.volume_profile.val = Some(3375.0);
         ctx.flow.delta = Some(-250.0);
         ctx.flow.cvd_slope = Some(-0.5);
         ctx.flow.stacked_imbalance = ImbalanceSide::Bearish;

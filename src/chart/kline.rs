@@ -1559,6 +1559,7 @@ impl KlineChart {
             fvg,
             leverage: 0.0,
             prev_obi_l5: None,
+            slow_slope: None,
         };
 
         // Capas: TOML base → Mongo override por régimen (vía mongo_handles).

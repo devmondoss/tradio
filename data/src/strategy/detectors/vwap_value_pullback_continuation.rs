@@ -78,12 +78,8 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && slow_slope_ok_long
         && val_proximity_ok_long;
 
-    // CVD level gate: a single bar of positive delta cannot override strongly adverse
-    // cumulative flow. Threshold -200 was chosen after observing CVD=-471 triggering
-    // a spurious long in a day-long sell-side session (2026-05-14 deployment).
     let long_flow = flow.cvd_slope.unwrap_or(0.0) >= 0.0
         && flow.delta.unwrap_or(0.0) > 0.0
-        && flow.cvd.unwrap_or(0.0) > -200.0
         && flow.taker_imbalance.unwrap_or(0.0) > 0.0
         && !flow.failed_acceptance;
 
@@ -221,7 +217,6 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     let short_flow = flow.cvd_slope.unwrap_or(0.0) <= 0.0
         && flow.delta.unwrap_or(0.0) < 0.0
-        && flow.cvd.unwrap_or(0.0) < 200.0
         && flow.taker_imbalance.unwrap_or(0.0) < 0.0
         && !flow.failed_acceptance;
 

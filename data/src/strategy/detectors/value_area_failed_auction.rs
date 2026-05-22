@@ -24,7 +24,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && (atr <= 0.0 || px > vah - 0.5 * atr)  // fix 2: proximity to edge
         && flow.failed_acceptance
         && flow.delta.unwrap_or(0.0) < 0.0         // fix 3: aligned delta for SHORT
-        && flow.footprint_absorption == AbsorptionSide::Ask;
+        && matches!(flow.footprint_absorption, AbsorptionSide::Ask | AbsorptionSide::Unknown);
 
     // In Chop: require clear directional flow (strong cvd_slope + taker_imbalance + delta magnitude).
     // Normal: requires neutral-to-bearish flow (< 0.10 taker_imbalance filters ~20% of market time).
@@ -88,7 +88,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && (atr <= 0.0 || px < val + 0.5 * atr)   // fix 2: proximity to edge
         && flow.failed_acceptance
         && flow.delta.unwrap_or(0.0) > 0.0          // fix 3: aligned delta for LONG
-        && flow.footprint_absorption == AbsorptionSide::Bid;
+        && matches!(flow.footprint_absorption, AbsorptionSide::Bid | AbsorptionSide::Unknown);
 
     // In Chop: mirror of short — require strong bullish conviction.
     let long_flow = if chop_strict {
