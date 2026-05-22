@@ -5,8 +5,8 @@ pub enum TradingSession {
     Asia,            // 00:00–08:00 UTC — acumulación, rangos, baja volatilidad
     London,          // 07:00–13:00 UTC — breakouts, liquidity grabs
     LondonNyOverlap, // 13:00–16:00 UTC — máxima liquidez
-    NewYork,         // 13:00–17:00 UTC — continuación o reversión de London
-    OffHours,        // 17:00–24:00 UTC — entre sesiones
+    NewYork,         // 13:00–21:00 UTC — continuación o reversión de London (US market close)
+    OffHours,        // 21:00–24:00 UTC — entre sesiones
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,7 +37,7 @@ const ASIA_CLOSE: i64 = 480;  // 08:00
 const LONDON_OPEN: i64 = 420; // 07:00
 const LONDON_CLOSE: i64 = 780; // 13:00
 const NY_OPEN: i64 = 780;     // 13:00
-const NY_CLOSE: i64 = 1020;   // 17:00
+const NY_CLOSE: i64 = 1260;   // 21:00 — US market close, covers Kaiko's active volume window
 const OVERLAP_START: i64 = 780; // 13:00
 const OVERLAP_END: i64 = 960;   // 16:00
 

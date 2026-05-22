@@ -134,6 +134,8 @@ pub fn build_flow_context(
     sweep_confirmed: bool,
     fast_slope: Option<f64>,
     oi_delta_zscore: Option<f64>,
+    vpin_cdf: Option<f64>,
+    cvd_divergence_persistence: Option<i32>,
 ) -> OrderFlowContext {
     let taker_imbalance = match (buy_volume, sell_volume) {
         (Some(buy), Some(sell)) => {
@@ -176,7 +178,21 @@ pub fn build_flow_context(
         fast_slope,
         footprint_levels: vec![],
         oi_delta_zscore,
+        vpin_cdf,
+        cvd_divergence_persistence,
     }
+}
+
+/// Returns true if funding rate is acceptable for a LONG entry.
+/// Blocks longs when funding is extreme positive (crowded long = squeeze risk).
+pub fn funding_long_ok(funding_rate: Option<f64>) -> bool {
+    funding_rate.map(|f| f < 0.0008).unwrap_or(true) // 0.08% per 8h threshold
+}
+
+/// Returns true if funding rate is acceptable for a SHORT entry.
+/// Blocks shorts when funding is extreme negative (crowded short = squeeze risk).
+pub fn funding_short_ok(funding_rate: Option<f64>) -> bool {
+    funding_rate.map(|f| f > -0.0005).unwrap_or(true) // -0.05% per 8h threshold
 }
 
 /// Returns true if any wall in `walls` is within `atr` distance of `price`.

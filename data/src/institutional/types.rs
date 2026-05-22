@@ -28,6 +28,10 @@ pub struct LiquidationSnapshot {
     /// True when > $5M liquidated in any 60-second window within the last 5 minutes.
     pub cascade_detected: bool,
     pub last_event_ms: Option<i64>,
+    /// Z-score of total_usd_5m vs the rolling bar-end distribution (last 20 bars).
+    /// None until at least 3 bar snapshots are recorded.
+    #[serde(default)]
+    pub total_zscore: Option<f64>,
 }
 
 impl Default for LiquidationSnapshot {
@@ -39,6 +43,7 @@ impl Default for LiquidationSnapshot {
             dominant_side: LiqSide::Neutral,
             cascade_detected: false,
             last_event_ms: None,
+            total_zscore: None,
         }
     }
 }

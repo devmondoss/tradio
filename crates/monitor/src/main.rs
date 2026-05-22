@@ -595,6 +595,10 @@ struct BarState {
     last_intrabar_signal_ms: i64,
     // OBI L5 from the previous bar — injected into StrategyMarketContext for DIB persistence gate
     prev_obi_l5: f64,
+    // VPIN rolling history for CDF (percentile rank) computation
+    vpin_history: VecDeque<f64>,
+    // Consecutive bars of CVD-vs-price divergence (positive=bearish, negative=bullish, 0=aligned)
+    cvd_divergence_bars: i32,
     // Lab outcome tracker — tracks open LabSignals and resolves them bar by bar
     lab_tracker: LabTracker,
     lab_cfg: LabConfig,
@@ -656,6 +660,8 @@ impl BarState {
             intrabar_signal_fired: false,
             last_intrabar_signal_ms: 0,
             prev_obi_l5: 0.0,
+            vpin_history: VecDeque::with_capacity(51),
+            cvd_divergence_bars: 0,
             lab_tracker: LabTracker::new(50),
             lab_cfg: LabConfig::from_env(),
         }
@@ -900,7 +906,9 @@ impl BarState {
             frozen.mss_active,
             frozen.sweep_confirmed,
             Some(frozen.fast_slope),
-            None, // oi_delta_zscore — intrabar uses frozen snapshot, not updated here
+            None, // oi_delta_zscore — intrabar uses frozen snapshot
+            None, // vpin_cdf — not recomputed intrabar
+            None, // cvd_divergence_persistence — bar-close metric only
         );
         flow.footprint_levels = frozen.footprint_levels.clone();
 
@@ -955,6 +963,7 @@ impl BarState {
             leverage: self.paper.config.leverage,
             prev_obi_l5: Some(self.prev_obi_l5),
             slow_slope: Some(frozen.slow_slope),
+            auction_state: None, // not recomputed intrabar
         }
     }
 
@@ -1377,6 +1386,42 @@ impl BarState {
             _ => derive_stacked_imbalance(&recent_deltas),
         };
 
+        // VPIN CDF: percentile rank of current bar_vpin vs rolling 50-bar history
+        if let Some(v) = bar_vpin {
+            self.vpin_history.push_back(v);
+            if self.vpin_history.len() > 50 {
+                self.vpin_history.pop_front();
+            }
+        }
+        let vpin_cdf = bar_vpin.and_then(|v| {
+            let n = self.vpin_history.len();
+            if n < 3 { return None; }
+            let below = self.vpin_history.iter().filter(|&&x| x <= v).count();
+            Some(below as f64 / n as f64)
+        });
+
+        // CVD divergence persistence: count consecutive bars where CVD direction ≠ price direction
+        let prev_close = self.bars.iter().rev().nth(1).map(|b| b.close.to_f32() as f64);
+        let prev_cvd = self.cvd_history.iter().rev().nth(1).copied();
+        let cvd_divergence_persistence = if let (Some(pc), Some(pcvd)) = (prev_close, prev_cvd) {
+            let price_up = c > pc;
+            let cvd_up = self.cvd > pcvd;
+            if price_up != cvd_up {
+                // Divergence: price and CVD moving in opposite directions
+                let sign = if price_up { 1 } else { -1 }; // positive=bearish div, negative=bullish div
+                self.cvd_divergence_bars = if self.cvd_divergence_bars * sign > 0 {
+                    self.cvd_divergence_bars + sign
+                } else {
+                    sign
+                };
+            } else {
+                self.cvd_divergence_bars = 0;
+            }
+            Some(self.cvd_divergence_bars)
+        } else {
+            None
+        };
+
         let mut flow = build_flow_context(
             Some(self.cvd),
             cvd_slope,
@@ -1399,6 +1444,8 @@ impl BarState {
             sweep_confirmed,
             Some(fast_slope),
             self.oi_tracker.delta_zscore(),
+            vpin_cdf,
+            cvd_divergence_persistence,
         );
         flow.footprint_levels = footprint_levels.clone();
 
@@ -1428,6 +1475,7 @@ impl BarState {
         // Prune stale liquidation events before building the snapshot
         self.liq_tracker.prune(bar_ms);
         let liq_snap = self.liq_tracker.snapshot(bar_ms);
+        self.liq_tracker.record_bar_total(liq_snap.total_usd_5m);
         let ls_snap = self.ls_tracker.snapshot();
         let oi_snap = self.oi_tracker.snapshot();
         let fund_snap = self.funding_tracker.snapshot();
@@ -1473,7 +1521,7 @@ impl BarState {
         };
 
         let current_obi_l5 = ob_ctx.obi_l5.unwrap_or(0.0);
-        let ctx = StrategyMarketContext {
+        let mut ctx = StrategyMarketContext {
             symbol: symbol.to_string(),
             timestamp_ms: bar_ms,
             price: c,
@@ -1493,7 +1541,11 @@ impl BarState {
             leverage: self.paper.config.leverage,
             prev_obi_l5: Some(self.prev_obi_l5),
             slow_slope: Some(slow_slope),
+            auction_state: None, // populated below after ctx is built
         };
+        // Auction state requires the full context, so classify after building it
+        let auction = data::strategy::auction_state::classify(&ctx);
+        ctx.auction_state = Some(auction);
         self.prev_obi_l5 = current_obi_l5;
 
         let (signal, _) = route_strategy(&ctx, &cfg);

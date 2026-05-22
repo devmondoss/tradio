@@ -14,8 +14,12 @@ pub fn detect(
     let ob = &ctx.orderbook;
 
     // LONG — barrido de shorts
-    let liq_confirms_long = inst.liquidations.short_liq_usd_5m > cfg.liq_hunt_min_usd
-        && matches!(inst.liquidations.dominant_side, LiqSide::Shorts);
+    // Use z-score when available (outlier vs rolling distribution); fall back to absolute threshold.
+    let liq_confirms_long = matches!(inst.liquidations.dominant_side, LiqSide::Shorts)
+        && match inst.liquidations.total_zscore {
+            Some(z) => z > 1.5,
+            None => inst.liquidations.short_liq_usd_5m > cfg.liq_hunt_min_usd,
+        };
 
     let momentum_long = inst.oi_trend.slope_5bar > 0.0
         && inst
@@ -96,8 +100,11 @@ pub fn detect(
     }
 
     // SHORT — barrido de longs
-    let liq_confirms_short = inst.liquidations.long_liq_usd_5m > cfg.liq_hunt_min_usd
-        && matches!(inst.liquidations.dominant_side, LiqSide::Longs);
+    let liq_confirms_short = matches!(inst.liquidations.dominant_side, LiqSide::Longs)
+        && match inst.liquidations.total_zscore {
+            Some(z) => z > 1.5,
+            None => inst.liquidations.long_liq_usd_5m > cfg.liq_hunt_min_usd,
+        };
 
     let momentum_short = inst.oi_trend.slope_5bar < 0.0
         && inst

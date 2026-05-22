@@ -5,16 +5,43 @@ use super::types::{LiqSide, LiquidationEvent, LiquidationSnapshot};
 const WINDOW_MS: i64 = 5 * 60 * 1_000; // 5 minutes
 const CASCADE_WINDOW_MS: i64 = 60_000;  // 60 seconds
 const CASCADE_THRESHOLD_USD: f64 = 5_000_000.0; // $5M in 60s
+const BAR_HISTORY: usize = 20; // rolling window for z-score (20 bars = 100 min at M5)
 
 pub struct LiquidationTracker {
     events: VecDeque<LiquidationEvent>,
+    /// Total USD liquidated per bar-end snapshot — used for z-score normalization.
+    bar_totals: VecDeque<f64>,
 }
 
 impl LiquidationTracker {
     pub fn new() -> Self {
         Self {
             events: VecDeque::new(),
+            bar_totals: VecDeque::with_capacity(BAR_HISTORY + 1),
         }
+    }
+
+    /// Record the total USD liquidated at bar close. Call once per bar after `snapshot()`.
+    pub fn record_bar_total(&mut self, total_usd: f64) {
+        self.bar_totals.push_back(total_usd);
+        if self.bar_totals.len() > BAR_HISTORY {
+            self.bar_totals.pop_front();
+        }
+    }
+
+    /// Z-score of `value` vs the bar_totals rolling distribution. None until ≥3 samples.
+    fn zscore(&self, value: f64) -> Option<f64> {
+        let n = self.bar_totals.len();
+        if n < 3 {
+            return None;
+        }
+        let mean = self.bar_totals.iter().sum::<f64>() / n as f64;
+        let variance = self.bar_totals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
+        let std = variance.sqrt();
+        if std < 1.0 {
+            return None;
+        }
+        Some((value - mean) / std)
     }
 
     pub fn push(&mut self, event: LiquidationEvent) {
@@ -72,6 +99,7 @@ impl LiquidationTracker {
             dominant_side,
             cascade_detected: cascade_usd > CASCADE_THRESHOLD_USD,
             last_event_ms: last_ms,
+            total_zscore: self.zscore(total),
         }
     }
 }

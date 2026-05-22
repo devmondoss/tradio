@@ -183,6 +183,15 @@ pub struct OrderFlowContext {
     /// None hasta que OiTracker tenga ≥3 deltas acumulados (~15 min).
     #[serde(default)]
     pub oi_delta_zscore: Option<f64>,
+    /// Percentile rank (0–1) of current bar_vpin vs rolling 50-bar history.
+    /// 0.85+ = top 15% of toxic flow observed; use as CDF gate per López de Prado.
+    #[serde(default)]
+    pub vpin_cdf: Option<f64>,
+    /// Consecutive bars where CVD direction ≠ price direction (divergence persistence).
+    /// Positive = bearish divergence (price up, CVD flat/down). Negative = bullish divergence.
+    /// None until ≥2 bars of history.
+    #[serde(default)]
+    pub cvd_divergence_persistence: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,6 +268,10 @@ pub struct StrategyMarketContext {
     /// is chop, not trend. None during warmup (<14 bars).
     #[serde(default)]
     pub slow_slope: Option<f64>,
+    /// Auction state classification: Balance/UpImbalance/DownImbalance/Accumulation/Distribution.
+    /// None during warmup (< 5 bars).
+    #[serde(default)]
+    pub auction_state: Option<crate::strategy::auction_state::AuctionStateContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

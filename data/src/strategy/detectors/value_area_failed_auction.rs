@@ -38,7 +38,9 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_above;
 
-    if short_location && short_flow && short_book && adapter::basis_ok(flow.basis, false) {
+    if short_location && short_flow && short_book && adapter::basis_ok(flow.basis, false)
+        && adapter::funding_short_ok(flow.funding_rate)
+    {
         let entry = px;
         let stop = f64::max(vah + 0.25 * atr, px + 0.5 * atr);
         let target = poc;
@@ -101,7 +103,9 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_below;
 
-    if long_location && long_flow && long_book && adapter::basis_ok(flow.basis, true) {
+    if long_location && long_flow && long_book && adapter::basis_ok(flow.basis, true)
+        && adapter::funding_long_ok(flow.funding_rate)
+    {
         let entry = px;
         let stop = f64::min(val - 0.25 * atr, px - 0.5 * atr);
         let target = poc;

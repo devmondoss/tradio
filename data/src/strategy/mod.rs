@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod auction_state;
 pub mod config_file;
 pub mod context;
 pub mod cooldown;

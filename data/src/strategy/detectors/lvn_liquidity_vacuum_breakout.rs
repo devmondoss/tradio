@@ -53,7 +53,9 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && ob.microprice.map(|m| m >= px).unwrap_or(true)
         && !flow.ask_wall_nearby;
 
-    if long_location && long_flow && long_book && adapter::basis_ok(flow.basis, true) {
+    if long_location && long_flow && long_book && adapter::basis_ok(flow.basis, true)
+        && adapter::funding_long_ok(flow.funding_rate)
+    {
         let mut targets = vp.hvn_nearby.clone();
         if let Some(vah) = vp.vah {
             targets.push(vah);
@@ -125,7 +127,9 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && ob.microprice.map(|m| m <= px).unwrap_or(true)
         && !flow.bid_wall_nearby;
 
-    if short_location && short_flow && short_book && adapter::basis_ok(flow.basis, false) {
+    if short_location && short_flow && short_book && adapter::basis_ok(flow.basis, false)
+        && adapter::funding_short_ok(flow.funding_rate)
+    {
         let mut targets = vp.hvn_nearby.clone();
         if let Some(val) = vp.val {
             targets.push(val);

@@ -1449,6 +1449,8 @@ impl KlineChart {
             sweep_confirmed,
             None, // fast_slope — not available in GUI chart
             None, // oi_delta_zscore — not available in GUI chart
+            None, // vpin_cdf — not available in GUI chart
+            None, // cvd_divergence_persistence — not available in GUI chart
         );
 
         // Alimentar trackers con la vela cerrada y obtener sus snapshots
@@ -1560,6 +1562,7 @@ impl KlineChart {
             leverage: 0.0,
             prev_obi_l5: None,
             slow_slope: None,
+            auction_state: None,
         };
 
         // Capas: TOML base → Mongo override por régimen (vía mongo_handles).
