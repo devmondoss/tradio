@@ -1866,7 +1866,7 @@ fn compute_cvd_slope(history: &VecDeque<f64>) -> Option<f64> {
     if n < 5 {
         return None;
     }
-    let window = 10.min(n);
+    let window = 5.min(n);
     let vals: Vec<f64> = history
         .iter()
         .rev()

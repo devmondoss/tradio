@@ -57,8 +57,8 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     // Slow slope strength gate: avoid entering trend-continuation when slope is marginal.
     // A slope barely above the 0.10 entry threshold is chop — the regime could flip in 1-2 bars.
-    // Require slow_slope > 0.20 so we're firmly in trend, not at the chop/trend boundary.
-    let slow_slope_ok_long = ctx.slow_slope.map(|s| s > 0.20).unwrap_or(true);
+    // Require slow_slope > 0.12 so we're firmly in trend, not at the chop/trend boundary.
+    let slow_slope_ok_long = ctx.slow_slope.map(|s| s > 0.12).unwrap_or(true);
 
     // VAL proximity gate: "in value" at the midpoint is NOT a pullback.
     // Require price to be in the lower 40% of the value range (closer to VAL = structural support).
@@ -189,12 +189,12 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     let fast_slope_ok_short = flow.fast_slope.map(|fs| fs <= -0.10).unwrap_or(true);
 
-    // Slow slope strength gate: symmetric with long gate — require slope < -0.20 for shorts.
+    // Slow slope strength gate: symmetric with long gate — require slope < -0.12 for shorts.
     // bearish_divergence_in_uptrend bypasses this since it's a divergence scenario, not pure trend.
     let slow_slope_ok_short = if bearish_divergence_in_uptrend {
         true
     } else {
-        ctx.slow_slope.map(|s| s < -0.20).unwrap_or(true)
+        ctx.slow_slope.map(|s| s < -0.12).unwrap_or(true)
     };
 
     // VAH proximity gate: for shorts, price should be in the upper 40% of the value range
