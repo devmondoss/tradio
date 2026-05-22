@@ -60,6 +60,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         if let Some(vah) = vp.vah {
             targets.push(vah);
         }
+        // Fallback: if no VP level exists above price (post-breakout), use swing high
+        if let Some(sw_high) = ctx.swing_high_20 {
+            targets.push(sw_high);
+        }
 
         if let Some(target) = nearest_above(&targets, px) {
             let entry = px;
@@ -123,8 +127,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && flow.taker_imbalance.unwrap_or(0.0).abs() < 0.90;
 
     // bid_wall_nearby = support immediately below → blocks the breakdown path
+    // microprice gate relaxed when CVD slope is strongly negative (overwhelming bear flow)
+    let strong_bear_flow = flow.cvd_slope.unwrap_or(0.0) < -5.0 || matches!(ctx.regime, Regime::Expansion | Regime::TrendDown);
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps
-        && ob.microprice.map(|m| m <= px).unwrap_or(true)
+        && (ob.microprice.map(|m| m <= px).unwrap_or(true) || strong_bear_flow)
         && !flow.bid_wall_nearby;
 
     if short_location && short_flow && short_book && adapter::basis_ok(flow.basis, false)
@@ -133,6 +139,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         let mut targets = vp.hvn_nearby.clone();
         if let Some(val) = vp.val {
             targets.push(val);
+        }
+        // Fallback: if no VP level exists below price (post-crash), use swing low
+        if let Some(sw_low) = ctx.swing_low_20 {
+            targets.push(sw_low);
         }
 
         if let Some(target) = nearest_below(&targets, px) {
