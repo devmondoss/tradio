@@ -1278,7 +1278,7 @@ impl KlineChart {
         let avwap_bos = self.indicators[KlineIndicator::Vwap]
             .as_ref()
             .and_then(|i| i.latest_avwap_bos());
-        let vwap = adapter::build_vwap_context(price, vwap_value, avwap_bos);
+        let vwap = adapter::build_vwap_context(price, vwap_value, avwap_bos, None);
 
         let atr = self.indicators[KlineIndicator::Atr]
             .as_ref()

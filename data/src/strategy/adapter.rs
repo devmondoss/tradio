@@ -501,17 +501,19 @@ pub fn build_vwap_context(
     price: f64,
     vwap_session: Option<f64>,
     avwap_bos: Option<f64>,
+    avwap_event: Option<f64>,
 ) -> VwapContext {
     let price_vs_vwap = StrategyMarketContext::price_relation(price, vwap_session);
     let price_vs_avwap_bos = StrategyMarketContext::price_relation(price, avwap_bos);
+    let price_vs_avwap_event = StrategyMarketContext::price_relation(price, avwap_event);
 
     VwapContext {
         vwap_session,
         avwap_bos,
-        avwap_event: None,
+        avwap_event,
         price_vs_vwap,
         price_vs_avwap_bos,
-        price_vs_avwap_event: PriceRelation::Unknown,
+        price_vs_avwap_event,
         quality: if vwap_session.is_some() {
             DataQuality::Live
         } else {

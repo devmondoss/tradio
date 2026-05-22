@@ -37,7 +37,7 @@ use tokio_rustls::{
     rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName},
 };
 
-use data::detectors::{FvgContext, FvgDetector, OrderBlockContext, OrderBlockDetector};
+use data::detectors::{FvgContext, FvgDetector, OrderBlockContext, OrderBlockDetector, SpoofDetector};
 use data::chart::kline::KlineTrades;
 use data::institutional::{
     FundingRateSample, FundingTracker, InstitutionalContext, LiqMapSnapshot, LiqMapTracker,
@@ -379,6 +379,7 @@ struct FrozenBarCtx {
     // VWAP / AVWAP
     vwap_session: Option<f64>,
     avwap_bos: Option<f64>,
+    avwap_event: Option<f64>,
     // Flow (bar-computed, frozen)
     cvd_slope: Option<f64>,
     failed_acceptance: bool,
@@ -558,6 +559,8 @@ struct BarState {
     liq_map_tracker: LiqMapTracker,
     liq_map_snapshot: Option<LiqMapSnapshot>,
     last_taker_ratio: Option<TakerRatioSnapshot>,
+    spoof_detector: SpoofDetector,
+    avwap_event_anchor_ms: Option<i64>,
     // MongoDB writer — local persistence, signal↔trade linking via ObjectId
     mongo: MongoWriter,
     // ObjectId of the most recently written shadow_signals document — used to link signal_outcomes
@@ -630,6 +633,8 @@ impl BarState {
             liq_map_tracker: LiqMapTracker::new(),
             liq_map_snapshot: None,
             last_taker_ratio: None,
+            spoof_detector: SpoofDetector::new(),
+            avwap_event_anchor_ms: None,
             mongo,
             pending_signal_oid: None,
             supabase,
@@ -831,7 +836,7 @@ impl BarState {
             frozen.regime
         };
 
-        let vwap_ctx = build_vwap_context(px, frozen.vwap_session, frozen.avwap_bos);
+        let vwap_ctx = build_vwap_context(px, frozen.vwap_session, frozen.avwap_bos, frozen.avwap_event);
         let vp_ctx = build_volume_profile_context(
             px,
             frozen.poc,
@@ -840,7 +845,7 @@ impl BarState {
             frozen.hvn_nearby.clone(),
             frozen.lvn_nearby.clone(),
         );
-        let ob_ctx = match &self.depth {
+        let mut ob_ctx = match &self.depth {
             Some(d) => build_orderbook_context(d),
             None => OrderBookContext {
                 obi_l5: None,
@@ -856,6 +861,7 @@ impl BarState {
                 spoof: None,
             },
         };
+        ob_ctx.spoof = Some(self.spoof_detector.context().clone());
 
         let live_delta = self.bar_buy_vol - self.bar_sell_vol;
         let live_vpin = if self.bar_buy_vol + self.bar_sell_vol > 0.0 {
@@ -1021,6 +1027,24 @@ impl BarState {
     }
 
     fn on_depth(&mut self, depth: Depth) {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let bids: Vec<(f64, f64)> = depth
+            .bids
+            .iter()
+            .rev()
+            .take(20)
+            .map(|(p, q)| (p.to_f32() as f64, q.to_f32_lossy() as f64))
+            .collect();
+        let asks: Vec<(f64, f64)> = depth
+            .asks
+            .iter()
+            .take(20)
+            .map(|(p, q)| (p.to_f32() as f64, q.to_f32_lossy() as f64))
+            .collect();
+        self.spoof_detector.update(&bids, &asks, self.current_price, now_ms);
         self.depth = Some(depth);
         self.metrics.depth_updates += 1;
         self.metrics.last_depth_at = Some(Instant::now());
@@ -1275,12 +1299,53 @@ impl BarState {
             None
         };
 
-        let vwap_ctx = build_vwap_context(c, self.vwap_session, avwap_bos);
+        // AVWAP-Event: anchored VWAP from the most recent significant event
+        // (funding rate extreme OR liquidation cascade). Gives context for
+        // how price has traded since the event that changed market structure.
+        let liq_snap_for_event = self.liq_tracker.snapshot(bar_ms as i64);
+        if let Some(rate) = self.funding_rate {
+            if rate.abs() > 0.0006 {
+                self.avwap_event_anchor_ms = Some(bar_ms as i64);
+            }
+        }
+        if liq_snap_for_event.cascade_detected {
+            self.avwap_event_anchor_ms = Some(bar_ms as i64);
+        }
+        let avwap_event: Option<f64> = if let Some(anchor_ms) = self.avwap_event_anchor_ms {
+            let bars_vec: Vec<_> = self.bars.iter().collect();
+            // Approximate bars-back using configured TF_MIN (default 5).
+            // Kline ring buffer doesn't store per-bar timestamps; use ratio of elapsed time.
+            let tf_min = std::env::var("TF_MIN").ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(5);
+            let tf_ms_approx = tf_min * 60_000;
+            let bars_back = ((bar_ms as i64 - anchor_ms) / tf_ms_approx).max(0) as usize;
+            let start_idx = bars_vec.len().saturating_sub(bars_back + 1);
+            if start_idx < bars_vec.len() {
+                let (cum_pv, cum_vol) = bars_vec[start_idx..].iter().fold(
+                    (0.0_f64, 0.0_f64),
+                    |(pv, v), b| {
+                        let bh = b.high.to_f32() as f64;
+                        let bl = b.low.to_f32() as f64;
+                        let bc = b.close.to_f32() as f64;
+                        let bv = b.volume.total().to_f32_lossy() as f64;
+                        (pv + (bh + bl + bc) / 3.0 * bv, v + bv)
+                    },
+                );
+                if cum_vol > 0.0 { Some(cum_pv / cum_vol) } else { None }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let vwap_ctx = build_vwap_context(c, self.vwap_session, avwap_bos, avwap_event);
         let vp_ctx = build_volume_profile_context(c, poc, vah, val, hvn_nearby, lvn_nearby);
         // Snapshot VP lists before vp_ctx is moved into StrategyMarketContext
         let frozen_hvn = vp_ctx.hvn_nearby.clone();
         let frozen_lvn = vp_ctx.lvn_nearby.clone();
-        let ob_ctx = match &self.depth {
+        let mut ob_ctx = match &self.depth {
             Some(d) => build_orderbook_context(d),
             None => OrderBookContext {
                 obi_l5: None,
@@ -1296,6 +1361,7 @@ impl BarState {
                 spoof: None,
             },
         };
+        ob_ctx.spoof = Some(self.spoof_detector.context().clone());
 
         let bid_wall_nearby = wall_nearby(&ob_ctx.walls_below, c, atr);
         let ask_wall_nearby = wall_nearby(&ob_ctx.walls_above, c, atr);
@@ -1611,6 +1677,7 @@ impl BarState {
             lvn_nearby: frozen_lvn,
             vwap_session: self.vwap_session,
             avwap_bos,
+            avwap_event,
             cvd_slope,
             failed_acceptance,
             footprint_absorption,
@@ -2156,6 +2223,80 @@ async fn fetch_funding_history(symbol: &str) -> Vec<FundingRateSample> {
         .unwrap_or_default()
 }
 
+/// Fetches historical open interest snapshots to pre-seed the OiTracker,
+/// eliminating the 15-min cold-start window for oi_delta_zscore.
+async fn fetch_oi_history(symbol: &str) -> Vec<OiHistSnapshot> {
+    let url = format!(
+        "https://fapi.binance.com/futures/data/openInterestHist?symbol={}&period=5m&limit=30",
+        symbol
+    );
+    let resp = match reqwest::get(&url).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[fetch] OI history failed: {e}");
+            return vec![];
+        }
+    };
+    let json: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[fetch] OI history parse failed: {e}");
+            return vec![];
+        }
+    };
+    json.as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| {
+                    let oi: f64 = entry.get("sumOpenInterest")?.as_str()?.parse().ok()?;
+                    let ts: i64 = entry.get("timestamp")?.as_i64()?;
+                    Some(OiHistSnapshot { timestamp_ms: ts, open_interest_usd: oi })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Fetches historical top-trader and global L/S snapshots to pre-seed LsRatioTracker,
+/// eliminating the 5-min cold-start window with fallback 0.50/0.50 defaults.
+async fn fetch_ls_history(symbol: &str) -> Vec<LongShortSnapshot> {
+    let mut result = Vec::new();
+    let endpoints: &[(&str, LsSource)] = &[
+        ("topLongShortPositionRatio", LsSource::TopTraderPosition),
+        ("globalLongShortAccountRatio", LsSource::GlobalAccount),
+    ];
+    for (endpoint, source) in endpoints {
+        let url = format!(
+            "https://fapi.binance.com/futures/data/{}?symbol={}&period=5m&limit=6",
+            endpoint, symbol
+        );
+        let resp = match reqwest::get(&url).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[fetch] LS history ({endpoint}) failed: {e}");
+                continue;
+            }
+        };
+        let json: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(arr) = json.as_array() {
+            for entry in arr {
+                let long_ratio: f64 = match entry.get("longAccount").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let short_ratio = 1.0 - long_ratio;
+                let ls_ratio = if short_ratio > 0.0 { long_ratio / short_ratio } else { 0.0 };
+                let ts: i64 = entry.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+                result.push(LongShortSnapshot { timestamp_ms: ts, long_ratio, short_ratio, ls_ratio, source: *source });
+            }
+        }
+    }
+    result
+}
+
 /// Fetches `limit` historical closed klines from Binance FAPI REST and seeds BarState
 /// with them so ATR, VWAP, VP, and regime are warm before the first live bar is processed.
 /// Signals are NOT emitted for historical bars — Supabase writes are suppressed.
@@ -2493,6 +2634,24 @@ async fn main() {
         let _ = funding_hist_tx.send(samples).await;
     });
 
+    // OI history: once at startup to pre-seed OiTracker (eliminates 15-min cold-start for z-score)
+    let (oi_hist_tx, mut oi_hist_rx) =
+        tokio::sync::mpsc::channel::<Vec<OiHistSnapshot>>(2);
+    let oi_hist_symbol = symbol_str.clone();
+    tokio::spawn(async move {
+        let snaps = fetch_oi_history(&oi_hist_symbol).await;
+        let _ = oi_hist_tx.send(snaps).await;
+    });
+
+    // L/S history: once at startup to pre-seed LsRatioTracker (eliminates 5-min fallback window)
+    let (ls_hist_tx, mut ls_hist_rx) =
+        tokio::sync::mpsc::channel::<Vec<LongShortSnapshot>>(2);
+    let ls_hist_symbol = symbol_str.clone();
+    tokio::spawn(async move {
+        let snaps = fetch_ls_history(&ls_hist_symbol).await;
+        let _ = ls_hist_tx.send(snaps).await;
+    });
+
     loop {
         tokio::select! {
             Some(event) = kline_stream.next() => {
@@ -2650,6 +2809,26 @@ async fn main() {
                 if !samples.is_empty() {
                     println!("[inst] loaded {} funding rate history samples", samples.len());
                     state.funding_tracker.load(samples);
+                }
+            }
+
+            Some(snaps) = oi_hist_rx.recv() => {
+                if !snaps.is_empty() {
+                    println!("[inst] seeding OI tracker with {} historical snapshots", snaps.len());
+                    for snap in snaps {
+                        state.oi_tracker.push(snap);
+                    }
+                    state.freshness.oi_fetched_at = Some(Instant::now());
+                }
+            }
+
+            Some(snaps) = ls_hist_rx.recv() => {
+                if !snaps.is_empty() {
+                    println!("[inst] seeding L/S tracker with {} historical snapshots", snaps.len());
+                    for snap in snaps {
+                        state.ls_tracker.push(snap);
+                    }
+                    state.freshness.ls_fetched_at = Some(Instant::now());
                 }
             }
 
