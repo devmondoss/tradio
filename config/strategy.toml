@@ -18,7 +18,7 @@ min_score                = 0.60     # umbral de score para emitir una señal
 min_score_institutional  = 0.55     # umbral para LiqHunt / FER / SMD (señales infrecuentes, alta convicción)
 max_spread_bps           = 2.0      # spread máximo aceptado (basis points)
 max_vpin                 = 0.75     # VPIN máximo (flujo tóxico) antes de bloquear
-min_rr                   = 1.5      # R:R mínimo para emitir señal
+min_rr                   = 2.0      # R:R mínimo para emitir señal (Subdimi: siempre 2:1 mínimo)
 max_rr_m5                = 8.0      # R:R máximo alcanzable en M5 BTC (filtra targets fantasía)
 default_ttl_min          = 250      # TTL por defecto de una señal (minutos)
 session_filter_enabled   = true     # filtrar señales según la sesión de trading activa
@@ -33,7 +33,7 @@ cascade_threshold  = 5000000        # USD en 60s que constituye una cascada (dem
 ttl_min            = 10             # TTL de la señal (minutos)
 
 [funding_exhaustion]
-extreme_threshold  = 0.0006         # funding absoluto que dispara régimen extremo (0.06%)
+extreme_threshold  = 0.001          # funding absoluto que dispara régimen extremo (0.10%)
 top_long_min       = 0.46           # top traders long pct mínimo para FER Long
 retail_long_max    = 0.58           # retail long pct máximo para FER Long
 ttl_min            = 30             # TTL de la señal (minutos)

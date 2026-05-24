@@ -45,6 +45,7 @@ pub enum StrategyId {
     LiquidationHunt,
     FundingExhaustionReversal,
     SmartMoneyDivergence,
+    CvdDivergenceReversal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +131,15 @@ pub struct VolumeProfileContext {
     pub lvn_nearby: Vec<f64>,
     pub value_location: ValueLocation,
     pub quality: DataQuality,
+    /// Naked POCs from previous sessions that price hasn't revisited.
+    /// These act as magnets per Subdimi methodology (price tends to fill unfinished business).
+    /// Newest first.
+    #[serde(default)]
+    pub naked_pocs: Vec<f64>,
+    /// Mid-prices of TPO single-print zones for the current day.
+    /// A single print is a price level visited in only one 30-min TPO period → structural gap.
+    #[serde(default)]
+    pub single_prints: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +202,30 @@ pub struct OrderFlowContext {
     /// None until ≥2 bars of history.
     #[serde(default)]
     pub cvd_divergence_persistence: Option<i32>,
+    /// Finish Action (Subdimi): lowest footprint level has near-zero sell volume → no sellers at bottom → bullish reversal confirmation.
+    #[serde(default)]
+    pub finish_action_bullish: bool,
+    /// Finish Action (Subdimi): highest footprint level has near-zero buy volume → no buyers at top → bearish reversal confirmation.
+    #[serde(default)]
+    pub finish_action_bearish: bool,
+    /// Unfinish Action (Subdimi): lowest footprint level has significant sell volume → sellers trapped below → price magnet downward (red flag for longs).
+    #[serde(default)]
+    pub unfinish_action_bullish: bool,
+    /// Unfinish Action (Subdimi): highest footprint level has significant buy volume → buyers trapped above → price magnet upward (red flag for shorts).
+    #[serde(default)]
+    pub unfinish_action_bearish: bool,
+    /// Big Trade (Subdimi): anomalously high-volume level (>2.5× avg) in lower half of bar, buy-dominated → institutional accumulation at lows.
+    #[serde(default)]
+    pub big_trade_bullish: bool,
+    /// Big Trade (Subdimi): anomalously high-volume level (>2.5× avg) in upper half of bar, sell-dominated → institutional distribution at highs.
+    #[serde(default)]
+    pub big_trade_bearish: bool,
+    /// Delta Drain rate: OLS slope of per-bar delta over the last 5 bars, normalized by ATR.
+    /// Positive → delta trending upward (sellers losing conviction, bullish exhaustion signal).
+    /// Negative → delta trending downward (buyers losing conviction, bearish exhaustion signal).
+    /// None until ≥5 bars of history.
+    #[serde(default)]
+    pub delta_velocity: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,6 +306,16 @@ pub struct StrategyMarketContext {
     /// None during warmup (< 5 bars).
     #[serde(default)]
     pub auction_state: Option<crate::strategy::auction_state::AuctionStateContext>,
+
+    /// Volume Profile open bias for the current session (NY open classification vs prev day VP).
+    /// None until at least one full day of data has accumulated.
+    #[serde(default)]
+    pub vp_open_bias: Option<crate::strategy::vp_open_bias::DailyVpContext>,
+
+    /// HTF VP cascade: weekly + monthly volume profile context for top-down bias.
+    /// None until at least one full week of data has accumulated.
+    #[serde(default)]
+    pub htf_vp: Option<crate::strategy::vp_open_bias::HtfVpContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,7 +355,7 @@ pub struct StrategyConfig {
     pub liq_ttl_ms: i64,
 
     // FundingExhaustionReversal
-    /// Absolute funding rate that triggers extreme regime (0.0006 = 0.06%).
+    /// Absolute funding rate that triggers extreme regime (0.001 = 0.10%).
     pub funding_extreme_threshold: f64,
     pub funding_ttl_ms: i64,
     /// Top traders long pct minimum for FER Long (neutral-to-bullish positioning).
@@ -365,7 +409,7 @@ impl Default for StrategyConfig {
             liq_hunt_min_usd: 25_000.0,
             liq_cascade_threshold: 5_000_000.0,
             liq_ttl_ms: 10 * 60 * 1000,
-            funding_extreme_threshold: 0.0006,
+            funding_extreme_threshold: 0.001,
             funding_ttl_ms: 30 * 60 * 1000,
             fer_top_long_min: 0.46,
             fer_retail_long_max: 0.58,

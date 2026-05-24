@@ -295,6 +295,32 @@ fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Val
     let nearest_wall_above = ctx.orderbook.walls_above.first().copied();
     let nearest_wall_below = ctx.orderbook.walls_below.first().copied();
 
+    // Subdimi fields — aligned with signal direction
+    let is_long = signal.side.map(|s| matches!(s, data::strategy::types::Side::Long)).unwrap_or(false);
+    let finish_action   = if is_long { ctx.flow.finish_action_bullish  } else { ctx.flow.finish_action_bearish  };
+    let unfinish_action = if is_long { ctx.flow.unfinish_action_bearish } else { ctx.flow.unfinish_action_bullish };
+    let big_trade       = if is_long { ctx.flow.big_trade_bullish       } else { ctx.flow.big_trade_bearish      };
+
+    let htf_weekly_location  = ctx.htf_vp.as_ref().and_then(|h| h.weekly.as_ref())
+        .map(|w| format!("{:?}", w.location));
+    let htf_monthly_location = ctx.htf_vp.as_ref().and_then(|h| h.monthly.as_ref())
+        .map(|w| format!("{:?}", w.location));
+
+    // Subdomi JSONB — contextual fields not worth individual columns
+    let subdomi_ctx = json!({
+        "naked_poc_count":            ctx.volume_profile.naked_pocs.len(),
+        "single_print_count":         ctx.volume_profile.single_prints.len(),
+        "vpin_cdf":                   ctx.flow.vpin_cdf,
+        "oi_delta_zscore":            ctx.flow.oi_delta_zscore,
+        "cvd_divergence_persistence": ctx.flow.cvd_divergence_persistence,
+        "htf_weekly_poc":             ctx.htf_vp.as_ref().and_then(|h| h.weekly.as_ref()).map(|w| w.poc),
+        "htf_monthly_poc":            ctx.htf_vp.as_ref().and_then(|h| h.monthly.as_ref()).map(|w| w.poc),
+        "finish_action_bullish":      ctx.flow.finish_action_bullish,
+        "finish_action_bearish":      ctx.flow.finish_action_bearish,
+        "unfinish_action_bullish":    ctx.flow.unfinish_action_bullish,
+        "unfinish_action_bearish":    ctx.flow.unfinish_action_bearish,
+    });
+
     json!({
         "timestamp_ms":   ctx.timestamp_ms,
         "strategy":       signal.strategy_id.map(|s| format!("{s:?}")).unwrap_or_default(),
@@ -351,6 +377,20 @@ fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Val
         "funding_current":      inst.map(|i| i.funding.current),
         "funding_regime":       inst.map(|i| format!("{:?}", i.funding.regime)),
         "taker_imbalance":      inst.and_then(|i| i.taker_ratio.as_ref().map(|t| t.taker_imbalance)),
+
+        // Subdimi methodology — columnas individuales (filtrado estadístico)
+        "finish_action":          finish_action,
+        "unfinish_action":        unfinish_action,
+        "big_trade":              big_trade,
+        "stacked_imbalance":      format!("{:?}", ctx.flow.stacked_imbalance),
+        "vp_open_bias":           ctx.vp_open_bias.as_ref().map(|v| format!("{:?}", v.bias)),
+        "auction_state":          ctx.auction_state.as_ref().map(|a| format!("{:?}", a.state)),
+        "htf_weekly_location":    htf_weekly_location,
+        "htf_monthly_location":   htf_monthly_location,
+        "delta_velocity":         ctx.flow.delta_velocity,
+
+        // Subdimi contexto blob
+        "subdomi_ctx":            subdomi_ctx,
     })
 }
 

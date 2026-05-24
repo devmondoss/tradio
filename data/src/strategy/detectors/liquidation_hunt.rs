@@ -1,4 +1,4 @@
-use crate::institutional::{InstitutionalContext, LiqSide};
+﻿use crate::institutional::{InstitutionalContext, LiqSide};
 use crate::strategy::types::*;
 
 // Note: toxic_flow_gate is evaluated once in the router before calling any detector.
@@ -208,6 +208,8 @@ mod tests {
                 lvn_nearby: vec![],
                 value_location: ValueLocation::AboveVah,
                 quality: DataQuality::Live,
+                naked_pocs: vec![],
+                single_prints: vec![],
             },
             vwap: VwapContext {
                 vwap_session: Some(99500.0),
@@ -243,6 +245,14 @@ mod tests {
                 fast_slope: None,
                 footprint_levels: vec![],
                 oi_delta_zscore: None,
+                vpin_cdf: None,
+                cvd_divergence_persistence: None,
+                finish_action_bullish: false,
+                finish_action_bearish: false,
+                unfinish_action_bullish: false,
+                unfinish_action_bearish: false,
+                big_trade_bullish: false,
+                big_trade_bearish: false,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.10),
@@ -267,6 +277,9 @@ mod tests {
             leverage: 1.0,
             prev_obi_l5: None,
             slow_slope: None,
+            auction_state: None,
+            vp_open_bias: None,
+            htf_vp: None,
         }
     }
 
@@ -280,6 +293,7 @@ mod tests {
                 dominant_side: LiqSide::Shorts,
                 cascade_detected: false,
                 last_event_ms: Some(1710000000000),
+            total_zscore: None,
             },
             ls_ratio: LsRatioContext {
                 top_traders_long_pct: 0.55,
@@ -351,6 +365,7 @@ mod tests {
             dominant_side: LiqSide::Longs,
             cascade_detected: false,
             last_event_ms: Some(1710000000000),
+            total_zscore: None,
         };
         inst.oi_trend.slope_5bar = -1000.0;
         if let Some(ref mut tr) = inst.taker_ratio {

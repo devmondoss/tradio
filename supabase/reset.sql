@@ -100,7 +100,19 @@ CREATE TABLE shadow_signals (
     nearest_wall_above      DOUBLE PRECISION,
     nearest_wall_below      DOUBLE PRECISION,
     swing_high_20           DOUBLE PRECISION,
-    swing_low_20            DOUBLE PRECISION
+    swing_low_20            DOUBLE PRECISION,
+
+    -- Subdimi methodology context (columnas individuales para análisis estadístico)
+    finish_action           BOOLEAN,
+    unfinish_action         BOOLEAN,
+    big_trade               BOOLEAN,
+    stacked_imbalance       TEXT,
+    vp_open_bias            TEXT,
+    auction_state           TEXT,
+    htf_weekly_location     TEXT,
+    htf_monthly_location    TEXT,
+    delta_velocity          DOUBLE PRECISION,
+    subdomi_ctx             JSONB
 );
 
 -- Trades cerrados del paper trader (write_trade)
@@ -337,6 +349,15 @@ SELECT
     s.funding_percentile_30d,
     s.taker_imbalance,
     s.cvd_slope,
+    s.delta_velocity,
+    s.finish_action,
+    s.unfinish_action,
+    s.big_trade,
+    s.stacked_imbalance,
+    s.vp_open_bias,
+    s.auction_state,
+    s.htf_weekly_location,
+    s.htf_monthly_location,
 
     -- Outcome del trade
     o.close_reason,

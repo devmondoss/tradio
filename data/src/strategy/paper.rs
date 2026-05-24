@@ -443,12 +443,14 @@ impl PaperAccount {
         if curr_period <= prev_period {
             return;
         }
+        let periods_crossed = (curr_period - prev_period) as f64;
         let funding_rate = self.config.funding_rate;
         for pos in &mut self.open_positions {
+            // Tasa positiva: Long paga, Short cobra (negative amount = ingreso).
+            // Multiply by periods_crossed to handle trades spanning multiple 8h windows.
             let amount = match pos.side {
-                // Tasa positiva: Long paga, Short cobra (negative amount = ingreso).
-                Side::Long => pos.notional * funding_rate,
-                Side::Short => -(pos.notional * funding_rate),
+                Side::Long => pos.notional * funding_rate * periods_crossed,
+                Side::Short => -(pos.notional * funding_rate * periods_crossed),
             };
             pos.funding_paid += amount;
             // No se descuenta del balance aquí — se difiere al cierre vía net_pnl.

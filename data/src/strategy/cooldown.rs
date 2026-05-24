@@ -45,6 +45,7 @@ fn strategy_key(id: StrategyId) -> u8 {
         StrategyId::LiquidationHunt => 7,
         StrategyId::FundingExhaustionReversal => 8,
         StrategyId::SmartMoneyDivergence => 9,
+        StrategyId::CvdDivergenceReversal => 10,
     }
 }
 
@@ -107,6 +108,7 @@ impl CooldownRegistry {
             LiquidationHunt,
             FundingExhaustionReversal,
             SmartMoneyDivergence,
+            CvdDivergenceReversal,
         ]
         .iter()
         .filter_map(|&id| {

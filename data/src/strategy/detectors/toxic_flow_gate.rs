@@ -1,4 +1,4 @@
-use crate::strategy::types::*;
+﻿use crate::strategy::types::*;
 
 pub fn toxic_flow_gate(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Result<(), String> {
     if matches!(ctx.regime, Regime::Stress | Regime::Aftermath) {
@@ -61,6 +61,8 @@ mod tests {
                 lvn_nearby: vec![99800.0],
                 value_location: ValueLocation::InValue,
                 quality: DataQuality::Live,
+                naked_pocs: vec![],
+                single_prints: vec![],
             },
             vwap: VwapContext {
                 vwap_session: Some(99950.0),
@@ -96,6 +98,14 @@ mod tests {
                 fast_slope: None,
                 footprint_levels: vec![],
                 oi_delta_zscore: None,
+                vpin_cdf: None,
+                cvd_divergence_persistence: None,
+                finish_action_bullish: false,
+                finish_action_bearish: false,
+                unfinish_action_bullish: false,
+                unfinish_action_bearish: false,
+                big_trade_bullish: false,
+                big_trade_bearish: false,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.05),
@@ -120,6 +130,9 @@ mod tests {
             leverage: 1.0,
             prev_obi_l5: None,
             slow_slope: None,
+            auction_state: None,
+            vp_open_bias: None,
+            htf_vp: None,
         }
     }
 

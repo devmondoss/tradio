@@ -1,4 +1,4 @@
-use crate::detectors::OBStatus;
+﻿use crate::detectors::OBStatus;
 use crate::strategy::types::*;
 
 fn rr_ok(entry: f64, stop: f64, target: f64, cfg: &StrategyConfig) -> bool {
@@ -44,7 +44,9 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                     "obi_l5_bid_side".into(),
                     "target_swing_high_20".into(),
                 ];
-                if ob.volume_ratio > 1.5 {
+                if ob.volume_ratio > 3.0 {
+                    evidence.push("ob_volume_ratio_gt_3x".into());
+                } else if ob.volume_ratio > 1.5 {
                     evidence.push("ob_volume_ratio_gt_1_5".into());
                 }
                 if ob.swings_broken >= 2 {
@@ -99,7 +101,9 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                     "obi_l5_ask_side".into(),
                     "target_swing_low_20".into(),
                 ];
-                if ob.volume_ratio > 1.5 {
+                if ob.volume_ratio > 3.0 {
+                    evidence.push("ob_volume_ratio_gt_3x".into());
+                } else if ob.volume_ratio > 1.5 {
                     evidence.push("ob_volume_ratio_gt_1_5".into());
                 }
                 if ob.swings_broken >= 2 {
@@ -164,6 +168,8 @@ mod tests {
                 lvn_nearby: vec![],
                 value_location: ValueLocation::InValue,
                 quality: DataQuality::Live,
+                naked_pocs: vec![],
+                single_prints: vec![],
             },
             vwap: VwapContext {
                 vwap_session: Some(99_700.0),
@@ -199,6 +205,14 @@ mod tests {
                 fast_slope: Some(0.05),
                 footprint_levels: vec![],
                 oi_delta_zscore: None,
+                vpin_cdf: None,
+                cvd_divergence_persistence: None,
+                finish_action_bullish: false,
+                finish_action_bearish: false,
+                unfinish_action_bullish: false,
+                unfinish_action_bearish: false,
+                big_trade_bullish: false,
+                big_trade_bearish: false,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.10),
@@ -228,6 +242,9 @@ mod tests {
             leverage: 1.0,
             prev_obi_l5: None,
             slow_slope: None,
+            auction_state: None,
+            vp_open_bias: None,
+            htf_vp: None,
         }
     }
 

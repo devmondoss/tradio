@@ -1,4 +1,4 @@
-use super::trade_state::StructuralLevels;
+﻿use super::trade_state::StructuralLevels;
 use super::types::{Side, StrategyMarketContext, StrategySignal};
 
 pub struct TargetSelector;
@@ -116,6 +116,8 @@ mod tests {
                 lvn_nearby: vec![],
                 value_location: ValueLocation::InValue,
                 quality: DataQuality::Live,
+                naked_pocs: vec![],
+                single_prints: vec![],
             },
             vwap: VwapContext {
                 vwap_session: None,
@@ -151,6 +153,14 @@ mod tests {
                 fast_slope: None,
                 footprint_levels: vec![],
                 oi_delta_zscore: None,
+                vpin_cdf: None,
+                cvd_divergence_persistence: None,
+                finish_action_bullish: false,
+                finish_action_bearish: false,
+                unfinish_action_bullish: false,
+                unfinish_action_bearish: false,
+                big_trade_bullish: false,
+                big_trade_bearish: false,
             },
             orderbook: OrderBookContext {
                 obi_l5: None,
@@ -175,6 +185,9 @@ mod tests {
             leverage: 1.0,
             prev_obi_l5: None,
             slow_slope: None,
+            auction_state: None,
+            vp_open_bias: None,
+            htf_vp: None,
         }
     }
 

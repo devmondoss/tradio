@@ -1,17 +1,18 @@
 use crate::session::{TradingSession, classify_session};
 
 use super::auction_state::{AuctionState, AuctionStateContext};
+use super::vp_open_bias::DailyVpContext;
 use super::detectors::{
-    dom_imbalance_breakout, footprint_absorption_reversal, funding_exhaustion_reversal,
-    liquidation_hunt, lvn_liquidity_vacuum_breakout, order_block_retest, session_open_breakout,
-    smart_money_divergence, toxic_flow_gate::toxic_flow_gate, value_area_failed_auction,
-    vwap_value_pullback_continuation,
+    cvd_divergence_reversal, dom_imbalance_breakout, footprint_absorption_reversal,
+    funding_exhaustion_reversal, liquidation_hunt, lvn_liquidity_vacuum_breakout,
+    order_block_retest, session_open_breakout, smart_money_divergence,
+    toxic_flow_gate::toxic_flow_gate, value_area_failed_auction, vwap_value_pullback_continuation,
 };
 use super::scoring::{StrategyProfile, score_signal};
 use super::types::*;
 
 fn blocked_log(missing_reason: &str) -> Vec<DetectorSnap> {
-    let names = ["VAFA","LVN","DIB","SOB","OBR","FAR","VWAP","LIQ","FER","SMD"];
+    let names = ["VAFA","LVN","DIB","SOB","OBR","FAR","VWAP","CDR","LIQ","FER","SMD"];
     names.iter().map(|&n| DetectorSnap {
         name: n.into(),
         status: DetectorStatus::GlobalBlocked,
@@ -68,6 +69,11 @@ fn session_valid_for(id: StrategyId, session: TradingSession) -> bool {
         StrategyId::FundingExhaustionReversal => {
             matches!(session, TradingSession::Asia | TradingSession::London)
         }
+        // CDR: divergencia CVD-precio — válido en sesiones con liquidez
+        StrategyId::CvdDivergenceReversal => matches!(
+            session,
+            TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
+        ),
         // SMD necesita volumen de sesión para confirmar divergencia
         StrategyId::SmartMoneyDivergence => matches!(
             session,
@@ -88,7 +94,84 @@ fn detector_name_for(id: Option<StrategyId>) -> &'static str {
         Some(StrategyId::LiquidationHunt) => "LIQ",
         Some(StrategyId::FundingExhaustionReversal) => "FER",
         Some(StrategyId::SmartMoneyDivergence) => "SMD",
+        Some(StrategyId::CvdDivergenceReversal) => "CDR",
         None => "UNKNOWN",
+    }
+}
+
+fn signal_is_reversal(id: Option<StrategyId>) -> bool {
+    matches!(
+        id,
+        Some(StrategyId::ValueAreaFailedAuction)
+            | Some(StrategyId::FootprintAbsorptionReversal)
+            | Some(StrategyId::CvdDivergenceReversal)
+            | Some(StrategyId::FundingExhaustionReversal)
+            | Some(StrategyId::SmartMoneyDivergence)
+    )
+}
+
+fn signal_is_breakout(id: Option<StrategyId>) -> bool {
+    matches!(
+        id,
+        Some(StrategyId::LvnLiquidityVacuumBreakout)
+            | Some(StrategyId::SessionOpenBreakout)
+            | Some(StrategyId::DomImbalanceBreakout)
+    )
+}
+
+/// VP Open Bias gate (Subdimi methodology): day type determines which setups have edge.
+/// - TrendDay up   → block SHORT reversals (counter-trend against strong gap)
+/// - TrendDay down → block LONG reversals
+/// - InsideValue   → block breakout detectors (range day, trade extremes not breakouts)
+/// - OutsideVA/FadeGap/Unknown → no hard blocks (softer bias applied in scoring)
+fn apply_vp_bias_gate(
+    candidates: &mut Vec<StrategySignal>,
+    vp_bias: Option<&DailyVpContext>,
+    rejections: &mut Vec<String>,
+    detector_log: &mut Vec<DetectorSnap>,
+) {
+    let Some(bias_ctx) = vp_bias else { return };
+
+    let blocked: Vec<(usize, &'static str)> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| {
+            let reason = if bias_ctx.trend_day_is_up() {
+                if s.side == Some(Side::Short) && signal_is_reversal(s.strategy_id) {
+                    Some("VP_TREND_DAY_UP_BLOCKS_SHORT_REVERSAL")
+                } else {
+                    None
+                }
+            } else if bias_ctx.trend_day_is_down() {
+                if s.side == Some(Side::Long) && signal_is_reversal(s.strategy_id) {
+                    Some("VP_TREND_DAY_DOWN_BLOCKS_LONG_REVERSAL")
+                } else {
+                    None
+                }
+            } else if bias_ctx.is_range_day() {
+                if signal_is_breakout(s.strategy_id) {
+                    Some("VP_RANGE_DAY_BLOCKS_BREAKOUT")
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            reason.map(|r| (i, r))
+        })
+        .collect();
+
+    for (i, reason) in blocked.into_iter().rev() {
+        let removed = candidates.remove(i);
+        rejections.push(format!("{}:{}", detector_name_for(removed.strategy_id), reason));
+        let name = detector_name_for(removed.strategy_id);
+        if let Some(snap) = detector_log
+            .iter_mut()
+            .find(|d| d.name == name && d.status == DetectorStatus::Fired && d.score == removed.score)
+        {
+            snap.status = DetectorStatus::Skip;
+            snap.missing.push(reason.into());
+        }
     }
 }
 
@@ -307,6 +390,11 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (Str
         StrategyId::VwapValuePullbackContinuation,
         vwap_value_pullback_continuation::detect(ctx, cfg)
     );
+    try_detect!(
+        "CDR",
+        StrategyId::CvdDivergenceReversal,
+        cvd_divergence_reversal::detect(ctx, cfg)
+    );
 
     // Institutional detectors — only run when institutional data is available
     if let Some(inst) = &ctx.institutional {
@@ -338,6 +426,7 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (Str
     }
 
     apply_auction_state_gate(&mut candidates, ctx.auction_state.as_ref(), &mut rejections, &mut detector_log);
+    apply_vp_bias_gate(&mut candidates, ctx.vp_open_bias.as_ref(), &mut rejections, &mut detector_log);
 
     let best_idx = candidates
         .iter()

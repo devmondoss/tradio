@@ -1,7 +1,8 @@
-use crate::session::SessionPhase;
+﻿use crate::session::SessionPhase;
 use crate::structure::{HtfBias, PriceZone};
 
 use super::{adapter, types::*};
+use super::vp_open_bias::DailyVpBias;
 
 // VALORES DE ARRANQUE — se tunean en Fase D con datos reales
 
@@ -69,6 +70,10 @@ const FACTOR_VPIN_TOXIC: f64 = 0.35; // veto fuerte
 const FACTOR_VPIN_CLEAN: f64 = 1.20; // amplificador moderado
 const VETO_SCORE_CAP: f64 = 0.25; // techo absoluto cuando vpin es tóxico
 
+// --- CVD macro veto ---
+const CVD_MACRO_VETO_CAP: f64 = 0.35;  // techo cuando CVD contradice dirección sostenidamente
+const CVD_MACRO_VETO_BARS: i32 = 3;    // barras mínimas de divergencia para activar el veto
+
 // --- Factor spread ---
 const SPREAD_BAD_BPS: f64 = 1.5;
 const FACTOR_SPREAD_BAD: f64 = 0.80;
@@ -96,6 +101,16 @@ const FACTOR_SMS_AGAINST: f64 = 0.70;
 
 // --- Factor OpeningRush (solo LiquidationHunt) ---
 const FACTOR_OPENING_RUSH: f64 = 1.15;
+
+// --- Factor VP Open Bias (Subdimi: day type gates edge) ---
+const FACTOR_VP_BIAS_WITH: f64 = 1.15;    // setup aligned with day type
+const FACTOR_VP_BIAS_AGAINST: f64 = 0.75; // setup misaligned with day type (TrendDay only)
+
+// --- Bonus Stacked Imbalance (FBG zone alineada con la señal) ---
+const BONUS_STACKED_IMBALANCE: f64 = 0.04;
+
+// --- Bonus Naked POC (imán de sesión anterior entre entry y target) ---
+const BONUS_NAKED_POC_MAGNET: f64 = 0.03;
 
 /// Mapea `value` linealmente de [min, max] a [0.0, 1.0], clampeado.
 fn ramp(value: f64, min: f64, max: f64) -> f64 {
@@ -308,11 +323,68 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
         1.0
     };
 
-    let mut score = base_score * factor_vpin * factor_spread * factor_regime * factor_confluencia * factor_structure * factor_sms * factor_opening_rush;
+    // factor_vp_bias: Subdimi VP Open Bias — amplifica setups alineados con el tipo de día,
+    // penaliza reversales en TrendDay. InsideValue amplifica reversales, penaliza breakouts.
+    let factor_vp_bias = if let Some(ref bias_ctx) = ctx.vp_open_bias {
+        let is_reversal = matches!(
+            signal.strategy_id,
+            Some(StrategyId::ValueAreaFailedAuction)
+                | Some(StrategyId::FootprintAbsorptionReversal)
+                | Some(StrategyId::CvdDivergenceReversal)
+                | Some(StrategyId::FundingExhaustionReversal)
+                | Some(StrategyId::SmartMoneyDivergence)
+        );
+        let is_breakout = matches!(
+            signal.strategy_id,
+            Some(StrategyId::LvnLiquidityVacuumBreakout)
+                | Some(StrategyId::SessionOpenBreakout)
+                | Some(StrategyId::DomImbalanceBreakout)
+        );
+        match bias_ctx.bias {
+            DailyVpBias::TrendDay => {
+                let aligned = (bias_ctx.trend_day_is_up() && is_long)
+                    || (bias_ctx.trend_day_is_down() && !is_long);
+                if aligned { FACTOR_VP_BIAS_WITH } else { FACTOR_VP_BIAS_AGAINST }
+            }
+            DailyVpBias::InsideValue => {
+                if is_reversal { FACTOR_VP_BIAS_WITH }
+                else if is_breakout { FACTOR_VP_BIAS_AGAINST }
+                else { 1.0 }
+            }
+            DailyVpBias::OutsideVaInsidePa | DailyVpBias::FadeGap => {
+                let aligned = (is_long && bias_ctx.bias_supports_long())
+                    || (!is_long && bias_ctx.bias_supports_short());
+                if aligned { FACTOR_VP_BIAS_WITH } else { 1.0 }
+            }
+            DailyVpBias::Unknown => 1.0,
+        }
+    } else {
+        1.0
+    };
+
+    // HTF VP cascade: weekly + monthly bias top-down multiplier
+    let factor_htf_vp = ctx.htf_vp.as_ref()
+        .map(|htf| htf.bias_factor(is_long))
+        .unwrap_or(1.0);
+
+    let mut score = base_score * factor_vpin * factor_spread * factor_regime * factor_confluencia * factor_structure * factor_sms * factor_opening_rush * factor_vp_bias * factor_htf_vp;
 
     // Regla de precedencia del veto: VPIN tóxico clampea sin importar amplificadores
     if vpin_is_toxic {
         score = score.min(VETO_SCORE_CAP);
+    }
+
+    // CVD macro veto: si el CVD contradice la dirección durante >= CVD_MACRO_VETO_BARS
+    // techumbre a CVD_MACRO_VETO_CAP (no bloquea completamente, permite señal débil).
+    if let Some(persist) = ctx.flow.cvd_divergence_persistence {
+        let cvd_contradicts = match signal.side {
+            Some(Side::Long) => persist >= CVD_MACRO_VETO_BARS,
+            Some(Side::Short) => persist <= -CVD_MACRO_VETO_BARS,
+            None => false,
+        };
+        if cvd_contradicts && score > CVD_MACRO_VETO_CAP {
+            score = CVD_MACRO_VETO_CAP;
+        }
     }
 
     // Ajustes aditivos crypto-nativos (post-producto para no amplificar multiplicadores)
@@ -322,10 +394,46 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
     score += adapter::clean_action_score_bonus(ctx.flow.price_action_clean);
     // Bonus de zona HTF (aditivo para no componer con los multiplicadores)
     score += zone_bonus;
+    // Bonus stacked_imbalance: FBG institucional alineada con la dirección de la señal
+    score += match ctx.flow.stacked_imbalance {
+        ImbalanceSide::Bullish if is_long => BONUS_STACKED_IMBALANCE,
+        ImbalanceSide::Bearish if !is_long => BONUS_STACKED_IMBALANCE,
+        _ => 0.0,
+    };
+    // Bonus Finish Action (Subdimi): zero opposite-side volume at the bar extreme → exhaustion confirmed
+    const BONUS_FINISH_ACTION: f64 = 0.05;
+    if is_long && ctx.flow.finish_action_bullish { score += BONUS_FINISH_ACTION; }
+    if !is_long && ctx.flow.finish_action_bearish { score += BONUS_FINISH_ACTION; }
+    // Unfinish Action penalty: significant remaining volume at extreme → trapped participants → adverse magnet
+    const PENALTY_UNFINISH_ACTION: f64 = -0.04;
+    if is_long && ctx.flow.unfinish_action_bearish { score += PENALTY_UNFINISH_ACTION; }
+    if !is_long && ctx.flow.unfinish_action_bullish { score += PENALTY_UNFINISH_ACTION; }
+    // Big Trade bonus (Subdimi): anomalous institutional-size volume at bar extreme confirms absorption
+    const BONUS_BIG_TRADE: f64 = 0.06;
+    if is_long && ctx.flow.big_trade_bullish { score += BONUS_BIG_TRADE; }
+    if !is_long && ctx.flow.big_trade_bearish { score += BONUS_BIG_TRADE; }
+    // Naked POC magnet: if any naked POC sits between entry and target it acts as a structural pull.
+    if let (Some(entry), Some(target)) = (signal.entry_price, signal.target_price) {
+        let has_magnet = ctx.volume_profile.naked_pocs.iter().any(|&poc| {
+            if is_long { poc > entry && poc < target }
+            else       { poc < entry && poc > target }
+        });
+        if has_magnet { score += BONUS_NAKED_POC_MAGNET; }
+    }
 
-    // Re-apply veto cap: additive adjustments must not escape the toxic VPIN ceiling.
+    // Re-apply veto caps: additive adjustments must not escape ceilings.
     if vpin_is_toxic {
         score = score.min(VETO_SCORE_CAP);
+    }
+    if let Some(persist) = ctx.flow.cvd_divergence_persistence {
+        let cvd_contradicts = match signal.side {
+            Some(Side::Long) => persist >= CVD_MACRO_VETO_BARS,
+            Some(Side::Short) => persist <= -CVD_MACRO_VETO_BARS,
+            None => false,
+        };
+        if cvd_contradicts {
+            score = score.min(CVD_MACRO_VETO_CAP);
+        }
     }
 
     signal.score = score.clamp(0.0, 1.0);
@@ -351,6 +459,8 @@ mod tests {
                 lvn_nearby: vec![],
                 value_location: ValueLocation::InValue,
                 quality: DataQuality::Live,
+                naked_pocs: vec![],
+                single_prints: vec![],
             },
             vwap: VwapContext {
                 vwap_session: Some(99950.0),
@@ -386,6 +496,14 @@ mod tests {
                 fast_slope: None,
                 footprint_levels: vec![],
                 oi_delta_zscore: None,
+                vpin_cdf: None,
+                cvd_divergence_persistence: None,
+                finish_action_bullish: false,
+                finish_action_bearish: false,
+                unfinish_action_bullish: false,
+                unfinish_action_bearish: false,
+                big_trade_bullish: false,
+                big_trade_bearish: false,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.05),
@@ -410,6 +528,9 @@ mod tests {
             leverage: 1.0,
             prev_obi_l5: None,
             slow_slope: None,
+            auction_state: None,
+            vp_open_bias: None,
+            htf_vp: None,
         }
     }
 
@@ -528,6 +649,73 @@ mod tests {
         assert!(
             scored.score <= VETO_SCORE_CAP,
             "toxic VPIN must cap score at {VETO_SCORE_CAP}, got {}",
+            scored.score
+        );
+    }
+
+    #[test]
+    fn cvd_veto_caps_long_when_persistence_positive() {
+        let mut ctx = dummy_ctx();
+        // Flujo alcista fuerte en contexto de TrendUp — normalmente score alto
+        ctx.flow.cvd_slope = Some(5.0);
+        ctx.flow.taker_imbalance = Some(0.4);
+        ctx.flow.vpin = Some(0.25); // limpio, no activa VPIN veto
+        // CVD divergence: persistence >= 3 para LONG contradice (precio baja pero CVD sube persistentemente)
+        ctx.flow.cvd_divergence_persistence = Some(4);
+
+        let signal = StrategySignal {
+            action: StrategyAction::ShadowSignal,
+            strategy_id: Some(StrategyId::ValueAreaFailedAuction),
+            side: Some(Side::Long),
+            regime: ctx.regime,
+            entry_price: Some(100000.0),
+            stop_price: Some(99750.0),
+            target_price: Some(100750.0),
+            score: 0.0,
+            ttl_ms: 300000,
+            evidence: vec![],
+            missing: vec![],
+            invalidation: vec![],
+            created_at_ms: ctx.timestamp_ms,
+        };
+
+        let scored = score_signal(&ctx, signal);
+        assert!(
+            scored.score <= CVD_MACRO_VETO_CAP,
+            "CVD persistence >= 3 on LONG must cap at {CVD_MACRO_VETO_CAP}, got {}",
+            scored.score
+        );
+    }
+
+    #[test]
+    fn cvd_veto_not_triggered_below_threshold() {
+        let mut ctx = dummy_ctx();
+        ctx.flow.cvd_slope = Some(5.0);
+        ctx.flow.taker_imbalance = Some(0.4);
+        ctx.flow.vpin = Some(0.25);
+        // persistence = 2 → no activa el veto (umbral es 3)
+        ctx.flow.cvd_divergence_persistence = Some(2);
+
+        let signal = StrategySignal {
+            action: StrategyAction::ShadowSignal,
+            strategy_id: Some(StrategyId::ValueAreaFailedAuction),
+            side: Some(Side::Long),
+            regime: ctx.regime,
+            entry_price: Some(100000.0),
+            stop_price: Some(99750.0),
+            target_price: Some(100750.0),
+            score: 0.0,
+            ttl_ms: 300000,
+            evidence: vec![],
+            missing: vec![],
+            invalidation: vec![],
+            created_at_ms: ctx.timestamp_ms,
+        };
+
+        let scored = score_signal(&ctx, signal);
+        assert!(
+            scored.score > CVD_MACRO_VETO_CAP,
+            "persistence=2 should not trigger CVD veto, got {}",
             scored.score
         );
     }

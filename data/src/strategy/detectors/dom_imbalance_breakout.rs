@@ -1,4 +1,4 @@
-use crate::strategy::{adapter, types::*};
+﻿use crate::strategy::{adapter, types::*};
 
 const MIN_OBI_L5: f64 = 0.40;
 const MIN_CVD_SLOPE: f64 = 0.05;
@@ -163,6 +163,8 @@ mod tests {
                 lvn_nearby: vec![99_950.0],
                 value_location: ValueLocation::InValue,
                 quality: DataQuality::Live,
+                naked_pocs: vec![],
+                single_prints: vec![],
             },
             vwap: VwapContext {
                 vwap_session: Some(99_700.0),
@@ -198,6 +200,14 @@ mod tests {
                 fast_slope: Some(0.05),
                 footprint_levels: vec![],
                 oi_delta_zscore: None,
+                vpin_cdf: None,
+                cvd_divergence_persistence: None,
+                finish_action_bullish: false,
+                finish_action_bearish: false,
+                unfinish_action_bullish: false,
+                unfinish_action_bearish: false,
+                big_trade_bullish: false,
+                big_trade_bearish: false,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.45),
@@ -222,6 +232,9 @@ mod tests {
             leverage: 1.0,
             prev_obi_l5: Some(0.15),
             slow_slope: None,
+            auction_state: None,
+            vp_open_bias: None,
+            htf_vp: None,
         }
     }
 

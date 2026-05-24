@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(cfg.funding_ttl_ms, 30 * 60 * 1000);
         assert_eq!(cfg.smd_ttl_ms, 20 * 60 * 1000);
         assert_eq!(cfg.liq_hunt_min_usd, 100_000.0);
-        assert_eq!(cfg.funding_extreme_threshold, 0.0006);
+        assert_eq!(cfg.funding_extreme_threshold, 0.001);
     }
 
     /// Un archivo parcial conserva los defaults para lo ausente.

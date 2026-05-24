@@ -73,7 +73,21 @@ CREATE TABLE IF NOT EXISTS shadow_signals (
     taker_imbalance         DOUBLE PRECISION,
 
     -- Paper trader config
-    leverage                DOUBLE PRECISION
+    leverage                DOUBLE PRECISION,
+
+    -- Subdimi methodology context (columnas individuales para análisis estadístico)
+    finish_action           BOOLEAN,          -- exhaustión alineada con dirección de señal
+    unfinish_action         BOOLEAN,          -- imán adverso opuesto a la señal (penaliza)
+    big_trade               BOOLEAN,          -- orden institucional confirma dirección
+    stacked_imbalance       TEXT,             -- 'Bullish' | 'Bearish' | 'None'
+    vp_open_bias            TEXT,             -- 'InsideValue' | 'TrendDay' | 'OutsideVaInsidePa' | 'FadeGap' | 'Unknown'
+    auction_state           TEXT,             -- 'Balance' | 'UpImbalance' | 'DownImbalance' | 'Accumulation' | 'Distribution' | 'Unknown'
+    htf_weekly_location     TEXT,             -- 'AboveVah' | 'BelowVal' | 'InValue' | 'Unknown'
+    htf_monthly_location    TEXT,             -- idem
+    delta_velocity          DOUBLE PRECISION, -- OLS slope delta últimas 5 barras / ATR
+
+    -- Contexto Subdimi adicional (raramente filtrado — guardado como blob)
+    subdomi_ctx             JSONB
 );
 
 -- ============================================================
@@ -330,6 +344,15 @@ SELECT
     s.funding_percentile_30d,
     s.taker_imbalance,
     s.cvd_slope,
+    s.delta_velocity,
+    s.finish_action,
+    s.unfinish_action,
+    s.big_trade,
+    s.stacked_imbalance,
+    s.vp_open_bias,
+    s.auction_state,
+    s.htf_weekly_location,
+    s.htf_monthly_location,
 
     o.close_reason,
     o.r_multiple,
@@ -377,6 +400,23 @@ WHERE s.action = 'ShadowSignal';
 -- ALTER TABLE signal_outcomes
 --     ADD COLUMN IF NOT EXISTS is_partial       BOOLEAN          NOT NULL DEFAULT FALSE,
 --     ADD COLUMN IF NOT EXISTS partial_fraction DOUBLE PRECISION NOT NULL DEFAULT 0.0;
+
+-- ============================================================
+-- MIGRATION: columnas Subdimi methodology
+-- Ejecutar una sola vez si la tabla shadow_signals ya existe.
+-- En instalaciones nuevas el CREATE TABLE ya las incluye.
+-- ============================================================
+-- ALTER TABLE shadow_signals
+--     ADD COLUMN IF NOT EXISTS finish_action        BOOLEAN,
+--     ADD COLUMN IF NOT EXISTS unfinish_action      BOOLEAN,
+--     ADD COLUMN IF NOT EXISTS big_trade            BOOLEAN,
+--     ADD COLUMN IF NOT EXISTS stacked_imbalance    TEXT,
+--     ADD COLUMN IF NOT EXISTS vp_open_bias         TEXT,
+--     ADD COLUMN IF NOT EXISTS auction_state        TEXT,
+--     ADD COLUMN IF NOT EXISTS htf_weekly_location  TEXT,
+--     ADD COLUMN IF NOT EXISTS htf_monthly_location TEXT,
+--     ADD COLUMN IF NOT EXISTS delta_velocity       DOUBLE PRECISION,
+--     ADD COLUMN IF NOT EXISTS subdomi_ctx          JSONB;
 
 -- ============================================================
 -- TTL AUTOMÁTICO: borrar snapshots > 90 días

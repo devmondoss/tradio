@@ -1,4 +1,4 @@
-use crate::strategy::types::*;
+﻿use crate::strategy::types::*;
 
 fn rr_ok(entry: f64, stop: f64, target: f64, cfg: &StrategyConfig) -> bool {
     let risk = (entry - stop).abs();
@@ -97,15 +97,24 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 target_price: Some(target),
                 score: 0.0,
                 ttl_ms: cfg.default_ttl_ms,
-                evidence: vec![
-                    "val_absorption_zone".into(),
-                    "three_negative_delta_levels".into(),
-                    "close_back_above_val".into(),
-                    "obi_l5_bid_side".into(),
-                    "seller_pressure_fading".into(),
-                    "target_poc_or_vah".into(),
-                ],
-                missing: vec![],
+                evidence: {
+                    let mut ev = vec![
+                        "val_absorption_zone".into(),
+                        "three_negative_delta_levels".into(),
+                        "close_back_above_val".into(),
+                        "obi_l5_bid_side".into(),
+                        "seller_pressure_fading".into(),
+                        "target_poc_or_vah".into(),
+                    ];
+                    if flow.finish_action_bullish { ev.push("finish_action_bullish".into()); }
+                    if flow.big_trade_bullish { ev.push("big_trade_bullish".into()); }
+                    ev
+                },
+                missing: {
+                    let mut miss = vec![];
+                    if flow.unfinish_action_bearish { miss.push("unfinish_action_bearish_magnet_above".into()); }
+                    miss
+                },
                 invalidation: vec![
                     "price_closes_below_val".into(),
                     "negative_delta_expands".into(),
@@ -146,15 +155,24 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 target_price: Some(target),
                 score: 0.0,
                 ttl_ms: cfg.default_ttl_ms,
-                evidence: vec![
-                    "vah_absorption_zone".into(),
-                    "three_positive_delta_levels".into(),
-                    "close_back_below_vah".into(),
-                    "obi_l5_ask_side".into(),
-                    "buyer_pressure_fading".into(),
-                    "target_poc_or_val".into(),
-                ],
-                missing: vec![],
+                evidence: {
+                    let mut ev = vec![
+                        "vah_absorption_zone".into(),
+                        "three_positive_delta_levels".into(),
+                        "close_back_below_vah".into(),
+                        "obi_l5_ask_side".into(),
+                        "buyer_pressure_fading".into(),
+                        "target_poc_or_val".into(),
+                    ];
+                    if flow.finish_action_bearish { ev.push("finish_action_bearish".into()); }
+                    if flow.big_trade_bearish { ev.push("big_trade_bearish".into()); }
+                    ev
+                },
+                missing: {
+                    let mut miss = vec![];
+                    if flow.unfinish_action_bullish { miss.push("unfinish_action_bullish_magnet_below".into()); }
+                    miss
+                },
                 invalidation: vec![
                     "price_closes_above_vah".into(),
                     "positive_delta_expands".into(),
@@ -205,6 +223,8 @@ mod tests {
                 lvn_nearby: vec![],
                 value_location: ValueLocation::InValue,
                 quality: DataQuality::Live,
+                naked_pocs: vec![],
+                single_prints: vec![],
             },
             vwap: VwapContext {
                 vwap_session: Some(99_700.0),
@@ -245,6 +265,14 @@ mod tests {
                     level(99_560.0, 10.0),
                 ],
                 oi_delta_zscore: None,
+                vpin_cdf: None,
+                cvd_divergence_persistence: None,
+                finish_action_bullish: false,
+                finish_action_bearish: false,
+                unfinish_action_bullish: false,
+                unfinish_action_bearish: false,
+                big_trade_bullish: false,
+                big_trade_bearish: false,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(0.10),
@@ -269,6 +297,9 @@ mod tests {
             leverage: 1.0,
             prev_obi_l5: None,
             slow_slope: None,
+            auction_state: None,
+            vp_open_bias: None,
+            htf_vp: None,
         }
     }
 

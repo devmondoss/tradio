@@ -16,4 +16,6 @@ pub mod target_selector;
 pub mod tracker;
 pub mod trade_manager;
 pub mod trade_state;
+pub mod tpo;
 pub mod types;
+pub mod vp_open_bias;

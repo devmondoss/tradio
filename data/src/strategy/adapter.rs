@@ -180,7 +180,105 @@ pub fn build_flow_context(
         oi_delta_zscore,
         vpin_cdf,
         cvd_divergence_persistence,
+        finish_action_bullish: false,
+        finish_action_bearish: false,
+        unfinish_action_bullish: false,
+        unfinish_action_bearish: false,
+        big_trade_bullish: false,
+        big_trade_bearish: false,
+        delta_velocity: None,
     }
+}
+
+/// Derives Finish Action and Unfinish Action from footprint levels (Subdimi methodology).
+///
+/// Finish Action: the opposite side has zero volume at the bar extreme → exhaustion → reversal signal.
+///   Bullish: lowest level sell_volume ≈ 0 (no sellers at the bottom).
+///   Bearish: highest level buy_volume ≈ 0 (no buyers at the top).
+///
+/// Unfinish Action: significant remaining volume at the extreme → price magnet → will return there.
+///   Bullish magnet (unfinish_bullish): lowest level has significant sell_volume → sellers trapped below.
+///   Bearish magnet (unfinish_bearish): highest level has significant buy_volume → buyers trapped above.
+///
+/// Returns `(finish_bullish, finish_bearish, unfinish_bullish, unfinish_bearish)`.
+pub fn derive_finish_unfinish_action(
+    levels: &[FootprintLevel],
+) -> (bool, bool, bool, bool) {
+    if levels.is_empty() {
+        return (false, false, false, false);
+    }
+
+    let total_vol: f64 = levels.iter().map(|l| l.buy_volume + l.sell_volume).sum();
+    if total_vol <= 0.0 {
+        return (false, false, false, false);
+    }
+    let avg_vol = total_vol / levels.len() as f64;
+    let zero_threshold = (avg_vol * 0.05).max(1.0);
+    let significant_threshold = (avg_vol * 0.30).max(5.0);
+
+    let low_level = levels
+        .iter()
+        .min_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
+    let high_level = levels
+        .iter()
+        .max_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
+
+    let (finish_bullish, unfinish_bullish) = if let Some(ll) = low_level {
+        (
+            ll.sell_volume < zero_threshold,
+            ll.sell_volume > significant_threshold,
+        )
+    } else {
+        (false, false)
+    };
+
+    let (finish_bearish, unfinish_bearish) = if let Some(hl) = high_level {
+        (
+            hl.buy_volume < zero_threshold,
+            hl.buy_volume > significant_threshold,
+        )
+    } else {
+        (false, false)
+    };
+
+    (finish_bullish, finish_bearish, unfinish_bullish, unfinish_bearish)
+}
+
+/// Derives Big Trade flags from footprint levels (Subdimi methodology).
+///
+/// A Big Trade is an anomalously large individual order visible as a "bubble" in ATAS footprint.
+/// Approximated here as: a level with total volume > 2.5× the bar's average level volume.
+///
+/// `big_trade_bullish`: high-volume level in lower half of bar, buy-dominated → institutional accumulation.
+/// `big_trade_bearish`: high-volume level in upper half of bar, sell-dominated → institutional distribution.
+///
+/// Requires ≥2 footprint levels to be meaningful.
+pub fn derive_big_trade(levels: &[FootprintLevel]) -> (bool, bool) {
+    if levels.len() < 2 {
+        return (false, false);
+    }
+    let total_vol: f64 = levels.iter().map(|l| l.buy_volume + l.sell_volume).sum();
+    if total_vol <= 0.0 {
+        return (false, false);
+    }
+    let avg_vol = total_vol / levels.len() as f64;
+    let threshold = avg_vol * 2.5;
+
+    let min_price = levels.iter().map(|l| l.price).fold(f64::INFINITY, f64::min);
+    let max_price = levels.iter().map(|l| l.price).fold(f64::NEG_INFINITY, f64::max);
+    let mid_price = (min_price + max_price) / 2.0;
+
+    let big_trade_bullish = levels
+        .iter()
+        .filter(|l| l.buy_volume + l.sell_volume > threshold && l.price <= mid_price)
+        .any(|l| l.buy_volume > l.sell_volume);
+
+    let big_trade_bearish = levels
+        .iter()
+        .filter(|l| l.buy_volume + l.sell_volume > threshold && l.price > mid_price)
+        .any(|l| l.sell_volume > l.buy_volume);
+
+    (big_trade_bullish, big_trade_bearish)
 }
 
 /// Returns true if funding rate is acceptable for a LONG entry.
@@ -562,6 +660,8 @@ pub fn build_volume_profile_context(
         } else {
             DataQuality::Missing
         },
+        naked_pocs: vec![],
+        single_prints: vec![],
     }
 }
 
@@ -652,6 +752,31 @@ pub fn derive_mss_and_sweep(highs: &[f64], lows: &[f64], closes: &[f64]) -> (boo
     (mss, sweep)
 }
 
+/// Delta Drain rate — OLS slope of per-bar delta over the last `n` bars, normalized by ATR.
+///
+/// Measures whether per-bar delta is progressively losing conviction:
+/// - **Positive slope**: delta trending upward → sellers exhausting (drain toward long).
+/// - **Negative slope**: delta trending downward → buyers exhausting (drain toward short).
+///
+/// Returns `None` if fewer than `n` bars are available or ATR is zero.
+pub fn derive_delta_velocity(recent_deltas: &[f64], n: usize, atr: f64) -> Option<f64> {
+    if recent_deltas.len() < n || atr <= 0.0 {
+        return None;
+    }
+    let window = &recent_deltas[recent_deltas.len() - n..];
+    let n_f = n as f64;
+    let sum_x: f64 = (0..n).map(|i| i as f64).sum();
+    let sum_y: f64 = window.iter().sum();
+    let sum_xx: f64 = (0..n).map(|i| (i as f64).powi(2)).sum();
+    let sum_xy: f64 = window.iter().enumerate().map(|(i, &y)| i as f64 * y).sum();
+    let denom = n_f * sum_xx - sum_x * sum_x;
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    let slope = (n_f * sum_xy - sum_x * sum_y) / denom;
+    Some(slope / atr)
+}
+
 /// Detects stacked imbalance: 3 or more consecutive bars in the same delta direction
 /// ending at the most recent bar. `recent_deltas` is oldest-first.
 pub fn derive_stacked_imbalance(recent_deltas: &[f64]) -> ImbalanceSide {
@@ -677,6 +802,52 @@ pub fn derive_stacked_imbalance(recent_deltas: &[f64]) -> ImbalanceSide {
     } else {
         ImbalanceSide::None
     }
+}
+
+/// Detects a Footprint Buy/Bear Gap (FBG) — the Subdimi definition of stacked imbalance.
+///
+/// An FBG requires consecutive footprint price levels where one side is completely absent:
+/// - **Bullish FBG**: N+ consecutive levels where `sell_volume == 0` (no sellers) → buy gap.
+/// - **Bearish FBG**: N+ consecutive levels where `buy_volume == 0` (no buyers) → sell gap.
+///
+/// This is stronger than delta direction alone — it means the opposing side had *zero* presence,
+/// leaving a structural gap that price tends to fill on the next visit.
+pub fn derive_fbg_imbalance(levels: &[FootprintLevel], min_levels: usize) -> ImbalanceSide {
+    if levels.len() < min_levels {
+        return ImbalanceSide::Unknown;
+    }
+
+    let mut sorted = levels.to_vec();
+    sorted.sort_by(|a, b| {
+        a.price
+            .partial_cmp(&b.price)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut buy_gap_run = 0usize; // consecutive levels with sell_volume=0 (no sellers)
+    let mut sell_gap_run = 0usize; // consecutive levels with buy_volume=0 (no buyers)
+
+    for level in &sorted {
+        if level.sell_volume <= 0.0 && level.buy_volume > 0.0 {
+            buy_gap_run += 1;
+            sell_gap_run = 0;
+        } else if level.buy_volume <= 0.0 && level.sell_volume > 0.0 {
+            sell_gap_run += 1;
+            buy_gap_run = 0;
+        } else {
+            buy_gap_run = 0;
+            sell_gap_run = 0;
+        }
+
+        if buy_gap_run >= min_levels {
+            return ImbalanceSide::Bullish;
+        }
+        if sell_gap_run >= min_levels {
+            return ImbalanceSide::Bearish;
+        }
+    }
+
+    ImbalanceSide::None
 }
 
 /// Detects stacked footprint imbalance inside one candle: at least `min_levels`
@@ -916,5 +1087,54 @@ mod tests {
         // i=3: highs[1..3]=[101,105], 105 NOT < 105 → not confirmed
         // i=4: highs[2..4]=[105,105], 105 NOT < 103 → not confirmed
         assert_eq!(sh, None, "flat double-top should not produce a confirmed pivot");
+    }
+
+    #[test]
+    fn finish_action_bullish_no_sellers_at_bottom() {
+        // Lowest level: sell=0 → finish_bullish. Highest: buy=40, sig_thresh≈17.5 → unfinish_bearish.
+        let levels = vec![
+            FootprintLevel { price: 100.0, buy_volume: 50.0, sell_volume: 0.0, delta: 50.0 },
+            FootprintLevel { price: 101.0, buy_volume: 30.0, sell_volume: 20.0, delta: 10.0 },
+            FootprintLevel { price: 102.0, buy_volume: 40.0, sell_volume: 35.0, delta: 5.0 },
+        ];
+        let (fb, fbe, ub, ube) = derive_finish_unfinish_action(&levels);
+        assert!(fb, "lowest level sell_volume=0 → finish_action_bullish");
+        assert!(!fbe, "highest level buy_volume=40, not zero → no finish_bearish");
+        assert!(!ub, "lowest level sell_volume=0 → no unfinish_bullish");
+        assert!(ube, "highest level buy_volume=40 > sig_thresh → unfinish_bearish (buyers trapped above)");
+    }
+
+    #[test]
+    fn finish_action_bearish_no_buyers_at_top() {
+        // Highest level: buy=0 → finish_bearish. Lowest: sell=20, sig_thresh≈16 → unfinish_bullish.
+        let levels = vec![
+            FootprintLevel { price: 100.0, buy_volume: 30.0, sell_volume: 20.0, delta: 10.0 },
+            FootprintLevel { price: 101.0, buy_volume: 25.0, sell_volume: 30.0, delta: -5.0 },
+            FootprintLevel { price: 102.0, buy_volume: 0.0, sell_volume: 55.0, delta: -55.0 },
+        ];
+        let (fb, fbe, ub, ube) = derive_finish_unfinish_action(&levels);
+        assert!(!fb, "lowest level has sell_volume=20, not zero → no finish_bullish");
+        assert!(fbe, "highest level buy_volume=0 → finish_action_bearish");
+        assert!(ub, "lowest level sell_volume=20 > sig_thresh → unfinish_bullish (sellers trapped below)");
+        assert!(!ube, "highest level buy_volume=0 → no unfinish_bearish");
+    }
+
+    #[test]
+    fn unfinish_action_detected_when_significant_opposite_volume() {
+        // Lowest level has large sell_volume → sellers trapped below → bullish magnet (unfinish_bullish)
+        let levels = vec![
+            FootprintLevel { price: 100.0, buy_volume: 10.0, sell_volume: 80.0, delta: -70.0 },
+            FootprintLevel { price: 101.0, buy_volume: 50.0, sell_volume: 40.0, delta: 10.0 },
+            FootprintLevel { price: 102.0, buy_volume: 60.0, sell_volume: 50.0, delta: 10.0 },
+        ];
+        let (fb, _fbe, ub, _ube) = derive_finish_unfinish_action(&levels);
+        assert!(!fb, "sell_volume is large, not near zero → no finish action");
+        assert!(ub, "lowest level has significant sell_volume → unfinish_bullish magnet");
+    }
+
+    #[test]
+    fn empty_levels_return_all_false() {
+        let (fb, fbe, ub, ube) = derive_finish_unfinish_action(&[]);
+        assert!(!fb && !fbe && !ub && !ube);
     }
 }

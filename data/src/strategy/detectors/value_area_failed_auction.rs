@@ -1,4 +1,4 @@
-use crate::strategy::{adapter, types::*};
+﻿use crate::strategy::{adapter, types::*};
 
 // Note: toxic_flow_gate is evaluated once in the router before calling any detector.
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
@@ -33,7 +33,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             && flow.taker_imbalance.unwrap_or(0.0) < -0.15
             && (atr <= 0.0 || flow.delta.unwrap_or(0.0) / atr < -0.35)
     } else {
-        flow.cvd_slope.unwrap_or(0.0) <= 0.0 && flow.taker_imbalance.unwrap_or(0.0) < 0.10
+        flow.cvd_slope.unwrap_or(0.0) <= 0.0 && flow.taker_imbalance.unwrap_or(0.0) < 0.05
     };
 
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_above;
@@ -62,6 +62,12 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                     if (ob.high - px).abs() < atr { evidence.push("bearish_ob_nearby".into()); }
                 }
             }
+            if ctx.flow.finish_action_bearish { evidence.push("finish_action_bearish".into()); }
+            if ctx.flow.delta_velocity.map(|v| v > 0.05).unwrap_or(false) {
+                evidence.push("delta_drain_bearish".into());
+            }
+            let mut missing = vec![];
+            if ctx.flow.unfinish_action_bullish { missing.push("unfinish_action_bullish_magnet_below".into()); }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::ValueAreaFailedAuction),
@@ -73,7 +79,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 score: 0.0,
                 ttl_ms: cfg.default_ttl_ms,
                 evidence,
-                missing: vec![],
+                missing,
                 invalidation: vec![
                     "price_reclaims_above_failed_auction_high".into(),
                     "vpin_becomes_toxic".into(),
@@ -98,7 +104,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             && flow.taker_imbalance.unwrap_or(0.0) > 0.15
             && (atr <= 0.0 || flow.delta.unwrap_or(0.0) / atr > 0.35)
     } else {
-        flow.cvd_slope.unwrap_or(0.0) >= 0.0 && flow.taker_imbalance.unwrap_or(0.0) > -0.10
+        flow.cvd_slope.unwrap_or(0.0) >= 0.0 && flow.taker_imbalance.unwrap_or(0.0) > -0.05
     };
 
     let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_below;
@@ -127,6 +133,12 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                     if (px - ob.low).abs() < atr { evidence.push("bullish_ob_nearby".into()); }
                 }
             }
+            if ctx.flow.finish_action_bullish { evidence.push("finish_action_bullish".into()); }
+            if ctx.flow.delta_velocity.map(|v| v < -0.05).unwrap_or(false) {
+                evidence.push("delta_drain_bullish".into());
+            }
+            let mut missing = vec![];
+            if ctx.flow.unfinish_action_bearish { missing.push("unfinish_action_bearish_magnet_above".into()); }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::ValueAreaFailedAuction),
@@ -138,7 +150,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 score: 0.0,
                 ttl_ms: cfg.default_ttl_ms,
                 evidence,
-                missing: vec![],
+                missing,
                 invalidation: vec![
                     "price_loses_below_failed_auction_low".into(),
                     "vpin_becomes_toxic".into(),
@@ -175,6 +187,8 @@ mod tests {
                 lvn_nearby: vec![],
                 value_location: ValueLocation::InValue,
                 quality: DataQuality::Live,
+                naked_pocs: vec![],
+                single_prints: vec![],
             },
             vwap: VwapContext {
                 vwap_session: Some(99950.0),
@@ -189,7 +203,7 @@ mod tests {
                 cvd: Some(1000.0),
                 cvd_slope: Some(-0.2),
                 delta: Some(-80.0), // aligned SHORT (negative)
-                taker_imbalance: Some(0.05), // < 0.10 threshold (neutral-to-bearish for SHORT)
+                taker_imbalance: Some(0.03), // < 0.05 threshold (neutral-to-bearish for SHORT)
                 buy_volume: Some(5000.0),
                 sell_volume: Some(4800.0),
                 vpin: Some(0.45),
@@ -210,6 +224,14 @@ mod tests {
                 fast_slope: None,
                 footprint_levels: vec![],
                 oi_delta_zscore: None,
+                vpin_cdf: None,
+                cvd_divergence_persistence: None,
+                finish_action_bullish: false,
+                finish_action_bearish: false,
+                unfinish_action_bullish: false,
+                unfinish_action_bearish: false,
+                big_trade_bullish: false,
+                big_trade_bearish: false,
             },
             orderbook: OrderBookContext {
                 obi_l5: Some(-0.05),
@@ -234,6 +256,9 @@ mod tests {
             leverage: 1.0,
             prev_obi_l5: None,
             slow_slope: None,
+            auction_state: None,
+            vp_open_bias: None,
+            htf_vp: None,
         }
     }
 

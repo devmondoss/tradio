@@ -1563,6 +1563,8 @@ impl KlineChart {
             prev_obi_l5: None,
             slow_slope: None,
             auction_state: None,
+            vp_open_bias: None,
+            htf_vp: None,
         };
 
         // Capas: TOML base → Mongo override por régimen (vía mongo_handles).

@@ -52,9 +52,10 @@ use data::strategy::{
         build_flow_context, build_orderbook_context, build_volume_profile_context,
         build_vwap_context, count_price_reversals, derive_confirmed_swings,
         derive_cvd_divergence, derive_failed_acceptance_and_absorption,
-        derive_footprint_absorption_at_value_edge, derive_regime,
-        derive_regime_with_hysteresis, derive_stacked_imbalance,
-        derive_stacked_imbalance_from_levels, wall_nearby, SWING_CONFIRM_BARS,
+        derive_big_trade, derive_delta_velocity, derive_fbg_imbalance,
+        derive_finish_unfinish_action, derive_footprint_absorption_at_value_edge, derive_regime,
+        derive_regime_with_hysteresis, derive_stacked_imbalance, derive_stacked_imbalance_from_levels,
+        wall_nearby, SWING_CONFIRM_BARS,
     },
     intent_logger::collect_near_misses,
     lab::{LabConfig, LabTracker, run_strategy_lab},
@@ -410,6 +411,8 @@ struct FrozenBarCtx {
     // Timing
     bar_close_ms: i64,
     bar_close_price: f64,
+    // VP open bias (frozen at bar close, stable for intrabar evals within same bar)
+    vp_open_bias: Option<data::strategy::vp_open_bias::DailyVpContext>,
 }
 
 impl PipelineMetrics {
@@ -602,6 +605,15 @@ struct BarState {
     // Lab outcome tracker — tracks open LabSignals and resolves them bar by bar
     lab_tracker: LabTracker,
     lab_cfg: LabConfig,
+    // VP open bias tracker — classifies daily session open vs previous day's value area
+    vp_bias_tracker: data::strategy::vp_open_bias::DailyVpTracker,
+    // Naked POC tracker — tracks previous-session POCs not yet revisited by price
+    naked_poc_tracker: data::strategy::vp_open_bias::NakedPocTracker,
+    // HTF VP cascade trackers — weekly and monthly volume profiles for top-down bias
+    htf_weekly_tracker: data::strategy::vp_open_bias::HtfVpTracker,
+    htf_monthly_tracker: data::strategy::vp_open_bias::HtfVpTracker,
+    // TPO Single Print tracker — 30-min Market Profile, detects structural gaps
+    tpo_tracker: data::strategy::tpo::TpoTracker,
 }
 
 impl BarState {
@@ -664,6 +676,11 @@ impl BarState {
             cvd_divergence_bars: 0,
             lab_tracker: LabTracker::new(50),
             lab_cfg: LabConfig::from_env(),
+            vp_bias_tracker: data::strategy::vp_open_bias::DailyVpTracker::new(),
+            naked_poc_tracker: data::strategy::vp_open_bias::NakedPocTracker::new(10),
+            htf_weekly_tracker: data::strategy::vp_open_bias::HtfVpTracker::new_weekly(),
+            htf_monthly_tracker: data::strategy::vp_open_bias::HtfVpTracker::new_monthly(),
+            tpo_tracker: data::strategy::tpo::TpoTracker::new(),
         }
     }
 
@@ -911,6 +928,21 @@ impl BarState {
             None, // cvd_divergence_persistence — bar-close metric only
         );
         flow.footprint_levels = frozen.footprint_levels.clone();
+        {
+            let (fb, fbe, ub, ube) = derive_finish_unfinish_action(&flow.footprint_levels);
+            flow.finish_action_bullish = fb;
+            flow.finish_action_bearish = fbe;
+            flow.unfinish_action_bullish = ub;
+            flow.unfinish_action_bearish = ube;
+            let (btb, btbe) = derive_big_trade(&flow.footprint_levels);
+            flow.big_trade_bullish = btb;
+            flow.big_trade_bearish = btbe;
+        }
+        // Delta velocity: OLS slope of per-bar delta, last 5 bars, normalized by ATR
+        {
+            let recent: Vec<f64> = self.bar_delta_history.iter().copied().collect();
+            flow.delta_velocity = derive_delta_velocity(&recent, 5, frozen.atr.unwrap_or(0.0));
+        }
 
         let liq_snap = self.liq_tracker.snapshot(now_ms);
         let ls_snap = self.ls_tracker.snapshot();
@@ -964,6 +996,8 @@ impl BarState {
             prev_obi_l5: Some(self.prev_obi_l5),
             slow_slope: Some(frozen.slow_slope),
             auction_state: None, // not recomputed intrabar
+            vp_open_bias: frozen.vp_open_bias.clone(),
+            htf_vp: None, // not recomputed intrabar
         }
     }
 
@@ -1172,6 +1206,21 @@ impl BarState {
         let (poc, vah, val, hvn_nearby, lvn_nearby) =
             compute_volume_profile(&self.bars, VP_BINS, c);
 
+        // VP open bias: update tracker with current bar's data and VP snapshot
+        let vp_open_bias = self.vp_bias_tracker
+            .update(bar_ms, o, h, l, poc, vah, val)
+            .cloned();
+
+        // Naked POC: track previous-session POCs not yet revisited (0.05% touch band)
+        self.naked_poc_tracker.update(bar_ms, poc, c, 0.0005);
+
+        // TPO single prints: update 30-min Market Profile tracker
+        self.tpo_tracker.update(bar_ms, h, l, c, if atr > 0.0 { Some(atr) } else { None });
+
+        // HTF VP cascade: update weekly and monthly VP trackers
+        let htf_weekly = self.htf_weekly_tracker.update(bar_ms, h, l, c, vol, c).cloned();
+        let htf_monthly = self.htf_monthly_tracker.update(bar_ms, h, l, c, vol, c).cloned();
+
         let footprint_levels = self.current_footprint_levels();
         let recent_deltas_fa: Vec<f64> = self.bar_delta_history.iter().copied().collect();
         let (failed_acceptance, footprint_absorption_estimate) =
@@ -1350,7 +1399,9 @@ impl BarState {
         };
 
         let vwap_ctx = build_vwap_context(c, self.vwap_session, avwap_bos, avwap_event);
-        let vp_ctx = build_volume_profile_context(c, poc, vah, val, hvn_nearby, lvn_nearby);
+        let mut vp_ctx = build_volume_profile_context(c, poc, vah, val, hvn_nearby, lvn_nearby);
+        vp_ctx.naked_pocs = self.naked_poc_tracker.naked_poc_prices();
+        vp_ctx.single_prints = self.tpo_tracker.single_print_mids();
         // Snapshot VP lists before vp_ctx is moved into StrategyMarketContext
         let frozen_hvn = vp_ctx.hvn_nearby.clone();
         let frozen_lvn = vp_ctx.lvn_nearby.clone();
@@ -1380,10 +1431,17 @@ impl BarState {
         };
 
         let recent_deltas: Vec<f64> = self.bar_delta_history.iter().copied().collect();
-        let footprint_stacked = derive_stacked_imbalance_from_levels(&footprint_levels, 3);
-        let stacked_imbalance = match footprint_stacked {
-            ImbalanceSide::Bullish | ImbalanceSide::Bearish => footprint_stacked,
-            _ => derive_stacked_imbalance(&recent_deltas),
+        // FBG (Footprint Buy/Bear Gap) is the strongest signal: one side completely absent.
+        // Falls back to delta-direction stacking, then to multi-bar delta streak.
+        let fbg = derive_fbg_imbalance(&footprint_levels, 3);
+        let stacked_imbalance = if matches!(fbg, ImbalanceSide::Bullish | ImbalanceSide::Bearish) {
+            fbg
+        } else {
+            let footprint_stacked = derive_stacked_imbalance_from_levels(&footprint_levels, 3);
+            match footprint_stacked {
+                ImbalanceSide::Bullish | ImbalanceSide::Bearish => footprint_stacked,
+                _ => derive_stacked_imbalance(&recent_deltas),
+            }
         };
 
         // VPIN CDF: percentile rank of current bar_vpin vs rolling 50-bar history
@@ -1448,6 +1506,21 @@ impl BarState {
             cvd_divergence_persistence,
         );
         flow.footprint_levels = footprint_levels.clone();
+        {
+            let (fb, fbe, ub, ube) = derive_finish_unfinish_action(&flow.footprint_levels);
+            flow.finish_action_bullish = fb;
+            flow.finish_action_bearish = fbe;
+            flow.unfinish_action_bullish = ub;
+            flow.unfinish_action_bearish = ube;
+            let (btb, btbe) = derive_big_trade(&flow.footprint_levels);
+            flow.big_trade_bullish = btb;
+            flow.big_trade_bearish = btbe;
+        }
+        // Delta velocity: OLS slope of per-bar delta, last 5 bars, normalized by ATR
+        {
+            let recent: Vec<f64> = self.bar_delta_history.iter().copied().collect();
+            flow.delta_velocity = derive_delta_velocity(&recent, 5, atr);
+        }
 
         self.ms_tracker.push_bar(o, h, l, c, bar_ms);
         let market_structure = self.ms_tracker.snapshot();
@@ -1542,6 +1615,16 @@ impl BarState {
             prev_obi_l5: Some(self.prev_obi_l5),
             slow_slope: Some(slow_slope),
             auction_state: None, // populated below after ctx is built
+            vp_open_bias: vp_open_bias.clone(),
+            htf_vp: {
+                let weekly = htf_weekly.clone();
+                let monthly = htf_monthly.clone();
+                if weekly.is_some() || monthly.is_some() {
+                    Some(data::strategy::vp_open_bias::HtfVpContext { weekly, monthly })
+                } else {
+                    None
+                }
+            },
         };
         // Auction state requires the full context, so classify after building it
         let auction = data::strategy::auction_state::classify(&ctx);
@@ -1694,7 +1777,7 @@ impl BarState {
              vwap={:.2} cvd={:.1} ob={} \
              inst={inst_label} ls_top={:.1}%/{:.1}% liq={:.0}$ liq_age={liq_age} \
              ws=[{ws_label}] \
-             action={:?} score={:.3} delivery={delivery_lag_ms}ms proc={processing_ms}ms equity={:.2} \
+             action={:?} score={:.3} bss={} delivery={delivery_lag_ms}ms proc={processing_ms}ms equity={:.2} \
              missing=[{missing_str}] skip=[{skip_str}]",
             self.funding_rate.unwrap_or(0.0) * 10_000.0,
             basis.unwrap_or(0.0),
@@ -1711,6 +1794,7 @@ impl BarState {
             inst_ref.map(|i| i.liquidations.total_usd_5m).unwrap_or(0.0),
             signal.action,
             signal.score,
+            self.metrics.bars_since_signal,
             self.paper.equity,
         );
 
@@ -1753,6 +1837,7 @@ impl BarState {
             bar_vpin,
             bar_close_ms: bar_ms,
             bar_close_price: c,
+            vp_open_bias: vp_open_bias.clone(),
         });
         self.bar_footprint.clear();
         self.intrabar_signal_fired = false;
