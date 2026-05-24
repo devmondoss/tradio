@@ -941,7 +941,7 @@ impl BarState {
         // Delta velocity: OLS slope of per-bar delta, last 5 bars, normalized by ATR
         {
             let recent: Vec<f64> = self.bar_delta_history.iter().copied().collect();
-            flow.delta_velocity = derive_delta_velocity(&recent, 5, frozen.atr.unwrap_or(0.0));
+            flow.delta_velocity = derive_delta_velocity(&recent, 5, frozen.atr);
         }
 
         let liq_snap = self.liq_tracker.snapshot(now_ms);
