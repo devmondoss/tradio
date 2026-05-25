@@ -60,6 +60,7 @@ use data::strategy::{
     intent_logger::collect_near_misses,
     lab::{LabConfig, LabTracker, run_strategy_lab},
     paper::PaperAccount,
+    playbook_reasoning::classify_playbook_reasoning,
     router::route_strategy,
     types::{
         AbsorptionSide, CvdDivergence, DataQuality, ImbalanceSide, OrderBookContext, Regime, Side,
@@ -1007,7 +1008,8 @@ impl BarState {
         };
         let ctx = self.build_intrabar_ctx(&frozen, now_ms, symbol);
         let cfg = self.config_loader.current();
-        let (signal, _) = route_strategy(&ctx, &cfg);
+        let (signal, detector_log) = route_strategy(&ctx, &cfg);
+        let reasoning = classify_playbook_reasoning(&ctx, &cfg, &signal, &detector_log);
 
         self.last_intrabar_eval_price = self.current_price;
         self.last_intrabar_eval_ms = now_ms;
@@ -1050,7 +1052,8 @@ impl BarState {
                 if let Some(sb) = self.supabase.clone() {
                     let s = signal.clone();
                     let c = ctx.clone();
-                    tokio::spawn(async move { sb.write_signal(&s, &c).await; });
+                    let r = reasoning.clone();
+                    tokio::spawn(async move { sb.write_signal_with_reasoning(&s, &c, &r).await; });
                 }
             }
             IntrabarMode::ShadowSignal => {
@@ -1063,7 +1066,8 @@ impl BarState {
                 if let Some(sb) = self.supabase.clone() {
                     let s = signal.clone();
                     let c = ctx.clone();
-                    tokio::spawn(async move { sb.write_signal(&s, &c).await; });
+                    let r = reasoning.clone();
+                    tokio::spawn(async move { sb.write_signal_with_reasoning(&s, &c, &r).await; });
                 }
             }
         }
@@ -1631,7 +1635,8 @@ impl BarState {
         ctx.auction_state = Some(auction);
         self.prev_obi_l5 = current_obi_l5;
 
-        let (signal, _) = route_strategy(&ctx, &cfg);
+        let (signal, detector_log) = route_strategy(&ctx, &cfg);
+        let reasoning = classify_playbook_reasoning(&ctx, &cfg, &signal, &detector_log);
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
         if signal_fired {
             self.metrics.signals_today += 1;
@@ -1735,9 +1740,12 @@ impl BarState {
             if let Some(sb) = self.supabase.clone() {
                 let s = signal.clone();
                 let c = ctx.clone();
+                let r = reasoning.clone();
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 self.pending_supabase_uuid_rx = Some(rx);
-                tokio::spawn(async move { let _ = tx.send(sb.write_signal(&s, &c).await); });
+                tokio::spawn(async move {
+                    let _ = tx.send(sb.write_signal_with_reasoning(&s, &c, &r).await);
+                });
             }
         }
 

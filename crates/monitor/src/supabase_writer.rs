@@ -12,6 +12,7 @@ use data::strategy::{
         StrategyRuntimeStatus,
     },
     paper::ClosedTrade,
+    playbook_reasoning::PlaybookReasoning,
     types::{StrategyAction, StrategyMarketContext, StrategySignal},
 };
 use serde_json::{json, Value};
@@ -43,11 +44,29 @@ impl SupabaseWriter {
         signal: &StrategySignal,
         ctx: &StrategyMarketContext,
     ) -> Option<String> {
+        self.write_signal_inner(signal, ctx, None).await
+    }
+
+    pub async fn write_signal_with_reasoning(
+        &self,
+        signal: &StrategySignal,
+        ctx: &StrategyMarketContext,
+        reasoning: &PlaybookReasoning,
+    ) -> Option<String> {
+        self.write_signal_inner(signal, ctx, Some(reasoning)).await
+    }
+
+    async fn write_signal_inner(
+        &self,
+        signal: &StrategySignal,
+        ctx: &StrategyMarketContext,
+        reasoning: Option<&PlaybookReasoning>,
+    ) -> Option<String> {
         if signal.action == StrategyAction::Wait {
             return None;
         }
 
-        let body = build_signal_row(signal, ctx);
+        let body = build_signal_row(signal, ctx, reasoning);
         let url = format!("{}/rest/v1/shadow_signals", self.url);
         let result = self
             .client
@@ -278,7 +297,11 @@ impl SupabaseWriter {
     }
 }
 
-fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Value {
+fn build_signal_row(
+    signal: &StrategySignal,
+    ctx: &StrategyMarketContext,
+    reasoning: Option<&PlaybookReasoning>,
+) -> Value {
     let inst = ctx.institutional.as_ref();
 
     let evidence: Vec<String> = signal.evidence.iter().map(|e| format!("{e:?}")).collect();
@@ -305,6 +328,21 @@ fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Val
         .map(|w| format!("{:?}", w.location));
     let htf_monthly_location = ctx.htf_vp.as_ref().and_then(|h| h.monthly.as_ref())
         .map(|w| format!("{:?}", w.location));
+    let reasoning_tags = reasoning.map(|r| json!({
+        "market_state": &r.market_state,
+        "location_tags": &r.location_tags,
+        "flow_tags": &r.flow_tags,
+        "liquidity_tags": &r.liquidity_tags,
+        "book_tags": &r.book_tags,
+        "institutional_tags": &r.institutional_tags,
+        "structure_tags": &r.structure_tags,
+        "trigger_tags": &r.trigger_tags,
+        "risk_tags": &r.risk_tags,
+        "confirmation_tags": &r.confirmation_tags,
+        "contradiction_tags": &r.contradiction_tags,
+        "missing_tags": &r.missing_tags,
+        "detector_role_tags": &r.detector_role_tags,
+    }));
 
     // Subdomi JSONB — contextual fields not worth individual columns
     let subdomi_ctx = json!({
@@ -319,6 +357,10 @@ fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Val
         "finish_action_bearish":      ctx.flow.finish_action_bearish,
         "unfinish_action_bullish":    ctx.flow.unfinish_action_bullish,
         "unfinish_action_bearish":    ctx.flow.unfinish_action_bearish,
+        "playbook_reasoning":         reasoning,
+        "primary_playbook":           reasoning.map(|r| r.primary_playbook.as_str()),
+        "reasoning_confidence":       reasoning.map(|r| r.confidence),
+        "reasoning_completeness":     reasoning.map(|r| r.completeness),
     });
 
     json!({
@@ -388,6 +430,14 @@ fn build_signal_row(signal: &StrategySignal, ctx: &StrategyMarketContext) -> Val
         "htf_weekly_location":    htf_weekly_location,
         "htf_monthly_location":   htf_monthly_location,
         "delta_velocity":         ctx.flow.delta_velocity,
+
+        // Playbook reasoning Fase 1 — observador, no gate
+        "reasoning_version":       reasoning.map(|r| r.version.as_str()),
+        "primary_playbook":        reasoning.map(|r| r.primary_playbook.as_str()),
+        "secondary_playbooks":     reasoning.map(|r| &r.secondary_playbooks),
+        "reasoning_tags":          reasoning_tags,
+        "reasoning_confidence":    reasoning.map(|r| r.confidence),
+        "reasoning_completeness":  reasoning.map(|r| r.completeness),
 
         // Subdimi contexto blob
         "subdomi_ctx":            subdomi_ctx,

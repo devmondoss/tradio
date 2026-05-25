@@ -99,6 +99,20 @@ fn detector_name_for(id: Option<StrategyId>) -> &'static str {
     }
 }
 
+/// Current production mode is Subdimi-only. Non-Subdimi detectors remain in the
+/// codebase for research/backtesting, but they cannot compete in the live router.
+fn subdimi_detector_allowed(id: StrategyId) -> bool {
+    matches!(
+        id,
+        StrategyId::ValueAreaFailedAuction
+            | StrategyId::FootprintAbsorptionReversal
+            | StrategyId::LvnLiquidityVacuumBreakout
+            | StrategyId::CvdDivergenceReversal
+            | StrategyId::OrderBlockRetest
+            | StrategyId::LiquidationHunt
+    )
+}
+
 fn signal_is_reversal(id: Option<StrategyId>) -> bool {
     matches!(
         id,
@@ -321,7 +335,15 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (Str
     macro_rules! try_detect {
         ($name:literal, $id:expr, $expr:expr) => {
             // Filtro de sesión: descartar antes de pasar al scoring
-            if cfg.session_filter_enabled && !session_valid_for($id, current_session) {
+            if !subdimi_detector_allowed($id) {
+                rejections.push(format!("{}:SUBDIMI_ONLY_DISABLED", $name));
+                detector_log.push(DetectorSnap {
+                    name: $name.into(),
+                    status: DetectorStatus::Skip,
+                    missing: vec!["SUBDIMI_ONLY_DISABLED".into()],
+                    ..Default::default()
+                });
+            } else if cfg.session_filter_enabled && !session_valid_for($id, current_session) {
                 rejections.push(format!("{}:SESSION_INVALID", $name));
                 detector_log.push(DetectorSnap {
                     name: $name.into(),
@@ -415,13 +437,26 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (Str
         );
     } else {
         rejections.push("INST:NULL".into());
-        for name in ["LIQ", "FER", "SMD"] {
-            detector_log.push(DetectorSnap {
-                name: name.into(),
-                status: DetectorStatus::GlobalBlocked,
-                missing: vec!["INST:NULL".into()],
-                ..Default::default()
-            });
+        for (name, id) in [
+            ("LIQ", StrategyId::LiquidationHunt),
+            ("FER", StrategyId::FundingExhaustionReversal),
+            ("SMD", StrategyId::SmartMoneyDivergence),
+        ] {
+            if subdimi_detector_allowed(id) {
+                detector_log.push(DetectorSnap {
+                    name: name.into(),
+                    status: DetectorStatus::GlobalBlocked,
+                    missing: vec!["INST:NULL".into()],
+                    ..Default::default()
+                });
+            } else {
+                detector_log.push(DetectorSnap {
+                    name: name.into(),
+                    status: DetectorStatus::Skip,
+                    missing: vec!["SUBDIMI_ONLY_DISABLED".into()],
+                    ..Default::default()
+                });
+            }
         }
     }
 

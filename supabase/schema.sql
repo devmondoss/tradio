@@ -86,6 +86,14 @@ CREATE TABLE IF NOT EXISTS shadow_signals (
     htf_monthly_location    TEXT,             -- idem
     delta_velocity          DOUBLE PRECISION, -- OLS slope delta últimas 5 barras / ATR
 
+    -- Playbook reasoning Fase 1 (observador, no gate)
+    reasoning_version       TEXT,
+    primary_playbook        TEXT,
+    secondary_playbooks     JSONB,
+    reasoning_tags          JSONB,
+    reasoning_confidence    DOUBLE PRECISION,
+    reasoning_completeness  DOUBLE PRECISION,
+
     -- Contexto Subdimi adicional (raramente filtrado — guardado como blob)
     subdomi_ctx             JSONB
 );
@@ -277,6 +285,9 @@ CREATE INDEX IF NOT EXISTS idx_signals_regime
 CREATE INDEX IF NOT EXISTS idx_signals_institutional
     ON shadow_signals(short_liq_usd_5m, funding_percentile_30d, ls_divergence);
 
+CREATE INDEX IF NOT EXISTS idx_signals_playbook
+    ON shadow_signals(primary_playbook, reasoning_confidence, timestamp_ms DESC);
+
 CREATE INDEX IF NOT EXISTS idx_outcomes_signal
     ON signal_outcomes(signal_id);
 
@@ -353,6 +364,12 @@ SELECT
     s.auction_state,
     s.htf_weekly_location,
     s.htf_monthly_location,
+    s.reasoning_version,
+    s.primary_playbook,
+    s.secondary_playbooks,
+    s.reasoning_tags,
+    s.reasoning_confidence,
+    s.reasoning_completeness,
 
     o.close_reason,
     o.r_multiple,

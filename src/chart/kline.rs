@@ -1589,7 +1589,7 @@ impl KlineChart {
         let current_bar = self.bar_index;
 
         let (mut signal, detector_log) = router::route_strategy(&ctx, &cfg);
-        self.last_detector_log = detector_log;
+        self.last_detector_log = detector_log.clone();
 
         // Cooldown: suppress repeat signals from the same strategy within cooldown_bars.
         // Only the winning strategy enters cooldown — others remain available.
@@ -1616,7 +1616,13 @@ impl KlineChart {
             }
         }
 
-        logger::log_signal(&ctx, &signal);
+        let reasoning = data::strategy::playbook_reasoning::classify_playbook_reasoning(
+            &ctx,
+            &cfg,
+            &signal,
+            &detector_log,
+        );
+        logger::log_signal_with_reasoning(&ctx, &signal, &reasoning);
 
         let signal_fired = signal.action == StrategyAction::ShadowSignal;
         crate::strategy::intent_logger::log_near_misses(&ctx, &cfg, signal_fired);

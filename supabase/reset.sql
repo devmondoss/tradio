@@ -112,6 +112,15 @@ CREATE TABLE shadow_signals (
     htf_weekly_location     TEXT,
     htf_monthly_location    TEXT,
     delta_velocity          DOUBLE PRECISION,
+
+    -- Playbook reasoning Fase 1 (observador, no gate)
+    reasoning_version       TEXT,
+    primary_playbook        TEXT,
+    secondary_playbooks     JSONB,
+    reasoning_tags          JSONB,
+    reasoning_confidence    DOUBLE PRECISION,
+    reasoning_completeness  DOUBLE PRECISION,
+
     subdomi_ctx             JSONB
 );
 
@@ -296,6 +305,7 @@ CREATE INDEX idx_signals_strategy_time  ON shadow_signals(strategy, timestamp_ms
 CREATE INDEX idx_signals_action_time    ON shadow_signals(action, timestamp_ms DESC);
 CREATE INDEX idx_signals_regime         ON shadow_signals(regime_combined, strategy);
 CREATE INDEX idx_signals_institutional  ON shadow_signals(short_liq_usd_5m, funding_percentile_30d, ls_divergence);
+CREATE INDEX idx_signals_playbook       ON shadow_signals(primary_playbook, reasoning_confidence, timestamp_ms DESC);
 
 CREATE INDEX idx_outcomes_signal        ON signal_outcomes(signal_id);
 CREATE INDEX idx_outcomes_reason        ON signal_outcomes(close_reason, r_multiple);
@@ -358,6 +368,12 @@ SELECT
     s.auction_state,
     s.htf_weekly_location,
     s.htf_monthly_location,
+    s.reasoning_version,
+    s.primary_playbook,
+    s.secondary_playbooks,
+    s.reasoning_tags,
+    s.reasoning_confidence,
+    s.reasoning_completeness,
 
     -- Outcome del trade
     o.close_reason,

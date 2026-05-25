@@ -1,3 +1,4 @@
+use super::playbook_reasoning::PlaybookReasoning;
 use super::types::*;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -17,6 +18,22 @@ fn shadow_events_dir() -> PathBuf {
 /// - `strategy_rejected.jsonl` — Wait with LOW_SCORE (for threshold calibration)
 /// - `strategy_blocked.jsonl`  — Blocked by gate (for gate calibration)
 pub fn log_signal(ctx: &StrategyMarketContext, signal: &StrategySignal) {
+    log_signal_inner(ctx, signal, None);
+}
+
+pub fn log_signal_with_reasoning(
+    ctx: &StrategyMarketContext,
+    signal: &StrategySignal,
+    reasoning: &PlaybookReasoning,
+) {
+    log_signal_inner(ctx, signal, Some(reasoning));
+}
+
+fn log_signal_inner(
+    ctx: &StrategyMarketContext,
+    signal: &StrategySignal,
+    reasoning: Option<&PlaybookReasoning>,
+) {
     let filename = match signal.action {
         StrategyAction::ShadowSignal => "strategy_signals.jsonl",
         StrategyAction::Wait => "strategy_rejected.jsonl",
@@ -38,6 +55,7 @@ pub fn log_signal(ctx: &StrategyMarketContext, signal: &StrategySignal) {
         evidence: signal.evidence.clone(),
         missing: signal.missing.clone(),
         invalidation: signal.invalidation.clone(),
+        playbook_reasoning: reasoning.cloned(),
         context: SignalContext {
             price: ctx.price,
             vwap_session: ctx.vwap.vwap_session,
@@ -77,6 +95,7 @@ struct SignalLogEntry {
     evidence: Vec<String>,
     missing: Vec<String>,
     invalidation: Vec<String>,
+    playbook_reasoning: Option<PlaybookReasoning>,
     context: SignalContext,
 }
 

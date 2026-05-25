@@ -10,6 +10,7 @@ pub mod logger;
 pub mod mongo_config_loader;
 pub mod mongo_writer;
 pub mod paper;
+pub mod playbook_reasoning;
 pub mod router;
 pub mod scoring;
 pub mod target_selector;
