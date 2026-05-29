@@ -1,6 +1,6 @@
 # FlowSurface — Estado del Proyecto + Checklist por Capas
 
-*Última revisión: 2026-05-29 — sesión 5 (DRR implementado, micro-ventana conectada, sistema en acumulación activa)*
+*Última revisión: 2026-05-29 — sesión 6 (UI local con DRR range overlay + HUD panel, DB completamente migrada, sistema en acumulación activa)*
 
 ---
 
@@ -194,8 +194,11 @@ Lab
 
 | Estado | Archivo |
 |--------|---------|
-| ✅ | `supabase/migration_drr.sql` — 30 columnas DRR + reasoning + índices + vista ✅ ejecutado 2026-05-29 |
-| ✅ | `docs/migration_micro_windows.sql` — tabla micro_windows + vista v_micro_with_outcomes ✅ ejecutado 2026-05-29 |
+| ✅ | `supabase/migration_drr.sql` — 30 columnas DRR + reasoning + 5 índices + vista actualizada ✅ ejecutado 2026-05-29 |
+| ✅ | `docs/migration_micro_windows.sql` — tabla `micro_windows` + vista `v_micro_with_outcomes` ✅ ejecutado 2026-05-29 |
+| ✅ | `v_micro_with_outcomes` recreada con `DROP + CREATE` — incluye session_name, absorption_count, entry_type ✅ 2026-05-29 |
+| ✅ | DB limpieza completa — datos pre-DRR borrados (13 señales viejas), sistema arranca limpio |
+| ✅ | `micro_windows` acumulando — verificado 2 rows a los 23 min del primer deploy |
 
 ---
 
@@ -214,6 +217,9 @@ Lab
 | ✅ | OI Delta barras verde/rojo |
 | ✅ | Order Block overlay |
 | ✅ | **RangeDetector wired en UI** — `bootstrap_detectors()` + `on_kline_closed()` ✅ 2026-05-29 |
+| ✅ | **`draw_drr_range()`** — Range High/Low/Mid líneas dashed naranjas, no-trade zone sombreada (35-65%), triángulos de sweep, labels RH/RL/T ✅ 2026-05-29 |
+| ✅ | **`draw_drr_hud()`** — Panel HUD top-right: Regime (coloreado), Session/Phase, VPBias, AuctionState, Range state, Sweep, Absorb N/5 [F.B.C.X.S], CVD slope ✅ 2026-05-29 |
+| ✅ | **`DrrHudState`** — Snapshot del ctx en cada bar close para el panel HUD ✅ 2026-05-29 |
 
 ---
 
