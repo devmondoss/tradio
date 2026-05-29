@@ -90,33 +90,32 @@ CREATE INDEX IF NOT EXISTS idx_mw_created       ON micro_windows (created_at DES
 -- result_r viene de signal_outcomes.r_multiple (no de shadow_signals).
 -- LEFT JOIN doble: la señal puede estar abierta (sin outcome aún).
 -- =====================================================================
+-- shadow_signals NO tiene columna symbol — join solo por timestamp_ms.
+-- Columnas entry_type/absorption_count/session_name/session_phase
+-- solo existen después de correr migration_drr.sql.
 CREATE OR REPLACE VIEW v_micro_with_outcomes AS
 SELECT
     mw.*,
-    ss.id               AS signal_id,
+    ss.id            AS signal_id,
     ss.side,
     ss.score,
     ss.strategy,
-    ss.entry_type,
-    ss.absorption_count,
-    ss.session_name,
-    ss.session_phase,
     ss.entry_price,
     ss.stop_price,
     ss.target_price,
-    so.r_multiple       AS result_r,
+    ss.regime_combined,
+    so.r_multiple    AS result_r,
     so.close_reason,
     so.pnl_net_usd,
     so.mfe_r,
     so.mae_r,
     so.duration_ms,
     CASE
-        WHEN so.r_multiple IS NULL              THEN 'no_outcome_yet'
-        WHEN so.close_reason = 'TP1_PARTIAL'    THEN 'partial_win'
-        WHEN so.r_multiple > 0                  THEN 'win'
+        WHEN so.r_multiple IS NULL           THEN 'no_outcome_yet'
+        WHEN so.close_reason = 'TP1_PARTIAL' THEN 'partial_win'
+        WHEN so.r_multiple > 0               THEN 'win'
         ELSE 'loss'
     END AS outcome_bucket,
-    -- micro-shape buckets para segmentación rápida
     CASE
         WHEN mw.late_surge_ratio >= 1.6 THEN 'back_loaded'
         WHEN mw.late_surge_ratio <= 0.6 THEN 'front_loaded'
@@ -129,12 +128,11 @@ SELECT
     END AS delta_shape_bucket
 FROM micro_windows mw
 LEFT JOIN shadow_signals ss
-       ON ss.symbol       = mw.symbol
-      AND ss.timestamp_ms = mw.candle_open_ms   -- OPEN de vela = OPEN de vela (bar.time = kline open time)
+       ON ss.timestamp_ms = mw.candle_open_ms
       AND ss.action       = 'ShadowSignal'
 LEFT JOIN signal_outcomes so
-       ON so.signal_id = ss.id
-      AND so.is_partial = FALSE;                  -- solo cierre final, no TP1_PARTIAL
+       ON so.signal_id  = ss.id
+      AND so.is_partial = FALSE;
 
 -- =====================================================================
 -- QUERY DE VERIFICACIÓN (ejecutar después de crear la vista):
