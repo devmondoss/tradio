@@ -46,6 +46,7 @@ pub enum StrategyId {
     FundingExhaustionReversal,
     SmartMoneyDivergence,
     CvdDivergenceReversal,
+    DeltaRangeReversal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,6 +317,11 @@ pub struct StrategyMarketContext {
     /// None until at least one full week of data has accumulated.
     #[serde(default)]
     pub htf_vp: Option<crate::strategy::vp_open_bias::HtfVpContext>,
+
+    /// Intraday range context from RangeDetector (price-action based, not VP-based).
+    /// None during warmup (<20 bars inside range) or when no valid range is detected.
+    #[serde(default)]
+    pub range: Option<crate::detectors::range_detector::RangeContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

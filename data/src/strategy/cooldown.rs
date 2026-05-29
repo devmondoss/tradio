@@ -46,6 +46,7 @@ fn strategy_key(id: StrategyId) -> u8 {
         StrategyId::FundingExhaustionReversal => 8,
         StrategyId::SmartMoneyDivergence => 9,
         StrategyId::CvdDivergenceReversal => 10,
+        StrategyId::DeltaRangeReversal => 11,
     }
 }
 

@@ -3,16 +3,17 @@ use crate::session::{TradingSession, classify_session};
 use super::auction_state::{AuctionState, AuctionStateContext};
 use super::vp_open_bias::DailyVpContext;
 use super::detectors::{
-    cvd_divergence_reversal, dom_imbalance_breakout, footprint_absorption_reversal,
-    funding_exhaustion_reversal, liquidation_hunt, lvn_liquidity_vacuum_breakout,
-    order_block_retest, session_open_breakout, smart_money_divergence,
-    toxic_flow_gate::toxic_flow_gate, value_area_failed_auction, vwap_value_pullback_continuation,
+    cvd_divergence_reversal, delta_range_reversal, dom_imbalance_breakout,
+    footprint_absorption_reversal, funding_exhaustion_reversal, liquidation_hunt,
+    lvn_liquidity_vacuum_breakout, order_block_retest, session_open_breakout,
+    smart_money_divergence, toxic_flow_gate::toxic_flow_gate, value_area_failed_auction,
+    vwap_value_pullback_continuation,
 };
 use super::scoring::{StrategyProfile, score_signal};
 use super::types::*;
 
 fn blocked_log(missing_reason: &str) -> Vec<DetectorSnap> {
-    let names = ["VAFA","LVN","DIB","SOB","OBR","FAR","VWAP","CDR","LIQ","FER","SMD"];
+    let names = ["DRR","VAFA","LVN","DIB","SOB","OBR","FAR","VWAP","CDR","LIQ","FER","SMD"];
     names.iter().map(|&n| DetectorSnap {
         name: n.into(),
         status: DetectorStatus::GlobalBlocked,
@@ -29,6 +30,11 @@ fn blocked_log(missing_reason: &str) -> Vec<DetectorSnap> {
 /// Retorna `true` si la sesión activa es válida para ejecutar esa estrategia.
 fn session_valid_for(id: StrategyId, session: TradingSession) -> bool {
     match id {
+        // DRR: rangos intradía se forman y operan mejor en sesiones líquidas
+        StrategyId::DeltaRangeReversal => matches!(
+            session,
+            TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
+        ),
         // VAFA requiere liquidez real para acceptance/rejection
         StrategyId::ValueAreaFailedAuction => matches!(
             session,
@@ -84,6 +90,7 @@ fn session_valid_for(id: StrategyId, session: TradingSession) -> bool {
 
 fn detector_name_for(id: Option<StrategyId>) -> &'static str {
     match id {
+        Some(StrategyId::DeltaRangeReversal) => "DRR",
         Some(StrategyId::ValueAreaFailedAuction) => "VAFA",
         Some(StrategyId::LvnLiquidityVacuumBreakout) => "LVN",
         Some(StrategyId::DomImbalanceBreakout) => "DIB",
@@ -99,24 +106,17 @@ fn detector_name_for(id: Option<StrategyId>) -> &'static str {
     }
 }
 
-/// Current production mode is Subdimi-only. Non-Subdimi detectors remain in the
-/// codebase for research/backtesting, but they cannot compete in the live router.
+/// Current production mode: DeltaRangeReversal is the sole live strategy.
+/// All other detectors remain in the codebase for research but cannot compete in the router.
 fn subdimi_detector_allowed(id: StrategyId) -> bool {
-    matches!(
-        id,
-        StrategyId::ValueAreaFailedAuction
-            | StrategyId::FootprintAbsorptionReversal
-            | StrategyId::LvnLiquidityVacuumBreakout
-            | StrategyId::CvdDivergenceReversal
-            | StrategyId::OrderBlockRetest
-            | StrategyId::LiquidationHunt
-    )
+    matches!(id, StrategyId::DeltaRangeReversal)
 }
 
 fn signal_is_reversal(id: Option<StrategyId>) -> bool {
     matches!(
         id,
-        Some(StrategyId::ValueAreaFailedAuction)
+        Some(StrategyId::DeltaRangeReversal)
+            | Some(StrategyId::ValueAreaFailedAuction)
             | Some(StrategyId::FootprintAbsorptionReversal)
             | Some(StrategyId::CvdDivergenceReversal)
             | Some(StrategyId::FundingExhaustionReversal)
@@ -377,6 +377,11 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (Str
         };
     }
 
+    try_detect!(
+        "DRR",
+        StrategyId::DeltaRangeReversal,
+        delta_range_reversal::detect(ctx, cfg)
+    );
     try_detect!(
         "VAFA",
         StrategyId::ValueAreaFailedAuction,

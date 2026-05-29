@@ -7,10 +7,6 @@
 ///   SUPABASE_URL  — https://[PROJECT].supabase.co
 ///   SUPABASE_KEY  — service_role key (bypasses RLS)
 use data::strategy::{
-    lab::types::{
-        BlockReason, HorizonOutcome, LabOutcome, LabSignal, OutcomeStatus,
-        StrategyRuntimeStatus,
-    },
     paper::ClosedTrade,
     playbook_reasoning::PlaybookReasoning,
     types::{StrategyAction, StrategyMarketContext, StrategySignal},
@@ -217,59 +213,16 @@ impl SupabaseWriter {
         }
     }
 
-    // ── Lab tables ────────────────────────────────────────────────────────────
+    // ── Subdimi Parallel Observer ─────────────────────────────────────────────
 
-    /// Inserts a LabSignal into lab_signals. Returns the Supabase UUID on success.
-    /// The UUID is needed to link lab_outcomes rows (signal_id FK).
-    /// Returns None on failure — the signal is lost but the monitor keeps running.
-    pub async fn write_lab_signal(&self, signal: &LabSignal) -> Option<String> {
-        let body = build_lab_signal_row(signal);
-        let url = format!("{}/rest/v1/lab_signals", self.url);
-        let result = self
-            .client
-            .post(&url)
-            .header("apikey", &self.key)
-            .header("Authorization", format!("Bearer {}", self.key))
-            .header("Content-Type", "application/json")
-            .header("Prefer", "return=representation")
-            .json(&body)
-            .send()
-            .await;
-
-        match result {
-            Err(e) => {
-                eprintln!("[supabase] POST lab_signals failed: {e}");
-                None
-            }
-            Ok(r) if !r.status().is_success() => {
-                let status = r.status();
-                let text = r.text().await.unwrap_or_default();
-                eprintln!("[supabase] POST lab_signals error {status}: {text}");
-                None
-            }
-            Ok(r) => {
-                let json: Value = r.json().await.unwrap_or(Value::Null);
-                json.as_array()
-                    .and_then(|arr| arr.first())
-                    .and_then(|row| row.get("id"))
-                    .and_then(|id| id.as_str())
-                    .map(|s| s.to_string())
-            }
-        }
-    }
-
-    /// Inserts a completed LabOutcome into lab_outcomes. Fire-and-forget.
-    /// signal_uuid links this outcome to its lab_signals row (FK).
-    pub fn write_lab_outcome(&self, outcome: &LabOutcome, signal_uuid: Option<String>) {
-        let Some(uuid) = signal_uuid else {
-            eprintln!("[supabase] write_lab_outcome skipped — no signal_uuid");
+    /// Writes a Subdimi parallel signal to lab_signals for comparison against DRR Core.
+    /// Fire-and-forget — failures are logged but never crash the monitor.
+    pub async fn write_parallel_signal(&self, signal: &StrategySignal) {
+        if signal.action != StrategyAction::ShadowSignal {
             return;
-        };
-        let body = build_lab_outcome_row(outcome, &uuid);
-        let writer = self.clone();
-        tokio::spawn(async move {
-            writer.post("lab_outcomes", &body).await;
-        });
+        }
+        let body = build_parallel_signal_row(signal);
+        self.post("lab_signals", &body).await;
     }
 
     async fn post(&self, table: &str, body: &Value) {
@@ -345,6 +298,109 @@ fn build_signal_row(
     }));
 
     // Subdomi JSONB — contextual fields not worth individual columns
+    // ── Bloque 1: Tiempo y sesión ─────────────────────────────────────────────
+    let hour_utc = ((ctx.timestamp_ms / 1000) % 86_400 / 3600) as i16;
+    let minute_utc = (((ctx.timestamp_ms / 1000) % 86_400) % 3600 / 60) as i32;
+    let day_of_week = ((ctx.timestamp_ms / 86_400_000 + 3) % 7 + 1) as i16; // 1=Mon 7=Sun
+    let session_name = ctx.session.as_ref().map(|s| format!("{:?}", s.session));
+    let session_phase = ctx.session.as_ref().map(|s| format!("{:?}", s.phase));
+    let minutes_since_session_open: Option<i16> = ctx.session.as_ref().map(|s| {
+        use data::session::TradingSession;
+        let start = match s.session {
+            TradingSession::Asia             =>  0 * 60,
+            TradingSession::London           =>  7 * 60,
+            TradingSession::LondonNyOverlap  => 12 * 60,
+            TradingSession::NewYork          => 13 * 60 + 30,
+            TradingSession::Off              =>  0,
+        };
+        let current = hour_utc as i32 * 60 + minute_utc;
+        (current - start).max(0) as i16
+    });
+
+    // ── Bloque 2: Calidad del rango ────────────────────────────────────────────
+    let range_midline_slope = ctx.range.as_ref().map(|r| r.midline_slope);
+    let range_bars_inside   = ctx.range.as_ref().map(|r| r.bars_inside as i32);
+    let range_second_test = {
+        let is_long = signal.side.map(|s| matches!(s, data::strategy::types::Side::Long)).unwrap_or(false);
+        ctx.range.as_ref().map(|r| if is_long { r.touches_low >= 2 } else { r.touches_high >= 2 })
+    };
+    let range_vs_value_area: Option<&str> = match (ctx.volume_profile.vah, ctx.volume_profile.val, ctx.range.as_ref()) {
+        (Some(vah), Some(val), Some(r)) => {
+            if r.range_low >= val && r.range_high <= vah       { Some("inside_va") }
+            else if r.range_low >= vah                         { Some("above_va") }
+            else if r.range_high <= val                        { Some("below_va") }
+            else                                               { Some("spanning_va") }
+        }
+        _ => None,
+    };
+
+    // ── Bloque 3: Calidad de absorción ────────────────────────────────────────
+    let is_long_signal = signal.side.map(|s| matches!(s, data::strategy::types::Side::Long)).unwrap_or(false);
+    let absorption_count: i16 = if is_long_signal {
+        [
+            ctx.flow.footprint_absorption == data::strategy::types::AbsorptionSide::Bid,
+            ctx.flow.big_trade_bearish,
+            matches!(ctx.flow.cvd_divergence, Some(data::strategy::types::CvdDivergence::BullishAbsorption)),
+            ctx.flow.finish_action_bullish,
+            ctx.range.as_ref().map(|r| r.sweep_range_low).unwrap_or(false),
+        ].iter().filter(|&&b| b).count() as i16
+    } else {
+        [
+            ctx.flow.footprint_absorption == data::strategy::types::AbsorptionSide::Ask,
+            ctx.flow.big_trade_bullish,
+            matches!(ctx.flow.cvd_divergence, Some(data::strategy::types::CvdDivergence::BearishAbsorption)),
+            ctx.flow.finish_action_bearish,
+            ctx.range.as_ref().map(|r| r.sweep_range_high).unwrap_or(false),
+        ].iter().filter(|&&b| b).count() as i16
+    };
+    let entry_type: Option<&str> = ctx.range.as_ref().map(|r| {
+        if is_long_signal { if r.sweep_range_low { "sweep_reclaim" } else { "near_extreme" } }
+        else              { if r.sweep_range_high { "sweep_reclaim" } else { "near_extreme" } }
+    });
+    let sweep_depth_atr = ctx.range.as_ref().and_then(|r| {
+        let depth = if is_long_signal { r.sweep_low_depth } else { r.sweep_high_depth };
+        depth.zip(ctx.atr).map(|(d, a)| d / a)
+    });
+    let delta_at_extreme = ctx.flow.delta;
+    let bar_volume = ctx.flow.buy_volume.zip(ctx.flow.sell_volume).map(|(b, s)| b + s);
+
+    // ── Bloque 4: Contexto de precio y estructura ─────────────────────────────
+    let value_location  = Some(format!("{:?}", ctx.volume_profile.value_location));
+    let price_vs_vwap   = Some(format!("{:?}", ctx.vwap.price_vs_vwap));
+    let price_vs_avwap_bos = Some(format!("{:?}", ctx.vwap.price_vs_avwap_bos));
+    let naked_poc_in_target_path = signal.entry_price.zip(signal.target_price).map(|(e, t)| {
+        let (lo, hi) = if t > e { (e, t) } else { (t, e) };
+        ctx.volume_profile.naked_pocs.iter().any(|&p| p > lo && p < hi)
+    });
+    let hvn_between_entry_target = signal.entry_price.zip(signal.target_price).map(|(e, t)| {
+        let (lo, hi) = if t > e { (e, t) } else { (t, e) };
+        ctx.volume_profile.hvn_nearby.iter().any(|&h| h > lo && h < hi)
+    });
+    let fast_slope_at_entry = ctx.flow.fast_slope;
+
+    // ── Bloque 5: Institucional compacto ─────────────────────────────────────
+    let oi_direction = ctx.flow.oi_momentum_aligned.map(|aligned| if aligned { "aligned" } else { "opposed" });
+    let cvd_div_persist = ctx.flow.cvd_divergence_persistence;
+    let vpin_val = ctx.flow.vpin;
+    let funding_velocity_val = inst.map(|i| i.funding.velocity);
+
+    // ── Bloque 6: Calidad del trade ───────────────────────────────────────────
+    let rr_actual = signal.entry_price.zip(signal.stop_price).zip(signal.target_price)
+        .map(|((e, s), t)| { let risk = (e - s).abs(); let rew = (t - e).abs(); if risk > 1e-10 { rew / risk } else { 0.0 } });
+    let distance_to_target_atr = signal.entry_price.zip(signal.target_price).zip(ctx.atr)
+        .map(|((e, t), a)| (t - e).abs() / a);
+    let distance_to_stop_atr = signal.entry_price.zip(signal.stop_price).zip(ctx.atr)
+        .map(|((e, s), a)| (e - s).abs() / a);
+    let obstacle_hvn_count: Option<i16> = signal.entry_price.zip(signal.target_price).map(|(e, t)| {
+        let (lo, hi) = if t > e { (e, t) } else { (t, e) };
+        ctx.volume_profile.hvn_nearby.iter().filter(|&&h| h > lo && h < hi).count() as i16
+    });
+    let nearest_naked_poc_dist_atr = ctx.atr.and_then(|a| {
+        ctx.volume_profile.naked_pocs.iter()
+            .map(|&p| (p - ctx.price).abs() / a)
+            .min_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
     let subdomi_ctx = json!({
         "naked_poc_count":            ctx.volume_profile.naked_pocs.len(),
         "single_print_count":         ctx.volume_profile.single_prints.len(),
@@ -440,88 +496,83 @@ fn build_signal_row(
         "reasoning_completeness":  reasoning.map(|r| r.completeness),
 
         // Subdimi contexto blob
+        // DRR — contexto del rango intradío
+        "range_high":         ctx.range.as_ref().map(|r| r.range_high),
+        "range_low":          ctx.range.as_ref().map(|r| r.range_low),
+        "range_mid":          ctx.range.as_ref().map(|r| r.range_mid),
+        "range_poc":          ctx.range.as_ref().and_then(|r| r.range_poc),
+        "range_size_atr":     ctx.range.as_ref().map(|r| r.range_size_atr),
+        "range_location":     ctx.range.as_ref().map(|r| format!("{:?}", r.location)),
+        "range_touches_high": ctx.range.as_ref().map(|r| r.touches_high),
+        "range_touches_low":  ctx.range.as_ref().map(|r| r.touches_low),
+        "range_sweep_low":    ctx.range.as_ref().map(|r| r.sweep_range_low),
+        "range_sweep_high":   ctx.range.as_ref().map(|r| r.sweep_range_high),
+
+        // Bloque 1: Tiempo y sesión
+        "session_name":               session_name,
+        "session_phase":              session_phase,
+        "hour_utc":                   hour_utc,
+        "day_of_week":                day_of_week,
+        "minutes_since_session_open": minutes_since_session_open,
+
+        // Bloque 2: Calidad del rango
+        "range_midline_slope": range_midline_slope,
+        "range_bars_inside":   range_bars_inside,
+        "range_second_test":   range_second_test,
+        "range_vs_value_area": range_vs_value_area,
+
+        // Bloque 3: Absorción / trigger
+        "absorption_count": absorption_count,
+        "entry_type":        entry_type,
+        "sweep_depth_atr":   sweep_depth_atr,
+        "delta_at_extreme":  delta_at_extreme,
+        "bar_volume":        bar_volume,
+
+        // Bloque 4: Contexto de precio y estructura
+        "value_location":            value_location,
+        "price_vs_vwap":             price_vs_vwap,
+        "price_vs_avwap_bos":        price_vs_avwap_bos,
+        "naked_poc_in_target_path":  naked_poc_in_target_path,
+        "hvn_between_entry_target":  hvn_between_entry_target,
+        "fast_slope_at_entry":       fast_slope_at_entry,
+
+        // Bloque 5: Institucional compacto
+        "oi_direction":               oi_direction,
+        "cvd_divergence_persistence": cvd_div_persist,
+        "vpin":                       vpin_val,
+        "funding_velocity":           funding_velocity_val,
+
+        // Bloque 6: Calidad del trade
+        "rr_actual":                  rr_actual,
+        "distance_to_target_atr":     distance_to_target_atr,
+        "distance_to_stop_atr":       distance_to_stop_atr,
+        "obstacle_hvn_count":         obstacle_hvn_count,
+        "nearest_naked_poc_dist_atr": nearest_naked_poc_dist_atr,
+
+
+        // Subdomi contexto blob
         "subdomi_ctx":            subdomi_ctx,
     })
 }
 
-fn build_lab_signal_row(signal: &LabSignal) -> Value {
-    let snap = &signal.snapshot;
-
-    let status_str = match &signal.status {
-        StrategyRuntimeStatus::Asleep => "Asleep".to_string(),
-        StrategyRuntimeStatus::Observed => "Observed".to_string(),
-        StrategyRuntimeStatus::ShadowSignal => "ShadowSignal".to_string(),
-        StrategyRuntimeStatus::Blocked { .. } => "Blocked".to_string(),
-    };
-    let block_reason = match &signal.status {
-        StrategyRuntimeStatus::Blocked { reason } => Some(match reason {
-            BlockReason::SessionFilter => "SessionFilter".to_string(),
-            BlockReason::DataQuality { .. } => "DataQuality".to_string(),
-            BlockReason::SpreadGate => "SpreadGate".to_string(),
-            BlockReason::RegimeStress => "RegimeStress".to_string(),
-            BlockReason::CooldownActive => "CooldownActive".to_string(),
-            BlockReason::RRTooLow { .. } => "RRTooLow".to_string(),
-            BlockReason::LiqInstability => "LiqInstability".to_string(),
-        }),
-        _ => None,
-    };
-
-    // Serialize the full snapshot as jsonb
-    let snapshot_value = serde_json::to_value(snap).unwrap_or(Value::Null);
-
+fn build_parallel_signal_row(signal: &StrategySignal) -> Value {
     json!({
-        "id":            signal.signal_id.to_string(),
-        "strategy_id":   signal.strategy_id.as_str(),
-        "status":        status_str,
-        "maturity":      format!("{:?}", signal.maturity),
-        "timestamp_ms":  signal.timestamp_ms,
-        "action":        signal.action.map(|a| format!("{a:?}")),
-        "entry_price":   signal.entry_price,
-        "target":        signal.target,
-        "stop":          signal.stop,
-        "rr":            signal.rr,
-        "confidence":    signal.confidence,
-        "missing_data":  signal.missing_data,
-        "block_reason":  block_reason,
-        "snapshot":      snapshot_value,
-    })
-}
-
-fn build_lab_outcome_row(outcome: &LabOutcome, signal_uuid: &str) -> Value {
-    fn horizon_json(h: &Option<HorizonOutcome>) -> Value {
-        match h {
-            None => Value::Null,
-            Some(h) => json!({
-                "price": h.price_at_horizon,
-                "r":     h.r_achieved,
-                "correct": h.direction_correct,
-            }),
-        }
-    }
-
-    let final_status = outcome.final_status.as_ref().map(|s| match s {
-        OutcomeStatus::TargetHit => "TargetHit".to_string(),
-        OutcomeStatus::StopHit => "StopHit".to_string(),
-        OutcomeStatus::TtlExpired { .. } => "TtlExpired".to_string(),
-        OutcomeStatus::StillOpen => "StillOpen".to_string(),
-    });
-
-    json!({
-        "signal_id":     signal_uuid,
-        "strategy_id":   outcome.strategy_id.as_str(),
-        "entry_price":   outcome.entry_price,
-        "target":        outcome.target,
-        "stop":          outcome.stop,
-        "side":          format!("{:?}", outcome.side),
-        "outcome_30s":   horizon_json(&outcome.outcome_30s),
-        "outcome_1m":    horizon_json(&outcome.outcome_1m),
-        "outcome_3m":    horizon_json(&outcome.outcome_3m),
-        "outcome_5m":    horizon_json(&outcome.outcome_5m),
-        "outcome_15m":   horizon_json(&outcome.outcome_15m),
-        "outcome_ttl":   horizon_json(&outcome.outcome_ttl),
-        "mfe":           outcome.mfe,
-        "mae":           outcome.mae,
-        "final_status":  final_status,
+        "strategy_id":  signal.strategy_id.map(|id| format!("{id:?}")),
+        "status":       "ShadowSignal",
+        "maturity":     "SubdimiParallel",
+        "timestamp_ms": signal.created_at_ms,
+        "action":       format!("{:?}", signal.action),
+        "entry_price":  signal.entry_price,
+        "target":       signal.target_price,
+        "stop":         signal.stop_price,
+        "rr": {
+            let risk   = signal.entry_price.zip(signal.stop_price).map(|(e, s)| (e - s).abs()).unwrap_or(0.0);
+            let reward = signal.entry_price.zip(signal.target_price).map(|(e, t)| (t - e).abs()).unwrap_or(0.0);
+            if risk > 0.0 { Some(reward / risk) } else { None }
+        },
+        "confidence":   signal.score,
+        "missing_data": signal.missing.join(", "),
+        "snapshot":     serde_json::to_value(&signal.evidence).unwrap_or(Value::Null),
     })
 }
 

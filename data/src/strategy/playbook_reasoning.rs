@@ -1077,6 +1077,11 @@ fn classify_detector_role(
             s.smart_money_fade += 0.24;
             s.institutional_exhaustion += 0.08;
         }
+        StrategyId::DeltaRangeReversal => {
+            s.trapped += 0.20;
+            s.failed_auction += 0.10;
+            s.footprint_absorption += 0.08;
+        }
     }
 
     for det in detector_log {
@@ -1277,6 +1282,7 @@ fn detector_name(id: StrategyId) -> &'static str {
         StrategyId::FundingExhaustionReversal => "fer",
         StrategyId::SmartMoneyDivergence => "smd",
         StrategyId::CvdDivergenceReversal => "cdr",
+        StrategyId::DeltaRangeReversal => "drr",
     }
 }
 

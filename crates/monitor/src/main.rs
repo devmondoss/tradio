@@ -37,7 +37,7 @@ use tokio_rustls::{
     rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName},
 };
 
-use data::detectors::{FvgContext, FvgDetector, OrderBlockContext, OrderBlockDetector, SpoofDetector};
+use data::detectors::{FvgContext, FvgDetector, OrderBlockContext, OrderBlockDetector, RangeContext, RangeDetector, SpoofDetector};
 use data::chart::kline::KlineTrades;
 use data::institutional::{
     FundingRateSample, FundingTracker, InstitutionalContext, LiqMapSnapshot, LiqMapTracker,
@@ -58,8 +58,8 @@ use data::strategy::{
         wall_nearby, SWING_CONFIRM_BARS,
     },
     intent_logger::collect_near_misses,
-    lab::{LabConfig, LabTracker, run_strategy_lab},
     paper::PaperAccount,
+    subdimi_parallel::run_subdimi_parallel,
     playbook_reasoning::classify_playbook_reasoning,
     router::route_strategy,
     types::{
@@ -414,6 +414,8 @@ struct FrozenBarCtx {
     bar_close_price: f64,
     // VP open bias (frozen at bar close, stable for intrabar evals within same bar)
     vp_open_bias: Option<data::strategy::vp_open_bias::DailyVpContext>,
+    // Intraday range (frozen at bar close)
+    range: Option<RangeContext>,
 }
 
 impl PipelineMetrics {
@@ -560,6 +562,7 @@ struct BarState {
     ms_tracker: MarketStructureTracker,
     ob_detector: OrderBlockDetector,
     fvg_detector: FvgDetector,
+    range_detector: RangeDetector,
     liq_map_tracker: LiqMapTracker,
     liq_map_snapshot: Option<LiqMapSnapshot>,
     last_taker_ratio: Option<TakerRatioSnapshot>,
@@ -603,9 +606,6 @@ struct BarState {
     vpin_history: VecDeque<f64>,
     // Consecutive bars of CVD-vs-price divergence (positive=bearish, negative=bullish, 0=aligned)
     cvd_divergence_bars: i32,
-    // Lab outcome tracker — tracks open LabSignals and resolves them bar by bar
-    lab_tracker: LabTracker,
-    lab_cfg: LabConfig,
     // VP open bias tracker — classifies daily session open vs previous day's value area
     vp_bias_tracker: data::strategy::vp_open_bias::DailyVpTracker,
     // Naked POC tracker — tracks previous-session POCs not yet revisited by price
@@ -647,6 +647,7 @@ impl BarState {
             ms_tracker: MarketStructureTracker::new(100, 2),
             ob_detector: OrderBlockDetector::new(100),
             fvg_detector: FvgDetector::new(100),
+            range_detector: RangeDetector::new(),
             liq_map_tracker: LiqMapTracker::new(),
             liq_map_snapshot: None,
             last_taker_ratio: None,
@@ -675,8 +676,6 @@ impl BarState {
             prev_obi_l5: 0.0,
             vpin_history: VecDeque::with_capacity(51),
             cvd_divergence_bars: 0,
-            lab_tracker: LabTracker::new(50),
-            lab_cfg: LabConfig::from_env(),
             vp_bias_tracker: data::strategy::vp_open_bias::DailyVpTracker::new(),
             naked_poc_tracker: data::strategy::vp_open_bias::NakedPocTracker::new(10),
             htf_weekly_tracker: data::strategy::vp_open_bias::HtfVpTracker::new_weekly(),
@@ -999,6 +998,7 @@ impl BarState {
             auction_state: None, // not recomputed intrabar
             vp_open_bias: frozen.vp_open_bias.clone(),
             htf_vp: None, // not recomputed intrabar
+            range: frozen.range.clone(),
         }
     }
 
@@ -1532,6 +1532,10 @@ impl BarState {
         let order_blocks = self.ob_detector.snapshot(c);
         self.fvg_detector.push_bar(h, l, bar_ms);
         let fvg = self.fvg_detector.snapshot(c);
+        self.range_detector.push_bar(h, l, c);
+        let vp_poc = self.vp.poc();
+        let atr_for_range = self.atr_wilder.current().unwrap_or(0.0);
+        let range_ctx = self.range_detector.compute(c, atr_for_range, vp_poc);
         let session = classify_session(bar_ms);
 
         let current_oi = self
@@ -1629,6 +1633,7 @@ impl BarState {
                     None
                 }
             },
+            range: if range_ctx.valid { Some(range_ctx.clone()) } else { None },
         };
         // Auction state requires the full context, so classify after building it
         let auction = data::strategy::auction_state::classify(&ctx);
@@ -1649,22 +1654,14 @@ impl BarState {
         // Resolve outcomes that are at least one bar (5m) old
         self.resolve_outcomes(bar_ms, c);
 
-        // ── Strategy Lab ─────────────────────────────────────────────────────
-        let lab_signals = run_strategy_lab(&ctx, &cfg, &self.lab_cfg);
-        for lab_sig in &lab_signals {
-            self.lab_tracker.push(lab_sig);
-            // Bug #3 fix: persist ShadowSignals to Supabase lab_signals table
+        // ── Subdimi Parallel Observer ─────────────────────────────────────────
+        // Runs the 6 Subdimi detectors in parallel (no winner-takes-all).
+        // Signals are logged to lab_signals for comparison against DRR Core.
+        let parallel_signals = run_subdimi_parallel(&ctx, &cfg);
+        for sig in &parallel_signals {
             if let Some(sb) = self.supabase.clone() {
-                let sig = lab_sig.clone();
-                tokio::spawn(async move { sb.write_lab_signal(&sig).await; });
-            }
-        }
-        let completed_outcomes = self.lab_tracker.on_bar(h, l, c);
-        // Bug #2 fix: persist completed lab outcomes to Supabase lab_outcomes table
-        for outcome in completed_outcomes {
-            if let Some(sb) = self.supabase.clone() {
-                let uuid = Some(outcome.signal_id.to_string());
-                tokio::spawn(async move { sb.write_lab_outcome(&outcome, uuid); });
+                let sig = sig.clone();
+                tokio::spawn(async move { sb.write_parallel_signal(&sig).await; });
             }
         }
 
@@ -1846,6 +1843,7 @@ impl BarState {
             bar_close_ms: bar_ms,
             bar_close_price: c,
             vp_open_bias: vp_open_bias.clone(),
+            range: if range_ctx.valid { Some(range_ctx) } else { None },
         });
         self.bar_footprint.clear();
         self.intrabar_signal_fired = false;
@@ -2538,6 +2536,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
             .ob_detector
             .push_bar(open, high, low, close, volume, open_ms);
         state.fvg_detector.push_bar(high, low, open_ms);
+        state.range_detector.push_bar(high, low, close);
         let market_structure = state.ms_tracker.snapshot();
         let swing_high = market_structure.as_ref().and_then(|ms| ms.range_high);
         let swing_low = market_structure.as_ref().and_then(|ms| ms.range_low);

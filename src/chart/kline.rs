@@ -204,6 +204,8 @@ pub struct KlineChart {
     ob_context: Option<data::detectors::OrderBlockContext>,
     fvg_detector: data::detectors::FvgDetector,
     fvg_context: Option<data::detectors::FvgContext>,
+    range_detector: data::detectors::RangeDetector,
+    range_context: Option<data::detectors::RangeContext>,
     liq_map_tracker: data::institutional::LiqMapTracker,
     liq_map_snapshot: Option<data::institutional::LiqMapSnapshot>,
     funding_tracker: data::institutional::FundingTracker,
@@ -228,6 +230,8 @@ struct DetectorBootstrap {
     ob_context: Option<data::detectors::OrderBlockContext>,
     fvg_detector: data::detectors::FvgDetector,
     fvg_context: Option<data::detectors::FvgContext>,
+    range_detector: data::detectors::RangeDetector,
+    range_context: Option<data::detectors::RangeContext>,
     liq_map_tracker: data::institutional::LiqMapTracker,
     liq_map_snapshot: Option<data::institutional::LiqMapSnapshot>,
 }
@@ -236,6 +240,7 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
     let mut ms_tracker = data::structure::MarketStructureTracker::new(200, 3);
     let mut ob_detector = data::detectors::OrderBlockDetector::new(100);
     let mut fvg_detector = data::detectors::FvgDetector::new(100);
+    let mut range_detector = data::detectors::RangeDetector::new();
 
     for kline in klines {
         let o = kline.open.to_f32() as f64;
@@ -247,6 +252,7 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
         ms_tracker.push_bar(o, h, l, c, ts);
         ob_detector.push_bar(o, h, l, c, v, ts);
         fvg_detector.push_bar(h, l, ts);
+        range_detector.push_bar(h, l, c);
     }
 
     let last_price = klines
@@ -273,6 +279,16 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
     } else {
         None
     };
+    let range_context = {
+        // Use a placeholder ATR approximation for bootstrap; will be recomputed on first live bar.
+        let atr_approx = klines
+            .windows(2)
+            .map(|w| (w[1].high.to_f32() as f64 - w[1].low.to_f32() as f64).abs())
+            .sum::<f64>()
+            / klines.len().max(1) as f64;
+        let ctx = range_detector.compute(last_price, atr_approx, None);
+        if ctx.valid { Some(ctx) } else { None }
+    };
 
     let mut liq_map_tracker = data::institutional::LiqMapTracker::new();
     if let (Some(ms), true) = (&ms_snap, last_price > 0.0) {
@@ -288,6 +304,8 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
         ob_context,
         fvg_detector,
         fvg_context,
+        range_detector,
+        range_context,
         liq_map_tracker,
         liq_map_snapshot,
     }
@@ -401,6 +419,8 @@ impl KlineChart {
                     ob_context: boot.ob_context,
                     fvg_detector: boot.fvg_detector,
                     fvg_context: boot.fvg_context,
+                    range_detector: boot.range_detector,
+                    range_context: boot.range_context,
                     liq_map_tracker: boot.liq_map_tracker,
                     liq_map_snapshot: boot.liq_map_snapshot,
                     funding_tracker: data::institutional::FundingTracker::new(),
@@ -483,6 +503,8 @@ impl KlineChart {
                     ob_context: boot.ob_context,
                     fvg_detector: boot.fvg_detector,
                     fvg_context: boot.fvg_context,
+                    range_detector: boot.range_detector,
+                    range_context: boot.range_context,
                     liq_map_tracker: boot.liq_map_tracker,
                     liq_map_snapshot: boot.liq_map_snapshot,
                     funding_tracker: data::institutional::FundingTracker::new(),
@@ -890,6 +912,8 @@ impl KlineChart {
                         self.ob_context = boot.ob_context;
                         self.fvg_detector = boot.fvg_detector;
                         self.fvg_context = boot.fvg_context;
+                        self.range_detector = boot.range_detector;
+                        self.range_context = boot.range_context;
                         self.liq_map_tracker = boot.liq_map_tracker;
                         self.liq_map_snapshot = boot.liq_map_snapshot;
                     }
@@ -1461,6 +1485,7 @@ impl KlineChart {
             bar_open, bar_high, bar_low, bar_close, bar_volume, bar_ts_ms,
         );
         self.fvg_detector.push_bar(bar_high, bar_low, bar_ts_ms);
+        self.range_detector.push_bar(bar_high, bar_low, bar_close);
 
         let market_structure = self.ms_tracker.snapshot();
 
@@ -1489,6 +1514,25 @@ impl KlineChart {
         let fvg_snap = self.fvg_detector.snapshot(price);
         self.fvg_context = Some(fvg_snap.clone());
         let fvg = Some(fvg_snap);
+
+        let range = {
+            let atr_val = self.indicators[KlineIndicator::Atr]
+                .as_ref()
+                .and_then(|i| i.latest_atr())
+                .unwrap_or(0.0);
+            let vp_poc = self.indicators[KlineIndicator::VolumeProfile]
+                .as_ref()
+                .and_then(|i| i.latest_vol_profile_levels())
+                .map(|(poc, _, _)| poc);
+            let ctx = self.range_detector.compute(price, atr_val, vp_poc);
+            if ctx.valid {
+                self.range_context = Some(ctx.clone());
+                Some(ctx)
+            } else {
+                self.range_context = None;
+                None
+            }
+        };
 
         // Alimentar LiqMapTracker con swings del ms_context y OI actual
         {
@@ -1565,6 +1609,7 @@ impl KlineChart {
             auction_state: None,
             vp_open_bias: None,
             htf_vp: None,
+            range,
         };
 
         // Capas: TOML base → Mongo override por régimen (vía mongo_handles).

@@ -12,7 +12,7 @@
 
 DROP VIEW  IF EXISTS v_signals_with_outcomes;
 
-DROP TABLE IF EXISTS lab_outcomes;
+DROP TABLE IF EXISTS lab_outcomes;   -- ya no se usa (paralelo Subdimi no trackea outcomes)
 DROP TABLE IF EXISTS lab_signals;
 DROP TABLE IF EXISTS signal_outcomes;
 DROP TABLE IF EXISTS intrabar_outcomes;
@@ -120,6 +120,59 @@ CREATE TABLE shadow_signals (
     reasoning_tags          JSONB,
     reasoning_confidence    DOUBLE PRECISION,
     reasoning_completeness  DOUBLE PRECISION,
+
+    -- DRR — contexto del rango intradía
+    range_high              DOUBLE PRECISION,
+    range_low               DOUBLE PRECISION,
+    range_mid               DOUBLE PRECISION,
+    range_poc               DOUBLE PRECISION,
+    range_size_atr          DOUBLE PRECISION,
+    range_location          TEXT,
+    range_touches_high      INTEGER,
+    range_touches_low       INTEGER,
+    range_sweep_low         BOOLEAN,
+    range_sweep_high        BOOLEAN,
+
+    -- Bloque 1: Tiempo y sesión
+    session_name                TEXT,
+    session_phase               TEXT,
+    hour_utc                    SMALLINT,
+    day_of_week                 SMALLINT,
+    minutes_since_session_open  SMALLINT,
+
+    -- Bloque 2: Calidad del rango
+    range_midline_slope  DOUBLE PRECISION,
+    range_bars_inside    INTEGER,
+    range_second_test    BOOLEAN,
+    range_vs_value_area  TEXT,
+
+    -- Bloque 3: Calidad de absorción
+    absorption_count   SMALLINT,
+    entry_type         TEXT,
+    sweep_depth_atr    DOUBLE PRECISION,
+    delta_at_extreme   DOUBLE PRECISION,
+    bar_volume         DOUBLE PRECISION,
+
+    -- Bloque 4: Contexto de precio y estructura
+    value_location             TEXT,
+    price_vs_vwap              TEXT,
+    price_vs_avwap_bos         TEXT,
+    naked_poc_in_target_path   BOOLEAN,
+    hvn_between_entry_target   BOOLEAN,
+    fast_slope_at_entry        DOUBLE PRECISION,
+
+    -- Bloque 5: Institucional compacto
+    oi_direction               TEXT,
+    cvd_divergence_persistence SMALLINT,
+    vpin                       DOUBLE PRECISION,
+    funding_velocity           DOUBLE PRECISION,
+
+    -- Bloque 6: Calidad del trade
+    rr_actual                  DOUBLE PRECISION,
+    distance_to_target_atr     DOUBLE PRECISION,
+    distance_to_stop_atr       DOUBLE PRECISION,
+    obstacle_hvn_count         SMALLINT,
+    nearest_naked_poc_dist_atr DOUBLE PRECISION,
 
     subdomi_ctx             JSONB
 );
@@ -244,7 +297,8 @@ CREATE TABLE calibration_log (
     deployed_at         TIMESTAMPTZ
 );
 
--- Señales del Strategy Lab (todas las hipótesis, todos los estados)
+-- Señales del Subdimi Parallel Observer (los 6 detectores Subdimi corriendo en paralelo a DRR)
+-- maturity = 'SubdimiParallel' para distinguirlas de señales históricas del Lab
 CREATE TABLE lab_signals (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -262,27 +316,6 @@ CREATE TABLE lab_signals (
     missing_data    TEXT[],
     block_reason    TEXT,
     snapshot        JSONB NOT NULL
-);
-
--- Outcomes del Lab por horizonte temporal
-CREATE TABLE lab_outcomes (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    signal_id       UUID REFERENCES lab_signals(id) ON DELETE CASCADE,
-    strategy_id     TEXT NOT NULL,
-    entry_price     DOUBLE PRECISION NOT NULL,
-    target          DOUBLE PRECISION NOT NULL,
-    stop            DOUBLE PRECISION NOT NULL,
-    side            TEXT NOT NULL,
-    outcome_30s     JSONB,
-    outcome_1m      JSONB,
-    outcome_3m      JSONB,
-    outcome_5m      JSONB,
-    outcome_15m     JSONB,
-    outcome_ttl     JSONB,
-    mfe             DOUBLE PRECISION,
-    mae             DOUBLE PRECISION,
-    final_status    TEXT
 );
 
 -- Parámetros activos por régimen (leídos por el monitor Rust)
@@ -318,10 +351,14 @@ CREATE INDEX idx_snapshots_time         ON institutional_snapshots(timestamp_ms 
 CREATE INDEX idx_regime_history_time    ON regime_history(timestamp_ms DESC);
 CREATE INDEX idx_calibration_regime     ON calibration_log(regime, calibrated_at DESC);
 
+CREATE INDEX idx_signals_range_location ON shadow_signals(range_location, strategy, timestamp_ms DESC);
+CREATE INDEX idx_signals_session        ON shadow_signals(session_name, session_phase, strategy, timestamp_ms DESC);
+CREATE INDEX idx_signals_absorption     ON shadow_signals(absorption_count, entry_type, strategy);
+CREATE INDEX idx_signals_dow_hour       ON shadow_signals(day_of_week, hour_utc, strategy);
+CREATE INDEX idx_signals_playbook       ON shadow_signals(primary_playbook, reasoning_confidence, timestamp_ms DESC);
+
 CREATE INDEX idx_lab_signals_strategy   ON lab_signals(strategy_id, timestamp_ms DESC);
-CREATE INDEX idx_lab_signals_status     ON lab_signals(status, strategy_id);
-CREATE INDEX idx_lab_outcomes_signal    ON lab_outcomes(signal_id);
-CREATE INDEX idx_lab_outcomes_strategy  ON lab_outcomes(strategy_id, final_status);
+CREATE INDEX idx_lab_signals_status     ON lab_signals(status, maturity);
 
 -- ============================================================
 -- 4. VISTA ANALÍTICA
@@ -370,10 +407,20 @@ SELECT
     s.htf_monthly_location,
     s.reasoning_version,
     s.primary_playbook,
-    s.secondary_playbooks,
-    s.reasoning_tags,
     s.reasoning_confidence,
     s.reasoning_completeness,
+
+    -- DRR range context
+    s.range_high,
+    s.range_low,
+    s.range_mid,
+    s.range_poc,
+    s.range_size_atr,
+    s.range_location,
+    s.range_touches_high,
+    s.range_touches_low,
+    s.range_sweep_low,
+    s.range_sweep_high,
 
     -- Outcome del trade
     o.close_reason,

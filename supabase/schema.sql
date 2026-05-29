@@ -94,7 +94,60 @@ CREATE TABLE IF NOT EXISTS shadow_signals (
     reasoning_confidence    DOUBLE PRECISION,
     reasoning_completeness  DOUBLE PRECISION,
 
-    -- Contexto Subdimi adicional (raramente filtrado — guardado como blob)
+    -- DRR — contexto del rango intradía (price-action, no VP-based)
+    range_high              DOUBLE PRECISION,
+    range_low               DOUBLE PRECISION,
+    range_mid               DOUBLE PRECISION,
+    range_poc               DOUBLE PRECISION,
+    range_size_atr          DOUBLE PRECISION,
+    range_location          TEXT,
+    range_touches_high      INTEGER,
+    range_touches_low       INTEGER,
+    range_sweep_low         BOOLEAN,
+    range_sweep_high        BOOLEAN,
+
+    -- Bloque 1: Tiempo y sesión
+    session_name                TEXT,
+    session_phase               TEXT,
+    hour_utc                    SMALLINT,
+    day_of_week                 SMALLINT,
+    minutes_since_session_open  SMALLINT,
+
+    -- Bloque 2: Calidad del rango
+    range_midline_slope  DOUBLE PRECISION,
+    range_bars_inside    INTEGER,
+    range_second_test    BOOLEAN,
+    range_vs_value_area  TEXT,
+
+    -- Bloque 3: Calidad de absorción
+    absorption_count   SMALLINT,
+    entry_type         TEXT,
+    sweep_depth_atr    DOUBLE PRECISION,
+    delta_at_extreme   DOUBLE PRECISION,
+    bar_volume         DOUBLE PRECISION,
+
+    -- Bloque 4: Contexto de precio y estructura
+    value_location             TEXT,
+    price_vs_vwap              TEXT,
+    price_vs_avwap_bos         TEXT,
+    naked_poc_in_target_path   BOOLEAN,
+    hvn_between_entry_target   BOOLEAN,
+    fast_slope_at_entry        DOUBLE PRECISION,
+
+    -- Bloque 5: Institucional compacto
+    oi_direction               TEXT,
+    cvd_divergence_persistence SMALLINT,
+    vpin                       DOUBLE PRECISION,
+    funding_velocity           DOUBLE PRECISION,
+
+    -- Bloque 6: Calidad del trade
+    rr_actual                  DOUBLE PRECISION,
+    distance_to_target_atr     DOUBLE PRECISION,
+    distance_to_stop_atr       DOUBLE PRECISION,
+    obstacle_hvn_count         SMALLINT,
+    nearest_naked_poc_dist_atr DOUBLE PRECISION,
+
+    -- Contexto Subdimi adicional (blob)
     subdomi_ctx             JSONB
 );
 
@@ -288,6 +341,18 @@ CREATE INDEX IF NOT EXISTS idx_signals_institutional
 CREATE INDEX IF NOT EXISTS idx_signals_playbook
     ON shadow_signals(primary_playbook, reasoning_confidence, timestamp_ms DESC);
 
+CREATE INDEX IF NOT EXISTS idx_signals_range_location
+    ON shadow_signals(range_location, strategy, timestamp_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_signals_session
+    ON shadow_signals(session_name, session_phase, strategy, timestamp_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_signals_absorption
+    ON shadow_signals(absorption_count, entry_type, strategy);
+
+CREATE INDEX IF NOT EXISTS idx_signals_dow_hour
+    ON shadow_signals(day_of_week, hour_utc, strategy);
+
 CREATE INDEX IF NOT EXISTS idx_outcomes_signal
     ON signal_outcomes(signal_id);
 
@@ -341,19 +406,58 @@ SELECT
     s.atr,
     s.spread_bps,
 
-    s.short_liq_usd_5m,
-    s.long_liq_usd_5m,
-    s.cascade_active,
-    s.top_traders_long_pct,
-    s.retail_long_pct,
-    s.ls_divergence,
-    s.divergence_signal,
-    s.oi_change_30m_pct,
-    s.oi_trend,
-    s.funding_current,
-    s.funding_regime,
-    s.funding_percentile_30d,
-    s.taker_imbalance,
+    -- Bloque 1: Tiempo / sesión
+    s.session_name,
+    s.session_phase,
+    s.hour_utc,
+    s.day_of_week,
+    s.minutes_since_session_open,
+
+    -- Bloque 2: Calidad del rango
+    s.range_high,
+    s.range_low,
+    s.range_mid,
+    s.range_poc,
+    s.range_size_atr,
+    s.range_location,
+    s.range_touches_high,
+    s.range_touches_low,
+    s.range_sweep_low,
+    s.range_sweep_high,
+    s.range_midline_slope,
+    s.range_bars_inside,
+    s.range_second_test,
+    s.range_vs_value_area,
+
+    -- Bloque 3: Absorción / trigger
+    s.absorption_count,
+    s.entry_type,
+    s.sweep_depth_atr,
+    s.delta_at_extreme,
+    s.bar_volume,
+
+    -- Bloque 4: Contexto de precio
+    s.value_location,
+    s.price_vs_vwap,
+    s.price_vs_avwap_bos,
+    s.naked_poc_in_target_path,
+    s.hvn_between_entry_target,
+    s.fast_slope_at_entry,
+
+    -- Bloque 5: Institucional compacto
+    s.oi_direction,
+    s.cvd_divergence_persistence,
+    s.vpin,
+    s.funding_velocity,
+
+    -- Bloque 6: Calidad del trade
+    s.rr_actual,
+    s.distance_to_target_atr,
+    s.distance_to_stop_atr,
+    s.obstacle_hvn_count,
+    s.nearest_naked_poc_dist_atr,
+
+    -- Contexto Subdimi base
     s.cvd_slope,
     s.delta_velocity,
     s.finish_action,
@@ -366,34 +470,70 @@ SELECT
     s.htf_monthly_location,
     s.reasoning_version,
     s.primary_playbook,
-    s.secondary_playbooks,
-    s.reasoning_tags,
     s.reasoning_confidence,
     s.reasoning_completeness,
 
+    -- Institucional
+    s.short_liq_usd_5m,
+    s.long_liq_usd_5m,
+    s.cascade_active,
+    s.top_traders_long_pct,
+    s.retail_long_pct,
+    s.ls_divergence,
+    s.oi_change_30m_pct,
+    s.oi_trend,
+    s.funding_current,
+    s.funding_regime,
+    s.taker_imbalance,
+
+    -- Outcome
     o.close_reason,
     o.r_multiple,
     o.pnl_net_usd,
     o.duration_ms,
     o.mfe_r,
     o.mae_r,
+    o.is_partial,
+    o.partial_fraction,
     o.r_5m,
     o.r_15m,
     o.r_30m,
     o.r_1h,
-    o.is_partial,
-    o.partial_fraction,
 
-    CASE WHEN o.close_reason = 'TARGET_HIT'   THEN TRUE ELSE FALSE END AS hit_target,
-    CASE WHEN o.close_reason = 'STOP_HIT'     THEN TRUE ELSE FALSE END AS hit_stop,
-    CASE WHEN o.close_reason = 'TTL_EXPIRED'  THEN TRUE ELSE FALSE END AS expired,
-    CASE WHEN o.close_reason = 'INVALIDATED'  THEN TRUE ELSE FALSE END AS invalidated,
-    CASE WHEN o.close_reason = 'TP1_PARTIAL'  THEN TRUE ELSE FALSE END AS tp1_partial,
+    CASE WHEN o.close_reason = 'TARGET_HIT'  THEN TRUE ELSE FALSE END AS hit_target,
+    CASE WHEN o.close_reason = 'STOP_HIT'    THEN TRUE ELSE FALSE END AS hit_stop,
+    CASE WHEN o.close_reason = 'TTL_EXPIRED' THEN TRUE ELSE FALSE END AS expired,
+    CASE WHEN o.close_reason = 'INVALIDATED' THEN TRUE ELSE FALSE END AS invalidated,
+    CASE WHEN o.close_reason = 'TP1_PARTIAL' THEN TRUE ELSE FALSE END AS tp1_partial,
+
+    -- Buckets de segmentación
+    CASE
+        WHEN s.range_size_atr < 1.5 THEN 'tight'
+        WHEN s.range_size_atr < 2.5 THEN 'normal'
+        ELSE 'wide'
+    END AS range_size_bucket,
 
     CASE
-        WHEN s.short_liq_usd_5m > 3000000 THEN '>$3M'
-        WHEN s.short_liq_usd_5m > 2000000 THEN '$2M-$3M'
-        WHEN s.short_liq_usd_5m > 1000000 THEN '$1M-$2M'
+        WHEN s.absorption_count >= 4 THEN 'strong'
+        WHEN s.absorption_count >= 2 THEN 'medium'
+        WHEN s.absorption_count = 1  THEN 'weak'
+        ELSE 'none'
+    END AS absorption_quality,
+
+    CASE
+        WHEN s.range_midline_slope IS NOT NULL AND ABS(s.range_midline_slope) < 0.03 THEN 'flat'
+        WHEN s.range_midline_slope IS NOT NULL AND ABS(s.range_midline_slope) < 0.08 THEN 'slight_drift'
+        ELSE 'trending'
+    END AS range_quality,
+
+    CASE
+        WHEN s.rr_actual >= 2.5 THEN 'high_rr'
+        WHEN s.rr_actual >= 1.5 THEN 'normal_rr'
+        ELSE 'low_rr'
+    END AS rr_bucket,
+
+    CASE
+        WHEN s.short_liq_usd_5m > 1000000 THEN '>$1M'
         WHEN s.short_liq_usd_5m > 500000  THEN '$500K-$1M'
         ELSE '<$500K'
     END AS liq_bucket,
@@ -434,6 +574,34 @@ WHERE s.action = 'ShadowSignal';
 --     ADD COLUMN IF NOT EXISTS htf_monthly_location TEXT,
 --     ADD COLUMN IF NOT EXISTS delta_velocity       DOUBLE PRECISION,
 --     ADD COLUMN IF NOT EXISTS subdomi_ctx          JSONB;
+
+-- ============================================================
+-- MIGRATION: columnas DRR (DeltaRangeReversal)
+-- Ejecutar UNA VEZ en el SQL Editor de Supabase si la tabla ya existe.
+-- En instalaciones nuevas el CREATE TABLE ya las incluye.
+-- ============================================================
+-- ALTER TABLE shadow_signals
+--     ADD COLUMN IF NOT EXISTS range_high         DOUBLE PRECISION,
+--     ADD COLUMN IF NOT EXISTS range_low          DOUBLE PRECISION,
+--     ADD COLUMN IF NOT EXISTS range_mid          DOUBLE PRECISION,
+--     ADD COLUMN IF NOT EXISTS range_poc          DOUBLE PRECISION,
+--     ADD COLUMN IF NOT EXISTS range_size_atr     DOUBLE PRECISION,
+--     ADD COLUMN IF NOT EXISTS range_location     TEXT,
+--     ADD COLUMN IF NOT EXISTS range_touches_high INTEGER,
+--     ADD COLUMN IF NOT EXISTS range_touches_low  INTEGER,
+--     ADD COLUMN IF NOT EXISTS range_sweep_low    BOOLEAN,
+--     ADD COLUMN IF NOT EXISTS range_sweep_high   BOOLEAN;
+
+-- MIGRATION: columnas Playbook Reasoning (sesión 2026-05-24)
+-- Si se aplica esta migración, también recrear la vista v_signals_with_outcomes.
+-- ============================================================
+-- ALTER TABLE shadow_signals
+--     ADD COLUMN IF NOT EXISTS reasoning_version      TEXT,
+--     ADD COLUMN IF NOT EXISTS primary_playbook       TEXT,
+--     ADD COLUMN IF NOT EXISTS secondary_playbooks    JSONB,
+--     ADD COLUMN IF NOT EXISTS reasoning_tags         JSONB,
+--     ADD COLUMN IF NOT EXISTS reasoning_confidence   DOUBLE PRECISION,
+--     ADD COLUMN IF NOT EXISTS reasoning_completeness DOUBLE PRECISION;
 
 -- ============================================================
 -- TTL AUTOMÁTICO: borrar snapshots > 90 días
