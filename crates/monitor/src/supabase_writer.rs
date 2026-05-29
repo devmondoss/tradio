@@ -311,7 +311,7 @@ fn build_signal_row(
             TradingSession::London           =>  7 * 60,
             TradingSession::LondonNyOverlap  => 12 * 60,
             TradingSession::NewYork          => 13 * 60 + 30,
-            TradingSession::Off              =>  0,
+            TradingSession::OffHours              =>  0,
         };
         let current = hour_utc as i32 * 60 + minute_utc;
         (current - start).max(0) as i16
@@ -556,6 +556,11 @@ fn build_signal_row(
 }
 
 fn build_parallel_signal_row(signal: &StrategySignal) -> Value {
+    let rr = signal.entry_price.zip(signal.stop_price).zip(signal.target_price).map(|((e, s), t)| {
+        let risk = (e - s).abs();
+        let rew  = (t - e).abs();
+        if risk > 1e-10 { rew / risk } else { 0.0 }
+    });
     json!({
         "strategy_id":  signal.strategy_id.map(|id| format!("{id:?}")),
         "status":       "ShadowSignal",
@@ -565,11 +570,7 @@ fn build_parallel_signal_row(signal: &StrategySignal) -> Value {
         "entry_price":  signal.entry_price,
         "target":       signal.target_price,
         "stop":         signal.stop_price,
-        "rr": {
-            let risk   = signal.entry_price.zip(signal.stop_price).map(|(e, s)| (e - s).abs()).unwrap_or(0.0);
-            let reward = signal.entry_price.zip(signal.target_price).map(|(e, t)| (t - e).abs()).unwrap_or(0.0);
-            if risk > 0.0 { Some(reward / risk) } else { None }
-        },
+        "rr":           rr,
         "confidence":   signal.score,
         "missing_data": signal.missing.join(", "),
         "snapshot":     serde_json::to_value(&signal.evidence).unwrap_or(Value::Null),

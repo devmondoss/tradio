@@ -1,4 +1,4 @@
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 //! Layer 2: headless strategy monitor for cloud deployment (Railway).
 //!
 //! Connects to Binance LinearPerps WebSocket streams, accumulates kline/depth/trade
@@ -1533,9 +1533,7 @@ impl BarState {
         self.fvg_detector.push_bar(h, l, bar_ms);
         let fvg = self.fvg_detector.snapshot(c);
         self.range_detector.push_bar(h, l, c);
-        let vp_poc = self.vp.poc();
-        let atr_for_range = self.atr_wilder.current().unwrap_or(0.0);
-        let range_ctx = self.range_detector.compute(c, atr_for_range, vp_poc);
+        let range_ctx = self.range_detector.compute(c, atr, poc);
         let session = classify_session(bar_ms);
 
         let current_oi = self
