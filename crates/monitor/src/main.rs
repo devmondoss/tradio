@@ -58,6 +58,7 @@ use data::strategy::{
         wall_nearby, SWING_CONFIRM_BARS,
     },
     intent_logger::collect_near_misses,
+    micro_window::{CandleMicroBuffer, MicroCtx, MicroTrade, MicroWindowConfig},
     paper::PaperAccount,
     subdimi_parallel::run_subdimi_parallel,
     playbook_reasoning::classify_playbook_reasoning,
@@ -563,6 +564,9 @@ struct BarState {
     ob_detector: OrderBlockDetector,
     fvg_detector: FvgDetector,
     range_detector: RangeDetector,
+    micro_buffer: CandleMicroBuffer,
+    /// Open time of the current (live) candle — updated at each bar close.
+    current_candle_open_ms: i64,
     liq_map_tracker: LiqMapTracker,
     liq_map_snapshot: Option<LiqMapSnapshot>,
     last_taker_ratio: Option<TakerRatioSnapshot>,
@@ -648,6 +652,8 @@ impl BarState {
             ob_detector: OrderBlockDetector::new(100),
             fvg_detector: FvgDetector::new(100),
             range_detector: RangeDetector::new(),
+            micro_buffer: CandleMicroBuffer::new(MicroWindowConfig::default(), 0),
+            current_candle_open_ms: 0,
             liq_map_tracker: LiqMapTracker::new(),
             liq_map_snapshot: None,
             last_taker_ratio: None,
@@ -710,6 +716,19 @@ impl BarState {
         }
         self.metrics.trade_count += 1;
         self.metrics.last_trade_at = Some(Instant::now());
+        // Micro-window: accumulate trade into the current candle's buffer.
+        // Size is in base units (BTC) — consistent with CVD/footprint.
+        if self.current_candle_open_ms > 0 {
+            let mw_trade = MicroTrade {
+                ts_ms:   trade.time.as_u64() as i64,
+                price,
+                size:    f64::from(qty),
+                is_buy:  !is_sell,
+                is_big:  false,  // per-trade big detection not yet available
+                liq_usd: 0.0,    // liquidations come from separate @forceOrder stream
+            };
+            self.micro_buffer.on_trade(&mw_trade);
+        }
     }
 
     fn on_trade_batch(&mut self) {
@@ -1652,6 +1671,37 @@ impl BarState {
         // Resolve outcomes that are at least one bar (5m) old
         self.resolve_outcomes(bar_ms, c);
 
+        // ── Micro-window capture ──────────────────────────────────────────────
+        // Mark trigger if DRR fired, then build and send the row for this candle.
+        if signal_fired {
+            self.micro_buffer.mark_trigger(bar_ms);
+        }
+        if let Some(sb) = self.supabase.clone() {
+            let in_drr_zone = ctx.range.as_ref().map(|r| {
+                matches!(
+                    r.location,
+                    data::detectors::range_detector::RangeLocation::NearHigh
+                    | data::detectors::range_detector::RangeLocation::NearLow
+                    | data::detectors::range_detector::RangeLocation::OutsideHigh
+                    | data::detectors::range_detector::RangeLocation::OutsideLow
+                )
+            });
+            let mw_ctx = data::strategy::micro_window::MicroCtx {
+                atr:         ctx.atr.unwrap_or(0.0),
+                range_loc:   ctx.range.as_ref().map(|r| r.location),
+                range_high:  ctx.range.as_ref().map(|r| r.range_high),
+                range_low:   ctx.range.as_ref().map(|r| r.range_low),
+                range_mid:   ctx.range.as_ref().map(|r| r.range_mid),
+                in_drr_zone,
+            };
+            let mw_row = self.micro_buffer.build_row(&mw_ctx, "binance", &ctx.symbol);
+            tokio::spawn(async move { sb.write_micro_window(&mw_row).await; });
+        }
+        // Reset buffer for the next candle (open = current bar open + 5 min)
+        let next_open_ms = bar_ms + 300_000;
+        self.micro_buffer.reset(next_open_ms);
+        self.current_candle_open_ms = next_open_ms;
+
         // ── Subdimi Parallel Observer ─────────────────────────────────────────
         // Runs the 6 Subdimi detectors in parallel (no winner-takes-all).
         // Signals are logged to lab_signals for comparison against DRR Core.
@@ -2581,6 +2631,13 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
     let regime = derive_regime(regime_window, atr);
     state.last_regime_enum = regime;
     state.last_regime = Some(format!("{regime:?}"));
+    // Initialize micro_buffer open time to the bar after the last warmup bar
+    if let Some(last_bar) = state.bars.back() {
+        let last_open_ms = last_bar.time.as_u64() as i64;
+        let next_open_ms = last_open_ms + 300_000;
+        state.micro_buffer.reset(next_open_ms);
+        state.current_candle_open_ms = next_open_ms;
+    }
     println!(
         "[warmup] complete — {} bars loaded, atr={atr:.2}, regime={regime:?}",
         state.bars.len()

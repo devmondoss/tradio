@@ -6,6 +6,7 @@
 /// Environment variables:
 ///   SUPABASE_URL  — https://[PROJECT].supabase.co
 ///   SUPABASE_KEY  — service_role key (bypasses RLS)
+use data::strategy::micro_window::MicroWindowRow;
 use data::strategy::{
     paper::ClosedTrade,
     playbook_reasoning::PlaybookReasoning,
@@ -223,6 +224,62 @@ impl SupabaseWriter {
         }
         let body = build_parallel_signal_row(signal);
         self.post("lab_signals", &body).await;
+    }
+
+    /// Inserts a MicroWindowRow into micro_windows. Fire-and-forget.
+    /// Called once per bar close regardless of whether a signal fired.
+    pub async fn write_micro_window(&self, row: &MicroWindowRow) {
+        let body = json!({
+            "exchange":        row.exchange,
+            "symbol":          row.symbol,
+            "timeframe":       row.timeframe,
+            "candle_open_ms":  row.candle_open_ms,
+            "candle_close_ms": row.candle_close_ms,
+            "anchor":          row.anchor,
+            "window_start_ms": row.window_start_ms,
+            "window_end_ms":   row.window_end_ms,
+            "bucket_count":    row.bucket_count,
+            "bucket_secs":     row.bucket_secs,
+            "in_drr_zone":     row.in_drr_zone,
+            "range_location":  row.range_location,
+            "range_high":      row.range_high,
+            "range_low":       row.range_low,
+            "range_mid":       row.range_mid,
+            "atr":             row.atr,
+            "win_vol_total":   row.win_vol_total,
+            "win_delta_total": row.win_delta_total,
+            "win_trades_total":row.win_trades_total,
+            "win_cvd_net":     row.win_cvd_net,
+            "win_liq_total":   row.win_liq_total,
+            "win_big_vol":     row.win_big_vol,
+            "win_max_trade":   row.win_max_trade,
+            "aggressor_ratio": row.aggressor_ratio,
+            // arrays flatteados a columnas individuales
+            "delta_b0": row.delta_b[0], "delta_b1": row.delta_b[1],
+            "delta_b2": row.delta_b[2], "delta_b3": row.delta_b[3],
+            "delta_b4": row.delta_b[4],
+            "vol_b0":   row.vol_b[0],   "vol_b1":   row.vol_b[1],
+            "vol_b2":   row.vol_b[2],   "vol_b3":   row.vol_b[3],
+            "vol_b4":   row.vol_b[4],
+            "delta_slope":      row.delta_slope,
+            "delta_slope_norm": row.delta_slope_norm,
+            "delta_accel":      row.delta_accel,
+            "delta_flip":       row.delta_flip,
+            "delta_flip_bucket":row.delta_flip_bucket,
+            "monotonic_delta":  row.monotonic_delta,
+            "vol_peak_bucket":  row.vol_peak_bucket,
+            "vol_trajectory":   row.vol_trajectory,
+            "late_surge_ratio": row.late_surge_ratio,
+            "price_net":        row.price_net,
+            "price_path_eff":   row.price_path_eff,
+            "micro_range_atr":  row.micro_range_atr,
+            "absorption_proxy": row.absorption_proxy,
+            "reclaimed":        row.reclaimed,
+            "reclaim_bucket":   row.reclaim_bucket,
+            "sweep_depth_atr":  row.sweep_depth_atr,
+            "buckets":          row.buckets,
+        });
+        self.post("micro_windows", &body).await;
     }
 
     async fn post(&self, table: &str, body: &Value) {

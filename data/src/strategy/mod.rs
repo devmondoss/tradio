@@ -6,6 +6,7 @@ pub mod cooldown;
 pub mod detectors;
 pub mod intent_logger;
 pub mod logger;
+pub mod micro_window;
 pub mod subdimi_parallel;
 pub mod mongo_config_loader;
 pub mod mongo_writer;
