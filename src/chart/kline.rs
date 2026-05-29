@@ -194,6 +194,8 @@ pub struct KlineChart {
     pub last_depth: Option<exchange::depth::Depth>,
     pub last_regime: String,
     last_regime_enum: crate::strategy::types::Regime,
+    /// Live snapshot of DRR context for the HUD overlay — updated each bar close.
+    drr_hud: DrrHudState,
     pub config: data::chart::kline::Config,
     outcome_tracker: crate::strategy::tracker::OutcomeTracker,
     paper_account: crate::strategy::paper::PaperAccount,
@@ -220,6 +222,37 @@ pub struct KlineChart {
     pending_signal_oid: Option<data::strategy::mongo_writer::SignalOid>,
     /// Estado por-detector de la última barra evaluada — para el panel debug.
     pub last_detector_log: Vec<data::strategy::types::DetectorSnap>,
+}
+
+/// Live snapshot of DRR-relevant context for the HUD overlay.
+/// Updated on every bar close in run_strategy_detection().
+#[derive(Clone, Default)]
+struct DrrHudState {
+    // Market context
+    regime:        String,
+    session_name:  String,
+    session_phase: String,
+    vp_bias:       String,
+    auction_state: String,
+    // Range state
+    range_valid:      bool,
+    range_location:   String,
+    range_size_atr:   f64,
+    range_touches_hi: u32,
+    range_touches_lo: u32,
+    range_sweep_low:  bool,
+    range_sweep_high: bool,
+    // Absorption signals (individual booleans for coloring)
+    footprint_absorption: bool, // Bid/Ask active
+    big_trade_active:     bool,
+    cvd_divergence:       bool,
+    finish_action:        bool,
+    sweep_present:        bool,
+    absorption_count:     u8,
+    // Flow
+    cvd_slope:     Option<f64>,
+    vpin:          Option<f64>,
+    delta_velocity: Option<f64>,
 }
 
 struct DetectorBootstrap {
@@ -409,6 +442,7 @@ impl KlineChart {
                     last_depth: None,
                     last_regime: String::new(),
                     last_regime_enum: crate::strategy::types::Regime::Unknown,
+                    drr_hud: DrrHudState::default(),
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
@@ -493,6 +527,7 @@ impl KlineChart {
                     last_depth: None,
                     last_regime: String::new(),
                     last_regime_enum: crate::strategy::types::Regime::Unknown,
+                    drr_hud: DrrHudState::default(),
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
@@ -1629,6 +1664,47 @@ impl KlineChart {
         self.last_regime = format!("{:?}", ctx.regime);
         self.last_regime_enum = ctx.regime;
 
+        // Update DRR HUD snapshot from the latest context
+        {
+            use data::strategy::types::{AbsorptionSide, CvdDivergence, Side as SignalSide};
+            let rng = ctx.range.as_ref();
+            let is_long_bias = rng.map(|r| matches!(r.location,
+                data::detectors::range_detector::RangeLocation::NearLow |
+                data::detectors::range_detector::RangeLocation::OutsideLow
+            )).unwrap_or(false);
+            let absorption_active = [
+                !matches!(ctx.flow.footprint_absorption, AbsorptionSide::None | AbsorptionSide::Unknown),
+                if is_long_bias { ctx.flow.big_trade_bearish } else { ctx.flow.big_trade_bullish },
+                matches!(ctx.flow.cvd_divergence,
+                    Some(CvdDivergence::BullishAbsorption) | Some(CvdDivergence::BearishAbsorption)),
+                if is_long_bias { ctx.flow.finish_action_bullish } else { ctx.flow.finish_action_bearish },
+                rng.map(|r| r.sweep_range_low || r.sweep_range_high).unwrap_or(false),
+            ];
+            self.drr_hud = DrrHudState {
+                regime:        format!("{:?}", ctx.regime),
+                session_name:  ctx.session.as_ref().map(|s| format!("{:?}", s.session)).unwrap_or_default(),
+                session_phase: ctx.session.as_ref().map(|s| format!("{:?}", s.phase)).unwrap_or_default(),
+                vp_bias:       ctx.vp_open_bias.as_ref().map(|v| format!("{:?}", v.bias)).unwrap_or_default(),
+                auction_state: ctx.auction_state.as_ref().map(|a| format!("{:?}", a.state)).unwrap_or_default(),
+                range_valid:      rng.map(|r| r.valid).unwrap_or(false),
+                range_location:   rng.map(|r| format!("{:?}", r.location)).unwrap_or_default(),
+                range_size_atr:   rng.map(|r| r.range_size_atr).unwrap_or(0.0),
+                range_touches_hi: rng.map(|r| r.touches_high).unwrap_or(0),
+                range_touches_lo: rng.map(|r| r.touches_low).unwrap_or(0),
+                range_sweep_low:  rng.map(|r| r.sweep_range_low).unwrap_or(false),
+                range_sweep_high: rng.map(|r| r.sweep_range_high).unwrap_or(false),
+                footprint_absorption: !matches!(ctx.flow.footprint_absorption, AbsorptionSide::None | AbsorptionSide::Unknown),
+                big_trade_active: ctx.flow.big_trade_bullish || ctx.flow.big_trade_bearish,
+                cvd_divergence:   ctx.flow.cvd_divergence.is_some(),
+                finish_action:    ctx.flow.finish_action_bullish || ctx.flow.finish_action_bearish,
+                sweep_present:    rng.map(|r| r.sweep_range_low || r.sweep_range_high).unwrap_or(false),
+                absorption_count: absorption_active.iter().filter(|&&b| b).count() as u8,
+                cvd_slope:        ctx.flow.cvd_slope,
+                vpin:             ctx.flow.vpin,
+                delta_velocity:   ctx.flow.delta_velocity,
+            };
+        }
+
         self.bar_index += 1;
         self.last_evaluated_bar_ms = Some(bar_ts_ms);
         let current_bar = self.bar_index;
@@ -2529,6 +2605,222 @@ impl KlineChart {
         }
     }
 
+    // ── DRR Range Overlay ────────────────────────────────────────────────────
+    // Draws Range High / Low / Mid as dashed lines, shades the no-trade zone
+    // (35-65% of range), and marks any detected sweep with a small triangle.
+    fn draw_drr_range(
+        range: &data::detectors::RangeContext,
+        frame: &mut canvas::Frame,
+        region: Rectangle,
+        price_to_y: impl Fn(f64) -> f32,
+    ) {
+        if !range.valid { return; }
+
+        let x0 = region.x;
+        let x1 = region.x + region.width;
+
+        let y_hi  = price_to_y(range.range_high);
+        let y_lo  = price_to_y(range.range_low);
+        let y_mid = price_to_y(range.range_mid);
+
+        if !y_hi.is_finite() || !y_lo.is_finite() || !y_mid.is_finite() { return; }
+        if y_hi >= y_lo { return; } // chart clipped
+
+        // ── No-trade zone (35-65%) — subtle amber fill ──────────────────────
+        let range_h = y_lo - y_hi;
+        let y_zone_top = y_hi + range_h * 0.35;
+        let y_zone_bot = y_hi + range_h * 0.65;
+        frame.fill_rectangle(
+            Point::new(x0, y_zone_top),
+            Size::new(x1 - x0, y_zone_bot - y_zone_top),
+            Color::from_rgba(0.95, 0.75, 0.20, 0.06),
+        );
+
+        // ── Range High line (orange dashed) ─────────────────────────────────
+        let dashed = Stroke {
+            style: canvas::stroke::Style::Solid(Color::from_rgba(0.95, 0.60, 0.15, 0.85)),
+            width: 1.5,
+            line_dash: LineDash { segments: &[6.0, 4.0], offset: 0 },
+            ..Default::default()
+        };
+        frame.stroke(
+            &Path::line(Point::new(x0, y_hi), Point::new(x1, y_hi)),
+            dashed.clone(),
+        );
+
+        // ── Range Low line (orange dashed) ───────────────────────────────────
+        frame.stroke(
+            &Path::line(Point::new(x0, y_lo), Point::new(x1, y_lo)),
+            dashed.clone(),
+        );
+
+        // ── Range Mid line (faint dotted) ────────────────────────────────────
+        let mid_stroke = Stroke {
+            style: canvas::stroke::Style::Solid(Color::from_rgba(0.95, 0.60, 0.15, 0.35)),
+            width: 1.0,
+            line_dash: LineDash { segments: &[3.0, 5.0], offset: 0 },
+            ..Default::default()
+        };
+        frame.stroke(
+            &Path::line(Point::new(x0, y_mid), Point::new(x1, y_mid)),
+            mid_stroke,
+        );
+
+        // ── Sweep markers ────────────────────────────────────────────────────
+        // Small upward triangle at Range Low if sweep_range_low detected
+        if range.sweep_range_low {
+            let cx = x1 - 16.0;
+            let cy = y_lo + 5.0;
+            let tri = Path::new(|b| {
+                b.move_to(Point::new(cx, cy - 8.0));
+                b.line_to(Point::new(cx - 5.0, cy));
+                b.line_to(Point::new(cx + 5.0, cy));
+                b.close();
+            });
+            frame.fill(&tri, Color::from_rgba(0.25, 0.90, 0.45, 0.90));
+        }
+        if range.sweep_range_high {
+            let cx = x1 - 16.0;
+            let cy = y_hi - 5.0;
+            let tri = Path::new(|b| {
+                b.move_to(Point::new(cx, cy + 8.0));
+                b.line_to(Point::new(cx - 5.0, cy));
+                b.line_to(Point::new(cx + 5.0, cy));
+                b.close();
+            });
+            frame.fill(&tri, Color::from_rgba(0.90, 0.30, 0.30, 0.90));
+        }
+
+        // ── Labels ───────────────────────────────────────────────────────────
+        let label_color = Color::from_rgba(0.95, 0.70, 0.20, 0.85);
+        let small = iced::widget::canvas::Text {
+            size: iced::Pixels(10.0),
+            color: label_color,
+            ..iced::widget::canvas::Text::default()
+        };
+        frame.fill_text(iced::widget::canvas::Text {
+            content: format!("RH  {:.0}", range.range_high),
+            position: Point::new(x0 + 4.0, y_hi - 12.0),
+            ..small.clone()
+        });
+        frame.fill_text(iced::widget::canvas::Text {
+            content: format!("RL  {:.0}", range.range_low),
+            position: Point::new(x0 + 4.0, y_lo + 3.0),
+            ..small.clone()
+        });
+        frame.fill_text(iced::widget::canvas::Text {
+            content: format!("T {}/{}", range.touches_high, range.touches_low),
+            position: Point::new(x0 + 60.0, y_hi - 12.0),
+            ..small
+        });
+    }
+
+    // ── DRR HUD Overlay ──────────────────────────────────────────────────────
+    // Compact info panel top-right: regime, session, range state, absorptions.
+    fn draw_drr_hud(
+        hud: &DrrHudState,
+        frame: &mut canvas::Frame,
+        region: Rectangle,
+    ) {
+        let x = region.x + region.width - 200.0;
+        let y0 = region.y + 8.0;
+        let line_h = 13.0;
+        let mut row = 0usize;
+
+        // Background
+        frame.fill_rectangle(
+            Point::new(x - 4.0, y0 - 2.0),
+            Size::new(200.0, line_h * 9.0 + 6.0),
+            Color::from_rgba(0.05, 0.05, 0.08, 0.75),
+        );
+
+        let col_a = Color::from_rgba(0.70, 0.70, 0.80, 0.95);  // label
+        let col_v = Color::from_rgba(0.95, 0.95, 0.95, 1.00);  // value
+
+        let regime_color = match hud.regime.as_str() {
+            "TrendUp"    => Color::from_rgba(0.30, 0.90, 0.40, 1.0),
+            "TrendDown"  => Color::from_rgba(0.90, 0.30, 0.30, 1.0),
+            "Expansion"  => Color::from_rgba(0.90, 0.65, 0.10, 1.0),
+            "Chop" | "Compression" => Color::from_rgba(0.70, 0.70, 0.30, 1.0),
+            "Stress" | "Aftermath" => Color::from_rgba(1.0,  0.20, 0.20, 1.0),
+            _            => col_v,
+        };
+
+        macro_rules! hud_row {
+            ($label:expr, $value:expr, $color:expr) => {{
+                let y = y0 + row as f32 * line_h;
+                let text_base = iced::widget::canvas::Text {
+                    size: iced::Pixels(10.5),
+                    ..iced::widget::canvas::Text::default()
+                };
+                frame.fill_text(iced::widget::canvas::Text {
+                    content: format!("{:<8}", $label),
+                    position: Point::new(x, y),
+                    color: col_a,
+                    ..text_base.clone()
+                });
+                frame.fill_text(iced::widget::canvas::Text {
+                    content: $value.to_string(),
+                    position: Point::new(x + 62.0, y),
+                    color: $color,
+                    ..text_base
+                });
+                row += 1;
+            }};
+        }
+
+        hud_row!("Regime",  &hud.regime, regime_color);
+        hud_row!("Session", format!("{} / {}", &hud.session_name, &hud.session_phase), col_v);
+        hud_row!("VPBias",  &hud.vp_bias, col_v);
+        hud_row!("Auction", &hud.auction_state, col_v);
+
+        // Range state
+        let (rng_str, rng_color) = if hud.range_valid {
+            (format!("{} ({:.1}×ATR)", &hud.range_location, hud.range_size_atr),
+             Color::from_rgba(0.95, 0.70, 0.20, 1.0))
+        } else {
+            ("No range".to_string(), Color::from_rgba(0.50, 0.50, 0.50, 1.0))
+        };
+        hud_row!("Range",  rng_str, rng_color);
+        if hud.range_valid {
+            let sweep_str = match (hud.range_sweep_low, hud.range_sweep_high) {
+                (true,  false) => "▲ sweep low",
+                (false, true)  => "▼ sweep high",
+                (true,  true)  => "▲▼ both",
+                _              => "—",
+            };
+            hud_row!("Sweep",  sweep_str, Color::from_rgba(0.30, 0.90, 0.50, 1.0));
+        }
+
+        // Absorption signals
+        let abs_count = hud.absorption_count;
+        let abs_color = match abs_count {
+            4..=5 => Color::from_rgba(0.20, 0.95, 0.30, 1.0),
+            2..=3 => Color::from_rgba(0.90, 0.80, 0.10, 1.0),
+            1     => Color::from_rgba(0.80, 0.50, 0.10, 1.0),
+            _     => Color::from_rgba(0.45, 0.45, 0.45, 1.0),
+        };
+
+        let signals_str = format!(
+            "{}/5 [{}{}{}{}{}]",
+            abs_count,
+            if hud.footprint_absorption { "F" } else { "." },
+            if hud.big_trade_active     { "B" } else { "." },
+            if hud.cvd_divergence       { "C" } else { "." },
+            if hud.finish_action        { "X" } else { "." },
+            if hud.sweep_present        { "S" } else { "." },
+        );
+        hud_row!("Absorb",  signals_str, abs_color);
+
+        // CVD slope
+        if let Some(cvd) = hud.cvd_slope {
+            let cvd_color = if cvd > 0.1 { Color::from_rgba(0.30, 0.90, 0.40, 1.0) }
+                            else if cvd < -0.1 { Color::from_rgba(0.90, 0.30, 0.30, 1.0) }
+                            else { col_v };
+            hud_row!("CVD slp", format!("{:+.2}", cvd), cvd_color);
+        }
+    }
+
     fn draw_strategy_overlay(
         signals: &[StrategySignal],
         frame: &mut canvas::Frame,
@@ -2874,6 +3166,23 @@ impl canvas::Program<Message> for KlineChart {
                 if self.config.show_order_blocks {
                     self.draw_order_blocks(frame, &region, earliest, interval_to_x, price_to_y);
                 }
+
+                // DRR range overlay — always shown when a valid range is detected
+                if let Some(ref rng) = self.range_context {
+                    if rng.valid {
+                        Self::draw_drr_range(
+                            rng,
+                            frame,
+                            region,
+                            |price| chart.price_to_y(Price::from_f32(price as f32)),
+                        );
+                    }
+                }
+            }
+
+            // DRR HUD — shown when strategy overlay is active
+            if self.strategy_overlay_enabled && matches!(self.kind, KlineChartKind::Candles) {
+                Self::draw_drr_hud(&self.drr_hud, frame, region);
             }
 
             // Overlay de estrategia solo en Candlestick (mismo criterio que
