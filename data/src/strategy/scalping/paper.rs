@@ -340,8 +340,9 @@ impl ScalpingPaper {
         }
 
         self.trade_counter += 1;
+        // trade_id incluye entry_ms para evitar colisiones entre reinicios del monitor
         let trade = ScalpingTrade {
-            trade_id: format!("SC_{}", self.trade_counter),
+            trade_id: format!("SC_{}_{}", pos.entry_ms, self.trade_counter),
             strategy: pos.signal.strategy.to_string(),
             session: format!("{:?}", pos.signal.timestamp_ms),
             side: pos.signal.side,
