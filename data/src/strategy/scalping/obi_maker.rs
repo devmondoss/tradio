@@ -87,16 +87,17 @@ pub fn detect(ctx: &ScalpingContext, cfg: &ScalpingConfig) -> Option<ScalpingSig
         Side::Long => {
             let bid_px = round_tick(ctx.micro_price - half + skew);
             let be_move = 0.00040 * bid_px;
-            let target = (be_move * 1.2).max(4.0 * tick);
-            let tp1 = round_tick(bid_px + target);        // 1R
-            let tp2 = round_tick(bid_px + target * 1.5);  // 1.5R
-            let sl  = round_tick(bid_px - target * 0.65); // RR = 1/0.65 = 1.54
+            // ×1.8 para que TP1 > fees+slippage (×1.2 era estructuralmente negativo en TP1)
+            let target = (be_move * 1.8).max(6.0 * tick);
+            let tp1 = round_tick(bid_px + target);        // 1R  (~$52 a $73k)
+            let tp2 = round_tick(bid_px + target * 1.5);  // 1.5R (~$78)
+            let sl  = round_tick(bid_px - target * 0.65); // RR = 1.54
             (bid_px, sl, tp1, tp2)
         }
         Side::Short => {
             let ask_px = round_tick(ctx.micro_price + half + skew);
             let be_move = 0.00040 * ask_px;
-            let target = (be_move * 1.2).max(4.0 * tick);
+            let target = (be_move * 1.8).max(6.0 * tick);
             let tp1 = round_tick(ask_px - target);
             let tp2 = round_tick(ask_px - target * 1.5);
             let sl  = round_tick(ask_px + target * 0.65);

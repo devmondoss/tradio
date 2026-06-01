@@ -294,7 +294,9 @@ impl ScalpingPaper {
                 if price >= pos.signal.tp2_price {
                     return Some(ScalpingExitReason::TP2);
                 }
-                if obi_ema_fast < 0.45 {
+                // 0.35 en vez de 0.45 — más margen para que el precio llegue al target
+                // con 0.45 salíamos por ruido normal del libro antes de TP1
+                if obi_ema_fast < 0.35 {
                     return Some(ScalpingExitReason::ObiReversal);
                 }
             }
@@ -305,7 +307,8 @@ impl ScalpingPaper {
                 if price <= pos.signal.tp2_price {
                     return Some(ScalpingExitReason::TP2);
                 }
-                if obi_ema_fast > 0.55 {
+                // 0.65 en vez de 0.55 — mismo razonamiento para shorts
+                if obi_ema_fast > 0.65 {
                     return Some(ScalpingExitReason::ObiReversal);
                 }
             }
