@@ -1844,6 +1844,28 @@ impl BarState {
                 }
             }
 
+            // Log de diagnóstico scalping por barra (siempre visible, sin señal)
+            {
+                let dz  = self.scalping_state.compute_dz();
+                let vr  = self.scalping_state.compute_vr();
+                let obi = self.scalping_state.obi_ema_fast;
+                let cvd = self.scalping_state.cvd_session;
+                let slope = self.scalping_state.compute_cvd_slope(10)
+                    .map(|s| format!("{:+.1}", s))
+                    .unwrap_or_else(|| "n/a".into());
+                let can = self.scalping_state.paper.can_trade(
+                    cfg.scalping.max_trades_per_session,
+                    cfg.scalping.daily_loss_limit_pct,
+                    cfg.scalping.max_consecutive_losses,
+                );
+                let ses = data::strategy::scalping::is_scalping_session(session.session);
+                println!(
+                    "[scalping] session={ses} can_trade={can} obi={obi:.3} dz={dz:.2} vr={vr:.2} cvd_ses={cvd:.0} slope={slope} trades={}/{}",
+                    self.scalping_state.paper.daily_trades,
+                    cfg.scalping.max_trades_per_session,
+                );
+            }
+
             // Persistir cualquier trade cerrado que aún no se haya escrito a Supabase.
             // scalping_paper_written_idx rastrea hasta qué índice ya se persistió.
             if let Some(sb) = &self.supabase {
