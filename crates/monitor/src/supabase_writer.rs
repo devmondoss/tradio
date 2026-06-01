@@ -373,6 +373,61 @@ impl SupabaseWriter {
         });
     }
 
+    /// Inserta una fila en scalping_bars — una fila por barra M5, siempre.
+    /// Equivale al patrón polyrec: registro del universo completo para calibración offline.
+    pub fn write_scalping_bar(
+        &self,
+        ts_ms: i64,
+        session: &str,
+        regime: &str,
+        close: f64,
+        atr: f64,
+        funding_pct: Option<f64>,
+        obi_fast: f64,
+        obi_slow: f64,
+        obi_l5: f64,
+        cvd_session: f64,
+        cvd_slope: Option<f64>,
+        dz: f64,
+        vr: f64,
+        spread_ticks: i32,
+        absorption_long: f64,
+        absorption_short: f64,
+        liq_ratio: f64,
+        signal_fired: Option<&str>,
+        signal_score: Option<f64>,
+        blocked_by: Option<&str>,
+    ) {
+        let body = json!({
+            "ts_ms":           ts_ms,
+            "symbol":          "BTCUSDT",
+            "session":         session,
+            "regime":          regime,
+            "close":           close,
+            "atr":             atr,
+            "funding_pct":     funding_pct,
+            "obi_fast":        obi_fast,
+            "obi_slow":        obi_slow,
+            "obi_l5":          obi_l5,
+            "l5_l10_div":      obi_l5 - obi_fast,
+            "cvd_session":     cvd_session,
+            "cvd_slope":       cvd_slope,
+            "dz":              dz,
+            "vr":              vr,
+            "spread_ticks":    spread_ticks,
+            "absorption_long": absorption_long,
+            "absorption_short":absorption_short,
+            "liq_ratio":       liq_ratio,
+            "signal_fired":    signal_fired,
+            "signal_score":    signal_score,
+            "blocked_by":      blocked_by,
+        });
+        let writer = self.clone();
+        tokio::spawn(async move {
+            writer.post("scalping_bars", &body).await;
+        });
+    }
+
     async fn post(&self, table: &str, body: &Value) {
         let url = format!("{}/rest/v1/{}", self.url, table);
         let result = self

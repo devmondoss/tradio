@@ -1878,6 +1878,78 @@ impl BarState {
                     self.scalping_paper_written_idx = total;
                 }
             }
+
+            // ── scalping_bars recorder (polyrec) — una fila por barra, siempre ──
+            if let Some(sb) = &self.supabase {
+                let dz    = self.scalping_state.compute_dz();
+                let vr    = self.scalping_state.compute_vr();
+                let slope = self.scalping_state.compute_cvd_slope(10);
+                let obi_fast = self.scalping_state.obi_ema_fast;
+                let obi_slow = self.scalping_state.obi_ema_slow;
+                let obi_l5_raw = ctx.orderbook.obi_l5.unwrap_or(0.0);
+                let obi_l5_norm = (obi_l5_raw + 1.0) / 2.0;
+
+                // Score de absorción en ambos lados para el universo de datos
+                let abs_long  = data::strategy::scalping::absorption::absorption_score(&scalp_ctx, data::strategy::types::Side::Long);
+                let abs_short = data::strategy::scalping::absorption::absorption_score(&scalp_ctx, data::strategy::types::Side::Short);
+
+                // Señal disparada en esta barra (se detectó arriba en el bloque de detección)
+                let (sig_fired, sig_score) = self.scalping_state.active_signal
+                    .as_ref()
+                    .filter(|_| {
+                        // Solo contar si la señal es nueva (se abrió en esta barra)
+                        self.scalping_state.signal_entry_ms == Some(bar_ms)
+                    })
+                    .map(|s| {
+                        let label = format!("{}_{:?}", s.strategy, s.side);
+                        (Some(label), Some(s.conviction_score))
+                    })
+                    .unwrap_or((None, None));
+
+                // Razón principal de bloqueo si no disparó
+                let blocked = if sig_fired.is_some() {
+                    None
+                } else if !data::strategy::scalping::is_scalping_session(session.session) {
+                    Some("off_session")
+                } else if self.scalping_state.paper.has_position() {
+                    Some("has_position")
+                } else if !self.scalping_state.paper.can_trade(
+                    cfg.scalping.max_trades_per_session,
+                    cfg.scalping.daily_loss_limit_pct,
+                    cfg.scalping.max_consecutive_losses,
+                ) {
+                    Some("circuit_breaker")
+                } else if dz.abs() < cfg.scalping.s2_dz_min {
+                    Some("dz_low")
+                } else if vr < cfg.scalping.s2_vr_min {
+                    Some("vr_low")
+                } else {
+                    Some("conviction")
+                };
+
+                sb.write_scalping_bar(
+                    bar_ms,
+                    &format!("{:?}", session.session),
+                    &format!("{:?}", effective_regime),
+                    c,
+                    atr,
+                    self.funding_rate,
+                    obi_fast,
+                    obi_slow,
+                    obi_l5_norm,
+                    self.scalping_state.cvd_session,
+                    slope,
+                    dz,
+                    vr,
+                    self.spread_ticks_now(),
+                    abs_long,
+                    abs_short,
+                    liq_ratio,
+                    sig_fired.as_deref(),
+                    sig_score,
+                    blocked,
+                );
+            }
         }
 
         // ── Micro-window capture ──────────────────────────────────────────────
