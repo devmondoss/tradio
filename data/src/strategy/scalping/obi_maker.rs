@@ -19,6 +19,12 @@ pub fn detect(ctx: &ScalpingContext, cfg: &ScalpingConfig) -> Option<ScalpingSig
         return None;
     }
 
+    // Gate 1b: S1 desactivado en Asia — libro fino, OBI no predice dirección
+    // Los datos muestran 6/6 pérdidas en Asia por OBI_REVERSAL (spoofers dominan)
+    if ctx.session == crate::session::TradingSession::Asia {
+        return None;
+    }
+
     // Gate 2: spread aceptable (libro sano)
     if ctx.spread_ticks > cfg.max_spread_ticks {
         return None;
@@ -29,9 +35,22 @@ pub fn detect(ctx: &ScalpingContext, cfg: &ScalpingConfig) -> Option<ScalpingSig
         return None;
     }
 
+    // Gate 3b: volumen mínimo para que el OBI tenga respaldo real (VR ≥ 1.5)
+    // Con VR < 1.5 el libro es demasiado fino y un participante mueve el OBI sin intención real
+    if ctx.vr < 1.5 {
+        return None;
+    }
+
     // Gate 4: OBI tiene convicción mínima (|OBI - 0.5| ≥ 0.05)
     let obi_deviation = (ctx.obi_ema_fast - 0.5).abs();
     if obi_deviation < 0.05 {
+        return None;
+    }
+
+    // Gate 4b: OBI slow confirma que el sesgo es sostenido, no un spike de 2s
+    // Si la EMA lenta (~4s half-life) está cerca de neutral, el sesgo no está establecido
+    let obi_slow_deviation = (ctx.obi_ema_slow - 0.5).abs();
+    if obi_slow_deviation < 0.05 {
         return None;
     }
 
