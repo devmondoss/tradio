@@ -398,6 +398,55 @@ pub struct StrategyConfig {
     /// Evita señales back-to-back en el mismo nivel mientras el trade sigue activo.
     /// Default: 5 velas.
     pub cooldown_bars: u64,
+
+    /// DRR desactivado — sistema migrado a scalping. Default true para no romper
+    /// deployments que no tengan el flag en su config.
+    pub drr_enabled: bool,
+
+    /// Configuración del motor de scalping (3 estrategias: OBI/S1, Absorción/S2, CVD Divergencia/S3).
+    pub scalping: ScalpingConfig,
+}
+
+/// Parámetros del motor de scalping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScalpingConfig {
+    pub enabled: bool,
+    pub max_spread_ticks: i32,
+    pub max_vr: f64,
+    pub obi_threshold_long: f64,
+    pub obi_threshold_short: f64,
+    pub min_conviction_score: f64,
+    pub max_trades_per_session: u32,
+    pub daily_loss_limit_pct: f64,
+    pub max_consecutive_losses: u32,
+    pub time_stop_secs: u64,
+    pub s2_dz_min: f64,
+    pub s2_vr_min: f64,
+    pub s3_lookback_bars: usize,
+    pub s3_min_divergence_strength: f64,
+    pub min_rr: f64,
+}
+
+impl Default for ScalpingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_spread_ticks: 2,
+            max_vr: 5.0,
+            obi_threshold_long: 0.60,
+            obi_threshold_short: 0.40,
+            min_conviction_score: 55.0,
+            max_trades_per_session: 5,
+            daily_loss_limit_pct: 0.03,
+            max_consecutive_losses: 3,
+            time_stop_secs: 120,
+            s2_dz_min: 1.5,
+            s2_vr_min: 2.0,
+            s3_lookback_bars: 20,
+            s3_min_divergence_strength: 0.30,
+            min_rr: 1.5,
+        }
+    }
 }
 
 impl Default for StrategyConfig {
@@ -428,6 +477,8 @@ impl Default for StrategyConfig {
             htf_scoring_enabled: false,
             spoof_gate_enabled: false,
             cooldown_bars: 5,
+            drr_enabled: true,
+            scalping: ScalpingConfig::default(),
         }
     }
 }

@@ -109,7 +109,8 @@ pub enum Event {
     ToggleOrderBlocks,
     ToggleFvgs,
     ToggleStructure,
-    ToggleLiqMap,
+    ToggleLiqEvents,
+    ToggleScalpingPanel,
     StudyConfigurator(modal::pane::settings::study::StudyMessage),
     StreamModifierChanged(modal::stream::Message),
     ComparisonChartInteraction(super::chart::comparison::Message),
@@ -195,7 +196,7 @@ impl State {
         let is_candle_with_overlay = matches!(
             &self.content,
             Content::Kline { chart: Some(c), .. }
-                if c.strategy_overlay_enabled
+                if (c.strategy_overlay_enabled || c.config.show_scalping_panel)
                     && matches!(c.kind, data::chart::kline::KlineChartKind::Candles)
         );
         if !is_candle_with_overlay {
@@ -1021,50 +1022,12 @@ impl State {
                         data::chart::KlineChartKind::Candles => {
                             let selected_basis = chart.basis();
                             let kind = ModifierKind::Candlestick(selected_basis);
-                            let cfg = chart.config;
 
                             let modifiers =
                                 row![basis_modifier(id, selected_basis, modifier, kind),]
                                     .spacing(4);
 
-                            let overlay_buttons = row![
-                                button(text("OB").size(11).align_y(Alignment::Center))
-                                    .style(move |theme, status| style::button::modifier(
-                                        theme,
-                                        status,
-                                        cfg.show_order_blocks
-                                    ))
-                                    .on_press(Message::PaneEvent(id, Event::ToggleOrderBlocks))
-                                    .height(widget::PANE_CONTROL_BTN_HEIGHT),
-                                button(text("FVG").size(11).align_y(Alignment::Center))
-                                    .style(move |theme, status| style::button::modifier(
-                                        theme,
-                                        status,
-                                        cfg.show_fvgs
-                                    ))
-                                    .on_press(Message::PaneEvent(id, Event::ToggleFvgs))
-                                    .height(widget::PANE_CONTROL_BTN_HEIGHT),
-                                button(text("STR").size(11).align_y(Alignment::Center))
-                                    .style(move |theme, status| style::button::modifier(
-                                        theme,
-                                        status,
-                                        cfg.show_structure
-                                    ))
-                                    .on_press(Message::PaneEvent(id, Event::ToggleStructure))
-                                    .height(widget::PANE_CONTROL_BTN_HEIGHT),
-                                button(text("LIQ").size(11).align_y(Alignment::Center))
-                                    .style(move |theme, status| style::button::modifier(
-                                        theme,
-                                        status,
-                                        cfg.show_liq_map
-                                    ))
-                                    .on_press(Message::PaneEvent(id, Event::ToggleLiqMap))
-                                    .height(widget::PANE_CONTROL_BTN_HEIGHT),
-                            ]
-                            .spacing(2);
-
-                            top_left_buttons =
-                                top_left_buttons.push(modifiers).push(overlay_buttons);
+                            top_left_buttons = top_left_buttons.push(modifiers);
                         }
                     }
 
@@ -1413,10 +1376,22 @@ impl State {
                     return Some(Effect::PersistVisualConfig(VisualConfig::Kline(c.config)));
                 }
             }
-            Event::ToggleLiqMap => {
+            Event::ToggleLiqEvents => {
                 if let Content::Kline { chart: Some(c), .. } = &mut self.content {
-                    c.config.show_liq_map = !c.config.show_liq_map;
+                    c.config.show_liq_events = !c.config.show_liq_events;
                     return Some(Effect::PersistVisualConfig(VisualConfig::Kline(c.config)));
+                }
+            }
+            Event::ToggleScalpingPanel => {
+                if let Content::Kline { chart: Some(c), .. } = &mut self.content {
+                    c.config.show_scalping_panel = !c.config.show_scalping_panel;
+                    let effect = Effect::PersistVisualConfig(VisualConfig::Kline(c.config));
+                    // Abrir stream Depth si se activó el panel (necesario para OBI en tiempo real)
+                    if c.config.show_scalping_panel {
+                        self.ensure_strategy_depth_stream();
+                        return Some(Effect::RefreshStreams);
+                    }
+                    return Some(effect);
                 }
             }
             Event::StudyConfigurator(study_msg) => match study_msg {

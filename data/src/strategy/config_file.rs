@@ -25,6 +25,7 @@ fn config_path() -> PathBuf {
 #[derive(Deserialize, Default)]
 struct GeneralSection {
     enabled: Option<bool>,
+    drr_enabled: Option<bool>,
     min_score: Option<f64>,
     min_score_institutional: Option<f64>,
     max_spread_bps: Option<f64>,
@@ -36,6 +37,25 @@ struct GeneralSection {
     htf_scoring_enabled: Option<bool>,
     spoof_gate_enabled: Option<bool>,
     cooldown_bars: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+struct ScalpingSection {
+    enabled: Option<bool>,
+    max_spread_ticks: Option<i32>,
+    max_vr: Option<f64>,
+    obi_threshold_long: Option<f64>,
+    obi_threshold_short: Option<f64>,
+    min_conviction_score: Option<f64>,
+    max_trades_per_session: Option<u32>,
+    daily_loss_limit_pct: Option<f64>,
+    max_consecutive_losses: Option<u32>,
+    time_stop_secs: Option<u64>,
+    s2_dz_min: Option<f64>,
+    s2_vr_min: Option<f64>,
+    s3_lookback_bars: Option<usize>,
+    s3_min_divergence_strength: Option<f64>,
+    min_rr: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -71,6 +91,8 @@ struct StrategyConfigFile {
     funding_exhaustion: FundingExhaustionSection,
     #[serde(default)]
     smart_money_divergence: SmartMoneyDivergenceSection,
+    #[serde(default)]
+    scalping: ScalpingSection,
 }
 
 const MIN_MS: i64 = 60 * 1000;
@@ -81,6 +103,7 @@ impl StrategyConfigFile {
     fn merge_onto(self, mut cfg: StrategyConfig) -> StrategyConfig {
         let g = self.general;
         if let Some(v) = g.enabled { cfg.enabled = v; }
+        if let Some(v) = g.drr_enabled { cfg.drr_enabled = v; }
         if let Some(v) = g.min_score { cfg.min_score = v; }
         if let Some(v) = g.min_score_institutional { cfg.min_score_institutional = v; }
         if let Some(v) = g.max_spread_bps { cfg.max_spread_bps = v; }
@@ -109,6 +132,23 @@ impl StrategyConfigFile {
         if let Some(v) = smd.retail_long_threshold { cfg.retail_long_threshold = v; }
         if let Some(v) = smd.min_divergence { cfg.min_divergence = v; }
         if let Some(v) = smd.ttl_min { cfg.smd_ttl_ms = v * MIN_MS; }
+
+        let sc = self.scalping;
+        if let Some(v) = sc.enabled { cfg.scalping.enabled = v; }
+        if let Some(v) = sc.max_spread_ticks { cfg.scalping.max_spread_ticks = v; }
+        if let Some(v) = sc.max_vr { cfg.scalping.max_vr = v; }
+        if let Some(v) = sc.obi_threshold_long { cfg.scalping.obi_threshold_long = v; }
+        if let Some(v) = sc.obi_threshold_short { cfg.scalping.obi_threshold_short = v; }
+        if let Some(v) = sc.min_conviction_score { cfg.scalping.min_conviction_score = v; }
+        if let Some(v) = sc.max_trades_per_session { cfg.scalping.max_trades_per_session = v; }
+        if let Some(v) = sc.daily_loss_limit_pct { cfg.scalping.daily_loss_limit_pct = v; }
+        if let Some(v) = sc.max_consecutive_losses { cfg.scalping.max_consecutive_losses = v; }
+        if let Some(v) = sc.time_stop_secs { cfg.scalping.time_stop_secs = v; }
+        if let Some(v) = sc.s2_dz_min { cfg.scalping.s2_dz_min = v; }
+        if let Some(v) = sc.s2_vr_min { cfg.scalping.s2_vr_min = v; }
+        if let Some(v) = sc.s3_lookback_bars { cfg.scalping.s3_lookback_bars = v; }
+        if let Some(v) = sc.s3_min_divergence_strength { cfg.scalping.s3_min_divergence_strength = v; }
+        if let Some(v) = sc.min_rr { cfg.scalping.min_rr = v; }
 
         cfg
     }

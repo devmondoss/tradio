@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 
 WORKDIR /app
 COPY --from=builder /app/target/release/monitor /usr/local/bin/monitor
+COPY --from=builder /app/config /app/config
 
 RUN mkdir -p /app/logs
 

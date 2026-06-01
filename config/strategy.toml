@@ -14,6 +14,7 @@
 
 [general]
 enabled                  = true     # activar el motor de estrategias
+drr_enabled              = false    # DRR desactivado — sistema migrado a scalping
 min_score                = 0.60     # umbral de score para emitir una señal
 min_score_institutional  = 0.55     # umbral para LiqHunt / FER / SMD (señales infrecuentes, alta convicción)
 max_spread_bps           = 2.0      # spread máximo aceptado (basis points)
@@ -25,6 +26,26 @@ session_filter_enabled   = true     # filtrar señales según la sesión de trad
 htf_scoring_enabled      = true     # multiplicador HTF basado en MarketStructureContext
 spoof_gate_enabled       = false    # bloquear toxic_flow_gate cuando hay spoof en dirección de la señal
 cooldown_bars            = 5        # velas mínimas entre señales del mismo detector
+
+# ============================================================================
+# SCALPING — 3 estrategias de order flow M1/tick (London 07-10 UTC, NY 13-17 UTC)
+# ============================================================================
+[scalping]
+enabled                    = true
+max_spread_ticks           = 2          # máx ticks de spread para cotizar/entrar
+max_vr                     = 5.0        # Volume Ratio máx — pausar si evento de volatilidad
+obi_threshold_long         = 0.60       # OBI mínimo para sesgar longs (S1)
+obi_threshold_short        = 0.40       # OBI máximo para sesgar shorts (S1)
+min_conviction_score       = 55.0       # score mínimo para emitir señal S2/S3
+max_trades_per_session     = 5          # máx trades por sesión (London o NY)
+daily_loss_limit_pct       = 0.03       # stop día al 3% de pérdida
+max_consecutive_losses     = 3          # pausar después de 3 pérdidas consecutivas
+time_stop_secs             = 120        # time-stop: cerrar posición después de 2 min
+s2_dz_min                  = 1.5        # delta Z-score mínimo para señal de absorción S2
+s2_vr_min                  = 2.0        # VR mínimo para confirmar volumen en S2
+s3_lookback_bars           = 20         # barras de lookback para detección de swings S3
+s3_min_divergence_strength = 0.30       # fuerza mínima de divergencia CVD/precio en S3
+min_rr                     = 1.5        # R:R mínimo para emitir señal scalping
 
 [liquidation_hunt]
 min_usd            = 100000         # USD liquidado en 5 min para confirmar hunt en progreso

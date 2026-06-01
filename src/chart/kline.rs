@@ -147,6 +147,17 @@ impl Chart for KlineChart {
             indi.set_user_avwap_anchor(ts, &self.data_source);
         }
     }
+
+    fn on_scalping_panel_moved(&mut self, x: f32, y: f32) {
+        self.scalping_panel_x = x;
+        self.scalping_panel_y = y;
+        self.state().cache.main.clear();
+    }
+
+    fn on_scalping_history_toggled(&mut self) {
+        self.scalping_hud.show_history = !self.scalping_hud.show_history;
+        self.state().cache.main.clear();
+    }
 }
 
 impl PlotConstants for KlineChart {
@@ -196,6 +207,12 @@ pub struct KlineChart {
     last_regime_enum: crate::strategy::types::Regime,
     /// Live snapshot of DRR context for the HUD overlay — updated each bar close.
     drr_hud: DrrHudState,
+    /// Live snapshot del panel de scalping — actualizado en cada bar close y depth.
+    scalping_hud: ScalpingHudState,
+    scalping_state: data::strategy::scalping::ScalpingState,
+    /// Posición actual del panel de scalping en coordenadas de bounds (top-left origin).
+    scalping_panel_x: f32,
+    scalping_panel_y: f32,
     pub config: data::chart::kline::Config,
     outcome_tracker: crate::strategy::tracker::OutcomeTracker,
     paper_account: crate::strategy::paper::PaperAccount,
@@ -208,11 +225,14 @@ pub struct KlineChart {
     fvg_context: Option<data::detectors::FvgContext>,
     range_detector: data::detectors::RangeDetector,
     range_context: Option<data::detectors::RangeContext>,
-    liq_map_tracker: data::institutional::LiqMapTracker,
-    liq_map_snapshot: Option<data::institutional::LiqMapSnapshot>,
+    liq_events: std::collections::VecDeque<exchange::Liquidation>,
     funding_tracker: data::institutional::FundingTracker,
     oi_tracker: data::institutional::OiTracker,
     cooldown_registry: data::strategy::cooldown::CooldownRegistry,
+    micro_buffer: data::strategy::micro_window::CandleMicroBuffer,
+    micro_snaps: std::collections::VecDeque<(i64, MicroSnap)>,
+    big_trades_acc: BigTradesAccumulator,
+    big_trade_bars: std::collections::VecDeque<BigTradeBar>,
     bar_index: u64,
     /// Timestamp ms UTC de la última barra que el detector evaluó. Sirve para
     /// el panel Strategy Monitor (vitals "last HH:MM:SS UTC").
@@ -222,6 +242,68 @@ pub struct KlineChart {
     pending_signal_oid: Option<data::strategy::mongo_writer::SignalOid>,
     /// Estado por-detector de la última barra evaluada — para el panel debug.
     pub last_detector_log: Vec<data::strategy::types::DetectorSnap>,
+}
+
+// ── Adaptive Big Trades ───────────────────────────────────────────────────────
+
+/// Per-bar summary of large-trade activity for the chart overlay.
+#[derive(Clone, Default)]
+struct BigTradeBar {
+    /// Timestamp of the bar open (ms UTC) — used as x-axis key.
+    ts_ms: i64,
+    /// Net buy volume from large trades (absolute BTC).
+    buy_vol: f64,
+    /// Net sell volume from large trades (absolute BTC).
+    sell_vol: f64,
+    /// Adaptive threshold used for this bar.
+    threshold: f64,
+}
+
+/// Running accumulator fed by `insert_trades()`, finalised at bar close.
+struct BigTradesAccumulator {
+    /// Slow EMA of trade sizes — the adaptive baseline.
+    size_ema: f64,
+    buy_vol:  f64,
+    sell_vol: f64,
+}
+
+impl Default for BigTradesAccumulator {
+    fn default() -> Self {
+        Self { size_ema: 0.05, buy_vol: 0.0, sell_vol: 0.0 }
+    }
+}
+
+impl BigTradesAccumulator {
+    fn on_trade(&mut self, size: f64, is_sell: bool) {
+        // EMA decay ≈ half-life of 50 trades
+        self.size_ema = self.size_ema * 0.98 + size * 0.02;
+        let threshold = self.size_ema * 4.0;
+        if size >= threshold {
+            if is_sell { self.sell_vol += size; } else { self.buy_vol += size; }
+        }
+    }
+
+    fn finalise(&mut self, ts_ms: i64) -> BigTradeBar {
+        let bar = BigTradeBar {
+            ts_ms,
+            buy_vol:   self.buy_vol,
+            sell_vol:  self.sell_vol,
+            threshold: self.size_ema * 4.0,
+        };
+        self.buy_vol  = 0.0;
+        self.sell_vol = 0.0;
+        bar
+    }
+}
+
+/// Lightweight shape snapshot of one closed bar's micro-window.
+/// Stored in a rolling deque for per-candle strip rendering.
+#[derive(Clone, Default)]
+struct MicroSnap {
+    vol_trajectory:  String, // "front"|"back"|"u_shape"|"mid"|"flat"
+    late_surge_ratio: f64,
+    delta_slope_norm: f64,
+    absorption_proxy: f64,
 }
 
 /// Live snapshot of DRR-relevant context for the HUD overlay.
@@ -250,9 +332,83 @@ struct DrrHudState {
     sweep_present:        bool,
     absorption_count:     u8,
     // Flow
-    cvd_slope:     Option<f64>,
-    vpin:          Option<f64>,
+    cvd_slope:      Option<f64>,
+    vpin:           Option<f64>,
     delta_velocity: Option<f64>,
+    // Micro-window shape (last closed bar)
+    micro_vol_traj:    String,   // "front" | "back" | "u_shape" | "mid" | "flat"
+    micro_late_surge:  f64,      // last-bucket vol / mean-bucket vol
+    micro_delta_slope: f64,      // OLS slope of delta normalised by stdev
+    micro_absorb:      f64,      // vol / (|Δprice|/ATR) — high = absorption
+}
+
+/// Estado del panel de scalping — snapshot actualizado en cada bar close y depth update.
+#[derive(Default, Clone)]
+struct ScalpingHudState {
+    // Circuit breaker
+    can_trade: bool,
+    daily_trades: u32,
+    max_trades: u32,
+    daily_pnl: f64,
+    consecutive_losses: u32,
+    session: String,
+    // OBI en vivo (normalizado [0,1]: 0.5=balanceado, >0.5=bids, <0.5=asks)
+    obi_fast: f64,  // EMA rápida L10
+    obi_slow: f64,  // EMA lenta L10
+    obi_l5_norm: f64, // OBI L5 sin EMA — presión inmediata, para divergencia
+    spread_ticks: i32,
+    // CVD de sesión + slope (OLS 20 barras)
+    cvd_session: f64,
+    cvd_slope: Option<f64>,
+    // Posición activa
+    has_position: bool,
+    pos_strategy: String,
+    pos_side: String,
+    pos_entry: f64,
+    pos_stop: f64,
+    pos_tp1: f64,
+    pos_entry_ms: i64,
+    pos_tp2: f64,
+    pos_sl_at_be: bool,
+    pos_current_price: f64,
+    pos_lot_btc: f64,
+    pos_lot_notional: f64,
+    // Últimos 5 trades cerrados (para la tabla compacta)
+    trades: Vec<ScalpingTradeSnap>,
+
+    // Gates — estado de cada condición de entrada por estrategia
+    session_ok: bool,
+    s1_obi_dev: f64,
+    s1_obi_ok: bool,
+    s1_spread_ok: bool,
+    s1_vr_ok: bool,
+    s2_regime_ok: bool,
+    s2_dz: f64,
+    s2_dz_ok: bool,
+    s2_vr: f64,
+    s2_vr_ok: bool,
+
+    // Timer — countdown hasta cierre de la barra
+    last_bar_close_instant: Option<std::time::Instant>,
+    bar_period_secs: u32,
+
+    // Historia completa de trades
+    show_history: bool,
+    all_trades: Vec<ScalpingTradeSnap>,
+
+    // Capital del paper engine
+    total_equity: f64,
+    session_start_equity: f64,
+}
+
+#[derive(Default, Clone)]
+struct ScalpingTradeSnap {
+    strategy: String,
+    side: String,
+    result_r: f64,
+    exit_reason: String,
+    duration_secs: i64,
+    won: bool,
 }
 
 struct DetectorBootstrap {
@@ -265,8 +421,7 @@ struct DetectorBootstrap {
     fvg_context: Option<data::detectors::FvgContext>,
     range_detector: data::detectors::RangeDetector,
     range_context: Option<data::detectors::RangeContext>,
-    liq_map_tracker: data::institutional::LiqMapTracker,
-    liq_map_snapshot: Option<data::institutional::LiqMapSnapshot>,
+    scalping_state: data::strategy::scalping::ScalpingState,
 }
 
 fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
@@ -275,6 +430,9 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
     let mut fvg_detector = data::detectors::FvgDetector::new(100);
     let mut range_detector = data::detectors::RangeDetector::new();
 
+    // Calentar el scalping state con las klines históricas para que DZ, VR y
+    // cvd_slope tengan valores reales desde el primer bar live (no zeros de warmup).
+    let mut scalping_state = data::strategy::scalping::ScalpingState::new(25);
     for kline in klines {
         let o = kline.open.to_f32() as f64;
         let h = kline.high.to_f32() as f64;
@@ -286,6 +444,11 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
         ob_detector.push_bar(o, h, l, c, v, ts);
         fvg_detector.push_bar(h, l, ts);
         range_detector.push_bar(h, l, c);
+        // delta estimado del OHLC (proxy; aggTrades no están disponibles en el bootstrap)
+        let body = c - o;
+        let estimated_delta = body * v / (h - l + 1e-9);
+        let session = data::session::classify_session(ts).session;
+        scalping_state.on_bar_close(c, estimated_delta, v, h, l, session);
     }
 
     let last_price = klines
@@ -323,12 +486,6 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
         if ctx.valid { Some(ctx) } else { None }
     };
 
-    let mut liq_map_tracker = data::institutional::LiqMapTracker::new();
-    if let (Some(ms), true) = (&ms_snap, last_price > 0.0) {
-        liq_map_tracker.update(last_price, ms.range_high, ms.range_low, 0.0, last_ts);
-    }
-    let liq_map_snapshot = Some(liq_map_tracker.snapshot().clone());
-
     DetectorBootstrap {
         ms_context: ms_snap,
         structure_breaks,
@@ -339,9 +496,30 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
         fvg_context,
         range_detector,
         range_context,
-        liq_map_tracker,
-        liq_map_snapshot,
+        scalping_state,
     }
+}
+
+/// Convierte Unix timestamp (segundos) a YYYYMMDD sin dependencias externas.
+fn unix_to_yyyymmdd(secs: u64) -> u32 {
+    let mut days = secs / 86400;
+    let mut year = 1970u32;
+    loop {
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let days_in_year = if leap { 366 } else { 365 };
+        if days < days_in_year { break; }
+        days -= days_in_year;
+        year += 1;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let dim = [31u64, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u32;
+    for &d in &dim {
+        if days < d { break; }
+        days -= d;
+        month += 1;
+    }
+    year * 10000 + month * 100 + (days + 1) as u32
 }
 
 impl KlineChart {
@@ -443,6 +621,10 @@ impl KlineChart {
                     last_regime: String::new(),
                     last_regime_enum: crate::strategy::types::Regime::Unknown,
                     drr_hud: DrrHudState::default(),
+                    scalping_hud: ScalpingHudState::default(),
+                    scalping_state: boot.scalping_state,
+                    scalping_panel_x: 8.0,
+                    scalping_panel_y: 8.0,
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
@@ -455,11 +637,17 @@ impl KlineChart {
                     fvg_context: boot.fvg_context,
                     range_detector: boot.range_detector,
                     range_context: boot.range_context,
-                    liq_map_tracker: boot.liq_map_tracker,
-                    liq_map_snapshot: boot.liq_map_snapshot,
+                    liq_events: std::collections::VecDeque::new(),
                     funding_tracker: data::institutional::FundingTracker::new(),
                     oi_tracker: data::institutional::OiTracker::new(),
                     cooldown_registry: data::strategy::cooldown::CooldownRegistry::new(5),
+                    micro_buffer: data::strategy::micro_window::CandleMicroBuffer::new(
+                        data::strategy::micro_window::MicroWindowConfig::default(),
+                        0,
+                    ),
+                    micro_snaps: std::collections::VecDeque::new(),
+                    big_trades_acc: BigTradesAccumulator::default(),
+                    big_trade_bars: std::collections::VecDeque::new(),
                     last_evaluated_bar_ms: None,
                     pending_signal_oid: None,
                     last_detector_log: Vec::new(),
@@ -528,6 +716,10 @@ impl KlineChart {
                     last_regime: String::new(),
                     last_regime_enum: crate::strategy::types::Regime::Unknown,
                     drr_hud: DrrHudState::default(),
+                    scalping_hud: ScalpingHudState::default(),
+                    scalping_state: boot.scalping_state,
+                    scalping_panel_x: 8.0,
+                    scalping_panel_y: 8.0,
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
@@ -540,11 +732,17 @@ impl KlineChart {
                     fvg_context: boot.fvg_context,
                     range_detector: boot.range_detector,
                     range_context: boot.range_context,
-                    liq_map_tracker: boot.liq_map_tracker,
-                    liq_map_snapshot: boot.liq_map_snapshot,
+                    liq_events: std::collections::VecDeque::new(),
                     funding_tracker: data::institutional::FundingTracker::new(),
                     oi_tracker: data::institutional::OiTracker::new(),
                     cooldown_registry: data::strategy::cooldown::CooldownRegistry::new(5),
+                    micro_buffer: data::strategy::micro_window::CandleMicroBuffer::new(
+                        data::strategy::micro_window::MicroWindowConfig::default(),
+                        0,
+                    ),
+                    micro_snaps: std::collections::VecDeque::new(),
+                    big_trades_acc: BigTradesAccumulator::default(),
+                    big_trade_bars: std::collections::VecDeque::new(),
                     last_evaluated_bar_ms: None,
                     pending_signal_oid: None,
                     last_detector_log: Vec::new(),
@@ -604,7 +802,7 @@ impl KlineChart {
             .map(|v| !v.is_empty() && v != "0")
             .unwrap_or(false);
         if is_new_bar
-            && (self.strategy_overlay_enabled || force_overlay)
+            && (self.strategy_overlay_enabled || force_overlay || self.config.show_scalping_panel)
             && let Some((close, high, low, open, ts_ms)) = closed_bar
         {
             self.run_strategy_detection(close, high, low, open, ts_ms);
@@ -891,6 +1089,22 @@ impl KlineChart {
                     .filter_map(Option::as_mut)
                     .for_each(|indi| indi.on_insert_trades(buffer, 0, &self.data_source));
 
+                // Feed micro-window buffer and big-trades accumulator
+                for t in buffer {
+                    let size = t.qty.to_f32_lossy() as f64;
+                    self.micro_buffer.on_trade(
+                        &data::strategy::micro_window::MicroTrade {
+                            ts_ms:   t.time.as_u64() as i64,
+                            price:   t.price.to_f32() as f64,
+                            size,
+                            is_buy:  !t.is_sell,
+                            is_big:  false,
+                            liq_usd: 0.0,
+                        },
+                    );
+                    self.big_trades_acc.on_trade(size, t.is_sell);
+                }
+
                 self.invalidate(None);
             }
         }
@@ -949,8 +1163,6 @@ impl KlineChart {
                         self.fvg_context = boot.fvg_context;
                         self.range_detector = boot.range_detector;
                         self.range_context = boot.range_context;
-                        self.liq_map_tracker = boot.liq_map_tracker;
-                        self.liq_map_snapshot = boot.liq_map_snapshot;
                     }
                 }
                 self.invalidate(None);
@@ -1294,6 +1506,38 @@ impl KlineChart {
 
     pub fn update_depth(&mut self, depth: &exchange::depth::Depth) {
         self.last_depth = Some(depth.clone());
+
+        // OBI L10 — señal principal para el EMA scalping
+        let bid10: f64 = depth.bids.iter().rev().take(10)
+            .map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
+        let ask10: f64 = depth.asks.iter().take(10)
+            .map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
+        let total10 = bid10 + ask10;
+        if total10 > 0.0 {
+            let obi_l10_raw = (bid10 - ask10) / total10;
+            self.scalping_state.on_depth(obi_l10_raw); // normaliza a [0,1] internamente
+            self.scalping_hud.obi_fast = self.scalping_state.obi_ema_fast;
+            self.scalping_hud.obi_slow = self.scalping_state.obi_ema_slow;
+        }
+
+        // OBI L5 — señal auxiliar de presión inmediata (para divergencia L5/L10)
+        let bid5: f64 = depth.bids.iter().rev().take(5)
+            .map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
+        let ask5: f64 = depth.asks.iter().take(5)
+            .map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
+        let total5 = bid5 + ask5;
+        if total5 > 0.0 {
+            let obi_l5_raw = (bid5 - ask5) / total5;
+            self.scalping_hud.obi_l5_norm = (obi_l5_raw + 1.0) / 2.0; // [0,1]
+        }
+
+        // Spread en ticks
+        if let (Some((&ask, _)), Some((&bid, _))) =
+            (depth.asks.iter().next(), depth.bids.iter().next_back())
+        {
+            let spread_usd = (ask.to_f32() as f64 - bid.to_f32() as f64).max(0.0);
+            self.scalping_hud.spread_ticks = (spread_usd / 0.10).round() as i32;
+        }
     }
 
     fn run_strategy_detection(
@@ -1569,19 +1813,6 @@ impl KlineChart {
             }
         };
 
-        // Alimentar LiqMapTracker con swings del ms_context y OI actual
-        {
-            let swing_high = self.ms_context.as_ref().and_then(|ms| ms.range_high);
-            let swing_low = self.ms_context.as_ref().and_then(|ms| ms.range_low);
-            let oi_current = self.indicators[KlineIndicator::OpenInterest]
-                .as_ref()
-                .and_then(|i| i.oi_snapshot())
-                .and_then(|v| v.last().map(|o| o.value as f64))
-                .unwrap_or(0.0);
-            self.liq_map_tracker
-                .update(price, swing_high, swing_low, oi_current, bar_ts_ms);
-            self.liq_map_snapshot = Some(self.liq_map_tracker.snapshot().clone());
-        }
         let session = Some(classify_session(bar_ts_ms));
 
         // Construir InstitutionalContext con los trackers disponibles.
@@ -1614,7 +1845,7 @@ impl KlineChart {
                 funding,
                 quality,
                 smart_money_score: Some(sms),
-                liq_map: self.liq_map_snapshot.clone(),
+                liq_map: None,
             })
         };
 
@@ -1702,7 +1933,229 @@ impl KlineChart {
                 cvd_slope:        ctx.flow.cvd_slope,
                 vpin:             ctx.flow.vpin,
                 delta_velocity:   ctx.flow.delta_velocity,
+                micro_vol_traj:   String::new(),
+                micro_late_surge: 0.0,
+                micro_delta_slope: 0.0,
+                micro_absorb:     0.0,
             };
+        }
+
+        // ── Micro-window snapshot — build at bar close ────────────────────────
+        {
+            use data::strategy::micro_window::MicroCtx;
+            let rng = ctx.range.as_ref();
+            let micro_ctx = MicroCtx {
+                atr:         ctx.atr.unwrap_or(1.0).max(1e-9),
+                range_loc:   rng.map(|r| r.location),
+                range_high:  rng.filter(|r| r.valid).map(|r| r.range_high),
+                range_low:   rng.filter(|r| r.valid).map(|r| r.range_low),
+                range_mid:   rng.filter(|r| r.valid).map(|r| r.range_mid),
+                in_drr_zone: rng.map(|r| r.no_trade_zone),
+            };
+            // Only build when buffer has received at least one trade
+            let row = self.micro_buffer.build_row(&micro_ctx, "binance", &ctx.symbol);
+            self.drr_hud.micro_vol_traj    = row.vol_trajectory.clone();
+            self.drr_hud.micro_late_surge  = row.late_surge_ratio;
+            self.drr_hud.micro_delta_slope = row.delta_slope_norm;
+            self.drr_hud.micro_absorb      = row.absorption_proxy;
+            // Store snap for strip rendering (rolling 200 bars)
+            if self.micro_snaps.len() >= 200 {
+                self.micro_snaps.pop_front();
+            }
+            self.micro_snaps.push_back((bar_ts_ms, MicroSnap {
+                vol_trajectory:  row.vol_trajectory,
+                late_surge_ratio: row.late_surge_ratio,
+                delta_slope_norm: row.delta_slope_norm,
+                absorption_proxy: row.absorption_proxy,
+            }));
+            // Reset buffer for the next candle
+            self.micro_buffer.reset(bar_ts_ms + interval_ms as i64);
+        }
+
+        // ── Scalping engine — bar close update ───────────────────────────────
+        {
+            use data::strategy::scalping::{ScalpingRegime, absorption, cvd_divergence, obi_maker, is_scalping_session};
+            use data::strategy::scalping::paper::ScalpingExitReason;
+
+            let session_ts = data::session::classify_session(bar_ts_ms);
+            let current_session = session_ts.session;
+
+            self.scalping_state.on_bar_close(
+                ctx.flow.cvd.unwrap_or(0.0),
+                ctx.flow.delta.unwrap_or(0.0),
+                (ctx.flow.buy_volume.unwrap_or(0.0) + ctx.flow.sell_volume.unwrap_or(0.0)),
+                bar_high,
+                bar_low,
+                current_session,
+            );
+
+            let cfg_scalping = &cfg.scalping;
+            if cfg_scalping.enabled {
+                let scalping_regime = match ctx.regime {
+                    data::strategy::types::Regime::TrendUp | data::strategy::types::Regime::TrendDown => ScalpingRegime::Trend,
+                    _ => ScalpingRegime::Range,
+                };
+                let obi_l5 = ctx.orderbook.obi_l5.unwrap_or(0.0);
+                let micro_price = ctx.orderbook.microprice.unwrap_or(bar_close);
+                let spread_ticks = self.scalping_hud.spread_ticks;
+
+                // Cerrar posición si la sesión terminó
+                if self.scalping_state.paper.has_position() && !is_scalping_session(current_session) {
+                    let obi_exit = self.scalping_state.obi_ema_fast;
+                    let slope_exit = self.scalping_hud.cvd_slope;
+                    self.scalping_state.paper.close(bar_close, bar_ts_ms, ScalpingExitReason::SessionEnd);
+                    Self::journal_close(&self.scalping_state.paper, obi_exit, slope_exit);
+                    self.scalping_state.active_signal = None;
+                }
+
+                let scalp_ctx = self.scalping_state.build_context(
+                    obi_l5, micro_price, spread_ticks,
+                    ctx.flow.cvd.unwrap_or(0.0),
+                    ctx.flow.cvd_slope,
+                    bar_open, bar_high, bar_low, bar_close,
+                    ctx.flow.delta.unwrap_or(0.0),
+                    ctx.flow.buy_volume.unwrap_or(0.0) + ctx.flow.sell_volume.unwrap_or(0.0),
+                    ctx.atr.unwrap_or(100.0),
+                    scalping_regime,
+                    current_session,
+                    ctx.vwap.vwap_session,
+                    ctx.volume_profile.poc,
+                    ctx.flow.funding_rate,
+                    0.0, // liq_ratio — no disponible en el chart local
+                    bar_ts_ms,
+                    ctx.range.clone(),
+                    ctx.flow.footprint_levels.clone(),
+                    ctx.flow.big_trade_bullish,
+                    ctx.flow.big_trade_bearish,
+                );
+
+                // ── Gates en tiempo real ─────────────────────────────────────────
+                {
+                    // obi_ema_fast ya está en [0,1] — 0.5 = neutral
+                    let obi_dev = (scalp_ctx.obi_ema_fast - 0.5).abs();
+                    self.scalping_hud.session_ok = is_scalping_session(current_session);
+                    self.scalping_hud.s1_obi_dev = obi_dev; // desviación del neutral [0..0.5]
+                    self.scalping_hud.s1_obi_ok = obi_dev >= 0.05;
+                    self.scalping_hud.s1_spread_ok = spread_ticks <= cfg_scalping.max_spread_ticks;
+                    self.scalping_hud.s1_vr_ok = scalp_ctx.vr <= cfg_scalping.max_vr;
+                    self.scalping_hud.s2_regime_ok = matches!(scalping_regime, ScalpingRegime::Range);
+                    self.scalping_hud.s2_dz = scalp_ctx.dz;
+                    self.scalping_hud.s2_dz_ok = scalp_ctx.dz.abs() >= cfg_scalping.s2_dz_min;
+                    self.scalping_hud.s2_vr = scalp_ctx.vr;
+                    self.scalping_hud.s2_vr_ok = scalp_ctx.vr >= cfg_scalping.s2_vr_min;
+                    self.scalping_hud.last_bar_close_instant = Some(std::time::Instant::now());
+                    self.scalping_hud.bar_period_secs = (interval_ms / 1000) as u32;
+                }
+
+                // ── Check TP/SL/time-stop al cierre de cada barra ────────────
+                if self.scalping_state.paper.has_position() {
+                    let obi_now = self.scalping_state.obi_ema_fast;
+                    if let Some(reason) = self.scalping_state.paper.check_exit(
+                        bar_close,
+                        obi_now,
+                        spread_ticks,
+                        bar_ts_ms,
+                        cfg_scalping.time_stop_secs,
+                    ) {
+                        self.scalping_state.paper.close(bar_close, bar_ts_ms, reason);
+                        Self::journal_close(
+                            &self.scalping_state.paper,
+                            obi_now,
+                            scalp_ctx.cvd_slope,
+                        );
+                        self.scalping_state.active_signal = None;
+                    }
+                }
+
+                // ── Detectar nuevas señales ───────────────────────────────────
+                let can_trade = self.scalping_state.paper.can_trade(
+                    cfg_scalping.max_trades_per_session,
+                    cfg_scalping.daily_loss_limit_pct,
+                    cfg_scalping.max_consecutive_losses,
+                );
+
+                if !self.scalping_state.paper.has_position() {
+                    let sig = absorption::detect(&scalp_ctx, cfg_scalping)
+                        .or_else(|| cvd_divergence::detect(&scalp_ctx, cfg_scalping))
+                        .or_else(|| obi_maker::detect(&scalp_ctx, cfg_scalping));
+
+                    if let Some(s) = sig {
+                        if can_trade {
+                            Self::journal_open(&s, &scalp_ctx, self.scalping_hud.obi_l5_norm, bar_ts_ms);
+                            self.scalping_state.paper.open(
+                                s.clone(), bar_ts_ms,
+                                scalp_ctx.obi_ema_fast,
+                                self.scalping_hud.obi_l5_norm,
+                                scalp_ctx.dz, scalp_ctx.vr,
+                                scalp_ctx.cvd, scalp_ctx.cvd_slope,
+                                spread_ticks,
+                            );
+                            self.scalping_state.active_signal = Some(s);
+                            self.scalping_state.signal_entry_ms = Some(bar_ts_ms);
+                        } else {
+                            // Señal válida pero circuit breaker activo — registrar para análisis
+                            Self::journal_skipped(&s, &scalp_ctx, bar_ts_ms, "circuit_breaker");
+                        }
+                    }
+                }
+
+                // Actualizar HUD
+                let paper = &self.scalping_state.paper;
+                self.scalping_hud.can_trade = paper.can_trade(
+                    cfg_scalping.max_trades_per_session,
+                    cfg_scalping.daily_loss_limit_pct,
+                    cfg_scalping.max_consecutive_losses,
+                );
+                self.scalping_hud.daily_trades = paper.daily_trades;
+                self.scalping_hud.max_trades = cfg_scalping.max_trades_per_session;
+                self.scalping_hud.daily_pnl = paper.daily_pnl;
+                self.scalping_hud.consecutive_losses = paper.consecutive_losses;
+                self.scalping_hud.total_equity = paper.total_equity;
+                self.scalping_hud.session_start_equity = paper.session_start_equity;
+                self.scalping_hud.session = format!("{:?}", current_session);
+                self.scalping_hud.cvd_session = scalp_ctx.cvd;
+                self.scalping_hud.cvd_slope = scalp_ctx.cvd_slope;
+
+                self.scalping_hud.has_position = paper.has_position();
+                self.scalping_hud.pos_lot_btc = paper.active_lot_btc();
+                self.scalping_hud.pos_lot_notional = paper.active_lot_notional();
+                if let Some(sig) = &self.scalping_state.active_signal {
+                    self.scalping_hud.pos_strategy = sig.strategy.to_string();
+                    self.scalping_hud.pos_side     = format!("{:?}", sig.side);
+                    self.scalping_hud.pos_entry    = sig.entry_price;
+                    self.scalping_hud.pos_stop     = sig.stop_price;
+                    self.scalping_hud.pos_tp1      = sig.tp1_price;
+                    self.scalping_hud.pos_tp2      = sig.tp2_price;
+                    self.scalping_hud.pos_entry_ms = self.scalping_state.signal_entry_ms.unwrap_or(0);
+                    // BE: si el paper engine ya movió el SL a entry
+                    self.scalping_hud.pos_sl_at_be = self.scalping_state.paper
+                        .closed_trades.last()
+                        .map(|_| false) // no closed = still open; check via paper internals
+                        .unwrap_or(false);
+                }
+                self.scalping_hud.pos_current_price = bar_close;
+
+                // Últimos 5 trades para la tabla compacta + historial completo
+                let trades = &paper.closed_trades;
+                let start = trades.len().saturating_sub(5);
+                let snap_fn = |t: &data::strategy::scalping::paper::ScalpingTrade| ScalpingTradeSnap {
+                    strategy: t.strategy.clone(),
+                    side: format!("{:?}", t.side),
+                    result_r: t.result_r,
+                    exit_reason: t.exit_reason.to_string(),
+                    duration_secs: t.duration_ms / 1000,
+                    won: t.pnl_net > 0.0,
+                };
+                self.scalping_hud.trades = trades[start..].iter().rev().map(&snap_fn).collect();
+                self.scalping_hud.all_trades = trades.iter().rev().map(&snap_fn).collect();
+            }
+        }
+
+        // ── Finalise big-trades bar ───────────────────────────────────────────
+        {
+            let bar = self.big_trades_acc.finalise(bar_ts_ms);
+            if self.big_trade_bars.len() >= 200 { self.big_trade_bars.pop_front(); }
+            self.big_trade_bars.push_back(bar);
         }
 
         self.bar_index += 1;
@@ -2183,86 +2636,87 @@ impl KlineChart {
         }
     }
 
-    fn draw_liq_map(
+    // ── Liquidation event strip ──────────────────────────────────────────────
+    // Per-candle aggregated liquidation volume shown as a colored strip at the
+    // bottom of the chart. Long liq = orange (longs blown out), short liq = cyan.
+    // Big single events (>$1M) also show a triangle marker on the candle itself.
+    fn draw_liq_strip(
         &self,
         frame: &mut canvas::Frame,
         region: &Rectangle,
-        price_to_y: impl Fn(Price) -> f32,
+        interval_to_x: impl Fn(u64) -> f32,
+        cell_width: f32,
+        interval_ms: u64,
     ) {
-        let Some(ref snap) = self.liq_map_snapshot else {
-            return;
-        };
+        let strip_h  = 8.0_f32;
+        // Position: sits just above the x-axis labels, below the candles area
+        let strip_y  = region.y + region.height - strip_h - 2.0;
+        let half_w   = (cell_width * 0.42).max(1.5);
+        let col_long  = Color::from_rgba(0.95, 0.50, 0.10, 0.88); // long liq  → orange
+        let col_short = Color::from_rgba(0.20, 0.85, 0.85, 0.88); // short liq → cyan
 
-        let right_x = region.x + region.width;
-        // Density threshold — skip noise below this
-        const MIN_DENSITY: f32 = 0.15;
+        // Always draw a dim background line so the strip zone is always visible
+        frame.fill_rectangle(
+            Point::new(region.x, strip_y + strip_h - 1.0),
+            Size::new(region.width, 1.0),
+            Color::from_rgba(0.45, 0.45, 0.50, 0.25),
+        );
 
-        for level in snap.density_above.iter().chain(snap.density_below.iter()) {
-            if level.density < MIN_DENSITY {
-                continue;
+        if self.liq_events.is_empty() {
+            return; // no events yet — base line still visible above
+        }
+
+        // Group events by candle bucket
+        let mut buckets: std::collections::HashMap<u64, (f64, f64)> =
+            std::collections::HashMap::new();
+        for ev in &self.liq_events {
+            let ts     = ev.time.as_u64();
+            let bucket = (ts / interval_ms) * interval_ms;
+            let usd    = ev.price.to_f32() as f64 * ev.qty.to_f32_lossy() as f64;
+            let e      = buckets.entry(bucket).or_default();
+            if ev.is_long_liq { e.0 += usd; } else { e.1 += usd; }
+        }
+
+        // Normalise height: log scale so small events are still visible
+        let max_usd = buckets.values()
+            .map(|(a, b)| a.max(*b))
+            .fold(1.0_f64, f64::max);
+
+        for (bucket_ts, (long_usd, short_usd)) in &buckets {
+            let cx = interval_to_x(*bucket_ts);
+            if !cx.is_finite() || cx < region.x || cx > region.x + region.width { continue; }
+
+            // Long liq (red side — longs blown out)
+            if *long_usd > 10.0 {
+                let ratio = (long_usd.ln_1p() / max_usd.ln_1p()) as f32;
+                let h = (ratio * strip_h).clamp(1.0, strip_h);
+                frame.fill_rectangle(
+                    Point::new(cx - half_w, strip_y + strip_h - h),
+                    Size::new(half_w, h),
+                    col_long,
+                );
             }
-
-            let y = price_to_y(Price::from_f32(level.price as f32));
-            if !y.is_finite() {
-                continue;
-            }
-
-            let is_primary = snap
-                .primary_target_above
-                .map(|p| (p - level.price).abs() < 0.01)
-                .unwrap_or(false)
-                || snap
-                    .primary_target_below
-                    .map(|p| (p - level.price).abs() < 0.01)
-                    .unwrap_or(false);
-
-            // Opacity y grosor escalan con densidad; primario = más visible
-            let alpha = if is_primary {
-                0.85
-            } else {
-                (level.density * 0.70).clamp(0.15, 0.65)
-            };
-            let width = if is_primary { 1.5 } else { 0.8 };
-
-            let color = Color::from_rgba(1.0, 0.82, 0.10, alpha); // gold
-
-            let stroke = Stroke {
-                style: canvas::stroke::Style::Solid(color),
-                width,
-                line_dash: LineDash {
-                    segments: &[6.0, 3.0],
-                    offset: 0,
-                },
-                ..Default::default()
-            };
-            frame.stroke(
-                &Path::line(Point::new(region.x, y), Point::new(right_x, y)),
-                stroke,
-            );
-
-            // Etiqueta en el target principal
-            if is_primary {
-                let label = if snap
-                    .primary_target_above
-                    .map(|p| (p - level.price).abs() < 0.01)
-                    .unwrap_or(false)
-                {
-                    "LIQ↑"
-                } else {
-                    "LIQ↓"
-                };
-                frame.fill_text(canvas::Text {
-                    content: label.to_string(),
-                    position: Point::new(right_x - 4.0, y - 2.0),
-                    size: iced::Pixels(TEXT_SIZE * 0.78),
-                    color,
-                    align_x: iced::alignment::Horizontal::Right.into(),
-                    align_y: iced::alignment::Vertical::Bottom,
-                    font: style::AZERET_MONO,
-                    ..canvas::Text::default()
-                });
+            // Short liq (cyan side — shorts blown out)
+            if *short_usd > 10.0 {
+                let ratio = (short_usd.ln_1p() / max_usd.ln_1p()) as f32;
+                let h = (ratio * strip_h).clamp(1.0, strip_h);
+                frame.fill_rectangle(
+                    Point::new(cx, strip_y + strip_h - h),
+                    Size::new(half_w, h),
+                    col_short,
+                );
             }
         }
+    }
+
+    /// Receives forced-liquidation events from the `@forceOrder` stream.
+    pub fn on_liquidations(&mut self, events: &[exchange::Liquidation]) {
+        const MAX_EVENTS: usize = 2000;
+        for &ev in events {
+            if self.liq_events.len() >= MAX_EVENTS { self.liq_events.pop_front(); }
+            self.liq_events.push_back(ev);
+        }
+        self.invalidate(None);
     }
 
     fn draw_fvgs(
@@ -2279,34 +2733,26 @@ impl KlineChart {
 
         let right_x = region.x + region.width;
 
-        let all_fvgs = ctx.bullish_fvgs.iter().chain(ctx.bearish_fvgs.iter());
+        // Show at most 8 FVGs total (4 per side), most recent first
+        let all_fvgs = ctx.bullish_fvgs.iter().rev().take(4)
+            .chain(ctx.bearish_fvgs.iter().rev().take(4));
 
         for fvg in all_fvgs {
-            let (fill_color, border_color) = match (&fvg.fvg_type, &fvg.status) {
-                (data::detectors::FvgType::Bullish, data::detectors::FvgStatus::Unfilled) => (
-                    Color::from_rgba(0.10, 0.78, 0.80, 0.14),
-                    Color::from_rgba(0.10, 0.78, 0.80, 0.60),
-                ),
-                (
-                    data::detectors::FvgType::Bullish,
-                    data::detectors::FvgStatus::PartiallyFilled,
-                ) => (
-                    Color::from_rgba(0.10, 0.78, 0.80, 0.07),
-                    Color::from_rgba(0.10, 0.78, 0.80, 0.30),
-                ),
-                (data::detectors::FvgType::Bearish, data::detectors::FvgStatus::Unfilled) => (
-                    Color::from_rgba(0.95, 0.55, 0.10, 0.14),
-                    Color::from_rgba(0.95, 0.55, 0.10, 0.60),
-                ),
-                (
-                    data::detectors::FvgType::Bearish,
-                    data::detectors::FvgStatus::PartiallyFilled,
-                ) => (
-                    Color::from_rgba(0.95, 0.55, 0.10, 0.07),
-                    Color::from_rgba(0.95, 0.55, 0.10, 0.30),
-                ),
+            // Keep fills very subtle — FVGs are reference zones, not highlights
+            let (fill_a, border_a, base_color) = match (&fvg.fvg_type, &fvg.status) {
+                (data::detectors::FvgType::Bullish, data::detectors::FvgStatus::Unfilled) =>
+                    (0.10, 0.55, [0.10_f32, 0.78, 0.80]),
+                (data::detectors::FvgType::Bullish, data::detectors::FvgStatus::PartiallyFilled) =>
+                    (0.05, 0.28, [0.10, 0.78, 0.80]),
+                (data::detectors::FvgType::Bearish, data::detectors::FvgStatus::Unfilled) =>
+                    (0.10, 0.55, [0.95, 0.45, 0.10]),
+                (data::detectors::FvgType::Bearish, data::detectors::FvgStatus::PartiallyFilled) =>
+                    (0.05, 0.28, [0.95, 0.45, 0.10]),
                 _ => continue, // Filled — skip
             };
+
+            let fill_color   = Color::from_rgba(base_color[0], base_color[1], base_color[2], fill_a);
+            let border_color = Color::from_rgba(base_color[0], base_color[1], base_color[2], border_a);
 
             let ts = fvg.timestamp_ms as u64;
             let x_left = if ts >= earliest {
@@ -2314,52 +2760,40 @@ impl KlineChart {
             } else {
                 region.x
             };
-            let y_top = price_to_y(Price::from_f32(fvg.high as f32));
-            let y_bottom = price_to_y(Price::from_f32(fvg.low as f32));
-
-            let width = right_x - x_left;
-            let height = y_bottom - y_top;
+            let y_top    = price_to_y(Price::from_f32(fvg.high as f32));
+            let y_bottom = price_to_y(Price::from_f32(fvg.low  as f32));
+            let width    = right_x - x_left;
+            let height   = y_bottom - y_top;
 
             if width <= 0.0 || height <= 0.0 || !y_top.is_finite() || !y_bottom.is_finite() {
                 continue;
             }
 
-            frame.fill_rectangle(
-                Point::new(x_left, y_top),
-                Size::new(width, height),
-                fill_color,
-            );
+            // Filled rectangle (no extended border lines)
+            frame.fill_rectangle(Point::new(x_left, y_top), Size::new(width, height), fill_color);
 
-            let stroke = Stroke {
+            // Clean border: only top and bottom edges of the zone, not extended lines
+            let border_stroke = Stroke {
                 style: canvas::stroke::Style::Solid(border_color),
-                width: 0.8,
+                width: 0.9,
                 ..Default::default()
             };
-            frame.stroke(
-                &Path::line(Point::new(x_left, y_top), Point::new(right_x, y_top)),
-                stroke.clone(),
-            );
-            frame.stroke(
-                &Path::line(Point::new(x_left, y_bottom), Point::new(right_x, y_bottom)),
-                stroke,
-            );
+            frame.stroke(&Path::line(Point::new(x_left, y_top),    Point::new(right_x, y_top)),    border_stroke.clone());
+            frame.stroke(&Path::line(Point::new(x_left, y_bottom), Point::new(right_x, y_bottom)), border_stroke);
 
-            // FVG label
-            let fvg_tag = match &fvg.status {
-                data::detectors::FvgStatus::Unfilled => "FVG",
-                data::detectors::FvgStatus::PartiallyFilled => "FVG~",
-                _ => "FVG",
-            };
-            frame.fill_text(canvas::Text {
-                content: fvg_tag.to_string(),
-                position: Point::new(right_x - 4.0, y_top + 2.0),
-                size: iced::Pixels(TEXT_SIZE * 0.72),
-                color: border_color,
-                align_x: iced::alignment::Horizontal::Right.into(),
-                align_y: iced::alignment::Vertical::Top,
-                font: style::AZERET_MONO,
-                ..canvas::Text::default()
-            });
+            // Small label only on unfilled zones, left-aligned near origin of the FVG
+            if fvg.status == data::detectors::FvgStatus::Unfilled {
+                frame.fill_text(canvas::Text {
+                    content: "FVG".to_string(),
+                    position: Point::new(x_left + 3.0, y_top + 2.0),
+                    size: iced::Pixels(TEXT_SIZE * 0.70),
+                    color: border_color,
+                    align_x: iced::alignment::Horizontal::Left.into(),
+                    align_y: iced::alignment::Vertical::Top,
+                    font: style::AZERET_MONO,
+                    ..canvas::Text::default()
+                });
+            }
         }
     }
 
@@ -2374,70 +2808,93 @@ impl KlineChart {
     ) {
         let right_x = region.x + region.width;
 
-        // Premium / Discount zones from current ms_context
+        // ── Premium / Discount zones ──────────────────────────────────────────
         if let Some(ref ms) = self.ms_context {
-            // HTF bias label in top-right corner
-            let (bias_label, bias_color) = match ms.htf_bias {
-                data::structure::HtfBias::Bullish => {
-                    ("HTF: Bull", Color::from_rgba(0.25, 0.85, 0.45, 0.85))
-                }
-                data::structure::HtfBias::Bearish => {
-                    ("HTF: Bear", Color::from_rgba(0.90, 0.30, 0.30, 0.85))
-                }
-                data::structure::HtfBias::Neutral => {
-                    ("HTF: Neutral", Color::from_rgba(0.70, 0.70, 0.70, 0.70))
-                }
-            };
-            frame.fill_text(canvas::Text {
-                content: bias_label.to_string(),
-                position: Point::new(right_x - 8.0, region.y + 6.0),
-                size: iced::Pixels(TEXT_SIZE * 0.78),
-                color: bias_color,
-                align_x: iced::alignment::Horizontal::Right.into(),
-                align_y: iced::alignment::Vertical::Top,
-                font: style::AZERET_MONO,
-                ..canvas::Text::default()
-            });
-
             if let (Some(rh), Some(premium), Some(discount), Some(rl)) = (
                 ms.range_high,
                 ms.premium_threshold,
                 ms.discount_threshold,
                 ms.range_low,
             ) {
-                // Premium zone: price_range_high → premium_threshold
-                let y_rh = price_to_y(Price::from_f32(rh as f32));
+                // Premium zone (top of range → 75% line) — red tint
+                let y_rh      = price_to_y(Price::from_f32(rh      as f32));
                 let y_premium = price_to_y(Price::from_f32(premium as f32));
                 let premium_h = y_premium - y_rh;
                 if premium_h > 0.0 && y_rh.is_finite() && y_premium.is_finite() {
                     frame.fill_rectangle(
                         Point::new(region.x, y_rh),
                         Size::new(region.width, premium_h),
-                        Color::from_rgba(0.90, 0.20, 0.20, 0.08),
+                        Color::from_rgba(0.90, 0.20, 0.20, 0.07),
                     );
+                    // Border line at premium threshold
+                    frame.stroke(
+                        &Path::line(Point::new(region.x, y_premium), Point::new(right_x, y_premium)),
+                        Stroke {
+                            style: canvas::stroke::Style::Solid(Color::from_rgba(0.90, 0.35, 0.35, 0.35)),
+                            width: 0.6,
+                            line_dash: LineDash { segments: &[4.0, 4.0], offset: 0 },
+                            ..Default::default()
+                        },
+                    );
+                    frame.fill_text(canvas::Text {
+                        content: "Premium".to_string(),
+                        position: Point::new(region.x + 4.0, y_rh + 3.0),
+                        size: iced::Pixels(TEXT_SIZE * 0.70),
+                        color: Color::from_rgba(0.90, 0.45, 0.45, 0.55),
+                        align_x: iced::alignment::Horizontal::Left.into(),
+                        align_y: iced::alignment::Vertical::Top,
+                        font: style::AZERET_MONO,
+                        ..canvas::Text::default()
+                    });
                 }
 
-                // Discount zone: discount_threshold → range_low
+                // Discount zone (25% line → bottom of range) — green tint
                 let y_discount = price_to_y(Price::from_f32(discount as f32));
-                let y_rl = price_to_y(Price::from_f32(rl as f32));
+                let y_rl       = price_to_y(Price::from_f32(rl       as f32));
                 let discount_h = y_rl - y_discount;
                 if discount_h > 0.0 && y_discount.is_finite() && y_rl.is_finite() {
                     frame.fill_rectangle(
                         Point::new(region.x, y_discount),
                         Size::new(region.width, discount_h),
-                        Color::from_rgba(0.20, 0.80, 0.30, 0.08),
+                        Color::from_rgba(0.20, 0.80, 0.30, 0.07),
                     );
+                    frame.stroke(
+                        &Path::line(Point::new(region.x, y_discount), Point::new(right_x, y_discount)),
+                        Stroke {
+                            style: canvas::stroke::Style::Solid(Color::from_rgba(0.35, 0.80, 0.40, 0.35)),
+                            width: 0.6,
+                            line_dash: LineDash { segments: &[4.0, 4.0], offset: 0 },
+                            ..Default::default()
+                        },
+                    );
+                    frame.fill_text(canvas::Text {
+                        content: "Discount".to_string(),
+                        position: Point::new(region.x + 4.0, y_rl - 3.0),
+                        size: iced::Pixels(TEXT_SIZE * 0.70),
+                        color: Color::from_rgba(0.40, 0.85, 0.45, 0.55),
+                        align_x: iced::alignment::Horizontal::Left.into(),
+                        align_y: iced::alignment::Vertical::Bottom,
+                        font: style::AZERET_MONO,
+                        ..canvas::Text::default()
+                    });
                 }
             }
         }
 
-        // BOS / CHoCH markers
-        for sb in &self.structure_breaks {
-            let ts = sb.timestamp_ms as u64;
-            if ts < earliest || ts > latest {
-                continue;
-            }
+        // ── BOS / CHoCH markers — only last 8 visible breaks ─────────────────
+        // Find the 8 most recent breaks that are in the visible range
+        let visible_breaks: Vec<_> = self.structure_breaks.iter()
+            .filter(|sb| {
+                let ts = sb.timestamp_ms as u64;
+                ts >= earliest && ts <= latest
+            })
+            .collect();
+        // Show only the 8 most recent
+        let start = visible_breaks.len().saturating_sub(8);
+        let recent_breaks = &visible_breaks[start..];
 
+        for sb in recent_breaks {
+            let ts = sb.timestamp_ms as u64;
             let x = interval_to_x(ts);
             let y = price_to_y(Price::from_f32(sb.broken_level as f32));
 
@@ -2446,40 +2903,42 @@ impl KlineChart {
             }
 
             let (label, color) = match (&sb.event, &sb.direction) {
-                (data::structure::StructureEvent::Bos, data::structure::HtfBias::Bullish) => {
-                    ("BOS", Color::from_rgba(0.25, 0.85, 0.45, 0.90))
-                }
-                (data::structure::StructureEvent::Bos, _) => {
-                    ("BOS", Color::from_rgba(0.90, 0.30, 0.30, 0.90))
-                }
-                (data::structure::StructureEvent::Choch, data::structure::HtfBias::Bullish) => {
-                    ("CHoCH", Color::from_rgba(0.35, 0.60, 1.0, 0.90))
-                }
-                (data::structure::StructureEvent::Choch, _) => {
-                    ("CHoCH", Color::from_rgba(0.85, 0.45, 1.0, 0.90))
-                }
+                (data::structure::StructureEvent::Bos, data::structure::HtfBias::Bullish) =>
+                    ("BOS▲", Color::from_rgba(0.25, 0.88, 0.50, 0.95)),
+                (data::structure::StructureEvent::Bos, _) =>
+                    ("BOS▼", Color::from_rgba(0.92, 0.30, 0.30, 0.95)),
+                (data::structure::StructureEvent::Choch, data::structure::HtfBias::Bullish) =>
+                    ("CHoCH▲", Color::from_rgba(0.40, 0.65, 1.0, 0.95)),
+                (data::structure::StructureEvent::Choch, _) =>
+                    ("CHoCH▼", Color::from_rgba(0.88, 0.50, 1.0, 0.95)),
             };
 
-            // Línea horizontal punteada en el nivel roto
-            let h_stroke = Stroke {
-                style: canvas::stroke::Style::Solid(color.scale_alpha(0.40)),
-                width: 0.8,
-                line_dash: LineDash {
-                    segments: &[5.0, 3.0],
-                    offset: 0,
-                },
-                ..Default::default()
-            };
+            // Dashed horizontal level line from break candle to right edge
             frame.stroke(
                 &Path::line(Point::new(x, y), Point::new(right_x, y)),
-                h_stroke,
+                Stroke {
+                    style: canvas::stroke::Style::Solid(color.scale_alpha(0.50)),
+                    width: 0.8,
+                    line_dash: LineDash { segments: &[5.0, 4.0], offset: 0 },
+                    ..Default::default()
+                },
             );
 
-            // Label en el punto de ruptura
+            // Small solid vertical tick at the break point
+            frame.stroke(
+                &Path::line(Point::new(x, y - 4.0), Point::new(x, y + 4.0)),
+                Stroke {
+                    style: canvas::stroke::Style::Solid(color),
+                    width: 1.5,
+                    ..Default::default()
+                },
+            );
+
+            // Compact label immediately right of the tick
             frame.fill_text(canvas::Text {
                 content: label.to_string(),
-                position: Point::new(x + 4.0, y - 2.0),
-                size: iced::Pixels(TEXT_SIZE * 0.80),
+                position: Point::new(x + 4.0, y - 1.0),
+                size: iced::Pixels(TEXT_SIZE * 0.78),
                 color,
                 align_x: iced::alignment::Horizontal::Left.into(),
                 align_y: iced::alignment::Vertical::Bottom,
@@ -2503,101 +2962,70 @@ impl KlineChart {
 
         let right_x = region.x + region.width;
 
-        let all_obs = ctx.bullish_obs.iter().chain(ctx.bearish_obs.iter());
+        // Show only the 3 most recent active/tested OBs per side — mitigated are hidden.
+        // Sorted by recency: detector returns them oldest-first, so we take from the end.
+        let bullish_obs: Vec<_> = ctx.bullish_obs.iter()
+            .filter(|ob| !matches!(ob.status, data::detectors::OBStatus::Mitigated | data::detectors::OBStatus::Invalidated))
+            .rev().take(3).collect();
+        let bearish_obs: Vec<_> = ctx.bearish_obs.iter()
+            .filter(|ob| !matches!(ob.status, data::detectors::OBStatus::Mitigated | data::detectors::OBStatus::Invalidated))
+            .rev().take(3).collect();
 
-        for ob in all_obs {
-            let (fill_color, border_color) = match (&ob.ob_type, &ob.status) {
-                (data::detectors::OBType::Bullish, data::detectors::OBStatus::Active) => (
-                    Color::from_rgba(0.20, 0.80, 0.40, 0.18),
-                    Color::from_rgba(0.20, 0.80, 0.40, 0.70),
-                ),
-                (data::detectors::OBType::Bullish, data::detectors::OBStatus::Tested) => (
-                    Color::from_rgba(0.20, 0.80, 0.40, 0.10),
-                    Color::from_rgba(0.20, 0.80, 0.40, 0.40),
-                ),
-                (data::detectors::OBType::Bullish, data::detectors::OBStatus::Mitigated) => (
-                    Color::from_rgba(0.20, 0.80, 0.40, 0.05),
-                    Color::from_rgba(0.20, 0.80, 0.40, 0.18),
-                ),
-                (data::detectors::OBType::Bearish, data::detectors::OBStatus::Active) => (
-                    Color::from_rgba(0.90, 0.28, 0.28, 0.18),
-                    Color::from_rgba(0.90, 0.28, 0.28, 0.70),
-                ),
-                (data::detectors::OBType::Bearish, data::detectors::OBStatus::Tested) => (
-                    Color::from_rgba(0.90, 0.28, 0.28, 0.10),
-                    Color::from_rgba(0.90, 0.28, 0.28, 0.40),
-                ),
-                (data::detectors::OBType::Bearish, data::detectors::OBStatus::Mitigated) => (
-                    Color::from_rgba(0.90, 0.28, 0.28, 0.05),
-                    Color::from_rgba(0.90, 0.28, 0.28, 0.18),
-                ),
-                _ => continue, // Invalidated — skip
-            };
+        for ob in bullish_obs.iter().chain(bearish_obs.iter()) {
+            let is_bullish = matches!(ob.ob_type, data::detectors::OBType::Bullish);
+            let is_active  = matches!(ob.status, data::detectors::OBStatus::Active);
+
+            // Colour palette — professional: minimal fill, strong origin border
+            let (r, g, b): (f32, f32, f32) = if is_bullish { (0.20, 0.85, 0.45) } else { (0.92, 0.28, 0.28) };
+            let fill_a   = if is_active { 0.06 } else { 0.03 };
+            let border_a = if is_active { 0.75 } else { 0.40 };
+
+            let fill_color    = Color::from_rgba(r, g, b, fill_a);
+            let border_color  = Color::from_rgba(r, g, b, border_a);
+            let origin_color  = Color::from_rgba(r, g, b, if is_active { 0.90 } else { 0.55 });
 
             let ts = ob.timestamp_ms as u64;
-            let x_left = if ts >= earliest {
-                interval_to_x(ts)
-            } else {
-                region.x
-            };
+            let x_left = if ts >= earliest { interval_to_x(ts) } else { region.x };
             let x_left = x_left.max(region.x);
-            let y_top = price_to_y(Price::from_f32(ob.high as f32));
-            let y_bottom = price_to_y(Price::from_f32(ob.low as f32));
-
-            let width = right_x - x_left;
-            let height = y_bottom - y_top;
+            let y_top    = price_to_y(Price::from_f32(ob.high as f32));
+            let y_bottom = price_to_y(Price::from_f32(ob.low  as f32));
+            let height   = y_bottom - y_top;
+            let width    = right_x - x_left;
 
             if width <= 0.0 || height <= 0.0 || !y_top.is_finite() || !y_bottom.is_finite() {
                 continue;
             }
 
-            // Fill
-            frame.fill_rectangle(
-                Point::new(x_left, y_top),
-                Size::new(width, height),
-                fill_color,
-            );
+            // Very subtle fill — just enough to show the zone without overpowering candles
+            frame.fill_rectangle(Point::new(x_left, y_top), Size::new(width, height), fill_color);
 
-            // Border (top and bottom lines only — sides would look noisy)
-            let stroke = Stroke {
+            // Top + bottom borders (thin, extend to right edge)
+            let edge = Stroke {
                 style: canvas::stroke::Style::Solid(border_color),
-                width: 1.0,
+                width: 0.7,
                 ..Default::default()
             };
-            let top_line = Path::line(Point::new(x_left, y_top), Point::new(right_x, y_top));
-            let bot_line = Path::line(Point::new(x_left, y_bottom), Point::new(right_x, y_bottom));
-            frame.stroke(&top_line, stroke.clone());
-            frame.stroke(&bot_line, stroke);
+            frame.stroke(&Path::line(Point::new(x_left, y_top),    Point::new(right_x, y_top)),    edge.clone());
+            frame.stroke(&Path::line(Point::new(x_left, y_bottom), Point::new(right_x, y_bottom)), edge);
 
-            // Mid-line (50% mitigation level) — dashed, very subtle
-            let y_mid = price_to_y(Price::from_f32(ob.mid as f32));
-            if y_mid.is_finite() {
-                let mid_stroke = Stroke {
-                    style: canvas::stroke::Style::Solid(border_color.scale_alpha(0.5)),
-                    width: 0.5,
-                    line_dash: LineDash {
-                        segments: &[4.0, 4.0],
-                        offset: 0,
-                    },
+            // Origin left-edge marker — thick solid line, this is the most visible cue
+            frame.stroke(
+                &Path::line(Point::new(x_left, y_top), Point::new(x_left, y_bottom)),
+                Stroke {
+                    style: canvas::stroke::Style::Solid(origin_color),
+                    width: 2.5,
                     ..Default::default()
-                };
-                let mid_line = Path::line(Point::new(x_left, y_mid), Point::new(right_x, y_mid));
-                frame.stroke(&mid_line, mid_stroke);
-            }
+                },
+            );
 
-            // OB label in top-right corner
-            let status_tag = match &ob.status {
-                data::detectors::OBStatus::Active => "OB",
-                data::detectors::OBStatus::Tested => "OB~",
-                data::detectors::OBStatus::Mitigated => "OB×",
-                _ => "OB",
-            };
+            // Label at the origin (left edge), near the top border
+            let label = if is_active { "OB" } else { "OB~" };
             frame.fill_text(canvas::Text {
-                content: status_tag.to_string(),
-                position: Point::new(right_x - 4.0, y_top + 2.0),
+                content: label.to_string(),
+                position: Point::new(x_left + 4.0, y_top + 2.0),
                 size: iced::Pixels(TEXT_SIZE * 0.72),
-                color: border_color,
-                align_x: iced::alignment::Horizontal::Right.into(),
+                color: origin_color,
+                align_x: iced::alignment::Horizontal::Left.into(),
                 align_y: iced::alignment::Vertical::Top,
                 font: style::AZERET_MONO,
                 ..canvas::Text::default()
@@ -2715,6 +3143,117 @@ impl KlineChart {
         });
     }
 
+    // ── Adaptive Big Trades overlay ──────────────────────────────────────────
+    // Draws triangles above (large sell) and below (large buy) each candle.
+    // Triangle size is proportional to log(vol / threshold), clamped to [4, 12] px.
+    fn draw_big_trades(
+        bars: &std::collections::VecDeque<BigTradeBar>,
+        frame: &mut canvas::Frame,
+        region: Rectangle,
+        interval_to_x: impl Fn(u64) -> f32,
+        price_to_y: impl Fn(f64) -> f32,
+        data_source: &PlotData<KlineDataPoint>,
+    ) {
+        let col_buy  = iced::Color::from_rgba(0.20, 0.95, 0.35, 0.85);
+        let col_sell = iced::Color::from_rgba(0.95, 0.25, 0.25, 0.85);
+
+        for bar in bars {
+            let cx = interval_to_x(bar.ts_ms as u64);
+            if !cx.is_finite() { continue; }
+            if cx < region.x || cx > region.x + region.width { continue; }
+
+            let t = bar.threshold.max(1e-9);
+
+            // ── Buy triangle (below candle low) ───────────────────────────────
+            if bar.buy_vol >= t {
+                // Find candle low for this bar
+                let bar_y = match data_source {
+                    PlotData::TimeBased(ts) => {
+                        let key = exchange::UnixMs::new(bar.ts_ms as u64);
+                        ts.datapoints.get(&key).map(|dp| price_to_y(dp.kline.low.to_f32() as f64))
+                    }
+                    PlotData::TickBased(_) => None,
+                };
+                if let Some(y_low) = bar_y {
+                    if y_low.is_finite() {
+                        let size = (((bar.buy_vol / t).ln() + 1.0) * 4.0).clamp(4.0, 12.0) as f32;
+                        let y = y_low + size + 2.0;
+                        // Up-pointing triangle
+                        let path = iced::widget::canvas::Path::new(|b| {
+                            b.move_to(iced::Point::new(cx, y - size));
+                            b.line_to(iced::Point::new(cx - size * 0.6, y));
+                            b.line_to(iced::Point::new(cx + size * 0.6, y));
+                            b.close();
+                        });
+                        frame.fill(&path, col_buy);
+                    }
+                }
+            }
+
+            // ── Sell triangle (above candle high) ─────────────────────────────
+            if bar.sell_vol >= t {
+                let bar_y = match data_source {
+                    PlotData::TimeBased(ts) => {
+                        let key = exchange::UnixMs::new(bar.ts_ms as u64);
+                        ts.datapoints.get(&key).map(|dp| price_to_y(dp.kline.high.to_f32() as f64))
+                    }
+                    PlotData::TickBased(_) => None,
+                };
+                if let Some(y_high) = bar_y {
+                    if y_high.is_finite() {
+                        let size = (((bar.sell_vol / t).ln() + 1.0) * 4.0).clamp(4.0, 12.0) as f32;
+                        let y = y_high - size - 2.0;
+                        // Down-pointing triangle
+                        let path = iced::widget::canvas::Path::new(|b| {
+                            b.move_to(iced::Point::new(cx, y + size));
+                            b.line_to(iced::Point::new(cx - size * 0.6, y));
+                            b.line_to(iced::Point::new(cx + size * 0.6, y));
+                            b.close();
+                        });
+                        frame.fill(&path, col_sell);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Micro-window strip ───────────────────────────────────────────────────
+    // One colored square per candle at the bottom of the chart, showing
+    // vol_trajectory: back=orange, u_shape=purple, front=blue, mid=teal, flat=gray
+    fn draw_micro_strip(
+        snaps: &std::collections::VecDeque<(i64, MicroSnap)>,
+        frame: &mut canvas::Frame,
+        region: Rectangle,
+        interval_to_x: impl Fn(u64) -> f32,
+        cell_width: f32,
+    ) {
+        let strip_h = 5.0_f32;
+        let y = region.y + region.height - strip_h - 1.0;
+        let half_w = (cell_width * 0.45).max(1.0);
+
+        for (ts_ms, snap) in snaps {
+            let cx = interval_to_x(*ts_ms as u64);
+            if !cx.is_finite() { continue; }
+            if cx < region.x || cx > region.x + region.width { continue; }
+
+            let color = match snap.vol_trajectory.as_str() {
+                "back"    => Color::from_rgba(0.95, 0.55, 0.10, 0.80),
+                "u_shape" => Color::from_rgba(0.65, 0.30, 0.95, 0.80),
+                "front"   => Color::from_rgba(0.25, 0.60, 0.95, 0.80),
+                "mid"     => Color::from_rgba(0.20, 0.82, 0.82, 0.80),
+                _         => Color::from_rgba(0.45, 0.45, 0.50, 0.60),
+            };
+
+            // Height scales with late_surge_ratio clamped to 0.5–1.0×strip_h
+            let h = (snap.late_surge_ratio.clamp(0.5, 3.0) / 3.0 * strip_h as f64) as f32;
+            frame.fill_rectangle(
+                Point::new(cx - half_w, y + strip_h - h),
+                Size::new(half_w * 2.0, h),
+                color,
+            );
+        }
+    }
+
     // ── DRR HUD Overlay ──────────────────────────────────────────────────────
     // Compact info panel top-right: regime, session, range state, absorptions.
     fn draw_drr_hud(
@@ -2722,29 +3261,21 @@ impl KlineChart {
         frame: &mut canvas::Frame,
         region: Rectangle,
     ) {
-        let x = region.x + region.width - 200.0;
+        let x = region.x + region.width - 204.0;
         let y0 = region.y + 8.0;
         let line_h = 13.0;
         let mut row = 0usize;
 
-        // Background
+        // Background — sized for up to 16 rows (A + B sections)
         frame.fill_rectangle(
             Point::new(x - 4.0, y0 - 2.0),
-            Size::new(200.0, line_h * 9.0 + 6.0),
+            Size::new(204.0, line_h * 16.0 + 6.0),
             Color::from_rgba(0.05, 0.05, 0.08, 0.75),
         );
 
         let col_a = Color::from_rgba(0.70, 0.70, 0.80, 0.95);  // label
         let col_v = Color::from_rgba(0.95, 0.95, 0.95, 1.00);  // value
-
-        let regime_color = match hud.regime.as_str() {
-            "TrendUp"    => Color::from_rgba(0.30, 0.90, 0.40, 1.0),
-            "TrendDown"  => Color::from_rgba(0.90, 0.30, 0.30, 1.0),
-            "Expansion"  => Color::from_rgba(0.90, 0.65, 0.10, 1.0),
-            "Chop" | "Compression" => Color::from_rgba(0.70, 0.70, 0.30, 1.0),
-            "Stress" | "Aftermath" => Color::from_rgba(1.0,  0.20, 0.20, 1.0),
-            _            => col_v,
-        };
+        let col_dim = Color::from_rgba(0.45, 0.45, 0.50, 1.00); // separator / dimmed
 
         macro_rules! hud_row {
             ($label:expr, $value:expr, $color:expr) => {{
@@ -2769,30 +3300,69 @@ impl KlineChart {
             }};
         }
 
-        hud_row!("Regime",  &hud.regime, regime_color);
-        hud_row!("Session", format!("{} / {}", &hud.session_name, &hud.session_phase), col_v);
-        hud_row!("VPBias",  &hud.vp_bias, col_v);
-        hud_row!("Auction", &hud.auction_state, col_v);
+        // ── Regime ────────────────────────────────────────────────────────────
+        let regime_color = match hud.regime.as_str() {
+            "TrendUp"              => Color::from_rgba(0.30, 0.90, 0.40, 1.0),
+            "TrendDown"            => Color::from_rgba(0.90, 0.30, 0.30, 1.0),
+            "Expansion"            => Color::from_rgba(0.90, 0.65, 0.10, 1.0),
+            "Chop" | "Compression" => Color::from_rgba(0.70, 0.70, 0.30, 1.0),
+            "Stress" | "Aftermath" => Color::from_rgba(1.0,  0.20, 0.20, 1.0),
+            _                      => col_v,
+        };
+        hud_row!("Regime", &hud.regime, regime_color);
 
-        // Range state
+        hud_row!("Session", format!("{} / {}", &hud.session_name, &hud.session_phase), col_v);
+
+        // ── VPBias — colored ──────────────────────────────────────────────────
+        let vp_color = match hud.vp_bias.as_str() {
+            "TrendDayUp"   => Color::from_rgba(0.30, 0.90, 0.40, 1.0),
+            "TrendDayDown" => Color::from_rgba(0.90, 0.30, 0.30, 1.0),
+            "InsideValue"  => Color::from_rgba(0.90, 0.80, 0.10, 1.0),
+            "OpeningRange" => Color::from_rgba(0.90, 0.60, 0.10, 1.0),
+            "FadeGap"      => Color::from_rgba(0.60, 0.40, 0.90, 1.0),
+            _              => Color::from_rgba(0.65, 0.65, 0.70, 1.0),
+        };
+        hud_row!("VPBias", &hud.vp_bias, vp_color);
+
+        // ── AuctionState — colored ────────────────────────────────────────────
+        let auc_color = match hud.auction_state.as_str() {
+            "Balance"              => Color::from_rgba(0.90, 0.80, 0.10, 1.0),
+            "Auction" | "Initiative" => Color::from_rgba(0.30, 0.75, 0.95, 1.0),
+            "FailedAuction"        => Color::from_rgba(0.90, 0.30, 0.30, 1.0),
+            _                      => Color::from_rgba(0.65, 0.65, 0.70, 1.0),
+        };
+        hud_row!("Auction", &hud.auction_state, auc_color);
+
+        // ── Range ─────────────────────────────────────────────────────────────
         let (rng_str, rng_color) = if hud.range_valid {
-            (format!("{} ({:.1}×ATR)", &hud.range_location, hud.range_size_atr),
-             Color::from_rgba(0.95, 0.70, 0.20, 1.0))
+            (
+                format!("{} ({:.1}×ATR)", &hud.range_location, hud.range_size_atr),
+                Color::from_rgba(0.95, 0.70, 0.20, 1.0),
+            )
         } else {
             ("No range".to_string(), Color::from_rgba(0.50, 0.50, 0.50, 1.0))
         };
-        hud_row!("Range",  rng_str, rng_color);
+        hud_row!("Range", rng_str, rng_color);
+
         if hud.range_valid {
+            // Touches — separate Hi / Lo counts
+            let touch_color = Color::from_rgba(0.75, 0.75, 0.85, 1.0);
+            hud_row!(
+                "Touches",
+                format!("Hi:{} Lo:{}", hud.range_touches_hi, hud.range_touches_lo),
+                touch_color
+            );
+
             let sweep_str = match (hud.range_sweep_low, hud.range_sweep_high) {
                 (true,  false) => "▲ sweep low",
                 (false, true)  => "▼ sweep high",
                 (true,  true)  => "▲▼ both",
                 _              => "—",
             };
-            hud_row!("Sweep",  sweep_str, Color::from_rgba(0.30, 0.90, 0.50, 1.0));
+            hud_row!("Sweep", sweep_str, Color::from_rgba(0.30, 0.90, 0.50, 1.0));
         }
 
-        // Absorption signals
+        // ── Absorption signals ────────────────────────────────────────────────
         let abs_count = hud.absorption_count;
         let abs_color = match abs_count {
             4..=5 => Color::from_rgba(0.20, 0.95, 0.30, 1.0),
@@ -2800,7 +3370,6 @@ impl KlineChart {
             1     => Color::from_rgba(0.80, 0.50, 0.10, 1.0),
             _     => Color::from_rgba(0.45, 0.45, 0.45, 1.0),
         };
-
         let signals_str = format!(
             "{}/5 [{}{}{}{}{}]",
             abs_count,
@@ -2810,14 +3379,625 @@ impl KlineChart {
             if hud.finish_action        { "X" } else { "." },
             if hud.sweep_present        { "S" } else { "." },
         );
-        hud_row!("Absorb",  signals_str, abs_color);
+        hud_row!("Absorb", signals_str, abs_color);
 
-        // CVD slope
+        // ── CVD slope ─────────────────────────────────────────────────────────
         if let Some(cvd) = hud.cvd_slope {
-            let cvd_color = if cvd > 0.1 { Color::from_rgba(0.30, 0.90, 0.40, 1.0) }
-                            else if cvd < -0.1 { Color::from_rgba(0.90, 0.30, 0.30, 1.0) }
-                            else { col_v };
+            let cvd_color = if cvd > 0.1 {
+                Color::from_rgba(0.30, 0.90, 0.40, 1.0)
+            } else if cvd < -0.1 {
+                Color::from_rgba(0.90, 0.30, 0.30, 1.0)
+            } else {
+                col_v
+            };
             hud_row!("CVD slp", format!("{:+.2}", cvd), cvd_color);
+        }
+
+        // ── VPIN ──────────────────────────────────────────────────────────────
+        if let Some(vpin) = hud.vpin {
+            let vpin_color = if vpin < 0.45 {
+                Color::from_rgba(0.30, 0.90, 0.40, 1.0) // clean
+            } else if vpin < 0.65 {
+                Color::from_rgba(0.90, 0.80, 0.10, 1.0) // moderate
+            } else {
+                Color::from_rgba(0.90, 0.30, 0.30, 1.0) // toxic
+            };
+            hud_row!("VPIN", format!("{:.2}", vpin), vpin_color);
+        }
+
+        // ── Delta velocity ────────────────────────────────────────────────────
+        if let Some(dv) = hud.delta_velocity {
+            if dv.is_finite() && dv.abs() > 1e-6 {
+                let dv_color = if dv > 0.0 {
+                    Color::from_rgba(0.30, 0.90, 0.40, 1.0)
+                } else {
+                    Color::from_rgba(0.90, 0.30, 0.30, 1.0)
+                };
+                hud_row!("ΔVel", format!("{:+.2}", dv), dv_color);
+            }
+        }
+
+        // ── Micro-window section ──────────────────────────────────────────────
+        if !hud.micro_vol_traj.is_empty() {
+            // Separator
+            {
+                let y = y0 + row as f32 * line_h - 2.0;
+                frame.fill_rectangle(
+                    Point::new(x - 2.0, y),
+                    Size::new(200.0, 1.0),
+                    col_dim,
+                );
+                row += 1;
+            }
+
+            let (traj_sym, traj_color) = match hud.micro_vol_traj.as_str() {
+                "back"    => ("▶▶ back",  Color::from_rgba(0.95, 0.55, 0.10, 1.0)), // back-loaded
+                "u_shape" => ("∪ u_shp",  Color::from_rgba(0.70, 0.35, 0.95, 1.0)), // absorption
+                "front"   => ("◀◀ front", Color::from_rgba(0.30, 0.65, 0.95, 1.0)), // front-loaded
+                "mid"     => ("~ mid",    Color::from_rgba(0.30, 0.85, 0.85, 1.0)), // mid-peak
+                _         => ("— flat",   Color::from_rgba(0.55, 0.55, 0.55, 1.0)), // flat/unknown
+            };
+
+            let surge_str = if hud.micro_late_surge > 0.01 {
+                format!("{}  {:.1}×", traj_sym, hud.micro_late_surge)
+            } else {
+                traj_sym.to_string()
+            };
+            hud_row!("VolTraj", surge_str, traj_color);
+
+            // delta slope norm + absorption proxy on one row
+            let dslope_color = if hud.micro_delta_slope > 0.3 {
+                Color::from_rgba(0.30, 0.90, 0.40, 1.0)
+            } else if hud.micro_delta_slope < -0.3 {
+                Color::from_rgba(0.90, 0.30, 0.30, 1.0)
+            } else {
+                col_v
+            };
+            let absorb_str = if hud.micro_absorb > 0.01 {
+                format!("δ{:+.1}  ab{:.0}", hud.micro_delta_slope, hud.micro_absorb)
+            } else {
+                format!("δ{:+.1}", hud.micro_delta_slope)
+            };
+            hud_row!("μShape", absorb_str, dslope_color);
+        }
+    }
+
+    // ── Scalping Journal ──────────────────────────────────────────────────────
+
+    fn journal_path() -> String {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        format!("scalping_journal_{}.jsonl", unix_to_yyyymmdd(secs))
+    }
+
+    fn journal_append(value: serde_json::Value) {
+        use std::io::Write;
+        let path = Self::journal_path();
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            if let Ok(line) = serde_json::to_string(&value) {
+                let _ = f.write_all(format!("{}\n", line).as_bytes());
+            }
+        }
+    }
+
+    fn journal_open(
+        sig: &data::strategy::scalping::ScalpingSignal,
+        ctx: &data::strategy::scalping::ScalpingContext,
+        obi_l5: f64,
+        ts_ms: i64,
+    ) {
+        use serde_json::json;
+        Self::journal_append(json!({
+            "event": "OPEN",
+            "ts_ms": ts_ms,
+            "strategy": sig.strategy.to_string(),
+            "side": format!("{:?}", sig.side),
+            "entry": sig.entry_price,
+            "sl": sig.stop_price,
+            "tp1": sig.tp1_price,
+            "tp2": sig.tp2_price,
+            "rr": sig.rr,
+            "conviction": sig.conviction_score,
+            "entry_type": sig.entry_type,
+            "obi_l10": ctx.obi_ema_fast,
+            "obi_l5": obi_l5,
+            "l5_l10_div": obi_l5 - ctx.obi_ema_fast,
+            "cvd": ctx.cvd,
+            "cvd_slope": ctx.cvd_slope,
+            "dz": ctx.dz,
+            "vr": ctx.vr,
+            "spread_ticks": ctx.spread_ticks,
+            "regime": format!("{:?}", ctx.regime),
+            "session": format!("{:?}", ctx.session),
+            "atr": ctx.atr,
+        }));
+    }
+
+    fn journal_close(
+        paper: &data::strategy::scalping::paper::ScalpingPaper,
+        obi_at_exit: f64,
+        cvd_slope_at_exit: Option<f64>,
+    ) {
+        use serde_json::json;
+        let Some(t) = paper.closed_trades.last() else { return };
+        Self::journal_append(json!({
+            "event": "CLOSE",
+            "ts_ms": t.exit_ms,
+            "trade_id": t.trade_id,
+            "strategy": t.strategy,
+            "side": format!("{:?}", t.side),
+            "entry": t.entry_price,
+            "exit": t.exit_price,
+            "sl": t.stop_price,
+            "tp1": t.tp1_price,
+            "exit_reason": t.exit_reason.to_string(),
+            "pnl_gross": t.pnl_gross,
+            "pnl_net": t.pnl_net,
+            "result_r": t.result_r,
+            "duration_s": t.duration_ms / 1000,
+            "mfe": t.mfe,
+            "mae": t.mae,
+            "lot_btc": t.lot_btc,
+            "lot_notional": t.lot_notional,
+            // Entry context
+            "obi_at_entry": t.obi_at_entry,
+            "obi_l5_at_entry": t.obi_l5_at_entry,
+            "cvd_slope_at_entry": t.cvd_slope_at_entry,
+            "dz_at_entry": t.dz_at_entry,
+            "vr_at_entry": t.vr_at_entry,
+            "conviction": t.conviction_score,
+            // Exit context — para calibrar thresholds de salida
+            "obi_at_exit": obi_at_exit,
+            "cvd_slope_at_exit": cvd_slope_at_exit,
+        }));
+    }
+
+    fn journal_skipped(
+        sig: &data::strategy::scalping::ScalpingSignal,
+        ctx: &data::strategy::scalping::ScalpingContext,
+        ts_ms: i64,
+        reason: &str,
+    ) {
+        use serde_json::json;
+        Self::journal_append(json!({
+            "event": "SKIPPED",
+            "ts_ms": ts_ms,
+            "strategy": sig.strategy.to_string(),
+            "side": format!("{:?}", sig.side),
+            "reason": reason,
+            "conviction": sig.conviction_score,
+            "obi_l10": ctx.obi_ema_fast,
+            "cvd": ctx.cvd,
+            "cvd_slope": ctx.cvd_slope,
+            "dz": ctx.dz,
+            "vr": ctx.vr,
+            "session": format!("{:?}", ctx.session),
+        }));
+    }
+
+    // ── Scalping Monitor Panel ────────────────────────────────────────────────
+    /// Devuelve el Rectangle que ocupa el header del panel (para detección de drag).
+    pub fn scalping_panel_header_rect(panel_x: f32, panel_y: f32) -> Rectangle {
+        Rectangle { x: panel_x, y: panel_y, width: 310.0, height: 18.0 }
+    }
+
+    /// Devuelve el Rectangle del botón de historial para detección de click.
+    fn scalping_history_button_rect(panel_x: f32, panel_y: f32, hud: &ScalpingHudState) -> Rectangle {
+        let panel_w = 310.0_f32;
+        let line_h  = 15.0_f32;
+        let trade_rows = hud.trades.len().min(5) as f32;
+        let pos_rows   = if hud.has_position { 3.0 } else { 1.0 };
+        // cb + cvd_slope + ses + obi + gates(2) + pos + trades (sin separadores que no consumen row)
+        let base_rows = 2.0 + 1.0 + 1.0 + 2.0 + pos_rows + trade_rows.max(1.0);
+        let body_y = panel_y + 18.0;
+        let btn_y = body_y + 4.0 + base_rows * line_h;
+        Rectangle { x: panel_x + 4.0, y: btn_y, width: panel_w - 8.0, height: 14.0 }
+    }
+
+    fn draw_scalping_panel(
+        hud: &ScalpingHudState,
+        frame: &mut canvas::Frame,
+        panel_x: f32,
+        panel_y: f32,
+    ) {
+        let panel_w = 310.0_f32;
+        let line_h  = 15.0_f32;
+
+        let trade_rows = hud.trades.len().min(5) as f32;
+        let pos_rows   = if hud.has_position { 3.0 } else { 1.0 };
+        // rows: cb + cvd_slope + ses + obi + sep + gates(2) + sep + pos + sep + trades + btn
+        let normal_rows = 2.0 + 1.0 + 1.0 + 1.0 + 2.0 + 1.0 + pos_rows + 1.0 + trade_rows.max(1.0) + 1.0;
+        let hist_rows = if hud.show_history {
+            let n = hud.all_trades.len() as f32;
+            1.0 + n.max(1.0) // header-stats + trades
+        } else {
+            0.0
+        };
+        let panel_h = (normal_rows + hist_rows) * line_h + 14.0;
+
+        let x  = panel_x;
+        let y0 = panel_y + 18.0;
+
+        let col_green = Color::from_rgba(0.25, 0.88, 0.50, 1.00);
+        let col_red   = Color::from_rgba(0.92, 0.28, 0.28, 1.00);
+        let col_amber = Color::from_rgba(0.95, 0.72, 0.20, 1.00);
+        let col_dim   = Color::from_rgba(0.42, 0.44, 0.52, 1.00);
+        let col_blue  = Color::from_rgba(0.40, 0.68, 1.00, 1.00);
+        let col_bg    = Color::from_rgba(0.04, 0.05, 0.12, 0.92);
+
+        // ── Header (drag area) ────────────────────────────────────────────────
+        let header_bg = if hud.has_position {
+            if hud.pos_side == "Long" { Color::from_rgba(0.10, 0.28, 0.14, 0.97) }
+            else                      { Color::from_rgba(0.28, 0.10, 0.10, 0.97) }
+        } else {
+            Color::from_rgba(0.06, 0.08, 0.22, 0.97)
+        };
+        frame.fill_rectangle(Point::new(x, panel_y), Size::new(panel_w, 18.0), header_bg);
+
+        let (dot_col, status_txt) = if !hud.can_trade {
+            (col_red, "CIRCUIT BREAK")
+        } else if hud.has_position {
+            if hud.pos_side == "Long" { (col_green, "IN LONG") } else { (col_red, "IN SHORT") }
+        } else if hud.session_ok {
+            (col_green, "READY")
+        } else {
+            (col_dim, "OFF-SESSION")
+        };
+
+        let mk_txt = |content: String, px: f32, py: f32, color: Color, size: f32| canvas::Text {
+            content,
+            position: Point::new(px, py),
+            color,
+            size: iced::Pixels(size),
+            ..canvas::Text::default()
+        };
+
+        frame.fill_text(mk_txt("SCALPING".into(), x + 6.0, panel_y + 3.0, col_blue, 11.5));
+        frame.fill_text(mk_txt(format!("● {}", status_txt), x + 175.0, panel_y + 3.0, dot_col, 10.5));
+
+        // ── Cuerpo ────────────────────────────────────────────────────────────
+        frame.fill_rectangle(Point::new(x, y0), Size::new(panel_w, panel_h), col_bg);
+        frame.stroke_rectangle(
+            Point::new(x, panel_y),
+            Size::new(panel_w, panel_h + 18.0),
+            canvas::Stroke::default()
+                .with_color(Color::from_rgba(0.28, 0.38, 0.65, 0.70))
+                .with_width(1.0),
+        );
+
+        let mut row = 0usize;
+        let ry = |r: usize| y0 + 4.0 + r as f32 * line_h;
+
+        let sep = |frame: &mut canvas::Frame, y: f32| {
+            frame.stroke(
+                &canvas::Path::line(Point::new(x + 2.0, y), Point::new(x + panel_w - 2.0, y)),
+                canvas::Stroke::default().with_color(Color::from_rgba(0.22, 0.28, 0.55, 0.50)).with_width(0.7),
+            );
+        };
+
+        // ── Row 0: Capital + Circuit breaker ──────────────────────────────────
+        let cb_col = if hud.can_trade { col_green } else { col_red };
+        // Capital
+        let cap_pct = if hud.session_start_equity > 0.0 {
+            (hud.total_equity - hud.session_start_equity) / hud.session_start_equity * 100.0
+        } else { 0.0 };
+        let cap_col = if hud.total_equity >= hud.session_start_equity { col_green } else { col_red };
+        frame.fill_text(mk_txt(format!("${:.2}", hud.total_equity), x + 6.0, ry(row), cap_col, 11.0));
+        frame.fill_text(mk_txt(format!("{:+.1}%", cap_pct), x + 72.0, ry(row), cap_col, 10.0));
+        // Trades / losses / P&L
+        frame.fill_text(mk_txt(format!("{}/{}", hud.daily_trades, hud.max_trades), x + 118.0, ry(row), cb_col, 10.5));
+        frame.fill_text(mk_txt(format!("L:{}", hud.consecutive_losses), x + 158.0, ry(row), col_dim, 10.0));
+        let pnl_col = if hud.daily_pnl >= 0.0 { col_green } else { col_red };
+        frame.fill_text(mk_txt(format!("P&L {:+.3}$", hud.daily_pnl), x + 192.0, ry(row), pnl_col, 10.5));
+        row += 1;
+
+        // ── Row 0b: CVD sesión + slope ─────────────────────────────────────────
+        let cvd_col = if hud.cvd_session > 0.0 { col_green } else if hud.cvd_session < 0.0 { col_red } else { col_dim };
+        frame.fill_text(mk_txt(format!("CVD {:+.0}", hud.cvd_session), x + 6.0, ry(row), cvd_col, 10.5));
+
+        let (slope_sym, slope_col, slope_str) = match hud.cvd_slope {
+            Some(s) if s > 50.0  => ("↗", col_green, format!("{:+.0}/bar", s)),
+            Some(s) if s < -50.0 => ("↘", col_red,   format!("{:+.0}/bar", s)),
+            Some(s)              => ("→", col_amber,  format!("{:+.0}/bar", s)),
+            None                 => ("?", col_dim,    "slope n/a".into()),
+        };
+        frame.fill_text(mk_txt(slope_sym.into(), x + 90.0, ry(row), slope_col, 11.5));
+        frame.fill_text(mk_txt(slope_str, x + 104.0, ry(row), slope_col, 10.0));
+
+        // Divergencia CVD vs L5: ^L5 + CVD cayendo = absorción real
+        let l5_div = hud.obi_l5_norm - hud.obi_fast;
+        if l5_div.abs() > 0.06 {
+            let div_desc = if l5_div > 0.0 && hud.cvd_slope.unwrap_or(0.0) < -30.0 {
+                ("ABSORB?", col_amber) // presión compra L5 pero CVD cae → absorción
+            } else if l5_div < 0.0 && hud.cvd_slope.unwrap_or(0.0) > 30.0 {
+                ("ABSORB?", col_amber) // presión venta L5 pero CVD sube → absorción
+            } else {
+                ("SPOOF?", col_dim)    // divergencia sin confirmación de delta
+            };
+            frame.fill_text(mk_txt(div_desc.0.into(), x + 220.0, ry(row), div_desc.1, 9.5));
+        }
+        row += 1;
+
+        // ── Row 1: Session + Bar timer ─────────────────────────────────────────
+        let ses_col = if hud.session_ok { col_green } else { col_dim };
+        let ses_label = {
+            let s = hud.session.as_str();
+            if s == "OutOfSession" { "off" } else { s }
+        };
+        frame.fill_text(mk_txt(format!("SES {}", ses_label), x + 6.0, ry(row), ses_col, 10.5));
+
+        // Bar timer progress bar
+        let elapsed = hud.last_bar_close_instant
+            .map(|t| t.elapsed().as_secs_f32())
+            .unwrap_or(0.0);
+        let period = hud.bar_period_secs.max(1) as f32;
+        let pct = (elapsed / period).clamp(0.0, 1.0);
+        let remaining = (period - elapsed).max(0.0) as u32;
+        let bar_x = x + 100.0;
+        let bar_w = 120.0_f32;
+        frame.fill_rectangle(Point::new(bar_x, ry(row) + 3.0), Size::new(bar_w, 8.0),
+            Color::from_rgba(0.15, 0.16, 0.22, 1.0));
+        let fill_col = if pct < 0.6 { col_green } else if pct < 0.85 { col_amber } else { col_red };
+        frame.fill_rectangle(Point::new(bar_x, ry(row) + 3.0), Size::new(bar_w * pct, 8.0), fill_col);
+        frame.fill_text(mk_txt(format!("{}s", remaining), x + 226.0, ry(row), col_dim, 10.5));
+        frame.fill_text(mk_txt(format!("{}tk", hud.spread_ticks), x + 264.0, ry(row), col_dim, 10.5));
+        row += 1;
+
+        // ── Row 2: OBI bar L10 + L5 divergencia ──────────────────────────────
+        // obi_fast ∈ [0,1]: 0.5=neutral, >0.5=bids, <0.5=asks
+        let obi_bar_w = 80.0_f32;
+        let obi_pct = (hud.obi_fast.clamp(0.0, 1.0) as f32) * obi_bar_w;
+        let obi_col = if hud.obi_fast > 0.54 { col_green }
+                      else if hud.obi_fast < 0.46 { col_red }
+                      else { col_amber };
+        frame.fill_text(mk_txt("L10".into(), x + 6.0, ry(row), col_dim, 9.5));
+        frame.fill_rectangle(Point::new(x + 28.0, ry(row) + 3.0), Size::new(obi_bar_w, 8.0),
+            Color::from_rgba(0.15, 0.16, 0.20, 1.0));
+        // Línea central (0.5 = neutral)
+        frame.fill_rectangle(Point::new(x + 28.0 + obi_bar_w * 0.5 - 0.5, ry(row) + 3.0),
+            Size::new(1.0, 8.0), Color::from_rgba(0.35, 0.38, 0.50, 0.80));
+        frame.fill_rectangle(Point::new(x + 28.0, ry(row) + 3.0), Size::new(obi_pct, 8.0), obi_col);
+        frame.fill_text(mk_txt(format!("{:.3}", hud.obi_fast), x + 114.0, ry(row), obi_col, 10.5));
+
+        // Divergencia L5 vs L10
+        let div = hud.obi_l5_norm - hud.obi_fast;
+        let div_col = if div.abs() > 0.06 { col_amber } else { col_dim };
+        let div_sym = if div > 0.06 { "^L5" } else if div < -0.06 { "vL5" } else { "=L5" };
+        frame.fill_text(mk_txt(format!("{} {:.3}", div_sym, hud.obi_l5_norm), x + 170.0, ry(row), div_col, 9.5));
+        row += 1;
+
+        // ── Separator + GATES section ─────────────────────────────────────────
+        sep(frame, ry(row) - 2.0);
+
+        // Gate row 1: session | S1 OBI | S1 spread | S1 VR
+        let gok  = col_green;
+        let gfail = col_red;
+        let gd   = col_dim;
+
+        let gate_dot = |ok: bool| if ok { "✓" } else { "✗" };
+        let gate_col = |ok: bool| if ok { gok } else { gfail };
+
+        // S1 gates
+        frame.fill_text(mk_txt("S1".into(), x + 6.0, ry(row), col_blue, 10.0));
+        frame.fill_text(mk_txt(format!("OBI{}", gate_dot(hud.s1_obi_ok)), x + 22.0, ry(row), gate_col(hud.s1_obi_ok), 10.0));
+        frame.fill_text(mk_txt(format!("SPD{}", gate_dot(hud.s1_spread_ok)), x + 74.0, ry(row), gate_col(hud.s1_spread_ok), 10.0));
+        frame.fill_text(mk_txt(format!("VR{}", gate_dot(hud.s1_vr_ok)), x + 126.0, ry(row), gate_col(hud.s1_vr_ok), 10.0));
+        frame.fill_text(mk_txt(format!("SES{}", gate_dot(hud.session_ok)), x + 166.0, ry(row), gate_col(hud.session_ok), 10.0));
+        row += 1;
+
+        // S2 gates
+        frame.fill_text(mk_txt("S2".into(), x + 6.0, ry(row), col_blue, 10.0));
+        frame.fill_text(mk_txt(format!("RNG{}", gate_dot(hud.s2_regime_ok)), x + 22.0, ry(row), gate_col(hud.s2_regime_ok), 10.0));
+        frame.fill_text(mk_txt(format!("DZ {:.1}{}", hud.s2_dz, gate_dot(hud.s2_dz_ok)), x + 74.0, ry(row), gate_col(hud.s2_dz_ok), 10.0));
+        frame.fill_text(mk_txt(format!("VR {:.1}{}", hud.s2_vr, gate_dot(hud.s2_vr_ok)), x + 148.0, ry(row), gate_col(hud.s2_vr_ok), 10.0));
+        let _ = (gd, gok, gfail);
+        row += 1;
+
+        // ── Separator + Posición activa ───────────────────────────────────────
+        sep(frame, ry(row) - 2.0);
+
+        if hud.has_position {
+            let side_col = if hud.pos_side == "Long" { col_green } else { col_red };
+            frame.fill_text(mk_txt(
+                format!("{} {}  @ {:.1}", hud.pos_strategy, hud.pos_side.to_uppercase(), hud.pos_entry),
+                x + 6.0, ry(row), side_col, 11.5,
+            ));
+            row += 1;
+
+            let sl_label = if hud.pos_sl_at_be { "BE".to_string() } else { format!("SL {:.1}", hud.pos_stop) };
+            let sl_col = if hud.pos_sl_at_be { col_amber } else { col_red };
+            frame.fill_text(mk_txt(sl_label, x + 6.0, ry(row), sl_col, 11.0));
+            frame.fill_text(mk_txt(format!("TP1 {:.1}", hud.pos_tp1), x + 102.0, ry(row), col_green, 11.0));
+            frame.fill_text(mk_txt(format!("TP2 {:.1}", hud.pos_tp2), x + 196.0, ry(row), col_dim, 11.0));
+            row += 1;
+
+            let float_pnl = if hud.pos_side == "Long" {
+                (hud.pos_current_price - hud.pos_entry) * hud.pos_lot_btc
+            } else {
+                (hud.pos_entry - hud.pos_current_price) * hud.pos_lot_btc
+            };
+            let float_col = if float_pnl >= 0.0 { col_green } else { col_red };
+            frame.fill_text(mk_txt(
+                format!("Float {:+.4}$   now {:.1}", float_pnl, hud.pos_current_price),
+                x + 6.0, ry(row), float_col, 10.5,
+            ));
+            frame.fill_text(mk_txt(
+                format!("{:.5} BTC  ${:.1} notional", hud.pos_lot_btc, hud.pos_lot_notional),
+                x + 174.0, ry(row), col_dim, 9.5,
+            ));
+            row += 1;
+        } else {
+            frame.fill_text(mk_txt("── sin posición activa ──".into(), x + 6.0, ry(row), col_dim, 10.5));
+            row += 1;
+        }
+
+        sep(frame, ry(row) - 2.0);
+
+        // ── Trades recientes (compact) ────────────────────────────────────────
+        if hud.trades.is_empty() {
+            frame.fill_text(mk_txt("sin trades todavía".into(), x + 6.0, ry(row), col_dim, 10.5));
+            row += 1;
+        } else {
+            for t in &hud.trades {
+                let r_col = if t.won { col_green } else { col_red };
+                let side_s = if t.side == "Long" { "L" } else { "S" };
+                let strat_s = &t.strategy[..t.strategy.len().min(7)];
+                let exit_s  = &t.exit_reason[..t.exit_reason.len().min(8)];
+                frame.fill_text(mk_txt(
+                    format!("{} {} {:+.2}R  {}  {}s",
+                        strat_s, side_s, t.result_r, exit_s, t.duration_secs),
+                    x + 6.0, ry(row), r_col, 10.5,
+                ));
+                row += 1;
+            }
+        }
+
+        // ── History toggle button ─────────────────────────────────────────────
+        let btn_label = if hud.show_history {
+            format!("[ cerrar historial ]")
+        } else {
+            format!("[ ver historial ({} trades) ]", hud.all_trades.len())
+        };
+        let btn_bg = Color::from_rgba(0.12, 0.16, 0.30, 0.90);
+        frame.fill_rectangle(Point::new(x + 4.0, ry(row) + 1.0), Size::new(panel_w - 8.0, 13.0), btn_bg);
+        frame.fill_text(mk_txt(btn_label, x + 10.0, ry(row) + 1.0, col_blue, 10.0));
+        row += 1;
+
+        // ── History expanded view ─────────────────────────────────────────────
+        if hud.show_history {
+            sep(frame, ry(row) - 2.0);
+
+            // Summary stats
+            let n = hud.all_trades.len();
+            if n == 0 {
+                frame.fill_text(mk_txt("sin historial".into(), x + 6.0, ry(row), col_dim, 10.5));
+                row += 1;
+            } else {
+                let wins = hud.all_trades.iter().filter(|t| t.won).count();
+                let win_pct = wins * 100 / n;
+                let avg_r: f64 = hud.all_trades.iter().map(|t| t.result_r).sum::<f64>() / n as f64;
+                frame.fill_text(mk_txt(
+                    format!("HISTORIAL  {}t  WR {}%  avgR {:+.2}", n, win_pct, avg_r),
+                    x + 6.0, ry(row), col_blue, 10.0,
+                ));
+                row += 1;
+
+                for t in &hud.all_trades {
+                    let r_col = if t.won { col_green } else { col_red };
+                    let side_s = if t.side == "Long" { "L" } else { "S" };
+                    let strat_s = &t.strategy[..t.strategy.len().min(7)];
+                    let exit_s  = &t.exit_reason[..t.exit_reason.len().min(9)];
+                    frame.fill_text(mk_txt(
+                        format!("{} {} {:+.2}R  {}  {}s",
+                            strat_s, side_s, t.result_r, exit_s, t.duration_secs),
+                        x + 6.0, ry(row), r_col, 10.0,
+                    ));
+                    row += 1;
+                }
+            }
+        }
+        let _ = row;
+    }
+
+    // ── Scalping Signal Overlay (Entry/SL/BE/TP1/TP2 en el chart) ─────────────
+    fn draw_scalping_overlay(
+        hud: &ScalpingHudState,
+        frame: &mut canvas::Frame,
+        price_to_y: impl Fn(f64) -> f32,
+        region: Rectangle,
+    ) {
+        if !hud.has_position {
+            return;
+        }
+
+        let is_long = hud.pos_side == "Long";
+        let line_w = region.x + region.width;
+
+        let entry_col = if is_long {
+            Color::from_rgba(0.25, 0.88, 0.50, 0.90)
+        } else {
+            Color::from_rgba(0.92, 0.28, 0.28, 0.90)
+        };
+        let sl_col    = Color::from_rgba(0.90, 0.20, 0.20, 0.75);
+        let be_col    = Color::from_rgba(0.95, 0.75, 0.20, 0.80);
+        let tp1_col   = Color::from_rgba(0.25, 0.88, 0.50, 0.70);
+        let tp2_col   = Color::from_rgba(0.20, 0.70, 0.40, 0.45);
+
+        let entry_y = price_to_y(hud.pos_entry);
+        let sl_y    = price_to_y(if hud.pos_sl_at_be { hud.pos_entry } else { hud.pos_stop });
+        let tp1_y   = price_to_y(hud.pos_tp1);
+        let tp2_y   = price_to_y(hud.pos_tp2);
+
+        let dash = LineDash { segments: &[5.0, 3.5], offset: 0 };
+
+        // Zonas coloreadas
+        let tp_top = f32::min(entry_y, tp1_y);
+        let tp_h   = (entry_y - tp1_y).abs();
+        frame.fill_rectangle(Point::new(0.0, tp_top), Size::new(line_w, tp_h),
+            Color::from_rgba(0.20, 0.80, 0.40, 0.12));
+        let sl_top = f32::min(entry_y, sl_y);
+        let sl_h   = (entry_y - sl_y).abs();
+        frame.fill_rectangle(Point::new(0.0, sl_top), Size::new(line_w, sl_h),
+            Color::from_rgba(0.90, 0.25, 0.28, 0.12));
+
+        // Línea Entry (sólida, más gruesa)
+        if entry_y.is_finite() {
+            frame.stroke(&canvas::Path::line(Point::new(0.0, entry_y), Point::new(line_w, entry_y)),
+                canvas::Stroke::default().with_color(entry_col).with_width(1.8));
+            // Label Entry
+            frame.fill_text(canvas::Text {
+                content: format!("{} {:.1}", if is_long { "LONG" } else { "SHORT" }, hud.pos_entry),
+                position: Point::new(region.x + 6.0, entry_y - 12.0),
+                color: entry_col,
+                size: iced::Pixels(10.5),
+                ..canvas::Text::default()
+            });
+        }
+
+        // SL o BE
+        if sl_y.is_finite() {
+            let (sl_col_use, sl_label) = if hud.pos_sl_at_be {
+                (be_col, format!("BE {:.1}", hud.pos_entry))
+            } else {
+                (sl_col, format!("SL {:.1}", hud.pos_stop))
+            };
+            frame.stroke(&canvas::Path::line(Point::new(0.0, sl_y), Point::new(line_w, sl_y)),
+                canvas::Stroke { width: 1.2, line_dash: dash, ..Default::default() }.with_color(sl_col_use));
+            frame.fill_text(canvas::Text {
+                content: sl_label,
+                position: Point::new(region.x + 6.0, sl_y + 2.0),
+                color: sl_col_use,
+                size: iced::Pixels(10.0),
+                ..canvas::Text::default()
+            });
+        }
+
+        // TP1
+        if tp1_y.is_finite() {
+            frame.stroke(&canvas::Path::line(Point::new(0.0, tp1_y), Point::new(line_w, tp1_y)),
+                canvas::Stroke { width: 1.2, line_dash: dash, ..Default::default() }.with_color(tp1_col));
+            frame.fill_text(canvas::Text {
+                content: format!("TP1 {:.1}", hud.pos_tp1),
+                position: Point::new(region.x + 6.0, tp1_y - 11.0),
+                color: tp1_col,
+                size: iced::Pixels(10.0),
+                ..canvas::Text::default()
+            });
+        }
+
+        // TP2 (más tenue)
+        if tp2_y.is_finite() && (hud.pos_tp2 - hud.pos_tp1).abs() > 1.0 {
+            frame.stroke(&canvas::Path::line(Point::new(0.0, tp2_y), Point::new(line_w, tp2_y)),
+                canvas::Stroke { width: 0.9, line_dash: dash, ..Default::default() }.with_color(tp2_col));
+            frame.fill_text(canvas::Text {
+                content: format!("TP2 {:.1}", hud.pos_tp2),
+                position: Point::new(region.x + 6.0, tp2_y - 11.0),
+                color: tp2_col,
+                size: iced::Pixels(10.0),
+                ..canvas::Text::default()
+            });
         }
     }
 
@@ -2964,6 +4144,63 @@ impl canvas::Program<Message> for KlineChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
+        // ── Scalping panel drag ───────────────────────────────────────────────
+        if self.config.show_scalping_panel {
+            let header = Self::scalping_panel_header_rect(self.scalping_panel_x, self.scalping_panel_y);
+            // Adjust header to bounds-space (header coords are relative to top-left of bounds)
+            let abs_header = Rectangle {
+                x: bounds.x + header.x,
+                y: bounds.y + header.y,
+                width: header.width,
+                height: header.height,
+            };
+
+            match event {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    if let Some(pos) = cursor.position_in(bounds) {
+                        if header.contains(pos) {
+                            *interaction = Interaction::DraggingScalpingPanel {
+                                start: pos,
+                                base_x: self.scalping_panel_x,
+                                base_y: self.scalping_panel_y,
+                            };
+                            return Some(canvas::Action::capture());
+                        }
+                    }
+                }
+                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    if let Interaction::DraggingScalpingPanel { start, base_x, base_y } = *interaction {
+                        if let Some(pos) = cursor.position_in(bounds) {
+                            let dx = pos.x - start.x;
+                            let dy = pos.y - start.y;
+                            let new_x = (base_x + dx).max(0.0).min(bounds.width - 310.0);
+                            let new_y = (base_y + dy).max(0.0).min(bounds.height - 50.0);
+                            return Some(canvas::Action::publish(Message::ScalpingPanelMoved(new_x, new_y)));
+                        }
+                    }
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    if matches!(interaction, Interaction::DraggingScalpingPanel { .. }) {
+                        *interaction = Interaction::None;
+                        return Some(canvas::Action::capture());
+                    }
+                    // History button click
+                    if let Some(pos) = cursor.position_in(bounds) {
+                        let btn = Self::scalping_history_button_rect(
+                            self.scalping_panel_x,
+                            self.scalping_panel_y,
+                            &self.scalping_hud,
+                        );
+                        if btn.contains(pos) {
+                            return Some(canvas::Action::publish(Message::ToggleScalpingHistory));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            let _ = abs_header;
+        }
+
         super::canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
@@ -3144,9 +4381,7 @@ impl canvas::Program<Message> for KlineChart {
             );
 
             if matches!(self.kind, KlineChartKind::Candles) {
-                if self.config.show_liq_map {
-                    self.draw_liq_map(frame, &region, price_to_y);
-                }
+                // liq_map removed — real liquidation events rendered via draw_liq_strip()
 
                 if self.config.show_fvgs {
                     self.draw_fvgs(frame, &region, earliest, interval_to_x, price_to_y);
@@ -3180,9 +4415,52 @@ impl canvas::Program<Message> for KlineChart {
                 }
             }
 
+            // Adaptive Big Trades — triangles above/below candles
+            if self.strategy_overlay_enabled && matches!(self.kind, KlineChartKind::Candles) {
+                Self::draw_big_trades(
+                    &self.big_trade_bars,
+                    frame,
+                    region,
+                    interval_to_x,
+                    |price| chart.price_to_y(Price::from_f32(price as f32)),
+                    &self.data_source,
+                );
+            }
+
+            // Liquidation event strip — per-candle long/short liq volume
+            if self.config.show_liq_events && matches!(self.kind, KlineChartKind::Candles) {
+                let interval_ms = match &self.data_source {
+                    PlotData::TimeBased(ts) => ts.interval.to_milliseconds(),
+                    PlotData::TickBased(_) => 300_000,
+                };
+                self.draw_liq_strip(frame, &region, interval_to_x, chart.cell_width, interval_ms);
+            }
+
+            // Micro-window strip — one colored square per candle at bottom of chart
+            if self.strategy_overlay_enabled && matches!(self.kind, KlineChartKind::Candles) {
+                Self::draw_micro_strip(
+                    &self.micro_snaps,
+                    frame,
+                    region,
+                    interval_to_x,
+                    chart.cell_width,
+                );
+            }
+
             // DRR HUD — shown when strategy overlay is active
             if self.strategy_overlay_enabled && matches!(self.kind, KlineChartKind::Candles) {
                 Self::draw_drr_hud(&self.drr_hud, frame, region);
+            }
+
+            // Scalping Monitor Panel
+            if self.config.show_scalping_panel && matches!(self.kind, KlineChartKind::Candles) {
+                Self::draw_scalping_panel(&self.scalping_hud, frame, self.scalping_panel_x, self.scalping_panel_y);
+                Self::draw_scalping_overlay(
+                    &self.scalping_hud,
+                    frame,
+                    |price| chart.price_to_y(exchange::unit::Price::from_f32(price as f32)),
+                    region,
+                );
             }
 
             // Overlay de estrategia solo en Candlestick (mismo criterio que
@@ -3247,6 +4525,7 @@ impl canvas::Program<Message> for KlineChart {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
             Interaction::PlacingAvwapAnchor => mouse::Interaction::Cell,
+            Interaction::DraggingScalpingPanel { .. } => mouse::Interaction::Grabbing,
             Interaction::None | Interaction::Ruler { .. } => {
                 if cursor.is_over(bounds) {
                     mouse::Interaction::Crosshair

@@ -14,6 +14,24 @@ use data::strategy::{
 };
 use serde_json::{json, Value};
 
+/// Contexto extra que se pasa junto a una ScalpingSignal para persistencia.
+pub struct ScalpingWriteCtx<'a> {
+    pub session: &'a str,
+    pub obi: f64,
+    pub obi_ema_fast: f64,
+    pub dz: f64,
+    pub vr: f64,
+    pub cvd: f64,
+    pub spread_ticks: i32,
+    pub atr: f64,
+    pub regime: &'a str,
+    pub liq_ratio: f64,
+    pub range_high: Option<f64>,
+    pub range_low: Option<f64>,
+    pub range_mid: Option<f64>,
+    pub range_location: Option<&'a str>,
+}
+
 #[derive(Clone)]
 pub struct SupabaseWriter {
     url: String,
@@ -280,6 +298,79 @@ impl SupabaseWriter {
             "buckets":          row.buckets,
         });
         self.post("micro_windows", &body).await;
+    }
+
+    // ── Scalping ──────────────────────────────────────────────────────────────
+
+    /// Inserta una señal de scalping en scalping_signals. Fire-and-forget.
+    pub fn write_scalping_signal(&self, signal: &data::strategy::scalping::ScalpingSignal, ctx: &ScalpingWriteCtx) {
+        let body = json!({
+            "timestamp_ms":      signal.timestamp_ms,
+            "strategy":          signal.strategy.to_string(),
+            "side":              format!("{:?}", signal.side),
+            "entry_type":        &signal.entry_type,
+            "session":           ctx.session,
+            "entry_price":       signal.entry_price,
+            "stop_price":        signal.stop_price,
+            "tp1_price":         signal.tp1_price,
+            "tp2_price":         signal.tp2_price,
+            "rr_planned":        signal.rr,
+            "conviction_score":  signal.conviction_score,
+            "obi_at_entry":      ctx.obi,
+            "obi_ema_fast":      ctx.obi_ema_fast,
+            "dz_at_entry":       ctx.dz,
+            "vr_at_entry":       ctx.vr,
+            "cvd_at_entry":      ctx.cvd,
+            "spread_ticks":      ctx.spread_ticks,
+            "atr":               ctx.atr,
+            "regime":            ctx.regime,
+            "liq_ratio":         ctx.liq_ratio,
+            "range_high":        ctx.range_high,
+            "range_low":         ctx.range_low,
+            "range_mid":         ctx.range_mid,
+            "range_location":    ctx.range_location,
+            "evidence":          &signal.evidence,
+        });
+        let writer = self.clone();
+        tokio::spawn(async move {
+            writer.post("scalping_signals", &body).await;
+        });
+    }
+
+    /// Actualiza scalping_signals cuando el trade cierra + inserta en scalping_trades.
+    /// Fire-and-forget.
+    pub fn write_scalping_trade(&self, trade: &data::strategy::scalping::paper::ScalpingTrade) {
+        let body_trade = json!({
+            "trade_id":         &trade.trade_id,
+            "strategy":         &trade.strategy,
+            "side":             format!("{:?}", trade.side),
+            "entry_type":       &trade.entry_type,
+            "entry_price":      trade.entry_price,
+            "stop_price":       trade.stop_price,
+            "tp1_price":        trade.tp1_price,
+            "tp2_price":        trade.tp2_price,
+            "exit_price":       trade.exit_price,
+            "rr_planned":       trade.rr_planned,
+            "obi_at_entry":     trade.obi_at_entry,
+            "dz_at_entry":      trade.dz_at_entry,
+            "vr_at_entry":      trade.vr_at_entry,
+            "cvd_at_entry":     trade.cvd_at_entry,
+            "conviction_score": trade.conviction_score,
+            "spread_ticks":     trade.spread_ticks,
+            "exit_reason":      trade.exit_reason.to_string(),
+            "pnl_gross":        trade.pnl_gross,
+            "pnl_net":          trade.pnl_net,
+            "result_r":         trade.result_r,
+            "duration_ms":      trade.duration_ms,
+            "entry_ms":         trade.entry_ms,
+            "exit_ms":          trade.exit_ms,
+            "mfe":              trade.mfe,
+            "mae":              trade.mae,
+        });
+        let writer = self.clone();
+        tokio::spawn(async move {
+            writer.post("scalping_trades", &body_trade).await;
+        });
     }
 
     async fn post(&self, table: &str, body: &Value) {
@@ -629,7 +720,7 @@ fn build_parallel_signal_row(signal: &StrategySignal) -> Value {
         "stop":         signal.stop_price,
         "rr":           rr,
         "confidence":   signal.score,
-        "missing_data": signal.missing.join(", "),
+        "missing_data": &signal.missing,
         "snapshot":     serde_json::to_value(&signal.evidence).unwrap_or(Value::Null),
     })
 }

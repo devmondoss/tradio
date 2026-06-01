@@ -40,6 +40,12 @@ pub enum Interaction {
     },
     /// Waiting for user to click to place an AVWAP anchor.
     PlacingAvwapAnchor,
+    /// Dragging the scalping monitor panel.
+    DraggingScalpingPanel {
+        start: Point,
+        base_x: f32,
+        base_y: f32,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +67,10 @@ pub enum Message {
     DoubleClick(AxisScaleClicked),
     /// Set the user-anchored AVWAP to the given timestamp (0 = clear).
     SetAvwapAnchor(u64),
+    /// Scalping panel was dragged to a new position (absolute x, y from top-left of bounds).
+    ScalpingPanelMoved(f32, f32),
+    /// Toggle the trade history view inside the scalping panel.
+    ToggleScalpingHistory,
 }
 
 pub trait Chart: PlotConstants + canvas::Program<Message> {
@@ -87,6 +97,12 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
     fn is_empty(&self) -> bool;
 
     fn on_avwap_anchor_set(&mut self, _ts: u64) {}
+
+    /// Called when the scalping panel is dragged to a new position.
+    fn on_scalping_panel_moved(&mut self, _x: f32, _y: f32) {}
+
+    /// Called when the user clicks the history button in the scalping panel.
+    fn on_scalping_history_toggled(&mut self) {}
 }
 
 fn canvas_interaction<T: Chart>(
@@ -149,7 +165,8 @@ fn canvas_interaction<T: Chart>(
                             }
                             Interaction::None
                             | Interaction::Panning { .. }
-                            | Interaction::Zoomin { .. } => {
+                            | Interaction::Zoomin { .. }
+                            | Interaction::DraggingScalpingPanel { .. } => {
                                 *interaction = Interaction::Panning {
                                     translation: state.translation,
                                     start: cursor_in_bounds,
@@ -518,6 +535,14 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
         Message::CrosshairMoved => return chart.invalidate_crosshair(),
         Message::SetAvwapAnchor(ts) => {
             chart.on_avwap_anchor_set(*ts);
+        }
+        Message::ScalpingPanelMoved(x, y) => {
+            chart.on_scalping_panel_moved(*x, *y);
+            return; // no full redraw needed — panel position updated, draw will use new coords
+        }
+        Message::ToggleScalpingHistory => {
+            chart.on_scalping_history_toggled();
+            return;
         }
     }
     chart.invalidate_all();

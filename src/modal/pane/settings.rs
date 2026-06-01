@@ -601,9 +601,13 @@ pub fn kline_cfg_view<'a>(
                 .label("Market Structure (BOS / CHoCH + Premium/Discount)")
                 .on_toggle(move |_| Message::PaneEvent(pane, Event::ToggleStructure));
 
-            let liq_map = checkbox(cfg.show_liq_map)
-                .label("Liquidity Map (Stop cluster levels)")
-                .on_toggle(move |_| Message::PaneEvent(pane, Event::ToggleLiqMap));
+            let liq_map = checkbox(cfg.show_liq_events)
+                .label("Liquidations (@forceOrder real events)")
+                .on_toggle(move |_| Message::PaneEvent(pane, Event::ToggleLiqEvents));
+
+            let scalping_panel = checkbox(cfg.show_scalping_panel)
+                .label("Scalping Monitor (OBI/CVD/Trades panel)")
+                .on_toggle(move |_| Message::PaneEvent(pane, Event::ToggleScalpingPanel));
 
             column![
                 text("Display Options").size(14),
@@ -613,7 +617,8 @@ pub fn kline_cfg_view<'a>(
                     order_blocks,
                     fvgs,
                     structure,
-                    liq_map
+                    liq_map,
+                    scalping_panel,
                 ]
                 .spacing(6),
             ]

@@ -60,6 +60,10 @@ use data::strategy::{
     intent_logger::collect_near_misses,
     micro_window::{CandleMicroBuffer, MicroCtx, MicroTrade, MicroWindowConfig},
     paper::PaperAccount,
+    scalping::{
+        ScalpingRegime, ScalpingState,
+        absorption, cvd_divergence as cvd_div_scalping, obi_maker,
+    },
     subdimi_parallel::run_subdimi_parallel,
     playbook_reasoning::classify_playbook_reasoning,
     router::route_strategy,
@@ -619,6 +623,10 @@ struct BarState {
     htf_monthly_tracker: data::strategy::vp_open_bias::HtfVpTracker,
     // TPO Single Print tracker — 30-min Market Profile, detects structural gaps
     tpo_tracker: data::strategy::tpo::TpoTracker,
+    // Scalping engine — 3 strategies (S1/OBI, S2/Absorption, S3/CVD Divergence)
+    scalping_state: ScalpingState,
+    // Índice del último trade de scalping ya escrito a Supabase (evita doble escritura)
+    scalping_paper_written_idx: usize,
 }
 
 impl BarState {
@@ -687,6 +695,8 @@ impl BarState {
             htf_weekly_tracker: data::strategy::vp_open_bias::HtfVpTracker::new_weekly(),
             htf_monthly_tracker: data::strategy::vp_open_bias::HtfVpTracker::new_monthly(),
             tpo_tracker: data::strategy::tpo::TpoTracker::new(),
+            scalping_state: ScalpingState::new(25),
+            scalping_paper_written_idx: 0,
         }
     }
 
@@ -729,10 +739,38 @@ impl BarState {
             };
             self.micro_buffer.on_trade(&mw_trade);
         }
+        // Scalping: actualizar excursiones y evaluar exit en cada trade
+        if self.scalping_state.paper.has_position() && price > 0.0 {
+            self.scalping_state.paper.update_excursions(price);
+            let now_ms = trade.time.as_u64() as i64;
+            let cfg = self.config_loader.current();
+            if let Some(exit_reason) = self.scalping_state.paper.check_exit(
+                price,
+                self.scalping_state.obi_ema_fast,
+                self.spread_ticks_now(),
+                now_ms,
+                cfg.scalping.time_stop_secs,
+            ) {
+                self.scalping_state.paper.close(price, now_ms, exit_reason);
+                self.scalping_state.active_signal = None;
+                self.scalping_state.signal_entry_ms = None;
+            }
+        }
     }
 
     fn on_trade_batch(&mut self) {
         self.metrics.trade_batches += 1;
+    }
+
+    /// Spread actual en ticks ($0.10) del libro L2.
+    fn spread_ticks_now(&self) -> i32 {
+        if let Some(d) = &self.depth {
+            if let (Some((&ask, _)), Some((&bid, _))) = (d.asks.iter().next(), d.bids.iter().next_back()) {
+                let spread_usd = (ask.to_f32() as f64 - bid.to_f32() as f64).max(0.0);
+                return (spread_usd / 0.10).round() as i32;
+            }
+        }
+        1
     }
 
     fn current_footprint_levels(&self) -> Vec<FootprintLevel> {
@@ -1111,6 +1149,15 @@ impl BarState {
             .map(|(p, q)| (p.to_f32() as f64, q.to_f32_lossy() as f64))
             .collect();
         self.spoof_detector.update(&bids, &asks, self.current_price, now_ms);
+        // Scalping: OBI L10 → EMA normalizada [0,1] (consistente con local UI)
+        {
+            let bid10: f64 = depth.bids.iter().rev().take(10).map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
+            let ask10: f64 = depth.asks.iter().take(10).map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
+            let total10 = bid10 + ask10;
+            if total10 > 0.0 {
+                self.scalping_state.on_depth((bid10 - ask10) / total10); // on_depth normaliza internamente
+            }
+        }
         self.depth = Some(depth);
         self.metrics.depth_updates += 1;
         self.metrics.last_depth_at = Some(Instant::now());
@@ -1670,6 +1717,146 @@ impl BarState {
 
         // Resolve outcomes that are at least one bar (5m) old
         self.resolve_outcomes(bar_ms, c);
+
+        // ── Scalping engine (S1/OBI, S2/Absorption, S3/CVD Divergence) ────────
+        if cfg.scalping.enabled {
+            let scalping_regime = match effective_regime {
+                Regime::TrendUp | Regime::TrendDown => ScalpingRegime::Trend,
+                _ => ScalpingRegime::Range,
+            };
+            let liq_ratio = {
+                let liq_snap_local = self.liq_tracker.snapshot(bar_ms);
+                // Usamos el z-score de liquidaciones como proxy del ratio (>3 = elevated)
+                liq_snap_local.total_zscore.map(|z| z.abs()).unwrap_or(0.0)
+            };
+            let obi_l5 = ctx.orderbook.obi_l5.unwrap_or(0.0);
+            let micro_price = ctx.orderbook.microprice.unwrap_or(c);
+            let spread_ticks = self.spread_ticks_now();
+
+            // Actualizar historiales del scalping state
+            self.scalping_state.on_bar_close(
+                self.cvd,
+                bar_delta,
+                vol,
+                h,
+                l,
+                session.session,
+            );
+
+            // Construir ScalpingContext para los detectores
+            let scalp_ctx = self.scalping_state.build_context(
+                obi_l5,
+                micro_price,
+                spread_ticks,
+                self.cvd,
+                cvd_slope,
+                o, h, l, c,
+                bar_delta,
+                vol,
+                atr,
+                scalping_regime,
+                session.session,
+                self.vwap_session,
+                poc,
+                self.funding_rate,
+                liq_ratio,
+                bar_ms,
+                if range_ctx.valid { Some(range_ctx.clone()) } else { None },
+                footprint_levels.clone(),
+                ctx.flow.big_trade_bullish,
+                ctx.flow.big_trade_bearish,
+            );
+
+            // Cerrar posición si la sesión terminó
+            if self.scalping_state.paper.has_position() {
+                if !data::strategy::scalping::is_scalping_session(session.session) {
+                    self.scalping_state.paper.close(
+                        c, bar_ms,
+                        data::strategy::scalping::paper::ScalpingExitReason::SessionEnd,
+                    );
+                    self.scalping_state.active_signal = None;
+                    self.scalping_state.signal_entry_ms = None;
+                }
+            }
+
+            // Detectar nuevas señales si no hay posición activa
+            if !self.scalping_state.paper.has_position()
+                && self.scalping_state.paper.can_trade(
+                    cfg.scalping.max_trades_per_session,
+                    cfg.scalping.daily_loss_limit_pct,
+                    cfg.scalping.max_consecutive_losses,
+                )
+            {
+                let scalp_signal = absorption::detect(&scalp_ctx, &cfg.scalping)
+                    .or_else(|| cvd_div_scalping::detect(&scalp_ctx, &cfg.scalping))
+                    .or_else(|| obi_maker::detect(&scalp_ctx, &cfg.scalping));
+
+                if let Some(sig) = scalp_signal {
+                    println!(
+                        "[scalping] SIGNAL strategy={} side={:?} entry={:.1} sl={:.1} \
+                         tp1={:.1} tp2={:.1} rr={:.2} score={:.1} type={}",
+                        sig.strategy, sig.side, sig.entry_price, sig.stop_price,
+                        sig.tp1_price, sig.tp2_price, sig.rr, sig.conviction_score,
+                        sig.entry_type,
+                    );
+
+                    // Persistir señal en Supabase
+                    if let Some(sb) = &self.supabase {
+                        let session_str = format!("{:?}", session.session);
+                        let regime_str = format!("{}", if scalping_regime == ScalpingRegime::Range { "Range" } else { "Trend" });
+                        let write_ctx = supabase_writer::ScalpingWriteCtx {
+                            session: &session_str,
+                            obi: obi_l5,
+                            obi_ema_fast: self.scalping_state.obi_ema_fast,
+                            dz: scalp_ctx.dz,
+                            vr: scalp_ctx.vr,
+                            cvd: self.cvd,
+                            spread_ticks,
+                            atr,
+                            regime: &regime_str,
+                            liq_ratio,
+                            range_high: scalp_ctx.range.as_ref().map(|r| r.range_high),
+                            range_low: scalp_ctx.range.as_ref().map(|r| r.range_low),
+                            range_mid: scalp_ctx.range.as_ref().map(|r| r.range_mid),
+                            range_location: scalp_ctx.range.as_ref().map(|r| match r.location {
+                                data::detectors::range_detector::RangeLocation::NearHigh => "NearHigh",
+                                data::detectors::range_detector::RangeLocation::NearLow  => "NearLow",
+                                data::detectors::range_detector::RangeLocation::NoTrade  => "NoTrade",
+                                _ => "Inside",
+                            }),
+                        };
+                        sb.write_scalping_signal(&sig, &write_ctx);
+                    }
+
+                    self.scalping_state.paper.open(
+                        sig.clone(),
+                        bar_ms,
+                        scalp_ctx.obi_ema_fast,
+                        obi_l5,
+                        scalp_ctx.dz,
+                        scalp_ctx.vr,
+                        self.cvd,
+                        cvd_slope,
+                        spread_ticks,
+                    );
+                    self.scalping_state.active_signal = Some(sig);
+                    self.scalping_state.signal_entry_ms = Some(bar_ms);
+                }
+            }
+
+            // Persistir cualquier trade cerrado que aún no se haya escrito a Supabase.
+            // scalping_paper_written_idx rastrea hasta qué índice ya se persistió.
+            if let Some(sb) = &self.supabase {
+                let written = self.scalping_paper_written_idx;
+                let total = self.scalping_state.paper.closed_trades.len();
+                if total > written {
+                    for trade in &self.scalping_state.paper.closed_trades[written..] {
+                        sb.write_scalping_trade(trade);
+                    }
+                    self.scalping_paper_written_idx = total;
+                }
+            }
+        }
 
         // ── Micro-window capture ──────────────────────────────────────────────
         // Mark trigger if DRR fired, then build and send the row for this candle.
@@ -2734,6 +2921,7 @@ async fn main() {
     // so Railway deployments without a config/strategy.toml still work correctly.
     let mut base_cfg = StrategyConfig::load();
     base_cfg.enabled = true;
+    base_cfg.scalping.enabled = true; // siempre activo en Railway — el TOML puede no estar disponible
     let config_loader = MongoConfigLoader::from_env(base_cfg);
 
     let footprint_step: PriceStep = ticker_info.min_ticksize.into();

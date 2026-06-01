@@ -106,10 +106,10 @@ fn detector_name_for(id: Option<StrategyId>) -> &'static str {
     }
 }
 
-/// Current production mode: DeltaRangeReversal is the sole live strategy.
-/// All other detectors remain in the codebase for research but cannot compete in the router.
-fn subdimi_detector_allowed(id: StrategyId) -> bool {
-    matches!(id, StrategyId::DeltaRangeReversal)
+/// DRR gate: solo permite DRR si está habilitado en config.
+/// Todos los demás detectores Subdimi permanecen bloqueados (investigación).
+fn subdimi_detector_allowed(id: StrategyId, cfg: &StrategyConfig) -> bool {
+    matches!(id, StrategyId::DeltaRangeReversal) && cfg.drr_enabled
 }
 
 fn signal_is_reversal(id: Option<StrategyId>) -> bool {
@@ -335,7 +335,7 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (Str
     macro_rules! try_detect {
         ($name:literal, $id:expr, $expr:expr) => {
             // Filtro de sesión: descartar antes de pasar al scoring
-            if !subdimi_detector_allowed($id) {
+            if !subdimi_detector_allowed($id, cfg) {
                 rejections.push(format!("{}:SUBDIMI_ONLY_DISABLED", $name));
                 detector_log.push(DetectorSnap {
                     name: $name.into(),
@@ -447,7 +447,7 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (Str
             ("FER", StrategyId::FundingExhaustionReversal),
             ("SMD", StrategyId::SmartMoneyDivergence),
         ] {
-            if subdimi_detector_allowed(id) {
+            if subdimi_detector_allowed(id, cfg) {
                 detector_log.push(DetectorSnap {
                     name: name.into(),
                     status: DetectorStatus::GlobalBlocked,
