@@ -82,6 +82,15 @@ struct SmartMoneyDivergenceSection {
 }
 
 #[derive(Deserialize, Default)]
+struct RangeBreakoutSection {
+    enabled: Option<bool>,
+    stop_pct: Option<f64>,
+    target_short_pct: Option<f64>,
+    target_long_pct: Option<f64>,
+    min_rr: Option<f64>,
+}
+
+#[derive(Deserialize, Default)]
 struct StrategyConfigFile {
     #[serde(default)]
     general: GeneralSection,
@@ -93,6 +102,8 @@ struct StrategyConfigFile {
     smart_money_divergence: SmartMoneyDivergenceSection,
     #[serde(default)]
     scalping: ScalpingSection,
+    #[serde(default)]
+    range_breakout: RangeBreakoutSection,
 }
 
 const MIN_MS: i64 = 60 * 1000;
@@ -149,6 +160,13 @@ impl StrategyConfigFile {
         if let Some(v) = sc.s3_lookback_bars { cfg.scalping.s3_lookback_bars = v; }
         if let Some(v) = sc.s3_min_divergence_strength { cfg.scalping.s3_min_divergence_strength = v; }
         if let Some(v) = sc.min_rr { cfg.scalping.min_rr = v; }
+
+        let rb = self.range_breakout;
+        if let Some(v) = rb.enabled { cfg.range_breakout.enabled = v; }
+        if let Some(v) = rb.stop_pct { cfg.range_breakout.stop_pct = v; }
+        if let Some(v) = rb.target_short_pct { cfg.range_breakout.target_short_pct = v; }
+        if let Some(v) = rb.target_long_pct { cfg.range_breakout.target_long_pct = v; }
+        if let Some(v) = rb.min_rr { cfg.range_breakout.min_rr = v; }
 
         cfg
     }
