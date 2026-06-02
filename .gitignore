@@ -8,3 +8,7 @@ data/logs/
 calibration/.env
 **/__pycache__/
 *.pyc
+
+# Docs y SQL — solo locales, no van al repo
+/docs/
+/supabase/
