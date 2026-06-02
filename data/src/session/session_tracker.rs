@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TradingSession {
-    Asia,            // 00:00–08:00 UTC — acumulación, rangos, baja volatilidad
-    London,          // 07:00–13:00 UTC — breakouts, liquidity grabs
-    LondonNyOverlap, // 13:00–16:00 UTC — máxima liquidez
-    NewYork,         // 13:00–21:00 UTC — continuación o reversión de London (US market close)
-    OffHours,        // 21:00–24:00 UTC — entre sesiones
+    Asia,            // 00:00–09:00 UTC — Tokyo/Asia, acumulación, rangos
+    London,          // 08:00–17:00 UTC — Frankfurt open + London, breakouts
+    LondonNyOverlap, // 13:00–17:00 UTC — máxima liquidez (London + NYSE activos)
+    NewYork,         // 13:00–22:00 UTC — NYSE open 13:30, cierre 20:00
+    OffHours,        // 22:00–24:00 UTC — entre sesiones
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,15 +31,15 @@ pub struct SessionContext {
     pub minutes_until_close: u32,
 }
 
-// Límites en minutos UTC desde medianoche
-const ASIA_OPEN: i64 = 0;     // 00:00
-const ASIA_CLOSE: i64 = 480;  // 08:00
-const LONDON_OPEN: i64 = 420; // 07:00
-const LONDON_CLOSE: i64 = 780; // 13:00
-const NY_OPEN: i64 = 780;     // 13:00
-const NY_CLOSE: i64 = 1260;   // 21:00 — US market close, covers Kaiko's active volume window
-const OVERLAP_START: i64 = 780; // 13:00
-const OVERLAP_END: i64 = 960;   // 16:00
+// Límites en minutos UTC desde medianoche — horarios reales de mercado
+const ASIA_OPEN: i64 = 0;       // 00:00
+const ASIA_CLOSE: i64 = 540;    // 09:00 — Tokyo close
+const LONDON_OPEN: i64 = 480;   // 08:00 — Frankfurt/London open
+const LONDON_CLOSE: i64 = 1020; // 17:00 — London close
+const NY_OPEN: i64 = 780;       // 13:00 — US traders active (NYSE opens 13:30)
+const NY_CLOSE: i64 = 1320;     // 22:00 — post-NYSE close activity ends
+const OVERLAP_START: i64 = 780; // 13:00 — London + NY ambos activos
+const OVERLAP_END: i64 = 1020;  // 17:00 — London close = overlap termina
 
 /// Clasifica la sesión activa dado un timestamp UTC en milisegundos.
 pub fn classify_session(timestamp_ms: i64) -> SessionContext {
@@ -56,7 +56,7 @@ pub fn classify_session(timestamp_ms: i64) -> SessionContext {
         } else if day_minutes >= ASIA_OPEN && day_minutes < ASIA_CLOSE {
             (TradingSession::Asia, ASIA_OPEN, ASIA_CLOSE)
         } else {
-            (TradingSession::OffHours, NY_CLOSE, 1440)
+            (TradingSession::OffHours, NY_CLOSE, 1440) // 22:00–24:00
         };
 
     let minutes_since_open = (day_minutes - open_min).max(0) as u32;
@@ -91,8 +91,8 @@ mod tests {
 
     #[test]
     fn classifies_london_session() {
-        // 08:00 UTC = 480 min → 60 min into London (open at 420) → Mid
-        let ts_ms = 8 * 3600 * 1000_i64;
+        // 09:00 UTC = 540 min → 60 min into London (open at 480) → Mid
+        let ts_ms = 9 * 3600 * 1000_i64;
         let ctx = classify_session(ts_ms);
         assert_eq!(ctx.session, TradingSession::London);
         assert_eq!(ctx.phase, SessionPhase::Mid);
@@ -101,8 +101,8 @@ mod tests {
 
     #[test]
     fn classifies_london_opening_rush() {
-        // 07:05 UTC = 425 min → 5 min into London → OpeningRush
-        let ts_ms = (7 * 3600 + 5 * 60) * 1000_i64;
+        // 08:05 UTC = 485 min → 5 min into London → OpeningRush
+        let ts_ms = (8 * 3600 + 5 * 60) * 1000_i64;
         let ctx = classify_session(ts_ms);
         assert_eq!(ctx.session, TradingSession::London);
         assert_eq!(ctx.phase, SessionPhase::OpeningRush);
@@ -111,8 +111,8 @@ mod tests {
 
     #[test]
     fn classifies_london_open_phase() {
-        // 07:20 UTC = 440 min → 20 min into London → Open (>=15, <30)
-        let ts_ms = (7 * 3600 + 20 * 60) * 1000_i64;
+        // 08:20 UTC = 500 min → 20 min into London → Open (>=15, <30)
+        let ts_ms = (8 * 3600 + 20 * 60) * 1000_i64;
         let ctx = classify_session(ts_ms);
         assert_eq!(ctx.session, TradingSession::London);
         assert_eq!(ctx.phase, SessionPhase::Open);
@@ -120,10 +120,18 @@ mod tests {
 
     #[test]
     fn classifies_overlap() {
-        // 14:00 UTC = 840 min → LondonNyOverlap mid
+        // 14:00 UTC = 840 min → LondonNyOverlap (13:00–17:00)
         let ts_ms = 14 * 3600 * 1000_i64;
         let ctx = classify_session(ts_ms);
         assert_eq!(ctx.session, TradingSession::LondonNyOverlap);
+    }
+
+    #[test]
+    fn classifies_newyork_pure() {
+        // 18:00 UTC = 1080 min → NewYork (after London close at 17:00)
+        let ts_ms = 18 * 3600 * 1000_i64;
+        let ctx = classify_session(ts_ms);
+        assert_eq!(ctx.session, TradingSession::NewYork);
     }
 
     #[test]
@@ -132,5 +140,13 @@ mod tests {
         let ts_ms = 3 * 3600 * 1000_i64;
         let ctx = classify_session(ts_ms);
         assert_eq!(ctx.session, TradingSession::Asia);
+    }
+
+    #[test]
+    fn classifies_offhours() {
+        // 23:00 UTC = 1380 min → OffHours (after 22:00)
+        let ts_ms = 23 * 3600 * 1000_i64;
+        let ctx = classify_session(ts_ms);
+        assert_eq!(ctx.session, TradingSession::OffHours);
     }
 }
