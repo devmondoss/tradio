@@ -337,6 +337,32 @@ impl SupabaseWriter {
         });
     }
 
+    /// Escribe una señal del detector Range Breakout Flow a Supabase.
+    /// Fire-and-forget.
+    pub fn write_rbf_signal(&self, sig: &data::strategy::detectors::range_breakout_flow::RbfSignal) {
+        let body = serde_json::json!({
+            "timestamp_ms":    sig.timestamp_ms,
+            "direction":       format!("{:?}", sig.direction),
+            "session":         format!("{:?}", sig.session),
+            "entry_price":     sig.entry_price,
+            "stop_price":      sig.stop_price,
+            "target_price":    sig.target_price,
+            "rr":              sig.rr,
+            "range_high":      sig.range_high,
+            "range_low":       sig.range_low,
+            "range_pct":       sig.range_pct,
+            "range_bars":      sig.range_bars as i64,
+            "cvd_in_range":    sig.cvd_in_range,
+            "vr_at_breakout":  sig.vr_at_breakout,
+            "macro_regime":    format!("{:?}", sig.macro_regime),
+            "evidence":        &sig.evidence,
+        });
+        let writer = self.clone();
+        tokio::spawn(async move {
+            writer.post("rbf_signals", &body).await;
+        });
+    }
+
     /// Actualiza scalping_signals cuando el trade cierra + inserta en scalping_trades.
     /// Fire-and-forget.
     pub fn write_scalping_trade(&self, trade: &data::strategy::scalping::paper::ScalpingTrade) {

@@ -627,6 +627,8 @@ struct BarState {
     scalping_state: ScalpingState,
     // Índice del último trade de scalping ya escrito a Supabase (evita doble escritura)
     scalping_paper_written_idx: usize,
+    // Range Breakout Flow detector state
+    rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState,
 }
 
 impl BarState {
@@ -697,6 +699,7 @@ impl BarState {
             tpo_tracker: data::strategy::tpo::TpoTracker::new(),
             scalping_state: ScalpingState::new(25),
             scalping_paper_written_idx: 0,
+            rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState::new(),
         }
     }
 
@@ -1949,6 +1952,27 @@ impl BarState {
                     sig_score,
                     blocked,
                 );
+            }
+        }
+
+        // ── Range Breakout Flow detector ─────────────────────────────────────
+        {
+            if let Some(sig) = self.rbf_state.on_bar_close(
+                o, h, l, c,
+                vol,
+                bar_delta,
+                session.session,
+                bar_ms,
+                &cfg.range_breakout,
+            ) {
+                println!(
+                    "[rbf] {:?} entry={:.1} stop={:.1} target={:.1} rr={:.2} range={:.3}% cvd={:.1} vr={:.2}x {:?}",
+                    sig.direction, sig.entry_price, sig.stop_price, sig.target_price,
+                    sig.rr, sig.range_pct, sig.cvd_in_range, sig.vr_at_breakout, sig.macro_regime,
+                );
+                if let Some(sb) = &self.supabase {
+                    sb.write_rbf_signal(&sig);
+                }
             }
         }
 

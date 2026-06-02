@@ -405,6 +405,9 @@ pub struct StrategyConfig {
 
     /// Configuración del motor de scalping (3 estrategias: OBI/S1, Absorción/S2, CVD Divergencia/S3).
     pub scalping: ScalpingConfig,
+
+    /// Configuración del detector Range Breakout Flow.
+    pub range_breakout: crate::strategy::detectors::range_breakout_flow::RangeBreakoutConfig,
 }
 
 /// Parámetros del motor de scalping.
@@ -479,6 +482,7 @@ impl Default for StrategyConfig {
             cooldown_bars: 5,
             drr_enabled: true,
             scalping: ScalpingConfig::default(),
+            range_breakout: crate::strategy::detectors::range_breakout_flow::RangeBreakoutConfig::default(),
         }
     }
 }

@@ -6,6 +6,7 @@ pub mod funding_exhaustion_reversal;
 pub mod liquidation_hunt;
 pub mod lvn_liquidity_vacuum_breakout;
 pub mod order_block_retest;
+pub mod range_breakout_flow;
 pub mod session_open_breakout;
 pub mod smart_money_divergence;
 pub mod toxic_flow_gate;

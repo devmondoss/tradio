@@ -64,3 +64,15 @@ short_threshold        = 0.45       # top traders long pct por debajo → smart 
 retail_long_threshold  = 0.60       # retail long pct por encima → retail predominantemente long
 min_divergence         = 0.10       # divergencia mínima (retail_long - top_long) para disparar
 ttl_min                = 20         # TTL de la señal (minutos)
+
+# ============================================================================
+# RANGE BREAKOUT FLOW — detector validado en backtest 30 días M1
+# Rango de consolidación (0.08–0.55%) + CVD acumulado + VR≥2 en breakout
+# Config A: SHORT breakdown → target 0.5% | Config B: LONG breakout → target 0.45%
+# ============================================================================
+[range_breakout]
+enabled          = true
+stop_pct         = 0.25  # stop en % del precio (0.25% = ~$175 en BTC $70k)
+target_short_pct = 0.50  # target SHORT: 0.5% → RR 2:1
+target_long_pct  = 0.45  # target LONG: 0.45% → RR 1.8:1
+min_rr           = 1.5   # R:R mínimo para emitir señal
