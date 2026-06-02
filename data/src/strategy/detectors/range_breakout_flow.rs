@@ -1,14 +1,16 @@
-//! Range Breakout Flow — detector de continuación
+//! Range Breakout Flow — detector de continuación con gate de microestructura
 //!
-//! Hipótesis validada en backtest (30 días M1, n=914 señales):
-//!   Un rango de consolidación (0.08–0.55% de precio, 15–60 barras M1) donde el CVD
-//!   acumula presión en una dirección, seguido de un cierre fuera del rango con VR ≥ 2×,
-//!   produce edge positivo en horizonte de 30–60 minutos.
+//! Hipótesis validada en backtest (30 días M1, n=318 señales London+Overlap):
+//!   Rango de consolidación (0.08–0.55%, 15–60 barras M1) + CVD acumulado alineado
+//!   + VR ≥ 2× en breakout → edge positivo en horizonte 30–60 min.
 //!
-//! Dos configuraciones:
-//!   Config A — SHORT breakdown:  CVD bajista + VR≥2 + cierre bajo rango → target 0.5%
-//!   Config B — LONG breakout:    CVD alcista + VR≥2 + cierre sobre rango → target 0.4%
-//!              (mejor contra-tendencia; régimen macro bajista da más edge en short squeeze)
+//! Gate de microestructura (backtest offline 30d):
+//!   cvd_slope confirma dirección  (+11pp WR en Q4 vs Q1)
+//!   dz entre 0.5 y 3.0            (extremos >3 revierten; pico en dz ~2)
+//!   obi confirma dirección        (pendiente validación con datos reales)
+//!
+//! Sessions operativas — London (08-13 UTC) y Overlap (13-17 UTC).
+//! NewYork excluido: backtest 30d/43200 barras → WR 24.7% avgR -0.065.
 
 use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
@@ -16,29 +18,19 @@ use crate::session::{TradingSession, SessionPhase};
 
 // ── Parámetros del detector ───────────────────────────────────────────────────
 
-/// Ventanas de rango a probar (barras M1)
-const RANGE_WINDOWS: &[usize] = &[15, 20, 30, 45, 60];
-
-/// Rango mínimo como % del precio (evita ruido puro)
-const RANGE_MIN_PCT: f64 = 0.08;
-/// Rango máximo como % del precio (evita mercado trending)
-const RANGE_MAX_PCT: f64 = 0.55;
-
-/// VR mínimo en la barra de breakout
+const RANGE_WINDOWS:  &[usize] = &[15, 20, 30, 45, 60];
+const RANGE_MIN_PCT:  f64 = 0.08;
+const RANGE_MAX_PCT:  f64 = 0.55;
 const BREAKOUT_VR_MIN: f64 = 2.0;
+const VR_WINDOW:      usize = 50;
+const DZ_WINDOW:      usize = 50;
+const CVD_SLOPE_WIN:  usize = 20;
+const EMA_MACRO:      usize = 480;
 
-/// Ventana para calcular VR (volumen relativo)
-const VR_WINDOW: usize = 50;
-
-/// Ventana para EMA de régimen macro (480 barras M1 ≈ 8 horas)
-const EMA_MACRO: usize = 480;
-
-/// Sessions operativas — London (08-17), Overlap (13-17), NY (13-22)
+/// Sessions operativas — London (08-13 UTC) y Overlap (13-17 UTC).
+/// NewYork excluido por backtest: WR 24.7% avgR -0.065.
 const fn is_operative(s: TradingSession) -> bool {
-    matches!(
-        s,
-        TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
-    )
+    matches!(s, TradingSession::London | TradingSession::LondonNyOverlap)
 }
 
 // ── Tipos públicos ─────────────────────────────────────────────────────────────
@@ -49,46 +41,47 @@ pub enum RbfDirection {
     Long,
 }
 
-/// Régimen macro derivado de la EMA480
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MacroRegime {
-    Bull,          // precio > EMA480, slope positivo
-    Bear,          // precio < EMA480, slope negativo
-    BullPullback,  // precio > EMA480 pero slope negativo
-    BearPullback,  // precio < EMA480 pero slope positivo
+    Bull,
+    Bear,
+    BullPullback,
+    BearPullback,
     Unknown,
 }
 
-/// Señal emitida por el detector
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RbfSignal {
-    pub direction: RbfDirection,
-    pub entry_price: f64,
-    pub stop_price: f64,
-    pub target_price: f64,
-    pub rr: f64,
-    pub range_high: f64,
-    pub range_low: f64,
-    pub range_pct: f64,
-    pub range_bars: usize,
-    pub cvd_in_range: f64,
-    pub vr_at_breakout: f64,
-    pub macro_regime: MacroRegime,
-    pub session: TradingSession,
-    pub timestamp_ms: i64,
-    pub evidence: Vec<String>,
+    pub direction:        RbfDirection,
+    pub entry_price:      f64,
+    pub stop_price:       f64,
+    pub target_price:     f64,
+    pub rr:               f64,
+    pub range_high:       f64,
+    pub range_low:        f64,
+    pub range_pct:        f64,
+    pub range_bars:       usize,
+    pub cvd_in_range:     f64,
+    pub vr_at_breakout:   f64,
+    pub macro_regime:     MacroRegime,
+    pub session:          TradingSession,
+    pub timestamp_ms:     i64,
+    pub evidence:         Vec<String>,
 
-    // ── Campos de contexto adicionales ───────────────────────────────────────
-    /// Veces que el precio tocó el nivel roto antes del breakout (más = rango más confirmado)
-    pub range_touch_count: usize,
-    /// Fase de la sesión al momento del breakout (OpeningRush / Open / Mid / Close)
-    pub session_phase: SessionPhase,
-    /// (precio - VWAP) / VWAP × 100 — positivo = precio sobre VWAP
-    pub price_vs_vwap_pct: Option<f64>,
-    /// Funding rate al momento de entrada (None si no disponible)
-    pub funding_at_entry: Option<f64>,
-    /// Ratio de liquidaciones al momento de entrada (proxy de agresión)
-    pub liq_ratio_pre: f64,
+    // Contexto adicional
+    pub range_touch_count:  usize,
+    pub session_phase:      SessionPhase,
+    pub price_vs_vwap_pct:  Option<f64>,
+    pub funding_at_entry:   Option<f64>,
+    pub liq_ratio_pre:      f64,
+
+    // Microestructura en la barra de breakout
+    /// CVD slope (USD/bar) en la barra de ruptura; positivo = compradores acumulando.
+    pub cvd_slope_at_entry: Option<f64>,
+    /// Delta z-score de la barra de ruptura (normalizado 50 barras).
+    pub dz_at_entry:        f64,
+    /// Order Book Imbalance en la barra de ruptura (bid-ask / total).
+    pub obi_at_entry:       f64,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -100,38 +93,67 @@ struct BarSnapshot {
     low:    f64,
     close:  f64,
     volume: f64,
-    delta:  f64,  // bar delta (buy_vol - sell_vol proxy)
+    delta:  f64,
 }
 
 pub struct RangeBreakoutState {
-    /// Historial de barras M1 para detección de rangos
-    history:  VecDeque<BarSnapshot>,
-    /// Historial de volúmenes para VR rolling
-    vol_hist: VecDeque<f64>,
-    /// EMA macro (480 barras) — se actualiza iterativamente
-    ema480:   f64,
-    ema480_prev: f64,
-    ema480_initialized: bool,
-    bars_seen: usize,
-    /// ts de la última señal para cooldown (60 barras = 60 min)
-    last_signal_bar: usize,
+    history:              VecDeque<BarSnapshot>,
+    vol_hist:             VecDeque<f64>,
+    /// Historial de bar_delta para calcular dz internamente.
+    delta_hist:           VecDeque<f64>,
+    /// Historial de CVD acumulado para calcular cvd_slope internamente (fallback).
+    cvd_acc_hist:         VecDeque<f64>,
+    cvd_running:          f64,
+    ema480:               f64,
+    ema480_prev:          f64,
+    ema480_initialized:   bool,
+    bars_seen:            usize,
+    last_signal_bar:      usize,
 }
 
 impl RangeBreakoutState {
     pub fn new() -> Self {
         Self {
-            history:  VecDeque::with_capacity(RANGE_WINDOWS.iter().copied().max().unwrap_or(60) + 5),
-            vol_hist: VecDeque::with_capacity(VR_WINDOW + 5),
-            ema480:   0.0,
-            ema480_prev: 0.0,
+            history:            VecDeque::with_capacity(65),
+            vol_hist:           VecDeque::with_capacity(VR_WINDOW + 5),
+            delta_hist:         VecDeque::with_capacity(DZ_WINDOW + 5),
+            cvd_acc_hist:       VecDeque::with_capacity(CVD_SLOPE_WIN + 5),
+            cvd_running:        0.0,
+            ema480:             0.0,
+            ema480_prev:        0.0,
             ema480_initialized: false,
-            bars_seen: 0,
-            last_signal_bar: 0,
+            bars_seen:          0,
+            last_signal_bar:    0,
         }
     }
 
-    /// Llamar en cada cierre de barra M1 con los datos de la barra cerrada.
-    /// `bar_delta` = delta de la barra (buy_vol - sell_vol); puede ser estimado.
+    /// OLS slope del CVD acumulado sobre las últimas `window` barras.
+    fn compute_cvd_slope(&self) -> Option<f64> {
+        let n = self.cvd_acc_hist.len();
+        if n < 5 { return None; }
+        let slice: Vec<f64> = self.cvd_acc_hist.iter().copied().collect();
+        let nf = n as f64;
+        let sum_x: f64 = (0..n).map(|i| i as f64).sum();
+        let sum_y: f64 = slice.iter().sum();
+        let sum_xy: f64 = slice.iter().enumerate().map(|(i, &y)| i as f64 * y).sum();
+        let sum_x2: f64 = (0..n).map(|i| (i * i) as f64).sum();
+        let denom = nf * sum_x2 - sum_x * sum_x;
+        if denom.abs() < 1e-10 { return None; }
+        Some((nf * sum_xy - sum_x * sum_y) / denom)
+    }
+
+    /// Delta z-score de la barra actual.
+    fn compute_dz(&self, bar_delta: f64) -> f64 {
+        let n = self.delta_hist.len();
+        if n < 5 { return 0.0; }
+        let mean = self.delta_hist.iter().sum::<f64>() / n as f64;
+        let var  = self.delta_hist.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / n as f64;
+        let std  = var.sqrt();
+        if std < 1e-8 { return 0.0; }
+        (bar_delta - mean) / std
+    }
+
+    /// Llamar en cada cierre de barra M1.
     pub fn on_bar_close(
         &mut self,
         open: f64, high: f64, low: f64, close: f64,
@@ -139,16 +161,18 @@ impl RangeBreakoutState {
         session: TradingSession,
         timestamp_ms: i64,
         cfg: &RangeBreakoutConfig,
-        // Contexto adicional (opcionales, pasados desde el monitor)
-        vwap: Option<f64>,
+        // Microestructura externa
+        vwap:         Option<f64>,
         funding_rate: Option<f64>,
-        liq_ratio: f64,
+        liq_ratio:    f64,
+        obi:          f64,
+        cvd_slope_ext: Option<f64>, // slope computado externamente (preferido)
     ) -> Option<RbfSignal> {
-        let _ = open; // unused but kept for API clarity
+        let _ = open;
 
         self.bars_seen += 1;
 
-        // Actualizar EMA480 iterativa
+        // EMA480
         let k = 2.0 / (EMA_MACRO as f64 + 1.0);
         if !self.ema480_initialized {
             self.ema480      = close;
@@ -159,77 +183,60 @@ impl RangeBreakoutState {
             self.ema480 = close * k + self.ema480 * (1.0 - k);
         }
 
-        // Actualizar historial de volumen para VR
+        // Historial de volumen (VR)
         self.vol_hist.push_back(volume);
-        if self.vol_hist.len() > VR_WINDOW {
-            self.vol_hist.pop_front();
-        }
+        if self.vol_hist.len() > VR_WINDOW { self.vol_hist.pop_front(); }
 
-        // Guardar snapshot
+        // Historial de delta (dz)
+        self.delta_hist.push_back(bar_delta);
+        if self.delta_hist.len() > DZ_WINDOW { self.delta_hist.pop_front(); }
+
+        // Historial de CVD acumulado (slope fallback)
+        self.cvd_running += bar_delta;
+        self.cvd_acc_hist.push_back(self.cvd_running);
+        if self.cvd_acc_hist.len() > CVD_SLOPE_WIN { self.cvd_acc_hist.pop_front(); }
+
+        // Snapshot de la barra
         let max_history = *RANGE_WINDOWS.iter().max().unwrap_or(&60);
         self.history.push_back(BarSnapshot { high, low, close, volume, delta: bar_delta });
-        if self.history.len() > max_history + 2 {
-            self.history.pop_front();
-        }
+        if self.history.len() > max_history + 2 { self.history.pop_front(); }
 
-        // Necesitamos suficientes datos
-        if self.bars_seen < VR_WINDOW + *RANGE_WINDOWS.iter().max().unwrap_or(&60) {
-            return None;
-        }
+        if self.bars_seen < VR_WINDOW + max_history { return None; }
+        if self.bars_seen - self.last_signal_bar < 60 { return None; }
+        if !is_operative(session) { return None; }
+        if !cfg.enabled { return None; }
 
-        // Cooldown: 60 barras entre señales
-        if self.bars_seen - self.last_signal_bar < 60 {
-            return None;
-        }
-
-        // Solo sesiones operativas
-        if !is_operative(session) {
-            return None;
-        }
-
-        if !cfg.enabled {
-            return None;
-        }
-
-        // VR actual
+        // VR
         let mean_vol = if self.vol_hist.is_empty() { 1.0 }
             else { self.vol_hist.iter().sum::<f64>() / self.vol_hist.len() as f64 };
         let vr = if mean_vol > 0.0 { volume / mean_vol } else { 0.0 };
+        if vr < BREAKOUT_VR_MIN { return None; }
 
-        if vr < BREAKOUT_VR_MIN {
-            return None;
-        }
+        // Microestructura en esta barra
+        let dz         = self.compute_dz(bar_delta);
+        let cvd_slope  = cvd_slope_ext.or_else(|| self.compute_cvd_slope());
 
-        // Fase de sesión
-        let session_ctx   = crate::session::classify_session(timestamp_ms);
+        // Fase / régimen macro
+        let session_ctx  = crate::session::classify_session(timestamp_ms);
         let session_phase = session_ctx.phase;
-
-        // Régimen macro
-        let slope_positive = self.ema480 > self.ema480_prev;
-        let above_ema      = close > self.ema480;
-        let macro_regime   = match (above_ema, slope_positive) {
+        let slope_pos    = self.ema480 > self.ema480_prev;
+        let above_ema    = close > self.ema480;
+        let macro_regime = match (above_ema, slope_pos) {
             (true,  true)  => MacroRegime::Bull,
             (false, false) => MacroRegime::Bear,
             (true,  false) => MacroRegime::BullPullback,
             (false, true)  => MacroRegime::BearPullback,
         };
 
-        // Precio vs VWAP
         let price_vs_vwap_pct = vwap
             .filter(|v| *v > 0.0)
             .map(|v| (close - v) / v * 100.0);
 
-        // Probar distintas ventanas de rango
         let hist_len = self.history.len();
         for &range_bars in RANGE_WINDOWS {
-            if hist_len < range_bars + 1 {
-                continue;
-            }
+            if hist_len < range_bars + 1 { continue; }
 
-            // El rango son las `range_bars` barras ANTERIORES a la actual
             let window_start = hist_len - range_bars - 1;
-            let window_end   = hist_len - 1; // excluye la barra actual
-
             let window: Vec<&BarSnapshot> = self.history
                 .iter()
                 .skip(window_start)
@@ -238,43 +245,49 @@ impl RangeBreakoutState {
 
             let range_high = window.iter().map(|b| b.high).fold(f64::NEG_INFINITY, f64::max);
             let range_low  = window.iter().map(|b| b.low).fold(f64::INFINITY,  f64::min);
-            let range_size = range_high - range_low;
-            let range_pct  = range_size / close * 100.0;
+            let range_pct  = (range_high - range_low) / close * 100.0;
 
-            if range_pct < RANGE_MIN_PCT || range_pct > RANGE_MAX_PCT {
-                continue;
-            }
+            if range_pct < RANGE_MIN_PCT || range_pct > RANGE_MAX_PCT { continue; }
 
-            // CVD acumulado dentro del rango
             let cvd_in_range: f64 = window.iter().map(|b| b.delta).sum();
 
-            // Contar touches al nivel que se rompe (barras que tocaron pero cerraron dentro)
-            // Un "touch" = barra cuyo high/low llegó al nivel pero el close se mantuvo dentro
-            let touches_high: usize = window.iter().filter(|b| {
-                b.high >= range_high * 0.999 && b.close < range_high
-            }).count();
-            let touches_low: usize = window.iter().filter(|b| {
-                b.low <= range_low * 1.001 && b.close > range_low
-            }).count();
+            let touches_high = window.iter().filter(|b| b.high >= range_high * 0.999 && b.close < range_high).count();
+            let touches_low  = window.iter().filter(|b| b.low  <= range_low  * 1.001 && b.close > range_low).count();
 
-            // ¿La barra actual rompe el rango?
             let breaks_down = close < range_low;
             let breaks_up   = close > range_high;
-
-            if !breaks_down && !breaks_up {
-                continue;
-            }
+            if !breaks_down && !breaks_up { continue; }
 
             let direction = if breaks_down { RbfDirection::Short } else { RbfDirection::Long };
+            let sign: f64 = if breaks_down { 1.0 } else { -1.0 }; // sign para "move in direction"
 
-            // CVD debe respaldar la dirección
+            // CVD acumulado en rango alineado con dirección
             let cvd_aligned = match direction {
                 RbfDirection::Short => cvd_in_range < 0.0,
                 RbfDirection::Long  => cvd_in_range > 0.0,
             };
+            if !cvd_aligned { continue; }
 
-            if !cvd_aligned {
-                continue;
+            // ── Gate de microestructura ────────────────────────────────────────
+            // cvd_slope alineado: SHORT quiere slope negativo, LONG positivo
+            let cvd_slope_dir = cvd_slope.map(|s| sign * (-s));
+            if cfg.cvd_slope_gate {
+                if let Some(sd) = cvd_slope_dir {
+                    if sd <= 0.0 { continue; }
+                }
+            }
+
+            // dz alineado con la dirección
+            let dz_dir = sign * (-dz); // SHORT quiere dz negativo (vendedores), LONG positivo
+            if dz_dir < cfg.dz_min || dz_dir > cfg.dz_max { continue; }
+
+            // OBI alineado: SHORT quiere obi < threshold, LONG quiere obi > (1 - threshold)
+            if cfg.obi_gate {
+                let obi_ok = match direction {
+                    RbfDirection::Short => obi < cfg.obi_threshold,
+                    RbfDirection::Long  => obi > (1.0 - cfg.obi_threshold),
+                };
+                if !obi_ok { continue; }
             }
 
             // Calcular stop y target
@@ -283,51 +296,42 @@ impl RangeBreakoutState {
                 RbfDirection::Short => cfg.target_short_pct / 100.0,
                 RbfDirection::Long  => cfg.target_long_pct  / 100.0,
             };
-
             let (stop_price, target_price) = match direction {
-                RbfDirection::Short => (
-                    close * (1.0 + stop_pct),
-                    close * (1.0 - target_pct),
-                ),
-                RbfDirection::Long => (
-                    close * (1.0 - stop_pct),
-                    close * (1.0 + target_pct),
-                ),
+                RbfDirection::Short => (close * (1.0 + stop_pct),   close * (1.0 - target_pct)),
+                RbfDirection::Long  => (close * (1.0 - stop_pct),   close * (1.0 + target_pct)),
             };
-
             let risk   = (close - stop_price).abs();
             let reward = (target_price - close).abs();
             let rr     = if risk > 1e-10 { reward / risk } else { 0.0 };
-
-            if rr < cfg.min_rr {
-                continue;
-            }
+            if rr < cfg.min_rr { continue; }
 
             // Evidencia
-            let regime_label = format!("{:?}", macro_regime);
             let mut evidence = vec![
                 format!("rbf:{:?}", direction),
                 format!("range_pct={:.3}%", range_pct),
                 format!("range_bars={}", range_bars),
                 format!("cvd_in_range={:.1}", cvd_in_range),
                 format!("vr={:.2}x", vr),
-                format!("macro={}", regime_label),
+                format!("macro={:?}", macro_regime),
                 format!("session={:?}", session),
             ];
+            if let Some(sd) = cvd_slope_dir {
+                evidence.push(format!("cvd_slope_dir={:.2}", sd));
+            }
+            evidence.push(format!("dz_dir={:.2}", dz_dir));
+            if cfg.obi_gate {
+                evidence.push(format!("obi={:.3}", obi));
+            }
 
-            // Flag contra-tendencia (útil para análisis posterior)
             let counter_trend = match direction {
                 RbfDirection::Short => matches!(macro_regime, MacroRegime::Bull | MacroRegime::BullPullback),
                 RbfDirection::Long  => matches!(macro_regime, MacroRegime::Bear | MacroRegime::BearPullback),
             };
-            if counter_trend {
-                evidence.push("contra_tendencia".to_string());
-            }
+            if counter_trend { evidence.push("contra_tendencia".to_string()); }
 
             let range_touch_count = if breaks_down { touches_low } else { touches_high };
 
             self.last_signal_bar = self.bars_seen;
-            let _ = window_end;
 
             return Some(RbfSignal {
                 direction,
@@ -348,8 +352,11 @@ impl RangeBreakoutState {
                 range_touch_count,
                 session_phase,
                 price_vs_vwap_pct,
-                funding_at_entry: funding_rate,
-                liq_ratio_pre: liq_ratio,
+                funding_at_entry:    funding_rate,
+                liq_ratio_pre:       liq_ratio,
+                cvd_slope_at_entry:  cvd_slope,
+                dz_at_entry:         dz,
+                obi_at_entry:        obi,
             });
         }
 
@@ -361,15 +368,23 @@ impl RangeBreakoutState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RangeBreakoutConfig {
-    pub enabled:          bool,
-    /// Stop en % del precio (default 0.25%)
-    pub stop_pct:         f64,
-    /// Target para SHORT en % del precio (default 0.5%)
-    pub target_short_pct: f64,
-    /// Target para LONG en % del precio (default 0.45%)
-    pub target_long_pct:  f64,
-    /// R:R mínimo para emitir señal
-    pub min_rr:           f64,
+    pub enabled:           bool,
+    pub stop_pct:          f64,
+    pub target_short_pct:  f64,
+    pub target_long_pct:   f64,
+    pub min_rr:            f64,
+
+    // Gates de microestructura (validados backtest 30d)
+    /// Activar gate de CVD slope: slope debe confirmar dirección del breakout.
+    pub cvd_slope_gate:    bool,
+    /// dz mínimo alineado con dirección (0.5 = backtest óptimo, elimina breakouts planos).
+    pub dz_min:            f64,
+    /// dz máximo alineado con dirección (3.0 = cortar extremos que revierten).
+    pub dz_max:            f64,
+    /// Activar gate de OBI (requiere validación con datos reales; desactivado por defecto).
+    pub obi_gate:          bool,
+    /// Umbral OBI para el gate: SHORT quiere obi < threshold, LONG quiere obi > (1-threshold).
+    pub obi_threshold:     f64,
 }
 
 impl Default for RangeBreakoutConfig {
@@ -380,6 +395,12 @@ impl Default for RangeBreakoutConfig {
             target_short_pct: 0.50,
             target_long_pct:  0.45,
             min_rr:           1.5,
+            // Microestructura — valores del backtest 30d
+            cvd_slope_gate:   true,
+            dz_min:           0.5,
+            dz_max:           3.0,
+            obi_gate:         false, // pendiente validación con datos reales
+            obi_threshold:    0.45,
         }
     }
 }

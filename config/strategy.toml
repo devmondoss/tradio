@@ -66,13 +66,21 @@ min_divergence         = 0.10       # divergencia mínima (retail_long - top_lon
 ttl_min                = 20         # TTL de la señal (minutos)
 
 # ============================================================================
-# RANGE BREAKOUT FLOW — detector validado en backtest 30 días M1
+# RANGE BREAKOUT FLOW — detector validado en backtest 30 días M1 (n=318)
 # Rango de consolidación (0.08–0.55%) + CVD acumulado + VR≥2 en breakout
-# Config A: SHORT breakdown → target 0.5% | Config B: LONG breakout → target 0.45%
+# Sessions: London (08-13 UTC) + Overlap (13-17 UTC) — NewYork excluido (WR 24.7%)
+# Gate microestructura: cvd_slope confirma + dz entre 0.5 y 3.0
 # ============================================================================
 [range_breakout]
 enabled          = true
-stop_pct         = 0.25  # stop en % del precio (0.25% = ~$175 en BTC $70k)
-target_short_pct = 0.50  # target SHORT: 0.5% → RR 2:1
-target_long_pct  = 0.45  # target LONG: 0.45% → RR 1.8:1
-min_rr           = 1.5   # R:R mínimo para emitir señal
+stop_pct         = 0.25   # stop en % del precio (0.25% = ~$175 en BTC $70k)
+target_short_pct = 0.50   # target SHORT: 0.5% → RR 2:1
+target_long_pct  = 0.45   # target LONG: 0.45% → RR 1.8:1
+min_rr           = 1.5    # R:R mínimo para emitir señal
+
+# Gates de microestructura (backtest 30d: +11pp WR al filtrar por slope)
+cvd_slope_gate   = true   # slope CVD debe confirmar dirección del breakout
+dz_min           = 0.5    # dz mínimo alineado (elimina breakouts sin presión)
+dz_max           = 3.0    # dz máximo (extremos >3 revierten — fakeout)
+obi_gate         = false  # OBI gate desactivado (pendiente validación datos reales)
+obi_threshold    = 0.45   # umbral OBI cuando el gate esté activo

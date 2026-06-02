@@ -356,11 +356,14 @@ impl SupabaseWriter {
             "vr_at_breakout":     sig.vr_at_breakout,
             "macro_regime":       format!("{:?}", sig.macro_regime),
             "evidence":           &sig.evidence,
-            "range_touch_count":  sig.range_touch_count as i64,
-            "session_phase":      format!("{:?}", sig.session_phase),
-            "price_vs_vwap_pct":  sig.price_vs_vwap_pct,
-            "funding_at_entry":   sig.funding_at_entry,
-            "liq_ratio_pre":      sig.liq_ratio_pre,
+            "range_touch_count":    sig.range_touch_count as i64,
+            "session_phase":        format!("{:?}", sig.session_phase),
+            "price_vs_vwap_pct":    sig.price_vs_vwap_pct,
+            "funding_at_entry":     sig.funding_at_entry,
+            "liq_ratio_pre":        sig.liq_ratio_pre,
+            "cvd_slope_at_entry":   sig.cvd_slope_at_entry,
+            "dz_at_entry":          sig.dz_at_entry,
+            "obi_at_entry":         sig.obi_at_entry,
         });
         let writer = self.clone();
         tokio::spawn(async move {

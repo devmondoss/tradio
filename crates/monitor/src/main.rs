@@ -1961,6 +1961,7 @@ impl BarState {
                 let liq_snap = self.liq_tracker.snapshot(bar_ms);
                 liq_snap.total_zscore.map(|z| z.abs()).unwrap_or(0.0)
             };
+            let obi_rbf = ctx.orderbook.obi_l5.unwrap_or(0.0);
             if let Some(sig) = self.rbf_state.on_bar_close(
                 o, h, l, c,
                 vol,
@@ -1971,6 +1972,8 @@ impl BarState {
                 self.vwap_session,
                 self.funding_rate,
                 liq_ratio_rbf,
+                obi_rbf,
+                cvd_slope,
             ) {
                 println!(
                     "[rbf] {:?} entry={:.1} stop={:.1} target={:.1} rr={:.2} range={:.3}% cvd={:.1} vr={:.2}x {:?}",

@@ -83,11 +83,16 @@ struct SmartMoneyDivergenceSection {
 
 #[derive(Deserialize, Default)]
 struct RangeBreakoutSection {
-    enabled: Option<bool>,
-    stop_pct: Option<f64>,
+    enabled:          Option<bool>,
+    stop_pct:         Option<f64>,
     target_short_pct: Option<f64>,
-    target_long_pct: Option<f64>,
-    min_rr: Option<f64>,
+    target_long_pct:  Option<f64>,
+    min_rr:           Option<f64>,
+    cvd_slope_gate:   Option<bool>,
+    dz_min:           Option<f64>,
+    dz_max:           Option<f64>,
+    obi_gate:         Option<bool>,
+    obi_threshold:    Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -162,11 +167,16 @@ impl StrategyConfigFile {
         if let Some(v) = sc.min_rr { cfg.scalping.min_rr = v; }
 
         let rb = self.range_breakout;
-        if let Some(v) = rb.enabled { cfg.range_breakout.enabled = v; }
-        if let Some(v) = rb.stop_pct { cfg.range_breakout.stop_pct = v; }
+        if let Some(v) = rb.enabled          { cfg.range_breakout.enabled          = v; }
+        if let Some(v) = rb.stop_pct         { cfg.range_breakout.stop_pct         = v; }
         if let Some(v) = rb.target_short_pct { cfg.range_breakout.target_short_pct = v; }
-        if let Some(v) = rb.target_long_pct { cfg.range_breakout.target_long_pct = v; }
-        if let Some(v) = rb.min_rr { cfg.range_breakout.min_rr = v; }
+        if let Some(v) = rb.target_long_pct  { cfg.range_breakout.target_long_pct  = v; }
+        if let Some(v) = rb.min_rr           { cfg.range_breakout.min_rr           = v; }
+        if let Some(v) = rb.cvd_slope_gate   { cfg.range_breakout.cvd_slope_gate   = v; }
+        if let Some(v) = rb.dz_min           { cfg.range_breakout.dz_min           = v; }
+        if let Some(v) = rb.dz_max           { cfg.range_breakout.dz_max           = v; }
+        if let Some(v) = rb.obi_gate         { cfg.range_breakout.obi_gate         = v; }
+        if let Some(v) = rb.obi_threshold    { cfg.range_breakout.obi_threshold    = v; }
 
         cfg
     }
