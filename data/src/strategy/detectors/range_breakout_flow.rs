@@ -12,7 +12,7 @@
 
 use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
-use crate::session::TradingSession;
+use crate::session::{TradingSession, SessionPhase};
 
 // ── Parámetros del detector ───────────────────────────────────────────────────
 
@@ -33,7 +33,7 @@ const VR_WINDOW: usize = 50;
 /// Ventana para EMA de régimen macro (480 barras M1 ≈ 8 horas)
 const EMA_MACRO: usize = 480;
 
-/// Sessions operativas
+/// Sessions operativas — London (08-17), Overlap (13-17), NY (13-22)
 const fn is_operative(s: TradingSession) -> bool {
     matches!(
         s,
@@ -77,6 +77,18 @@ pub struct RbfSignal {
     pub session: TradingSession,
     pub timestamp_ms: i64,
     pub evidence: Vec<String>,
+
+    // ── Campos de contexto adicionales ───────────────────────────────────────
+    /// Veces que el precio tocó el nivel roto antes del breakout (más = rango más confirmado)
+    pub range_touch_count: usize,
+    /// Fase de la sesión al momento del breakout (OpeningRush / Open / Mid / Close)
+    pub session_phase: SessionPhase,
+    /// (precio - VWAP) / VWAP × 100 — positivo = precio sobre VWAP
+    pub price_vs_vwap_pct: Option<f64>,
+    /// Funding rate al momento de entrada (None si no disponible)
+    pub funding_at_entry: Option<f64>,
+    /// Ratio de liquidaciones al momento de entrada (proxy de agresión)
+    pub liq_ratio_pre: f64,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -127,6 +139,10 @@ impl RangeBreakoutState {
         session: TradingSession,
         timestamp_ms: i64,
         cfg: &RangeBreakoutConfig,
+        // Contexto adicional (opcionales, pasados desde el monitor)
+        vwap: Option<f64>,
+        funding_rate: Option<f64>,
+        liq_ratio: f64,
     ) -> Option<RbfSignal> {
         let _ = open; // unused but kept for API clarity
 
@@ -184,6 +200,10 @@ impl RangeBreakoutState {
             return None;
         }
 
+        // Fase de sesión
+        let session_ctx   = crate::session::classify_session(timestamp_ms);
+        let session_phase = session_ctx.phase;
+
         // Régimen macro
         let slope_positive = self.ema480 > self.ema480_prev;
         let above_ema      = close > self.ema480;
@@ -193,6 +213,11 @@ impl RangeBreakoutState {
             (true,  false) => MacroRegime::BullPullback,
             (false, true)  => MacroRegime::BearPullback,
         };
+
+        // Precio vs VWAP
+        let price_vs_vwap_pct = vwap
+            .filter(|v| *v > 0.0)
+            .map(|v| (close - v) / v * 100.0);
 
         // Probar distintas ventanas de rango
         let hist_len = self.history.len();
@@ -222,6 +247,15 @@ impl RangeBreakoutState {
 
             // CVD acumulado dentro del rango
             let cvd_in_range: f64 = window.iter().map(|b| b.delta).sum();
+
+            // Contar touches al nivel que se rompe (barras que tocaron pero cerraron dentro)
+            // Un "touch" = barra cuyo high/low llegó al nivel pero el close se mantuvo dentro
+            let touches_high: usize = window.iter().filter(|b| {
+                b.high >= range_high * 0.999 && b.close < range_high
+            }).count();
+            let touches_low: usize = window.iter().filter(|b| {
+                b.low <= range_low * 1.001 && b.close > range_low
+            }).count();
 
             // ¿La barra actual rompe el rango?
             let breaks_down = close < range_low;
@@ -290,6 +324,8 @@ impl RangeBreakoutState {
                 evidence.push("contra_tendencia".to_string());
             }
 
+            let range_touch_count = if breaks_down { touches_low } else { touches_high };
+
             self.last_signal_bar = self.bars_seen;
             let _ = window_end;
 
@@ -309,6 +345,11 @@ impl RangeBreakoutState {
                 session,
                 timestamp_ms,
                 evidence,
+                range_touch_count,
+                session_phase,
+                price_vs_vwap_pct,
+                funding_at_entry: funding_rate,
+                liq_ratio_pre: liq_ratio,
             });
         }
 

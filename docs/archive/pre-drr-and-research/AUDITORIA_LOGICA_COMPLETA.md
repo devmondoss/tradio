@@ -1,6 +1,8 @@
 # Auditoría de Lógica — FlowSurface Trading System
 ## Verificación completa de correctness antes de agregar nada nuevo
 
+> **Documento historico.** Auditoria previa a fixes y a la decision DRR-only. Usar solo para entender bugs pasados; el estado actual esta en [DRR_PRESENTE_Y_FUTURO.md](../../DRR_PRESENTE_Y_FUTURO.md).
+
 **Fecha:** Mayo 2026  
 **Fuentes:** STRATEGY_COMPLETE_DOCUMENTATION.md + FLOWSURFACE_STRATEGY_PROPOSAL_CLAUDE_CODE.md + logs Railway 00:35-05:06 UTC Mayo 17  
 **Metodología:** Análisis estático de pseudocódigo + evidencia de logs en producción  

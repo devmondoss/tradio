@@ -142,6 +142,16 @@ impl LiqMapTracker {
         // Factor de decaimiento temporal: niveles más viejos pesan menos
         let decay_half_life_ms: i64 = 4 * 60 * 60 * 1000; // 4 horas
 
+        // When OI data is unavailable (oi_at_time == 0), fall back to pure time-decay
+        // so swing levels are still visible (density ≈ 1.0 when fresh, decays to 0 over 4h).
+        let oi_ratio = |oi_at_time: f64| -> f32 {
+            if oi_at_time > 0.0 && ref_oi > 1.0 {
+                (oi_at_time / ref_oi) as f32
+            } else {
+                1.0 // OI not available — use recency as sole weight
+            }
+        };
+
         let mut above: Vec<LiqDensityLevel> = self
             .swing_highs
             .iter()
@@ -150,7 +160,7 @@ impl LiqMapTracker {
                 let age_ms = (now_ms - ts).max(0);
                 let time_factor =
                     (-0.693 * age_ms as f64 / decay_half_life_ms as f64).exp() as f32;
-                let density = ((oi_at_time / ref_oi) as f32 * time_factor).clamp(0.0, 1.0);
+                let density = (oi_ratio(oi_at_time) * time_factor).clamp(0.0, 1.0);
                 LiqDensityLevel { price, density }
             })
             .collect();
@@ -163,7 +173,7 @@ impl LiqMapTracker {
                 let age_ms = (now_ms - ts).max(0);
                 let time_factor =
                     (-0.693 * age_ms as f64 / decay_half_life_ms as f64).exp() as f32;
-                let density = ((oi_at_time / ref_oi) as f32 * time_factor).clamp(0.0, 1.0);
+                let density = (oi_ratio(oi_at_time) * time_factor).clamp(0.0, 1.0);
                 LiqDensityLevel { price, density }
             })
             .collect();

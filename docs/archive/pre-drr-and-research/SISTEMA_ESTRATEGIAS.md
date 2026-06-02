@@ -1,5 +1,7 @@
 # Sistema de Estrategias — FlowSurface
 
+> **Documento historico.** Describe la arquitectura Core/Lab multi-detector vigente antes de DRR-only. Para el estado actual y decisiones futuras usar [DRR_PRESENTE_Y_FUTURO.md](../../DRR_PRESENTE_Y_FUTURO.md).
+
 > Documento de referencia completo. Cubre arquitectura, módulos, condiciones, scoring, gates y estado de implementación.
 > Última actualización: 2026-05-21 (rev 5 — bugs de revisión estrategia corregidos, indicadores UI verificados como completos)
 

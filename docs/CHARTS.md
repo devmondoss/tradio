@@ -12,7 +12,7 @@ El chart más complejo del proyecto. Soporta dos modos (`KlineChartKind`):
 
 **Indicadores disponibles:** ver `docs/INDICATORS.md`.
 
-**Strategy overlay:** ver `docs/STRATEGY.md`.
+**Strategy overlay:** ver [DRR_PRESENTE_Y_FUTURO.md](DRR_PRESENTE_Y_FUTURO.md) para el estado live actual y [DRR_IMPLEMENTACION.md](DRR_IMPLEMENTACION.md) para la bitacora tecnica.
 
 ---
 

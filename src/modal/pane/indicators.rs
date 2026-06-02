@@ -5,7 +5,7 @@ use crate::widget::{column_drag, dragger_row};
 use data::chart::indicator::{Indicator, UiIndicator};
 use iced::{
     Element, Length, padding,
-    widget::{button, column, container, pane_grid, row, space, text},
+    widget::{button, column, container, pane_grid, row, scrollable, space, text},
 };
 
 pub fn view<'a, I>(
@@ -18,17 +18,22 @@ where
     I: Indicator + Copy + Into<UiIndicator>,
 {
     let content_allows_dragging = matches!(state.content, pane::Content::Kline { .. });
+
     let content_row = if let Some(market) = market_type {
-        content_row(pane, selected, market, content_allows_dragging)
+        content_row(pane, state, selected, market, content_allows_dragging)
     } else {
         column![].spacing(4).into()
     };
 
-    container(content_row)
-        .max_width(200)
-        .padding(16)
-        .style(style::chart_modal)
-        .into()
+    container(
+        scrollable(content_row)
+            .height(Length::Shrink)
+    )
+    .max_width(200)
+    .max_height(520)
+    .padding(16)
+    .style(style::chart_modal)
+    .into()
 }
 
 fn build_indicator_row<'a, I>(
@@ -108,8 +113,41 @@ where
         .into()
 }
 
+fn overlay_section<'a>(
+    pane: pane_grid::Pane,
+    cfg: data::chart::kline::Config,
+) -> Element<'a, Message> {
+    let btn = |label: &'static str, active: bool, event: pane::Event| {
+        let content = if active {
+            row![
+                text(label).size(12),
+                space::horizontal(),
+                container(icon_text(Icon::Checkmark, 11)),
+            ]
+            .width(Length::Fill)
+        } else {
+            row![text(label).size(12)].width(Length::Fill)
+        };
+        button(content)
+            .on_press(Message::PaneEvent(pane, event))
+            .width(Length::Fill)
+            .style(move |theme, status| style::button::modifier(theme, status, active))
+    };
+
+    column![
+        container(text("Overlays").size(13)).padding(padding::top(8).bottom(4)),
+        btn("Order Blocks", cfg.show_order_blocks, pane::Event::ToggleOrderBlocks),
+        btn("Fair Value Gaps", cfg.show_fvgs, pane::Event::ToggleFvgs),
+        btn("Structure", cfg.show_structure, pane::Event::ToggleStructure),
+        btn("Liquidations", cfg.show_liq_events, pane::Event::ToggleLiqEvents),
+    ]
+    .spacing(4)
+    .into()
+}
+
 fn content_row<'a, I>(
     pane: pane_grid::Pane,
+    state: &'a pane::State,
     selected: &[I],
     market: exchange::adapter::MarketKind,
     allows_drag: bool,
@@ -136,12 +174,27 @@ where
         None
     };
 
+    // Overlay toggles — only shown for Kline/Candles charts
+    let overlay_cfg = if let pane::Content::Kline {
+        chart: Some(chart),
+        kind: data::chart::KlineChartKind::Candles,
+        ..
+    } = &state.content
+    {
+        Some(chart.config)
+    } else {
+        None
+    };
+
     let mut col = iced::widget::Column::new();
     if let Some(sel) = selected_list {
         col = col.push(sel);
     }
     if let Some(avail) = available_list {
         col = col.push(avail);
+    }
+    if let Some(cfg) = overlay_cfg {
+        col = col.push(overlay_section(pane, cfg));
     }
 
     column![

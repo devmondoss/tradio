@@ -194,7 +194,10 @@ ss.timestamp_ms = mw.candle_open_ms
 - 5 índices nuevos (session, range_location, absorption, dow_hour, playbook)
 - Vista `v_signals_with_outcomes` actualizada con todos los campos + buckets de segmentación
 
-### `docs/migration_micro_windows.sql`
+### Migracion `micro_windows`
+
+SQL ejecutado en Supabase SQL Editor durante la sesion. El archivo temporal `docs/migration_micro_windows.sql` ya no debe tratarse como fuente canonica versionada.
+
 - Tabla `micro_windows` con 50+ columnas
 - 4 índices
 - Vista `v_micro_with_outcomes` — une micro_windows + shadow_signals + signal_outcomes

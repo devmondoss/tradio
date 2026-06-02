@@ -345,7 +345,9 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub show_structure: bool,
     #[serde(default = "default_true")]
-    pub show_liq_map: bool,
+    pub show_liq_events: bool,
+    #[serde(default)]
+    pub show_scalping_panel: bool,
 }
 
 fn default_true() -> bool {
@@ -365,7 +367,8 @@ impl Default for Config {
             show_order_blocks: true,
             show_fvgs: true,
             show_structure: true,
-            show_liq_map: true,
+            show_liq_events: true,
+            show_scalping_panel: false,
         }
     }
 }

@@ -1,8 +1,10 @@
 # Estado Actual del Sistema — FlowSurface Monitor
 
+> **Documento historico.** Este estado corresponde a la fase previa a DRR-only. Para el presente operativo usar [DRR_PRESENTE_Y_FUTURO.md](../../DRR_PRESENTE_Y_FUTURO.md) y [ESTADO_CHECKLIST.md](../../ESTADO_CHECKLIST.md).
+
 **Última actualización:** Mayo 2026
 
-> **🆕 2026-05-20**: Migración a operación **local con MongoDB**. La UI ahora corre el pipeline completo de detección + persistencia + config dinámica por régimen — paridad funcional con el monitor de Railway, más visualización en tiempo real. Doc canónica: [LOCAL_MONGO_SETUP.md](LOCAL_MONGO_SETUP.md).
+> **🆕 2026-05-20**: Migración a operación **local con MongoDB**. La UI ahora corre el pipeline completo de detección + persistencia + config dinámica por régimen — paridad funcional con el monitor de Railway, más visualización en tiempo real. Doc canónica: [LOCAL_MONGO_SETUP.md](../../LOCAL_MONGO_SETUP.md).
 
 Este documento describe el estado real y funcional del sistema después de todos los fixes y mejoras aplicados. Es la referencia autoritativa para entender qué hace cada componente y cómo está configurado en producción.
 
@@ -484,5 +486,3 @@ Todos implementados (verificado 2026-05-21).
 | `88b651e` | Dockerfile: builder rust:1.95-slim                                     |
 | `eac7221` | Dockerfile: runtime debian:trixie-slim (fix GLIBC 2.38)                |
 | —         | fix: progress_to_target, router tie-break, scale NaN, Bybit is_sell, atomic write, Dockerfile fail-fast, Supabase partial index |
-
-

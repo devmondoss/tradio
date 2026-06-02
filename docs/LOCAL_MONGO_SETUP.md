@@ -1,7 +1,7 @@
-# Setup Local + MongoDB (migración desde Railway/Supabase)
+# Setup Local + MongoDB
 
-**Fecha de migración**: 2026-05-20
-**Estado**: ✅ Operativo en local — paridad funcional con el monitor de Railway, más visualización en tiempo real.
+**Fecha de escritura**: 2026-05-20  
+**Estado actual (2026-05-29)**: El monitor de producción corre en **Railway + Supabase** (headless, 24/7). MongoDB local es para desarrollo: permite correr el binario `flowsurface` (UI) con detección activa sin depender de Railway. Ambos modos usan el mismo crate `data/`.
 
 ---
 
@@ -13,7 +13,7 @@ El sistema que corría 24/7 headless en Railway con Supabase ahora corre **dentr
 ANTES (Railway, headless)                       AHORA (local, con UI)
 ─────────────────────────                       ─────────────────────
 Railway servidor 24/7                           Tu PC
-└─ monitor (Rust headless)                      ├─ MongoDB localhost:27017
+└─ monitor (Rust headless)                      ├─ MongoDB localhost:27018
    ├─ Binance WebSocket                         └─ Flowsurface UI (iced)
    ├─ 8 detectores @ bar close                     ├─ Binance WebSocket   (mismo)
    ├─ ESCRIBE → Supabase shadow_signals             ├─ 8 detectores @ bar close   (mismo código)

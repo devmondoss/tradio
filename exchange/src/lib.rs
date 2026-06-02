@@ -581,6 +581,18 @@ pub struct Trade {
     pub qty: Qty,
 }
 
+/// A single forced-liquidation event from the `@forceOrder` stream.
+#[derive(Debug, Clone, Copy)]
+pub struct Liquidation {
+    pub time:        UnixMs,
+    pub price:       Price,
+    /// Quantity in base units (BTC for BTCUSDT).
+    pub qty:         Qty,
+    /// `true` = long position was liquidated (Binance sends `"S":"SELL"`).
+    /// `false` = short position was liquidated (`"S":"BUY"`).
+    pub is_long_liq: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Kline {
     pub time: UnixMs,

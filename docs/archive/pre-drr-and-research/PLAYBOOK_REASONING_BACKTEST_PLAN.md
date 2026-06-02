@@ -1,5 +1,7 @@
 # Playbook Reasoning para Backtesting
 
+> **Documento de referencia historica.** El reasoning sigue siendo util para analisis, pero el plan operativo actual de DRR esta en [DRR_PRESENTE_Y_FUTURO.md](../../DRR_PRESENTE_Y_FUTURO.md).
+
 Plan para agregar una capa de razonamiento hardcodeado sobre las senales del
 motor de estrategias, sin bloquear ni modificar el comportamiento actual en la
 fase inicial.

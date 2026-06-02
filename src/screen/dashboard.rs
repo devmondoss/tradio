@@ -1202,6 +1202,50 @@ impl Dashboard {
         }
     }
 
+    /// Route forced-liquidation events to kline charts whose ticker matches.
+    /// Route forced-liquidation events to kline charts whose ticker matches.
+    pub fn ingest_liquidations(
+        &mut self,
+        ticker_info: exchange::TickerInfo,
+        events: &[exchange::Liquidation],
+        main_window: window::Id,
+    ) {
+        // Match against panes that have this ticker active (any stream kind)
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, pane_state)| {
+                if pane_state.stream_pair() == Some(ticker_info) {
+                    if let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content {
+                        c.on_liquidations(events);
+                    }
+                }
+            });
+    }
+
+    /// Returns TickerInfo for all active LinearPerps kline panes.
+    /// Used to subscribe to `@forceOrder` streams.
+    pub fn active_liquidation_tickers(
+        &self,
+        main_window: window::Id,
+    ) -> Vec<exchange::TickerInfo> {
+        use std::collections::HashSet;
+        let mut seen: HashSet<exchange::TickerInfo> = HashSet::new();
+        let mut result = Vec::new();
+
+        self.iter_all_panes(main_window)
+            .for_each(|(_, _, pane_state)| {
+                if matches!(pane_state.content, pane::Content::Kline { .. }) {
+                    if let Some(ti) = pane_state.stream_pair() {
+                        if ti.ticker.market_type() == exchange::adapter::MarketKind::LinearPerps
+                            && seen.insert(ti)
+                        {
+                            result.push(ti);
+                        }
+                    }
+                }
+            });
+        result
+    }
+
     pub fn invalidate_all_panes(&mut self, main_window: window::Id) {
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, state)| {

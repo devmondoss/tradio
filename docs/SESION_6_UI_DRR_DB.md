@@ -53,7 +53,7 @@ Sistema arranca en cero el 2026-05-29. Todos los datos que entren de aquí en ad
 
 ### 4. Migraciones SQL ejecutadas
 
-**Problema:** `migration_micro_windows.sql` tenía la vista `v_micro_with_outcomes` con errores:
+**Problema:** la migracion temporal de `micro_windows` tenía la vista `v_micro_with_outcomes` con errores:
 - `ss.symbol` — columna inexistente en `shadow_signals`
 - `ss.entry_type`, `ss.session_name`, etc. — columnas que solo existen después de `migration_drr.sql`
 
@@ -61,7 +61,7 @@ Sistema arranca en cero el 2026-05-29. Todos los datos que entren de aquí en ad
 
 **Orden de ejecución (importante):**
 1. `supabase/migration_drr.sql` primero — agrega 30 columnas a shadow_signals
-2. `docs/migration_micro_windows.sql` segundo — crea micro_windows + vista
+2. SQL de `micro_windows` segundo — crea `micro_windows` + vista
 
 **Después:** `v_micro_with_outcomes` recreada con `DROP VIEW + CREATE VIEW` para incluir las columnas DRR (session_name, absorption_count, entry_type).
 

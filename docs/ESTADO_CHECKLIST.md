@@ -195,7 +195,7 @@ Lab
 | Estado | Archivo |
 |--------|---------|
 | ✅ | `supabase/migration_drr.sql` — 30 columnas DRR + reasoning + 5 índices + vista actualizada ✅ ejecutado 2026-05-29 |
-| ✅ | `docs/migration_micro_windows.sql` — tabla `micro_windows` + vista `v_micro_with_outcomes` ✅ ejecutado 2026-05-29 |
+| ✅ | Migracion `micro_windows` — tabla `micro_windows` + vista `v_micro_with_outcomes` ejecutadas en Supabase SQL Editor ✅ 2026-05-29 |
 | ✅ | `v_micro_with_outcomes` recreada con `DROP + CREATE` — incluye session_name, absorption_count, entry_type ✅ 2026-05-29 |
 | ✅ | DB limpieza completa — datos pre-DRR borrados (13 señales viejas), sistema arranca limpio |
 | ✅ | `micro_windows` acumulando — verificado 2 rows a los 23 min del primer deploy |

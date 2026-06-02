@@ -1,6 +1,6 @@
 # Arquitectura General de Flowsurface
 
-**Última actualización:** Mayo 2026
+**Última actualización:** 2026-05-29
 
 ---
 
@@ -149,12 +149,15 @@ route_strategy(ctx, cfg):
   2. if atr < $1.0   → Wait (ATR_NOT_READY)
   3. toxic_flow_gate → si falla → Blocked
   4. session filter  → descarta detectores fuera de horario válido
-  5. run detectors:  VAFA, LVN, DIB, SOB, OBR, FAR, VWAP → siempre
-                     LIQ, FER, SMD → solo si ctx.institutional.is_some()
+  5. run detectors:  todos los detectores pasan por subdimi_detector_allowed()
+                     → solo DeltaRangeReversal puede emitir señal (DRR-only mode)
+                     → VAFA, LVN, DIB, SOB, OBR, FAR, VWAP, LIQ, FER, SMD → SUBDIMI_ONLY_DISABLED
   6. score candidatos → best = max by score
   7. if best.score ≥ min_score → ShadowSignal
      else → Wait con LOW_SCORE
 ```
+
+**Modo producción actual (2026-05-29):** `subdimi_detector_allowed()` solo permite `DeltaRangeReversal`. Los demás detectores están en el codebase pero no compiten. Subdimi Parallel corre los 6 detectores anteriores en paralelo sin winner-takes-all y escribe a `lab_signals`.
 
 #### Paper Trader
 
@@ -369,13 +372,19 @@ CMD ["monitor"]
 
 ### Supabase (cloud storage)
 
-Tablas activas (schema en `docs/reset.sql`):
+Tablas activas — ver `ESTADO_CHECKLIST.md` para el schema completo:
 
-| Tabla              | Descripción                                         |
-|--------------------|-----------------------------------------------------|
-| `shadow_signals`   | Una fila por señal emitida (ShadowSignal o Blocked) |
-| `paper_trades`     | Una fila por trade cerrado con PnL completo         |
-| `deployed_params`  | Config calibrada por regime (si hay calibración)    |
+| Tabla                    | Descripción                                                    |
+|--------------------------|----------------------------------------------------------------|
+| `shadow_signals`         | Señales DRR con 30 campos de contexto/calibración             |
+| `signal_outcomes`        | Trades cerrados con R multiple, MFE, MAE                      |
+| `lab_signals`            | Señales Subdimi Parallel (observación, sin paper trading)      |
+| `micro_windows`          | Micro-dinámica por vela M5 — 288 rows/día                      |
+| `regime_history`         | Cambios de régimen (timestamp, valor, ATR)                     |
+| `institutional_snapshots`| Snapshots institucionales                                      |
+| `deployed_params`        | Config activa por régimen                                      |
+| `v_signals_with_outcomes`| Vista principal de análisis (shadow_signals + signal_outcomes) |
+| `v_micro_with_outcomes`  | Vista micro_windows + shadow_signals + signal_outcomes         |
 
 ### Local (desarrollo)
 

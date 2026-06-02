@@ -11,11 +11,14 @@ use super::plot::AnySeries;
 
 pub mod atr;
 pub mod cumulative_delta;
+pub mod cvd_large;
 pub mod funding_rate;
+pub mod market_pressure;
 pub mod oi_delta;
 pub mod oi_zscore;
 pub mod open_interest;
 pub mod relative_volume;
+pub mod speed_of_tape;
 pub mod volume;
 pub mod volume_profile;
 pub mod vwap;
@@ -276,6 +279,15 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
         KlineIndicator::Atr => Box::new(super::kline::atr::AtrIndicator::new()),
         KlineIndicator::RelativeVolume => {
             Box::new(super::kline::relative_volume::RelativeVolumeIndicator::new())
+        }
+        KlineIndicator::SpeedOfTape => {
+            Box::new(super::kline::speed_of_tape::SpeedOfTapeIndicator::new())
+        }
+        KlineIndicator::CvdLarge => {
+            Box::new(super::kline::cvd_large::CvdLargeIndicator::new())
+        }
+        KlineIndicator::MarketPressure => {
+            Box::new(super::kline::market_pressure::MarketPressureIndicator::new())
         }
     }
 }

@@ -216,6 +216,9 @@ impl Flowsurface {
                                 event: msg,
                             });
                     }
+                    exchange::Event::LiquidationsReceived(ticker_info, events) => {
+                        dashboard.ingest_liquidations(ticker_info, &events, main_window_id);
+                    }
                 }
             }
             Message::Tick(now) => {
@@ -743,6 +746,24 @@ impl Flowsurface {
             .market_subscriptions(&self.handles)
             .map(Message::MarketWsEvent);
 
+        // Liquidation streams — one per active LinearPerps ticker
+        let liq_streams = self
+            .active_dashboard()
+            .active_liquidation_tickers(self.main_window.id)
+            .into_iter()
+            .map(|ticker_info| {
+                let config = exchange::adapter::StreamConfig::new(
+                    ticker_info,
+                    ticker_info.exchange(),
+                    None,
+                    exchange::PushFrequency::ServerDefault,
+                );
+                let data = (self.handles.clone(), config);
+                Subscription::run_with(data, |data| data.0.liquidation_stream(&data.1))
+                    .map(Message::MarketWsEvent)
+            })
+            .collect::<Vec<_>>();
+
         let tick = iced::window::frames().map(Message::Tick);
 
         let hotkeys = keyboard::listen().filter_map(|event| {
@@ -755,13 +776,11 @@ impl Flowsurface {
             }
         });
 
-        Subscription::batch(vec![
-            exchange_streams,
-            sidebar,
-            window_events,
-            tick,
-            hotkeys,
-        ])
+        let mut subs = vec![exchange_streams, sidebar, window_events, tick, hotkeys];
+        if !liq_streams.is_empty() {
+            subs.push(Subscription::batch(liq_streams));
+        }
+        Subscription::batch(subs)
     }
 
     fn active_dashboard(&self) -> &Dashboard {

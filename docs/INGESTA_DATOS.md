@@ -1,7 +1,7 @@
 # FlowSurface — Ingesta de Datos
 
 > Referencia completa de todas las fuentes de datos externas: WebSockets, REST APIs, contratos de datos, structs de configuración Rust y esquema de escritura a Supabase.
-> Última actualización: 2026-05-19 (rev 2 — sección 13: raw vs derivado con fórmulas)
+> Última actualización: 2026-05-29 (rev 3 — eliminado LAB_ENABLED; ver DRR_IMPLEMENTACION.md para schema Supabase actual)
 
 ---
 
@@ -69,7 +69,6 @@
 | `TIMEFRAME_MIN` | `5` | Intervalo de barras en minutos (1/3/5/15/30/60) | `main.rs` |
 | `SUPABASE_URL` | — | URL del proyecto Supabase (e.g. `https://xyz.supabase.co`) | `config_loader.rs`, `supabase_writer.rs` |
 | `SUPABASE_KEY` | — | API key (anon o service_role) | `config_loader.rs`, `supabase_writer.rs` |
-| `LAB_ENABLED` | `false` | Activa el Strategy Lab | `data/src/strategy/lab/types.rs` |
 | `RUST_BACKTRACE` | `1` | Backtrace en panics (Railway) | `run.bat` |
 
 Si `SUPABASE_URL` o `SUPABASE_KEY` no están definidas, el sistema arranca en modo local silencioso: usa `StrategyConfig::default()` y no escribe señales.
@@ -518,10 +517,11 @@ Headers:
 | `shadow_signals` | Señal Core emitida | strategy, side, entry, stop, target, score, snapshot |
 | `signal_outcomes` | Trade Core cerrado | signal_id, final_r, final_status, mfe, mae |
 | `regime_history` | Cambio de regime | regime, atr, timestamp_ms |
-| `lab_signals` | Cada barra M5 × 5 detectores | **id** (UUID Rust), strategy_id, status, maturity, snapshot (JSONB) |
-| `lab_outcomes` | Outcome Lab resuelto | signal_id (FK → lab_signals.id), outcome_5m/15m/ttl, mfe, mae, final_status |
+| `lab_signals` | Señal Subdimi Parallel (observación) | **id** (UUID Rust), strategy_id, status, `maturity='SubdimiParallel'`, snapshot (JSONB) |
+| `micro_windows` | Cada vela M5 cerrada | candle_open_ms, shape features, DRR context — 288 rows/día |
+| ~~`lab_outcomes`~~ | *(legacy — Lab eliminado 2026-05-29, sin uso)* | — |
 
-**Nota FK**: `lab_signals` recibe `"id": signal.signal_id` en el body para que Supabase use el UUID de Rust como PK — garantiza que `lab_outcomes.signal_id` referencie correctamente la fila.
+**Nota FK**: `lab_signals` recibe `"id": signal.signal_id` en el body para que Supabase use el UUID de Rust como PK.
 
 ---
 

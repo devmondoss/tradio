@@ -7,10 +7,10 @@ use crate::strategy::types::DataQuality;
 // ── Parameters (doc section 9 — calibrated starting points) ──────────────────
 
 /// Rolling window of historical bars used for range detection.
-const WINDOW_BARS: usize = 80;
+const WINDOW_BARS: usize = 36;
 
 /// Minimum bars whose close fell inside [range_low, range_high] to consider the range valid.
-const MIN_BARS_INSIDE: usize = 20;
+const MIN_BARS_INSIDE: usize = 12;
 
 /// Minimum total touches on both extremes combined.
 const MIN_TOUCHES_TOTAL: usize = 3;

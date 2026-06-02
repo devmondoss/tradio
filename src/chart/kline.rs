@@ -213,6 +213,10 @@ pub struct KlineChart {
     /// Posición actual del panel de scalping en coordenadas de bounds (top-left origin).
     scalping_panel_x: f32,
     scalping_panel_y: f32,
+    /// RangeBreakoutFlow detector state — se actualiza en cada cierre de barra.
+    rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState,
+    /// Última señal RBF activa — se muestra en el overlay hasta que el precio toca SL o TP.
+    rbf_active_signal: Option<data::strategy::detectors::range_breakout_flow::RbfSignal>,
     pub config: data::chart::kline::Config,
     outcome_tracker: crate::strategy::tracker::OutcomeTracker,
     paper_account: crate::strategy::paper::PaperAccount,
@@ -422,6 +426,7 @@ struct DetectorBootstrap {
     range_detector: data::detectors::RangeDetector,
     range_context: Option<data::detectors::RangeContext>,
     scalping_state: data::strategy::scalping::ScalpingState,
+    rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState,
 }
 
 fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
@@ -430,9 +435,9 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
     let mut fvg_detector = data::detectors::FvgDetector::new(100);
     let mut range_detector = data::detectors::RangeDetector::new();
 
-    // Calentar el scalping state con las klines históricas para que DZ, VR y
-    // cvd_slope tengan valores reales desde el primer bar live (no zeros de warmup).
+    // Calentar el scalping state y el RBF state con klines históricas.
     let mut scalping_state = data::strategy::scalping::ScalpingState::new(25);
+    let mut rbf_state = data::strategy::detectors::range_breakout_flow::RangeBreakoutState::new();
     for kline in klines {
         let o = kline.open.to_f32() as f64;
         let h = kline.high.to_f32() as f64;
@@ -444,11 +449,15 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
         ob_detector.push_bar(o, h, l, c, v, ts);
         fvg_detector.push_bar(h, l, ts);
         range_detector.push_bar(h, l, c);
-        // delta estimado del OHLC (proxy; aggTrades no están disponibles en el bootstrap)
         let body = c - o;
         let estimated_delta = body * v / (h - l + 1e-9);
         let session = data::session::classify_session(ts).session;
         scalping_state.on_bar_close(c, estimated_delta, v, h, l, session);
+        // Calentamos el RBF pero descartamos señales del bootstrap
+        let _ = rbf_state.on_bar_close(
+            o, h, l, c, v, estimated_delta, session, ts,
+            &Default::default(), None, None, 0.0,
+        );
     }
 
     let last_price = klines
@@ -497,6 +506,7 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
         range_detector,
         range_context,
         scalping_state,
+        rbf_state,
     }
 }
 
@@ -625,6 +635,8 @@ impl KlineChart {
                     scalping_state: boot.scalping_state,
                     scalping_panel_x: 8.0,
                     scalping_panel_y: 8.0,
+                    rbf_state: boot.rbf_state,
+                    rbf_active_signal: None,
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
@@ -720,6 +732,8 @@ impl KlineChart {
                     scalping_state: boot.scalping_state,
                     scalping_panel_x: 8.0,
                     scalping_panel_y: 8.0,
+                    rbf_state: boot.rbf_state,
+                    rbf_active_signal: None,
                     config,
                     outcome_tracker: crate::strategy::tracker::OutcomeTracker::new(),
                     paper_account: crate::strategy::paper::PaperAccount::load_or_new(),
@@ -2148,6 +2162,45 @@ impl KlineChart {
                 };
                 self.scalping_hud.trades = trades[start..].iter().rev().map(&snap_fn).collect();
                 self.scalping_hud.all_trades = trades.iter().rev().map(&snap_fn).collect();
+            }
+        }
+
+        // ── RangeBreakoutFlow detector ────────────────────────────────────────
+        {
+            let session_rbf = data::session::classify_session(bar_ts_ms).session;
+            let bar_delta_rbf = ctx.flow.delta.unwrap_or(0.0);
+            let vol_rbf = ctx.flow.buy_volume.unwrap_or(0.0)
+                + ctx.flow.sell_volume.unwrap_or(0.0);
+
+            // Invalidar señal activa si el precio tocó stop o target
+            if let Some(ref sig) = self.rbf_active_signal {
+                use data::strategy::detectors::range_breakout_flow::RbfDirection;
+                let hit_stop = match sig.direction {
+                    RbfDirection::Short => bar_close >= sig.stop_price,
+                    RbfDirection::Long  => bar_close <= sig.stop_price,
+                };
+                let hit_target = match sig.direction {
+                    RbfDirection::Short => bar_close <= sig.target_price,
+                    RbfDirection::Long  => bar_close >= sig.target_price,
+                };
+                if hit_stop || hit_target {
+                    self.rbf_active_signal = None;
+                }
+            }
+
+            let vwap_rbf = ctx.vwap.vwap_session;
+            let fund_rbf = ctx.flow.funding_rate;
+            if let Some(new_sig) = self.rbf_state.on_bar_close(
+                bar_open, bar_high, bar_low, bar_close,
+                vol_rbf, bar_delta_rbf,
+                session_rbf,
+                bar_ts_ms,
+                &cfg.range_breakout,
+                vwap_rbf,
+                fund_rbf,
+                0.0, // liq_ratio no disponible en UI local
+            ) {
+                self.rbf_active_signal = Some(new_sig);
             }
         }
 
@@ -4001,6 +4054,117 @@ impl KlineChart {
         }
     }
 
+    fn draw_rbf_overlay(
+        sig: &data::strategy::detectors::range_breakout_flow::RbfSignal,
+        frame: &mut canvas::Frame,
+        price_to_y: impl Fn(f64) -> f32,
+        region: Rectangle,
+    ) {
+        use data::strategy::detectors::range_breakout_flow::RbfDirection;
+
+        let is_short = matches!(sig.direction, RbfDirection::Short);
+        let line_w   = region.x + region.width;
+        let dash     = LineDash { segments: &[6.0, 4.0], offset: 0 };
+
+        // Colores — naranja/ámbar para distinguir de scalping (verde/rojo)
+        let entry_col  = Color::from_rgba(0.95, 0.65, 0.10, 0.95); // ámbar
+        let stop_col   = Color::from_rgba(0.90, 0.25, 0.25, 0.80);
+        let target_col = Color::from_rgba(0.25, 0.85, 0.55, 0.80);
+        let range_col  = Color::from_rgba(0.95, 0.65, 0.10, 0.07); // relleno rango tenue
+
+        // Zona del rango de consolidación previo (contexto visual)
+        let rh_y = price_to_y(sig.range_high);
+        let rl_y = price_to_y(sig.range_low);
+        if rh_y.is_finite() && rl_y.is_finite() {
+            let top = f32::min(rh_y, rl_y);
+            let h   = (rh_y - rl_y).abs();
+            frame.fill_rectangle(Point::new(0.0, top), Size::new(line_w, h), range_col);
+            // Borde superior e inferior del rango
+            frame.stroke(
+                &canvas::Path::line(Point::new(0.0, rh_y), Point::new(line_w, rh_y)),
+                canvas::Stroke { width: 0.8, line_dash: dash, ..Default::default() }
+                    .with_color(Color::from_rgba(0.95, 0.65, 0.10, 0.40)),
+            );
+            frame.stroke(
+                &canvas::Path::line(Point::new(0.0, rl_y), Point::new(line_w, rl_y)),
+                canvas::Stroke { width: 0.8, line_dash: dash, ..Default::default() }
+                    .with_color(Color::from_rgba(0.95, 0.65, 0.10, 0.40)),
+            );
+        }
+
+        let entry_y  = price_to_y(sig.entry_price);
+        let stop_y   = price_to_y(sig.stop_price);
+        let target_y = price_to_y(sig.target_price);
+
+        // Zona profit (entry → target)
+        if entry_y.is_finite() && target_y.is_finite() {
+            let top = f32::min(entry_y, target_y);
+            let h   = (entry_y - target_y).abs();
+            frame.fill_rectangle(
+                Point::new(0.0, top), Size::new(line_w, h),
+                Color::from_rgba(0.20, 0.80, 0.40, 0.10),
+            );
+        }
+        // Zona riesgo (entry → stop)
+        if entry_y.is_finite() && stop_y.is_finite() {
+            let top = f32::min(entry_y, stop_y);
+            let h   = (entry_y - stop_y).abs();
+            frame.fill_rectangle(
+                Point::new(0.0, top), Size::new(line_w, h),
+                Color::from_rgba(0.90, 0.25, 0.25, 0.10),
+            );
+        }
+
+        // Línea Entry
+        if entry_y.is_finite() {
+            frame.stroke(
+                &canvas::Path::line(Point::new(0.0, entry_y), Point::new(line_w, entry_y)),
+                canvas::Stroke::default().with_color(entry_col).with_width(1.8),
+            );
+            frame.fill_text(canvas::Text {
+                content: format!("RBF {} {:.1}  rng{:.2}% vr{:.1}x",
+                    if is_short { "SHORT" } else { "LONG" },
+                    sig.entry_price, sig.range_pct, sig.vr_at_breakout),
+                position: Point::new(region.x + 6.0, entry_y - 13.0),
+                color: entry_col,
+                size: iced::Pixels(10.5),
+                ..canvas::Text::default()
+            });
+        }
+
+        // Stop
+        if stop_y.is_finite() {
+            frame.stroke(
+                &canvas::Path::line(Point::new(0.0, stop_y), Point::new(line_w, stop_y)),
+                canvas::Stroke { width: 1.2, line_dash: dash, ..Default::default() }
+                    .with_color(stop_col),
+            );
+            frame.fill_text(canvas::Text {
+                content: format!("SL {:.1}", sig.stop_price),
+                position: Point::new(region.x + 6.0, stop_y + 2.0),
+                color: stop_col,
+                size: iced::Pixels(10.0),
+                ..canvas::Text::default()
+            });
+        }
+
+        // Target
+        if target_y.is_finite() {
+            frame.stroke(
+                &canvas::Path::line(Point::new(0.0, target_y), Point::new(line_w, target_y)),
+                canvas::Stroke { width: 1.2, line_dash: dash, ..Default::default() }
+                    .with_color(target_col),
+            );
+            frame.fill_text(canvas::Text {
+                content: format!("TP {:.1}  ({:.1}R)", sig.target_price, sig.rr),
+                position: Point::new(region.x + 6.0, target_y - 11.0),
+                color: target_col,
+                size: iced::Pixels(10.0),
+                ..canvas::Text::default()
+            });
+        }
+    }
+
     fn draw_strategy_overlay(
         signals: &[StrategySignal],
         frame: &mut canvas::Frame,
@@ -4461,6 +4625,20 @@ impl canvas::Program<Message> for KlineChart {
                     |price| chart.price_to_y(exchange::unit::Price::from_f32(price as f32)),
                     region,
                 );
+            }
+
+            // RangeBreakoutFlow overlay — muestra la señal activa mientras no toque SL/TP
+            if self.strategy_overlay_enabled
+                && matches!(self.kind, KlineChartKind::Candles)
+            {
+                if let Some(ref sig) = self.rbf_active_signal {
+                    Self::draw_rbf_overlay(
+                        sig,
+                        frame,
+                        |price| chart.price_to_y(exchange::unit::Price::from_f32(price as f32)),
+                        region,
+                    );
+                }
             }
 
             // Overlay de estrategia solo en Candlestick (mismo criterio que

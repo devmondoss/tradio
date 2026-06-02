@@ -22,6 +22,13 @@ pub enum KlineIndicator {
     VolumeProfile,
     Atr,
     RelativeVolume,
+    // ── New order flow indicators ──────────────────────────────────────────
+    /// Tape activity — normalized trade count per bar with anomaly detection.
+    SpeedOfTape,
+    /// Large-trade delta — cumulative delta of trades above adaptive size threshold.
+    CvdLarge,
+    /// Market pressure — exponential-decay smoothed taker imbalance [-100, +100].
+    MarketPressure,
 }
 
 impl Indicator for KlineIndicator {
@@ -37,16 +44,19 @@ impl KlineIndicator {
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 6] = [
+    const FOR_SPOT: [KlineIndicator; 9] = [
         KlineIndicator::Volume,
         KlineIndicator::RelativeVolume,
         KlineIndicator::CumulativeDelta,
         KlineIndicator::Vwap,
         KlineIndicator::VolumeProfile,
         KlineIndicator::Atr,
+        KlineIndicator::SpeedOfTape,
+        KlineIndicator::CvdLarge,
+        KlineIndicator::MarketPressure,
     ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 10] = [
+    const FOR_PERPS: [KlineIndicator; 13] = [
         KlineIndicator::Volume,
         KlineIndicator::RelativeVolume,
         KlineIndicator::CumulativeDelta,
@@ -57,22 +67,28 @@ impl KlineIndicator {
         KlineIndicator::Vwap,
         KlineIndicator::VolumeProfile,
         KlineIndicator::Atr,
+        KlineIndicator::SpeedOfTape,
+        KlineIndicator::CvdLarge,
+        KlineIndicator::MarketPressure,
     ];
 }
 
 impl Display for KlineIndicator {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            KlineIndicator::Volume => write!(f, "Volume"),
+            KlineIndicator::Volume         => write!(f, "Volume"),
             KlineIndicator::CumulativeDelta => write!(f, "CVD"),
-            KlineIndicator::OpenInterest => write!(f, "Open Interest"),
-            KlineIndicator::OiDelta => write!(f, "OI Delta"),
-            KlineIndicator::OiZScore => write!(f, "OI Z-Score"),
-            KlineIndicator::FundingRate => write!(f, "Funding Rate"),
-            KlineIndicator::Vwap => write!(f, "VWAP"),
-            KlineIndicator::VolumeProfile => write!(f, "Vol Profile"),
-            KlineIndicator::Atr => write!(f, "ATR"),
+            KlineIndicator::OpenInterest   => write!(f, "Open Interest"),
+            KlineIndicator::OiDelta        => write!(f, "OI Delta"),
+            KlineIndicator::OiZScore       => write!(f, "OI Z-Score"),
+            KlineIndicator::FundingRate    => write!(f, "Funding Rate"),
+            KlineIndicator::Vwap           => write!(f, "VWAP"),
+            KlineIndicator::VolumeProfile  => write!(f, "Vol Profile"),
+            KlineIndicator::Atr            => write!(f, "ATR"),
             KlineIndicator::RelativeVolume => write!(f, "Rel Volume"),
+            KlineIndicator::SpeedOfTape    => write!(f, "Speed of Tape"),
+            KlineIndicator::CvdLarge       => write!(f, "CVD Large"),
+            KlineIndicator::MarketPressure => write!(f, "Market Pressure"),
         }
     }
 }

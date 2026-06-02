@@ -539,6 +539,8 @@ pub enum Event {
     DepthReceived(StreamKind, UnixMs, Arc<Depth>),
     TradesReceived(StreamKind, UnixMs, Box<[Trade]>),
     KlineReceived(StreamKind, Kline),
+    /// Forced-liquidation events from `@forceOrder` stream.
+    LiquidationsReceived(crate::TickerInfo, Box<[crate::Liquidation]>),
 }
 
 #[derive(Debug, Clone, Hash)]

@@ -1,5 +1,7 @@
 # Subdimi-only + Playbook Reasoning - Implementacion
 
+> **Documento historico.** Registra el paso intermedio Subdimi-only del 2026-05-24. El estado live actual es DRR-only; ver [DRR_PRESENTE_Y_FUTURO.md](../../DRR_PRESENTE_Y_FUTURO.md).
+
 Fecha de trabajo: 2026-05-24 (America/Lima)
 
 Este documento registra lo que se cambio realmente en el codigo, que comportamiento queda activo, que queda solo como observacion para backtesting y que pasos operativos faltan para que produccion refleje el cambio.

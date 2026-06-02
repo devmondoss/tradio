@@ -290,12 +290,12 @@ python scripts/analyze_outcomes.py --test       # datos sintéticos (verificaci�
 
 ## Docs relacionados
 
-- `docs/STRATEGY.md` — referencia completa del strategy module (detectores, scoring, gates)
+- `docs/DRR_PRESENTE_Y_FUTURO.md` — referencia canonica del estado live actual de DRR
 - `docs/ARQUITECTURA.md` — arquitectura general del proyecto
 - `docs/CHARTS.md` — sistema de charts y rendering
 - `docs/RENDERING.md` — pipeline de rendering canvas
 - `docs/DATOS.md` — fuentes de datos y adaptadores de exchange
 - `docs/BUILD.md` — setup de compilación y toolchain
 - `docs/BUGS_Y_FIXES.md` — historial de bugs y cómo se resolvieron
-- `docs/PENDIENTE.md` — backlog detallado con notas de diseño
+- `docs/README.md` — indice canonico de documentacion vigente e historica
 - `docs/DETECTOR_SOURCE.md` — fuentes y referencias de los detectores

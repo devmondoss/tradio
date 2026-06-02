@@ -1,6 +1,8 @@
 # FlowSurface — Plan de Implementación
 ## Strategy Lab + Core Engine v2
 
+> **Documento historico.** Este plan fue superado por la fase DRR-only del 2026-05-29. No usarlo como backlog actual; ver [DRR_PRESENTE_Y_FUTURO.md](../../DRR_PRESENTE_Y_FUTURO.md).
+
 > Documento para Claude Code. Actualizado: Mayo 2026.
 > Capital: $300. Par: BTCUSDT Perp Binance. Modo: Shadow/Paper únicamente.
 

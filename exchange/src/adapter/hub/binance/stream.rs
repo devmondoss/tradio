@@ -919,3 +919,88 @@ pub fn connect_depth_stream(
         }
     })
 }
+
+// ── Force-order (liquidation) stream ─────────────────────────────────────────
+
+/// Subscribes to Binance `@forceOrder` stream for a single LinearPerps ticker
+/// and emits `Event::LiquidationsReceived`.
+///
+/// Only available for `MarketKind::LinearPerps` (fstream.binance.com).
+/// For other market types the stream immediately disconnects.
+pub fn connect_liquidation_stream(
+    ticker_info: TickerInfo,
+    market: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
+) -> impl Stream<Item = Event> {
+    channel(50, move |mut output| async move {
+        if market != MarketKind::LinearPerps {
+            return; // @forceOrder only on futures
+        }
+        let exchange = exchange_from_market_type(market);
+        let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
+        let symbol_lc = symbol_str.to_lowercase();
+        let domain = "fstream.binance.com";
+        let url = format!("wss://{domain}/market/ws/{symbol_lc}@forceOrder");
+
+        loop {
+            match connect_ws(domain, &url, proxy_cfg.as_ref()).await {
+                Ok(mut ws) => {
+                    let _ = output.send(Event::Connected(exchange)).await;
+                    loop {
+                        match ws.read_frame().await {
+                            Ok(msg) if msg.opcode == OpCode::Text => {
+                                if let Some(liq) = parse_force_order(&msg.payload[..], ticker_info) {
+                                    let _ = output
+                                        .send(Event::LiquidationsReceived(
+                                            ticker_info,
+                                            vec![liq].into_boxed_slice(),
+                                        ))
+                                        .await;
+                                }
+                            }
+                            Ok(msg) if msg.opcode == OpCode::Close => {
+                                let _ = output
+                                    .send(Event::Disconnected(exchange, "closed".into()))
+                                    .await;
+                                break;
+                            }
+                            Err(e) => {
+                                let _ = output
+                                    .send(Event::Disconnected(exchange, e.to_string()))
+                                    .await;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(_) => {
+                    let _ = output
+                        .send(Event::Disconnected(exchange, "connect failed".into()))
+                        .await;
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+    })
+}
+
+fn parse_force_order(payload: &[u8], ticker_info: TickerInfo) -> Option<crate::Liquidation> {
+    let text = std::str::from_utf8(payload).ok()?;
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let o = v.get("o")?;
+    let side = o.get("S")?.as_str()?;
+    let is_long_liq = side == "SELL"; // SELL closes a long
+    let qty_f: f64 = o.get("z")?.as_str()?.parse().ok()?;
+    let price_f: f64 = o.get("ap")?.as_str()?.parse().ok()?;
+    let ts: u64 = o.get("T")?.as_u64()?;
+    let price = crate::Price::from_f32(price_f as f32)
+        .round_to_min_tick(ticker_info.min_ticksize);
+    let qty = crate::Qty::from_f32_lossy(qty_f as f32);
+    Some(crate::Liquidation {
+        time: crate::UnixMs::new(ts),
+        price,
+        qty,
+        is_long_liq,
+    })
+}
