@@ -337,10 +337,84 @@ impl SupabaseWriter {
         });
     }
 
-    /// Escribe una señal del detector Range Breakout Flow a Supabase.
-    /// Fire-and-forget.
-    pub fn write_rbf_signal(&self, sig: &data::strategy::detectors::range_breakout_flow::RbfSignal) {
+    /// Escribe una señal RBF y retorna el UUID asignado por Supabase (para PATCH posterior).
+    pub async fn write_rbf_signal_async(
+        &self,
+        sig: &data::strategy::detectors::range_breakout_flow::RbfSignal,
+    ) -> Option<String> {
+        let body = self.rbf_signal_body(sig);
+        let url = format!("{}/rest/v1/rbf_signals", self.url);
+        let result = self
+            .client
+            .post(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&body)
+            .send()
+            .await;
+
+        match result {
+            Ok(r) if r.status().is_success() => {
+                let rows: serde_json::Value = r.json().await.unwrap_or_default();
+                rows.as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|o| o.get("id"))
+                    .and_then(|v| v.as_i64())
+                    .map(|id| id.to_string())
+            }
+            Ok(r) => {
+                eprintln!("[supabase] write_rbf_signal_async HTTP {}", r.status());
+                None
+            }
+            Err(e) => {
+                eprintln!("[supabase] write_rbf_signal_async error: {e}");
+                None
+            }
+        }
+    }
+
+    /// Actualiza el outcome de una señal RBF existente (PATCH por id).
+    pub fn update_rbf_outcome(
+        &self,
+        id: &str,
+        trade: &data::strategy::detectors::rbf_paper::RbfClosedTrade,
+    ) {
         let body = serde_json::json!({
+            "status":       trade.exit_reason.as_str(),
+            "exit_price":   trade.exit_price,
+            "result_r":     trade.result_r,
+            "exit_reason":  trade.exit_reason.as_str(),
+            "closed_at":    trade.exit_ms,
+        });
+        let url    = format!("{}/rest/v1/rbf_signals?id=eq.{}", self.url, id);
+        let writer = self.clone();
+        let body_c = body.clone();
+        tokio::spawn(async move {
+            let result = writer
+                .client
+                .patch(&url)
+                .header("apikey", &writer.key)
+                .header("Authorization", format!("Bearer {}", writer.key))
+                .header("Content-Type", "application/json")
+                .header("Prefer", "return=minimal")
+                .json(&body_c)
+                .send()
+                .await;
+            if let Ok(r) = result {
+                if !r.status().is_success() {
+                    eprintln!("[supabase] update_rbf_outcome HTTP {}", r.status());
+                }
+            }
+        });
+    }
+
+    fn rbf_signal_body(
+        &self,
+        sig: &data::strategy::detectors::range_breakout_flow::RbfSignal,
+    ) -> serde_json::Value {
+        serde_json::json!({
             "timestamp_ms":       sig.timestamp_ms,
             "direction":          format!("{:?}", sig.direction),
             "session":            format!("{:?}", sig.session),
@@ -356,15 +430,20 @@ impl SupabaseWriter {
             "vr_at_breakout":     sig.vr_at_breakout,
             "macro_regime":       format!("{:?}", sig.macro_regime),
             "evidence":           &sig.evidence,
-            "range_touch_count":    sig.range_touch_count as i64,
-            "session_phase":        format!("{:?}", sig.session_phase),
-            "price_vs_vwap_pct":    sig.price_vs_vwap_pct,
-            "funding_at_entry":     sig.funding_at_entry,
-            "liq_ratio_pre":        sig.liq_ratio_pre,
-            "cvd_slope_at_entry":   sig.cvd_slope_at_entry,
-            "dz_at_entry":          sig.dz_at_entry,
-            "obi_at_entry":         sig.obi_at_entry,
-        });
+            "range_touch_count":  sig.range_touch_count as i64,
+            "session_phase":      format!("{:?}", sig.session_phase),
+            "price_vs_vwap_pct":  sig.price_vs_vwap_pct,
+            "funding_at_entry":   sig.funding_at_entry,
+            "liq_ratio_pre":      sig.liq_ratio_pre,
+            "cvd_slope_at_entry": sig.cvd_slope_at_entry,
+            "dz_at_entry":        sig.dz_at_entry,
+            "obi_at_entry":       sig.obi_at_entry,
+        })
+    }
+
+    /// Escribe una señal RBF a Supabase. Fire-and-forget.
+    pub fn write_rbf_signal(&self, sig: &data::strategy::detectors::range_breakout_flow::RbfSignal) {
+        let body   = self.rbf_signal_body(sig);
         let writer = self.clone();
         tokio::spawn(async move {
             writer.post("rbf_signals", &body).await;

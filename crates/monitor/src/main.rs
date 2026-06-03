@@ -629,6 +629,10 @@ struct BarState {
     scalping_paper_written_idx: usize,
     // Range Breakout Flow detector state
     rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState,
+    // RBF paper trader — trackea outcomes de señales RBF
+    rbf_paper: data::strategy::detectors::rbf_paper::RbfPaperTrader,
+    // UUID pendiente de asignar al paper trader (llega async tras write_rbf_signal_async)
+    rbf_pending_id_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
 }
 
 impl BarState {
@@ -700,6 +704,8 @@ impl BarState {
             scalping_state: ScalpingState::new(25),
             scalping_paper_written_idx: 0,
             rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState::new(),
+            rbf_paper: data::strategy::detectors::rbf_paper::RbfPaperTrader::new(),
+            rbf_pending_id_rx: None,
         }
     }
 
@@ -1955,33 +1961,69 @@ impl BarState {
             }
         }
 
-        // ── Range Breakout Flow detector ─────────────────────────────────────
+        // ── Range Breakout Flow detector + paper trader ───────────────────────
         {
+            // Resolver UUID pendiente del write async anterior
+            if let Some(mut rx) = self.rbf_pending_id_rx.take() {
+                if let Ok(maybe_id) = rx.try_recv() {
+                    if let Some(id) = maybe_id {
+                        self.rbf_paper.set_supabase_id(id);
+                    }
+                } else {
+                    // todavía no llegó — devolver al slot para el próximo bar
+                    self.rbf_pending_id_rx = Some(rx);
+                }
+            }
+
+            // Chequear exit de posición abierta
+            if self.rbf_paper.has_position() {
+                if let Some(trade) = self.rbf_paper.on_bar_close(h, l, bar_ms) {
+                    println!(
+                        "[rbf_paper] {:?} {} entry={:.1} exit={:.1} R={:.2}",
+                        trade.direction, trade.exit_reason.as_str(),
+                        trade.entry_price, trade.exit_price, trade.result_r,
+                    );
+                    if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
+                        sb.update_rbf_outcome(id, &trade);
+                    }
+                }
+            }
+
             let liq_ratio_rbf = {
                 let liq_snap = self.liq_tracker.snapshot(bar_ms);
                 liq_snap.total_zscore.map(|z| z.abs()).unwrap_or(0.0)
             };
             let obi_rbf = ctx.orderbook.obi_l5.unwrap_or(0.0);
-            if let Some(sig) = self.rbf_state.on_bar_close(
-                o, h, l, c,
-                vol,
-                bar_delta,
-                session.session,
-                bar_ms,
-                &cfg.range_breakout,
-                self.vwap_session,
-                self.funding_rate,
-                liq_ratio_rbf,
-                obi_rbf,
-                cvd_slope,
-            ) {
-                println!(
-                    "[rbf] {:?} entry={:.1} stop={:.1} target={:.1} rr={:.2} range={:.3}% cvd={:.1} vr={:.2}x {:?}",
-                    sig.direction, sig.entry_price, sig.stop_price, sig.target_price,
-                    sig.rr, sig.range_pct, sig.cvd_in_range, sig.vr_at_breakout, sig.macro_regime,
-                );
-                if let Some(sb) = &self.supabase {
-                    sb.write_rbf_signal(&sig);
+            if !self.rbf_paper.has_position() {
+                if let Some(sig) = self.rbf_state.on_bar_close(
+                    o, h, l, c,
+                    vol,
+                    bar_delta,
+                    session.session,
+                    bar_ms,
+                    &cfg.range_breakout,
+                    self.vwap_session,
+                    self.funding_rate,
+                    liq_ratio_rbf,
+                    obi_rbf,
+                    cvd_slope,
+                ) {
+                    println!(
+                        "[rbf] {:?} entry={:.1} stop={:.1} target={:.1} rr={:.2} range={:.3}% cvd={:.1} vr={:.2}x {:?} dz={:.2}",
+                        sig.direction, sig.entry_price, sig.stop_price, sig.target_price,
+                        sig.rr, sig.range_pct, sig.cvd_in_range, sig.vr_at_breakout,
+                        sig.macro_regime, sig.dz_at_entry,
+                    );
+                    self.rbf_paper.open(&sig);
+                    if let Some(sb) = self.supabase.clone() {
+                        let sig_c = sig.clone();
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        self.rbf_pending_id_rx = Some(rx);
+                        tokio::spawn(async move {
+                            let id = sb.write_rbf_signal_async(&sig_c).await;
+                            let _ = tx.send(id);
+                        });
+                    }
                 }
             }
         }
