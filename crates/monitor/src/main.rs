@@ -633,6 +633,8 @@ struct BarState {
     rbf_paper: data::strategy::detectors::rbf_paper::RbfPaperTrader,
     // UUID pendiente de asignar al paper trader (llega async tras write_rbf_signal_async)
     rbf_pending_id_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
+    // Última sesión vista — detecta cambio de sesión para forzar cierre de posición RBF abierta
+    rbf_last_session: data::session::session_tracker::TradingSession,
 }
 
 impl BarState {
@@ -706,6 +708,7 @@ impl BarState {
             rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState::new(),
             rbf_paper: data::strategy::detectors::rbf_paper::RbfPaperTrader::new(),
             rbf_pending_id_rx: None,
+            rbf_last_session: data::session::session_tracker::TradingSession::OffHours,
         }
     }
 
@@ -1963,6 +1966,20 @@ impl BarState {
 
         // ── Range Breakout Flow detector + paper trader ───────────────────────
         {
+            // Cierre forzado por cambio de sesión — evita posiciones OPEN eternas en Supabase
+            if session.session != self.rbf_last_session {
+                if let Some(trade) = self.rbf_paper.close_session(c, bar_ms) {
+                    println!(
+                        "[rbf_paper] SESSION_END {:?} entry={:.1} exit={:.1} R={:.2}",
+                        trade.direction, trade.entry_price, trade.exit_price, trade.result_r,
+                    );
+                    if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
+                        sb.update_rbf_outcome(id, &trade);
+                    }
+                }
+                self.rbf_last_session = session.session;
+            }
+
             // Resolver UUID pendiente del write async anterior
             if let Some(mut rx) = self.rbf_pending_id_rx.take() {
                 if let Ok(maybe_id) = rx.try_recv() {

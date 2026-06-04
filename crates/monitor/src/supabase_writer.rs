@@ -450,7 +450,7 @@ impl SupabaseWriter {
         });
     }
 
-    /// Actualiza scalping_signals cuando el trade cierra + inserta en scalping_trades.
+    /// Inserta en scalping_trades y hace PATCH a scalping_signals para cerrar el outcome.
     /// Fire-and-forget.
     pub fn write_scalping_trade(&self, trade: &data::strategy::scalping::paper::ScalpingTrade) {
         let body_trade = json!({
@@ -480,9 +480,35 @@ impl SupabaseWriter {
             "mfe":              trade.mfe,
             "mae":              trade.mae,
         });
+        let patch_signal = json!({
+            "status":      "CLOSED",
+            "exit_price":  trade.exit_price,
+            "exit_reason": trade.exit_reason.to_string(),
+            "pnl_net":     trade.pnl_net,
+            "result_r":    trade.result_r,
+            "duration_ms": trade.duration_ms,
+            "closed_at":   trade.exit_ms,
+        });
+        let entry_ms = trade.entry_ms;
         let writer = self.clone();
         tokio::spawn(async move {
             writer.post("scalping_trades", &body_trade).await;
+            // Cerrar la señal correspondiente en scalping_signals (match por timestamp_ms)
+            let url = format!("{}/rest/v1/scalping_signals?timestamp_ms=eq.{}", writer.url, entry_ms);
+            let result = writer.client
+                .patch(&url)
+                .header("apikey", &writer.key)
+                .header("Authorization", format!("Bearer {}", writer.key))
+                .header("Content-Type", "application/json")
+                .header("Prefer", "return=minimal")
+                .json(&patch_signal)
+                .send()
+                .await;
+            if let Ok(r) = result {
+                if !r.status().is_success() {
+                    eprintln!("[supabase] PATCH scalping_signals HTTP {}", r.status());
+                }
+            }
         });
     }
 
