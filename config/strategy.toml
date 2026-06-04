@@ -39,7 +39,7 @@ obi_threshold_short        = 0.40       # OBI máximo para sesgar shorts (S1)
 min_conviction_score       = 55.0       # score mínimo para emitir señal S2/S3
 max_trades_per_session     = 5          # máx trades por sesión (London o NY)
 daily_loss_limit_pct       = 0.03       # stop día al 3% de pérdida
-max_consecutive_losses     = 3          # pausar después de 3 pérdidas consecutivas
+max_consecutive_losses     = 9999       # desactivado — todo es paper trading
 time_stop_secs             = 120        # time-stop: cerrar posición después de 2 min
 s2_dz_min                  = 1.5        # delta Z-score mínimo para señal de absorción S2
 s2_vr_min                  = 2.0        # VR mínimo para confirmar volumen en S2
@@ -82,5 +82,10 @@ min_rr           = 1.5    # R:R mínimo para emitir señal
 cvd_slope_gate   = true   # slope CVD debe confirmar dirección del breakout
 dz_min           = 0.5    # dz mínimo alineado (elimina breakouts sin presión)
 dz_max           = 3.0    # dz máximo (extremos >3 revierten — fakeout)
-obi_gate         = false  # OBI gate desactivado (pendiente validación datos reales)
-obi_threshold    = 0.45   # umbral OBI cuando el gate esté activo
+obi_gate             = false  # OBI gate desactivado (pendiente validación datos reales)
+obi_threshold        = 0.45   # umbral OBI cuando el gate esté activo
+
+# Sistema de confluencia v2 — shadow mode (grabar todo, subir min_confluence_score cuando haya 50+ señales)
+min_confluence_score = 1      # 1 = shadow mode; subir a 3 después de calibración
+cvd_slope_threshold  = 15.0   # |cvd_slope| mínimo para el flag CvdSlopeSostenido
+bear_long_min_score  = 5      # Long en Bear/BearPullback requiere este score mínimo

@@ -438,6 +438,9 @@ impl SupabaseWriter {
             "cvd_slope_at_entry": sig.cvd_slope_at_entry,
             "dz_at_entry":        sig.dz_at_entry,
             "obi_at_entry":       sig.obi_at_entry,
+            "confluence_score":   sig.confluence_score as i64,
+            "confluence_flags":   sig.confluence_flags,
+            "veto_reason":        sig.veto_reason,
         })
     }
 

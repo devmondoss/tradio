@@ -1481,7 +1481,7 @@ impl BarState {
         };
 
         let vwap_ctx = build_vwap_context(c, self.vwap_session, avwap_bos, avwap_event);
-        let mut vp_ctx = build_volume_profile_context(c, poc, vah, val, hvn_nearby, lvn_nearby);
+        let mut vp_ctx = build_volume_profile_context(c, poc, vah, val, hvn_nearby.clone(), lvn_nearby.clone());
         vp_ctx.naked_pocs = self.naked_poc_tracker.naked_poc_prices();
         vp_ctx.single_prints = self.tpo_tracker.single_print_mids();
         // Snapshot VP lists before vp_ctx is moved into StrategyMarketContext
@@ -2012,6 +2012,21 @@ impl BarState {
             };
             let obi_rbf = ctx.orderbook.obi_l5.unwrap_or(0.0);
             if !self.rbf_paper.has_position() {
+                // Construir contexto de confluencia v2
+                let rbf_gate = data::strategy::detectors::range_breakout_flow::RbfGateContext {
+                    stacked_imbalance_bearish: stacked_imbalance == ImbalanceSide::Bearish,
+                    stacked_imbalance_bullish: stacked_imbalance == ImbalanceSide::Bullish,
+                    absorption_ask: footprint_absorption == AbsorptionSide::Ask,
+                    absorption_bid: footprint_absorption == AbsorptionSide::Bid,
+                    lvn_nearby: !lvn_nearby.is_empty(),
+                    thin_zone_below: ctx.orderbook.thin_zone_below,
+                    thin_zone_above: ctx.orderbook.thin_zone_above,
+                    bid_wall_nearby,
+                    ask_wall_nearby,
+                    hvn_levels: hvn_nearby.clone(),
+                    vpin: bar_vpin,
+                    oi_momentum_aligned,
+                };
                 if let Some(sig) = self.rbf_state.on_bar_close(
                     o, h, l, c,
                     vol,
@@ -2024,14 +2039,18 @@ impl BarState {
                     liq_ratio_rbf,
                     obi_rbf,
                     cvd_slope,
+                    Some(&rbf_gate),
                 ) {
+                    let tradeable = sig.veto_reason.is_none()
+                        && sig.confluence_score >= cfg.range_breakout.min_confluence_score;
                     println!(
-                        "[rbf] {:?} entry={:.1} stop={:.1} target={:.1} rr={:.2} range={:.3}% cvd={:.1} vr={:.2}x {:?} dz={:.2}",
-                        sig.direction, sig.entry_price, sig.stop_price, sig.target_price,
-                        sig.rr, sig.range_pct, sig.cvd_in_range, sig.vr_at_breakout,
-                        sig.macro_regime, sig.dz_at_entry,
+                        "[rbf] {:?} entry={:.1} rr={:.2} range={:.3}% vr={:.2}x {:?} score={}/{} veto={:?} trade={}",
+                        sig.direction, sig.entry_price, sig.rr, sig.range_pct,
+                        sig.vr_at_breakout, sig.macro_regime,
+                        sig.confluence_score, 7,
+                        sig.veto_reason, tradeable,
                     );
-                    self.rbf_paper.open(&sig);
+                    // Siempre escribir a Supabase (incluye señales vetadas, para calibración)
                     if let Some(sb) = self.supabase.clone() {
                         let sig_c = sig.clone();
                         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -2040,6 +2059,10 @@ impl BarState {
                             let id = sb.write_rbf_signal_async(&sig_c).await;
                             let _ = tx.send(id);
                         });
+                    }
+                    // Paper trade solo si pasa veto y score mínimo
+                    if tradeable {
+                        self.rbf_paper.open(&sig);
                     }
                 }
             }

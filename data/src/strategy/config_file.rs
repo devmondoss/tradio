@@ -91,8 +91,11 @@ struct RangeBreakoutSection {
     cvd_slope_gate:   Option<bool>,
     dz_min:           Option<f64>,
     dz_max:           Option<f64>,
-    obi_gate:         Option<bool>,
-    obi_threshold:    Option<f64>,
+    obi_gate:             Option<bool>,
+    obi_threshold:        Option<f64>,
+    min_confluence_score: Option<u8>,
+    cvd_slope_threshold:  Option<f64>,
+    bear_long_min_score:  Option<u8>,
 }
 
 #[derive(Deserialize, Default)]
@@ -175,8 +178,11 @@ impl StrategyConfigFile {
         if let Some(v) = rb.cvd_slope_gate   { cfg.range_breakout.cvd_slope_gate   = v; }
         if let Some(v) = rb.dz_min           { cfg.range_breakout.dz_min           = v; }
         if let Some(v) = rb.dz_max           { cfg.range_breakout.dz_max           = v; }
-        if let Some(v) = rb.obi_gate         { cfg.range_breakout.obi_gate         = v; }
-        if let Some(v) = rb.obi_threshold    { cfg.range_breakout.obi_threshold    = v; }
+        if let Some(v) = rb.obi_gate             { cfg.range_breakout.obi_gate             = v; }
+        if let Some(v) = rb.obi_threshold        { cfg.range_breakout.obi_threshold        = v; }
+        if let Some(v) = rb.min_confluence_score { cfg.range_breakout.min_confluence_score = v; }
+        if let Some(v) = rb.cvd_slope_threshold  { cfg.range_breakout.cvd_slope_threshold  = v; }
+        if let Some(v) = rb.bear_long_min_score  { cfg.range_breakout.bear_long_min_score  = v; }
 
         cfg
     }

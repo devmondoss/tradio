@@ -16,6 +16,162 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 use crate::session::{TradingSession, SessionPhase};
 
+// ── Tipos de confluencia ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfluenceFlag {
+    CvdSlopeSostenido,
+    ObiAlineado,
+    StackedImbalance,
+    AbsorcionFootprint,
+    LvnOThinZone,
+    VwapBias,
+    OiMomentum,
+}
+
+impl ConfluenceFlag {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::CvdSlopeSostenido  => "cvd_slope",
+            Self::ObiAlineado        => "obi",
+            Self::StackedImbalance   => "stacked_imbalance",
+            Self::AbsorcionFootprint => "absorption",
+            Self::LvnOThinZone       => "lvn_thin",
+            Self::VwapBias           => "vwap_bias",
+            Self::OiMomentum         => "oi_momentum",
+        }
+    }
+}
+
+/// Datos de microestructura externos que no residen en RangeBreakoutState.
+/// Los valores son crudos (no por-dirección) porque en main.rs aún no se
+/// conoce la dirección del breakout cuando se construye este contexto.
+pub struct RbfGateContext {
+    /// Stacked imbalance bearish activo (Bearish/FBG-Bearish).
+    pub stacked_imbalance_bearish: bool,
+    /// Stacked imbalance bullish activo (Bullish/FBG-Bullish).
+    pub stacked_imbalance_bullish: bool,
+    /// Absorción ask activa (señal bajista — asks absorbidos).
+    pub absorption_ask: bool,
+    /// Absorción bid activa (señal alcista — bids absorbidos).
+    pub absorption_bid: bool,
+    /// LVN cerca del precio actual (proxy: al menos un nivel en lvn_nearby).
+    pub lvn_nearby: bool,
+    /// Thin zone por debajo del precio (favorece SHORT breakout).
+    pub thin_zone_below: bool,
+    /// Thin zone por encima del precio (favorece LONG breakout).
+    pub thin_zone_above: bool,
+    /// Pared de bids cerca — bloquea SHORT (target difícil de alcanzar).
+    pub bid_wall_nearby: bool,
+    /// Pared de asks cerca — bloquea LONG (target difícil de alcanzar).
+    pub ask_wall_nearby: bool,
+    /// HVN levels para verificar obstáculos entre entry y target.
+    pub hvn_levels: Vec<f64>,
+    /// VPIN de la barra actual.
+    pub vpin: Option<f64>,
+    /// OI momentum alineado: precio + OI expandiéndose en la misma dirección.
+    pub oi_momentum_aligned: Option<bool>,
+}
+
+fn score_confluence(
+    direction: RbfDirection,
+    macro_regime: MacroRegime,
+    cvd_slope: Option<f64>,
+    obi: f64,
+    vwap: Option<f64>,
+    entry_price: f64,
+    target_price: f64,
+    gate: &RbfGateContext,
+    cfg: &RangeBreakoutConfig,
+) -> (u8, Vec<String>, Option<String>) {
+    // ── VETOS: cancelan la señal independientemente del score ─────────────────
+    match direction {
+        RbfDirection::Long  if gate.ask_wall_nearby => return (0, vec![], Some("wall_target".into())),
+        RbfDirection::Short if gate.bid_wall_nearby => return (0, vec![], Some("wall_target".into())),
+        _ => {}
+    }
+
+    // HVN entre entry y 50% del camino al target
+    let half_path = (target_price - entry_price).abs() * 0.5;
+    let has_hvn_obstacle = gate.hvn_levels.iter().any(|&lvl| {
+        let dist = (lvl - entry_price).abs();
+        dist < half_path
+    });
+    if has_hvn_obstacle {
+        return (0, vec![], Some("hvn_target".into()));
+    }
+
+    if gate.vpin.map_or(false, |v| v > 0.65) {
+        return (0, vec![], Some("vpin_toxic".into()));
+    }
+
+    // ── PUNTOS ────────────────────────────────────────────────────────────────
+    let mut score: u8 = 0;
+    let mut flags: Vec<ConfluenceFlag> = vec![];
+
+    if let Some(slope) = cvd_slope {
+        let t = cfg.cvd_slope_threshold;
+        let aligned = match direction {
+            RbfDirection::Short => slope < -t,
+            RbfDirection::Long  => slope >  t,
+        };
+        if aligned { score += 1; flags.push(ConfluenceFlag::CvdSlopeSostenido); }
+    }
+
+    let obi_aligned = match direction {
+        RbfDirection::Short => obi < -0.15,
+        RbfDirection::Long  => obi >  0.15,
+    };
+    if obi_aligned { score += 1; flags.push(ConfluenceFlag::ObiAlineado); }
+
+    let stacked = match direction {
+        RbfDirection::Short => gate.stacked_imbalance_bearish,
+        RbfDirection::Long  => gate.stacked_imbalance_bullish,
+    };
+    if stacked { score += 1; flags.push(ConfluenceFlag::StackedImbalance); }
+
+    let absorbed = match direction {
+        RbfDirection::Short => gate.absorption_ask,
+        RbfDirection::Long  => gate.absorption_bid,
+    };
+    if absorbed { score += 1; flags.push(ConfluenceFlag::AbsorcionFootprint); }
+
+    let thin = match direction {
+        RbfDirection::Short => gate.thin_zone_below,
+        RbfDirection::Long  => gate.thin_zone_above,
+    };
+    if gate.lvn_nearby || thin {
+        score += 1;
+        flags.push(ConfluenceFlag::LvnOThinZone);
+    }
+
+    if let Some(v) = vwap.filter(|&v| v > 0.0) {
+        let above = entry_price > v;
+        let aligned = match direction {
+            RbfDirection::Short => !above,
+            RbfDirection::Long  =>  above,
+        };
+        if aligned { score += 1; flags.push(ConfluenceFlag::VwapBias); }
+    }
+
+    if gate.oi_momentum_aligned == Some(true) {
+        score += 1;
+        flags.push(ConfluenceFlag::OiMomentum);
+    }
+
+    // Veto especial: Long contra tendencia bajista sin máxima confluencia
+    if direction == RbfDirection::Long
+        && matches!(macro_regime, MacroRegime::Bear | MacroRegime::BearPullback)
+        && score < cfg.bear_long_min_score
+    {
+        let flags_str = flags.iter().map(|f| f.as_str().to_string()).collect();
+        return (score, flags_str, Some("long_bear_low_score".into()));
+    }
+
+    let flags_str = flags.iter().map(|f| f.as_str().to_string()).collect();
+    (score, flags_str, None)
+}
+
 // ── Parámetros del detector ───────────────────────────────────────────────────
 
 const RANGE_WINDOWS:  &[usize] = &[15, 20, 30, 45, 60];
@@ -82,6 +238,14 @@ pub struct RbfSignal {
     pub dz_at_entry:        f64,
     /// Order Book Imbalance en la barra de ruptura (bid-ask / total).
     pub obi_at_entry:       f64,
+
+    // Confluencia v2
+    /// Puntuación de confluencia (0–7). Señales con veto tienen score calculado antes del veto.
+    pub confluence_score: u8,
+    /// Flags activos al disparar (ej. ["cvd_slope", "obi", "vwap_bias"]).
+    pub confluence_flags: Vec<String>,
+    /// Razón de veto si la señal fue vetada (no se abre posición, sí se registra en DB).
+    pub veto_reason: Option<String>,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -167,6 +331,8 @@ impl RangeBreakoutState {
         liq_ratio:    f64,
         obi:          f64,
         cvd_slope_ext: Option<f64>, // slope computado externamente (preferido)
+        // Contexto de confluencia v2 (opcional — si es None no se puntúa)
+        gate: Option<&RbfGateContext>,
     ) -> Option<RbfSignal> {
         let _ = open;
 
@@ -331,6 +497,24 @@ impl RangeBreakoutState {
 
             let range_touch_count = if breaks_down { touches_low } else { touches_high };
 
+            // ── Confluencia v2 ────────────────────────────────────────────────
+            let (confluence_score, confluence_flags, veto_reason) = if let Some(g) = gate {
+                score_confluence(
+                    direction, macro_regime,
+                    cvd_slope, obi, vwap,
+                    close, target_price,
+                    g, cfg,
+                )
+            } else {
+                (0, vec![], None)
+            };
+
+            if let Some(ref reason) = veto_reason {
+                evidence.push(format!("veto={}", reason));
+            } else {
+                evidence.push(format!("confluence={}/{}", confluence_score, 7));
+            }
+
             self.last_signal_bar = self.bars_seen;
 
             return Some(RbfSignal {
@@ -357,6 +541,9 @@ impl RangeBreakoutState {
                 cvd_slope_at_entry:  cvd_slope,
                 dz_at_entry:         dz,
                 obi_at_entry:        obi,
+                confluence_score,
+                confluence_flags,
+                veto_reason,
             });
         }
 
@@ -385,6 +572,14 @@ pub struct RangeBreakoutConfig {
     pub obi_gate:          bool,
     /// Umbral OBI para el gate: SHORT quiere obi < threshold, LONG quiere obi > (1-threshold).
     pub obi_threshold:     f64,
+
+    // Sistema de confluencia v2
+    /// Score mínimo para abrir posición. 1 = shadow mode (grabar todo). 3+ = producción.
+    pub min_confluence_score: u8,
+    /// |cvd_slope| mínimo para sumar el flag CvdSlopeSostenido.
+    pub cvd_slope_threshold: f64,
+    /// Score mínimo requerido para Long en régimen Bear/BearPullback.
+    pub bear_long_min_score: u8,
 }
 
 impl Default for RangeBreakoutConfig {
@@ -401,6 +596,10 @@ impl Default for RangeBreakoutConfig {
             dz_max:           3.0,
             obi_gate:         false, // pendiente validación con datos reales
             obi_threshold:    0.45,
+            // v2: shadow mode por defecto (grabar todo, sin filtro de score)
+            min_confluence_score: 1,
+            cvd_slope_threshold:  15.0,
+            bear_long_min_score:  5,
         }
     }
 }
