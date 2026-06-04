@@ -12,3 +12,4 @@ calibration/.env
 # Docs y SQL — solo locales, no van al repo
 /docs/
 /supabase/
+/strategies/
