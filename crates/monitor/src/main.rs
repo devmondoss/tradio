@@ -13,6 +13,7 @@
 
 mod intrabar;
 mod supabase_writer;
+mod ws_server;
 
 use std::collections::VecDeque;
 use std::sync::{
@@ -635,10 +636,12 @@ struct BarState {
     rbf_pending_id_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
     // Última sesión vista — detecta cambio de sesión para forzar cierre de posición RBF abierta
     rbf_last_session: data::session::session_tracker::TradingSession,
+    // WebSocket broadcast — envía barras y señales al dashboard web
+    ws_tx: ws_server::Sender,
 }
 
 impl BarState {
-    fn new(mongo: MongoWriter, supabase: Option<SupabaseWriter>, config_loader: MongoConfigLoader, footprint_step: PriceStep, liq_raw_counter: Arc<AtomicU64>, liq_global_raw_counter: Arc<AtomicU64>) -> Self {
+    fn new(mongo: MongoWriter, supabase: Option<SupabaseWriter>, config_loader: MongoConfigLoader, footprint_step: PriceStep, liq_raw_counter: Arc<AtomicU64>, liq_global_raw_counter: Arc<AtomicU64>, ws_tx: ws_server::Sender) -> Self {
         Self {
             bars: VecDeque::with_capacity(VP_WINDOW + 1),
             cvd: 0.0,
@@ -709,6 +712,7 @@ impl BarState {
             rbf_paper: data::strategy::detectors::rbf_paper::RbfPaperTrader::new(),
             rbf_pending_id_rx: None,
             rbf_last_session: data::session::session_tracker::TradingSession::OffHours,
+            ws_tx,
         }
     }
 
@@ -1964,6 +1968,13 @@ impl BarState {
             }
         }
 
+        // ── Broadcast barra al dashboard web ─────────────────────────────────
+        ws_server::broadcast(&self.ws_tx, ws_server::WsEvent::Bar {
+            ts_ms:  bar_ms,
+            open:   o, high: h, low: l, close: c,
+            regime: format!("{:?}", effective_regime),
+        });
+
         // ── Range Breakout Flow detector + paper trader ───────────────────────
         {
             // Cierre forzado por cambio de sesión — evita posiciones OPEN eternas en Supabase
@@ -2050,6 +2061,17 @@ impl BarState {
                         sig.confluence_score, 7,
                         sig.veto_reason, tradeable,
                     );
+                    // Broadcast señal al dashboard web
+                    ws_server::broadcast(&self.ws_tx, ws_server::WsEvent::Signal {
+                        ts_ms:     sig.timestamp_ms,
+                        direction: format!("{:?}", sig.direction),
+                        score:     Some(sig.confluence_score),
+                        veto:      sig.veto_reason.clone(),
+                        entry:     sig.entry_price,
+                        rr:        sig.rr,
+                        session:   format!("{:?}", sig.session),
+                    });
+
                     // Siempre escribir a Supabase (incluye señales vetadas, para calibración)
                     if let Some(sb) = self.supabase.clone() {
                         let sig_c = sig.clone();
@@ -3118,11 +3140,13 @@ async fn main() {
     let mut trade_stream = Box::pin(trade_stream);
 
     // ── Persistence: MongoDB (local) + Supabase (Railway) ────────────────────
-    // Each writer is fire-and-forget and fails silently when unavailable.
-    // MongoDB handles full signal↔trade linking via ObjectId.
-    // Supabase provides cloud visibility on Railway when SUPABASE_URL is set.
     let mongo = MongoWriter::from_env();
     let supabase = SupabaseWriter::from_env();
+
+    // ── WebSocket server — dashboard web en tiempo real ───────────────────────
+    let ws_port: u16 = std::env::var("WS_PORT")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(9001);
+    let ws_tx = ws_server::start(ws_port);
     if supabase.is_none() {
         println!("[supabase] SUPABASE_URL not set — cloud persistence disabled");
     }
@@ -3137,7 +3161,7 @@ async fn main() {
     let footprint_step: PriceStep = ticker_info.min_ticksize.into();
     let liq_raw_counter = Arc::new(AtomicU64::new(0));
     let liq_global_raw_counter = Arc::new(AtomicU64::new(0));
-    let mut state = BarState::new(mongo, supabase, config_loader, footprint_step, Arc::clone(&liq_raw_counter), Arc::clone(&liq_global_raw_counter));
+    let mut state = BarState::new(mongo, supabase, config_loader, footprint_step, Arc::clone(&liq_raw_counter), Arc::clone(&liq_global_raw_counter), ws_tx);
     state.intrabar_cfg.log_boot();
 
     // Seed bar history from REST before the live stream starts
