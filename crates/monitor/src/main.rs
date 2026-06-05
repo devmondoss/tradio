@@ -3298,6 +3298,14 @@ async fn main() {
                                     let bar_close_ms = open_ms + tf_ms;
                                     state.on_bar_close(kline, bar_close_ms, &symbol_str).await;
                                 } else {
+                                    // Tick vivo — broadcast precio actual al dashboard web
+                                    ws_server::broadcast(&state.ws_tx, ws_server::WsEvent::Tick {
+                                        ts_ms: open_ms as i64,
+                                        open:  kline.open.to_f32() as f64,
+                                        high:  kline.high.to_f32() as f64,
+                                        low:   kline.low.to_f32() as f64,
+                                        close: kline.close.to_f32() as f64,
+                                    });
                                     pending = Some((open_ms, kline));
                                 }
                             }

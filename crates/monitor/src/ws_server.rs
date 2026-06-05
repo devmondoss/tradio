@@ -18,6 +18,15 @@ const PORT: u16 = 9001;
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsEvent {
+    /// Tick vivo — la vela M1 en construcción, llega ~1s
+    Tick {
+        ts_ms: i64,
+        open:  f64,
+        high:  f64,
+        low:   f64,
+        close: f64,
+    },
+    /// Vela M1 cerrada con régimen calculado
     Bar {
         ts_ms:  i64,
         open:   f64,
@@ -26,6 +35,7 @@ pub enum WsEvent {
         close:  f64,
         regime: String,
     },
+    /// Señal RBF emitida
     Signal {
         ts_ms:     i64,
         direction: String,
