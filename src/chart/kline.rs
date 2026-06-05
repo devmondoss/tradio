@@ -456,7 +456,7 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
         // Calentamos el RBF pero descartamos señales del bootstrap
         let _ = rbf_state.on_bar_close(
             o, h, l, c, v, estimated_delta, session, ts,
-            &Default::default(), None, None, 0.0,
+            &Default::default(), None, None, 0.0, 0.0, None, None,
         );
     }
 
@@ -2199,6 +2199,9 @@ impl KlineChart {
                 vwap_rbf,
                 fund_rbf,
                 0.0, // liq_ratio no disponible en UI local
+                ctx.orderbook.obi_l5.unwrap_or(0.0),
+                None, // cvd_slope_ext
+                None, // gate de confluencia no disponible en UI local
             ) {
                 self.rbf_active_signal = Some(new_sig);
             }
