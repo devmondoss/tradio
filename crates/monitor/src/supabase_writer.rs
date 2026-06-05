@@ -515,13 +515,16 @@ impl SupabaseWriter {
         });
     }
 
-    /// Inserta una fila en scalping_bars — una fila por barra M5, siempre.
-    /// Equivale al patrón polyrec: registro del universo completo para calibración offline.
+    /// Inserta una fila en scalping_bars — una fila por barra M1, siempre.
+    #[allow(clippy::too_many_arguments)]
     pub fn write_scalping_bar(
         &self,
         ts_ms: i64,
         session: &str,
         regime: &str,
+        open: f64,
+        high: f64,
+        low: f64,
         close: f64,
         atr: f64,
         funding_pct: Option<f64>,
@@ -545,6 +548,9 @@ impl SupabaseWriter {
             "symbol":          "BTCUSDT",
             "session":         session,
             "regime":          regime,
+            "open":            open,
+            "high":            high,
+            "low":             low,
             "close":           close,
             "atr":             atr,
             "funding_pct":     funding_pct,

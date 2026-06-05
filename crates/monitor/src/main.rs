@@ -1943,7 +1943,7 @@ impl BarState {
                     bar_ms,
                     &format!("{:?}", session.session),
                     &format!("{:?}", effective_regime),
-                    c,
+                    o, h, l, c,
                     atr,
                     self.funding_rate,
                     obi_fast,
