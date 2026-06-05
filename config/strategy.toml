@@ -31,7 +31,7 @@ cooldown_bars            = 5        # velas mínimas entre señales del mismo de
 # SCALPING — 3 estrategias de order flow M1/tick (London 07-10 UTC, NY 13-17 UTC)
 # ============================================================================
 [scalping]
-enabled                    = true
+enabled                    = false
 max_spread_ticks           = 2          # máx ticks de spread para cotizar/entrar
 max_vr                     = 5.0        # Volume Ratio máx — pausar si evento de volatilidad
 obi_threshold_long         = 0.60       # OBI mínimo para sesgar longs (S1)
