@@ -3,16 +3,15 @@ mod chart;
 mod data;
 mod ws;
 
-use data::{Bar, RbfSignal, WsMessage, theme as T};
-use ws::WsEvent;
+use data::{Bar, RbfSignal, Timeframe, theme as T};
+use ws::KlineEvent;
 
 use iced::{
-    Alignment, Element, Font, Length, Pixels, Subscription, Task,
-    widget::{canvas, column, container, row, rule, scrollable, space, text},
+    Alignment, Border, Element, Font, Length, Pixels, Subscription, Task,
+    widget::{button, canvas, column, container, row, rule, scrollable, space, text},
 };
+use canvas::Cache;
 use std::borrow::Cow;
-
-const WS_URL: &str = "ws://localhost:9001";
 
 const AZERET_MONO_BYTES: &[u8] =
     include_bytes!("../../../assets/fonts/AzeretMono-Regular.ttf");
@@ -22,24 +21,28 @@ const AZERET_MONO: Font = Font::with_name("Azeret Mono");
 
 #[derive(Debug, Clone)]
 enum Message {
-    WsEvent(WsEvent),
+    KlineEvent(KlineEvent),
     BarsLoaded(Vec<Bar>),
     SignalsLoaded(Vec<RbfSignal>),
+    TimeframeSelected(Timeframe),
 }
 
 // ── Estado ───────────────────────────────────────────────────────────────────
 
 struct RbfMonitor {
-    bars:         Vec<Bar>,
-    signals:      Vec<RbfSignal>,
-    ws_connected: bool,
+    bars:        Vec<Bar>,
+    signals:     Vec<RbfSignal>,
+    connected:   bool,
+    timeframe:   Timeframe,
+    chart_cache: Cache,
 }
 
 impl RbfMonitor {
     fn new() -> (Self, Task<Message>) {
-        let state = Self { bars: vec![], signals: vec![], ws_connected: false };
+        let tf = Timeframe::M1;
+        let state = Self { bars: vec![], signals: vec![], connected: false, timeframe: tf, chart_cache: Cache::new() };
         let load = Task::batch(vec![
-            Task::future(async { Message::BarsLoaded(api::fetch_bars().await) }),
+            Task::future(async move { Message::BarsLoaded(api::fetch_bars(tf).await) }),
             Task::future(async { Message::SignalsLoaded(api::fetch_signals().await) }),
         ]);
         (state, load)
@@ -47,65 +50,59 @@ impl RbfMonitor {
 
     fn update(&mut self, msg: Message) -> Task<Message> {
         match msg {
-            Message::BarsLoaded(bars)       => { self.bars    = bars; }
-            Message::SignalsLoaded(signals) => { self.signals = signals; }
-            Message::WsEvent(ev) => match ev {
-                WsEvent::Connected    => { self.ws_connected = true; }
-                WsEvent::Disconnected => { self.ws_connected = false; }
-                WsEvent::Message(ws_msg) => self.handle_ws(ws_msg),
+            Message::BarsLoaded(bars) => {
+                self.bars = bars;
+                self.chart_cache.clear();
+            }
+            Message::SignalsLoaded(sigs) => {
+                self.signals = sigs;
+            }
+            Message::TimeframeSelected(tf) => {
+                if tf == self.timeframe { return Task::none(); }
+                self.timeframe = tf;
+                self.bars.clear();
+                return Task::future(async move {
+                    Message::BarsLoaded(api::fetch_bars(tf).await)
+                });
+            }
+            Message::KlineEvent(ev) => match ev {
+                KlineEvent::Connected    => { self.connected = true; }
+                KlineEvent::Disconnected => { self.connected = false; }
+                KlineEvent::Bar { ts_ms, open, high, low, close, closed } => {
+                    self.handle_bar(ts_ms, open, high, low, close, closed);
+                    self.chart_cache.clear();
+                }
             },
         }
         Task::none()
     }
 
-    fn handle_ws(&mut self, msg: WsMessage) {
-        match msg {
-            WsMessage::Tick { ts_ms, open, high, low, close } => {
-                if let Some(last) = self.bars.last_mut() {
-                    if last.live {
-                        last.high  = last.high.max(high);
-                        last.low   = last.low.min(low);
-                        last.close = close;
-                        return;
-                    }
-                }
-                self.bars.push(Bar { ts_ms, open, high, low, close, live: true });
-            }
-            WsMessage::Bar { ts_ms, open, high, low, close, .. } => {
-                if let Some(last) = self.bars.last_mut() {
-                    if last.live { last.live = false; }
-                }
-                self.bars.push(Bar { ts_ms, open, high, low, close, live: false });
-                if self.bars.len() > 1500 { self.bars.remove(0); }
-            }
-            WsMessage::Signal { ts_ms, direction, score, veto, entry, rr, session } => {
-                self.signals.insert(0, RbfSignal {
-                    id:               ts_ms,
-                    timestamp_ms:     ts_ms,
-                    direction,
-                    session,
-                    macro_regime:     None,
-                    entry_price:      entry,
-                    status:           "OPEN".into(),
-                    result_r:         None,
-                    exit_reason:      None,
-                    confluence_score: score,
-                    confluence_flags: None,
-                    veto_reason:      veto,
-                    rr,
-                });
+    fn handle_bar(&mut self, ts_ms: i64, open: f64, high: f64, low: f64, close: f64, closed: bool) {
+        if let Some(last) = self.bars.last_mut() {
+            if last.ts_ms == ts_ms {
+                // Actualizar la vela en construcción
+                last.high  = last.high.max(high);
+                last.low   = last.low.min(low);
+                last.close = close;
+                last.live  = !closed;
+                return;
             }
         }
+        // Nueva vela
+        if let Some(last) = self.bars.last_mut() {
+            last.live = false;
+        }
+        self.bars.push(Bar { ts_ms, open, high, low, close, live: !closed });
+        if self.bars.len() > 1500 { self.bars.remove(0); }
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        ws::connect(WS_URL.into()).map(Message::WsEvent)
+        ws::connect(self.timeframe.ws_url()).map(Message::KlineEvent)
     }
 
-    // ── Vista ─────────────────────────────────────────────────────────────
+    // ── Vista ─────────────────────────────────────────────────────────────────
 
     fn view(&self) -> Element<'_, Message> {
-        let navbar = self.view_navbar();
         let body = row![
             self.view_chart(),
             self.view_panels(),
@@ -114,7 +111,7 @@ impl RbfMonitor {
         .height(Length::Fill);
 
         container(
-            column![navbar, body].spacing(8).height(Length::Fill)
+            column![self.view_navbar(), body].spacing(8).height(Length::Fill)
         )
         .padding(10)
         .width(Length::Fill)
@@ -127,18 +124,39 @@ impl RbfMonitor {
     }
 
     fn view_navbar(&self) -> Element<'_, Message> {
-        let dot_color = if self.ws_connected { T::UP } else { T::DOWN };
-        let status_str = if self.ws_connected { "● live" } else { "● disconnected" };
+        let dot_color = if self.connected { T::UP } else { T::DOWN };
+        let status_str = if self.connected { "● live" } else { "● disconnected" };
 
         let last_price = self.bars.last()
             .map(|b| format!("  {:.1}", b.close))
             .unwrap_or_default();
+
+        // Botones de temporalidad
+        let tf_buttons = Timeframe::all().iter().map(|&tf| {
+            let selected = tf == self.timeframe;
+            button(
+                text(tf.label())
+                    .size(Pixels(10.0))
+                    .font(AZERET_MONO)
+                    .color(if selected { T::BG } else { T::TEXT2 }),
+            )
+            .padding([2, 6])
+            .style(move |_: &iced::Theme, _| button::Style {
+                background: Some(if selected { T::ACCENT.into() } else { T::CARD2.into() }),
+                border: Border { color: T::BORDER, width: 1.0, radius: 3.0.into() },
+                ..Default::default()
+            })
+            .on_press(Message::TimeframeSelected(tf))
+            .into()
+        });
 
         container(
             row![
                 text("RBF Monitor").color(T::TEXT).size(Pixels(13.0)).font(AZERET_MONO),
                 text(" — BTCUSDT.P").color(T::TEXT2).size(Pixels(11.0)).font(AZERET_MONO),
                 text(last_price).color(T::ACCENT).size(Pixels(13.0)).font(AZERET_MONO),
+                space::horizontal(),
+                row(tf_buttons).spacing(4).align_y(Alignment::Center),
                 space::horizontal(),
                 text(status_str).color(dot_color).size(Pixels(11.0)).font(AZERET_MONO),
             ]
@@ -153,7 +171,7 @@ impl RbfMonitor {
 
     fn view_chart(&self) -> Element<'_, Message> {
         container(
-            canvas(chart::ChartWidget { bars: self.bars.clone() })
+            canvas(chart::ChartWidget { bars: &self.bars, cache: &self.chart_cache })
                 .width(Length::Fill)
                 .height(Length::Fill),
         )
@@ -201,10 +219,10 @@ impl RbfMonitor {
             column![
                 text("Stats").color(T::TEXT).size(Pixels(11.0)).font(AZERET_MONO),
                 rule::horizontal(1.0),
-                stat_row("Win rate".into(),  format!("{wr:.1}%"),      wr_color),
-                stat_row("Avg R".into(),     format!("{avg_r:.2}R"),   avg_color),
-                stat_row("Señales".into(),   format!("{total}"),       T::TEXT),
-                stat_row("Abiertas".into(),  format!("{open_n}"),      T::ACCENT),
+                stat_row("Win rate".into(), format!("{wr:.1}%"),    wr_color),
+                stat_row("Avg R".into(),    format!("{avg_r:.2}R"), avg_color),
+                stat_row("Señales".into(),  format!("{total}"),     T::TEXT),
+                stat_row("Abiertas".into(), format!("{open_n}"),    T::ACCENT),
             ]
             .spacing(6),
         )
@@ -258,11 +276,11 @@ impl RbfMonitor {
                 *map.entry(v.clone()).or_default() += 1;
             }
         }
-        let mut veto_counts: Vec<(String, usize)> = map.into_iter().collect();
-        veto_counts.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+        let mut counts: Vec<(String, usize)> = map.into_iter().collect();
+        counts.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
 
-        let top5: Vec<(String, usize)> = veto_counts.into_iter().take(5).collect();
-        let veto_rows: Vec<Element<Message>> = top5.into_iter().map(|(name, cnt)| {
+        let top5: Vec<(String, usize)> = counts.into_iter().take(5).collect();
+        let veto_rows: Vec<Element<'_, Message>> = top5.into_iter().map(|(name, cnt)| {
             row![
                 text(name).color(T::DOWN).size(Pixels(9.0)).font(AZERET_MONO),
                 space::horizontal(),
@@ -271,7 +289,7 @@ impl RbfMonitor {
             .into()
         }).collect();
 
-        let body: Element<Message> = if veto_rows.is_empty() {
+        let body: Element<'_, Message> = if veto_rows.is_empty() {
             text("sin vetos").color(T::TEXT3).size(Pixels(9.0)).font(AZERET_MONO).into()
         } else {
             column(veto_rows).spacing(4).into()
@@ -294,11 +312,7 @@ impl RbfMonitor {
 fn card_style(_: &iced::Theme) -> container::Style {
     container::Style {
         background: Some(T::CARD.into()),
-        border: iced::Border {
-            color: T::BORDER,
-            width: 1.0,
-            radius: 4.0.into(),
-        },
+        border: Border { color: T::BORDER, width: 1.0, radius: 4.0.into() },
         ..Default::default()
     }
 }
