@@ -2022,6 +2022,7 @@ impl BarState {
                 liq_snap.total_zscore.map(|z| z.abs()).unwrap_or(0.0)
             };
             let obi_rbf = ctx.orderbook.obi_l5.unwrap_or(0.0);
+            let _ = liq_ratio_rbf; // usado dentro del bloque
             if !self.rbf_paper.has_position() {
                 // Construir contexto de confluencia v2
                 let rbf_gate = data::strategy::detectors::range_breakout_flow::RbfGateContext {
@@ -2088,6 +2089,54 @@ impl BarState {
                     }
                 }
             }
+        }
+
+        // ── RBF bar capture — microestructura por barra M1 para backtest futuro ─
+        if let Some(sb) = self.supabase.clone() {
+            // dz: delta z-score normalizado sobre últimas 50 barras
+            let rbf_dz = {
+                let n = self.bar_delta_history.len();
+                if n >= 5 {
+                    let mean = self.bar_delta_history.iter().sum::<f64>() / n as f64;
+                    let std = (self.bar_delta_history.iter()
+                        .map(|d| (d - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+                    if std > 1e-8 { (bar_delta - mean) / std } else { 0.0 }
+                } else { 0.0 }
+            };
+            // vr: volume ratio vs media de últimas 50 barras
+            let rbf_vr = {
+                let vols: Vec<f64> = self.bars.iter().map(|b| b.volume.total().to_f32_lossy() as f64).collect();
+                let n = vols.len().min(50);
+                if n > 0 {
+                    let mean = vols[vols.len()-n..].iter().sum::<f64>() / n as f64;
+                    if mean > 0.0 { vol / mean } else { 0.0 }
+                } else { 0.0 }
+            };
+            let stacked_str = match stacked_imbalance {
+                ImbalanceSide::Bullish => "Bullish",
+                ImbalanceSide::Bearish => "Bearish",
+                _ => "None",
+            };
+            let absorption_str = match footprint_absorption {
+                AbsorptionSide::Bid => "Bid",
+                AbsorptionSide::Ask => "Ask",
+                _ => "None",
+            };
+            let operative = matches!(session.session,
+                data::session::TradingSession::London |
+                data::session::TradingSession::LondonNyOverlap
+            );
+            sb.write_rbf_bar(
+                bar_ms, &format!("{:?}", session.session),
+                o, h, l, c, vol, bar_delta,
+                cvd_slope, ctx.orderbook.obi_l5.unwrap_or(0.0), rbf_dz, rbf_vr,
+                stacked_str, absorption_str,
+                ctx.orderbook.thin_zone_above, ctx.orderbook.thin_zone_below,
+                bid_wall_nearby, ask_wall_nearby,
+                bar_vpin, oi_momentum_aligned,
+                self.vwap_session, &format!("{:?}", effective_regime), atr,
+                operative,
+            );
         }
 
         // ── Micro-window capture ──────────────────────────────────────────────

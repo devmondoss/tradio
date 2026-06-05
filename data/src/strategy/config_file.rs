@@ -55,6 +55,7 @@ struct ScalpingSection {
     s2_vr_min: Option<f64>,
     s3_lookback_bars: Option<usize>,
     s3_min_divergence_strength: Option<f64>,
+    london_min_score:           Option<f64>,
     min_rr: Option<f64>,
 }
 
@@ -167,6 +168,7 @@ impl StrategyConfigFile {
         if let Some(v) = sc.s2_vr_min { cfg.scalping.s2_vr_min = v; }
         if let Some(v) = sc.s3_lookback_bars { cfg.scalping.s3_lookback_bars = v; }
         if let Some(v) = sc.s3_min_divergence_strength { cfg.scalping.s3_min_divergence_strength = v; }
+        if let Some(v) = sc.london_min_score           { cfg.scalping.london_min_score           = v; }
         if let Some(v) = sc.min_rr { cfg.scalping.min_rr = v; }
 
         let rb = self.range_breakout;

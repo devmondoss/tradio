@@ -428,6 +428,8 @@ pub struct ScalpingConfig {
     pub s3_lookback_bars: usize,
     pub s3_min_divergence_strength: f64,
     pub min_rr: f64,
+    /// Score mínimo para señales S1 en sesión London. Datos: <70 → avg_r=-0.21, ≥70 → avg_r=+0.36.
+    pub london_min_score: f64,
 }
 
 impl Default for ScalpingConfig {
@@ -448,6 +450,7 @@ impl Default for ScalpingConfig {
             s3_lookback_bars: 20,
             s3_min_divergence_strength: 0.30,
             min_rr: 1.5,
+            london_min_score: 70.0,
         }
     }
 }

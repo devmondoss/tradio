@@ -113,6 +113,16 @@ pub fn detect(ctx: &ScalpingContext, cfg: &ScalpingConfig) -> Option<ScalpingSig
         return None;
     }
 
+    let conviction_score = (obi_deviation * 200.0).clamp(55.0, 95.0);
+
+    // Gate 6: London requiere alta convicción — datos 40 trades muestran
+    // que score<70 en London tiene avg_r=-0.21 vs +0.36 con score>=70
+    if ctx.session == crate::session::TradingSession::London
+        && conviction_score < cfg.london_min_score
+    {
+        return None;
+    }
+
     let evidence = build_evidence(ctx, side, obi_deviation);
 
     Some(ScalpingSignal {
@@ -123,7 +133,7 @@ pub fn detect(ctx: &ScalpingContext, cfg: &ScalpingConfig) -> Option<ScalpingSig
         tp1_price: tp1,
         tp2_price: tp2,
         rr,
-        conviction_score: (obi_deviation * 200.0).clamp(55.0, 95.0),
+        conviction_score,
         entry_type: "post_only".to_string(),
         timestamp_ms: ctx.timestamp_ms,
         evidence,

@@ -45,6 +45,7 @@ s2_dz_min                  = 1.5        # delta Z-score mínimo para señal de a
 s2_vr_min                  = 2.0        # VR mínimo para confirmar volumen en S2
 s3_lookback_bars           = 20         # barras de lookback para detección de swings S3
 s3_min_divergence_strength = 0.30       # fuerza mínima de divergencia CVD/precio en S3
+london_min_score           = 70.0       # S1 en London requiere score ≥70 (datos: <70 → avg_r=-0.21)
 min_rr                     = 1.5        # R:R mínimo para emitir señal scalping
 
 [liquidation_hunt]

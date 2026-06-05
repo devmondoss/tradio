@@ -453,6 +453,50 @@ impl SupabaseWriter {
         });
     }
 
+    /// Escribe una barra M1 con contexto de microestructura para backtest futuro de RBF v2.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_rbf_bar(
+        &self,
+        ts_ms: i64, session: &str,
+        open: f64, high: f64, low: f64, close: f64, volume: f64, bar_delta: f64,
+        cvd_slope: Option<f64>, obi_l5: f64, dz: f64, vr: f64,
+        stacked_imb: &str, absorption: &str,
+        thin_above: bool, thin_below: bool, bid_wall: bool, ask_wall: bool,
+        vpin: Option<f64>, oi_momentum: Option<bool>,
+        vwap: Option<f64>, regime: &str, atr: f64, operative: bool,
+    ) {
+        let body = json!({
+            "ts_ms":       ts_ms,
+            "session":     session,
+            "open":        open,
+            "high":        high,
+            "low":         low,
+            "close":       close,
+            "volume":      volume,
+            "bar_delta":   bar_delta,
+            "cvd_slope":   cvd_slope,
+            "obi_l5":      obi_l5,
+            "dz":          dz,
+            "vr":          vr,
+            "stacked_imb": stacked_imb,
+            "absorption":  absorption,
+            "thin_above":  thin_above,
+            "thin_below":  thin_below,
+            "bid_wall":    bid_wall,
+            "ask_wall":    ask_wall,
+            "vpin":        vpin,
+            "oi_momentum": oi_momentum,
+            "vwap":        vwap,
+            "regime":      regime,
+            "atr":         atr,
+            "operative":   operative,
+        });
+        let writer = self.clone();
+        tokio::spawn(async move {
+            writer.post("rbf_bars", &body).await;
+        });
+    }
+
     /// Inserta en scalping_trades y hace PATCH a scalping_signals para cerrar el outcome.
     /// Fire-and-forget.
     pub fn write_scalping_trade(&self, trade: &data::strategy::scalping::paper::ScalpingTrade) {
