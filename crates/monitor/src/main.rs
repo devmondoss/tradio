@@ -2899,6 +2899,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         interval_str
     );
 
+    let rbf_warm_cfg = data::strategy::detectors::range_breakout_flow::RangeBreakoutConfig::default();
     for entry in closed {
         let arr = match entry.as_array() {
             Some(a) if a.len() >= 10 => a,
@@ -2982,6 +2983,15 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         if state.bars.len() > VP_WINDOW {
             state.bars.pop_front();
         }
+        // Feed rbf_state so VR/delta/EMA480 buffers son warm al arrancar.
+        // El resultado se descarta — solo queremos poblar el estado interno.
+        let vwap = state.vwap_session;
+        let warm_session = classify_session(open_ms).session;
+        let _ = state.rbf_state.on_bar_close(
+            open, high, low, close, volume, bar_delta,
+            warm_session, open_ms, &rbf_warm_cfg,
+            vwap, None, 0.0, 0.0, None, None,
+        );
     }
 
     // Prime last_regime_enum so hysteresis starts with the correct state
@@ -3139,7 +3149,8 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     state.intrabar_cfg.log_boot();
 
     // Seed bar history from REST before the live stream starts
-    warm_up_history(&mut state, &symbol_str, tf_min, 50).await;
+    warm_up_history(&mut state, &symbol_str, tf_min, 150).await;
+    state.rbf_state.reset_signal_cooldown();
 
     let tf_ms = timeframe.to_milliseconds();
     let mut pending: Option<(u64, Kline)> = None;

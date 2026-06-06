@@ -84,7 +84,7 @@ cvd_slope_gate   = true   # slope CVD debe confirmar dirección del breakout
 dz_min           = 0.5    # dz mínimo alineado (elimina breakouts sin presión)
 dz_max           = 3.0    # dz máximo (extremos >3 revierten — fakeout)
 obi_gate             = false  # OBI gate desactivado (pendiente validación datos reales)
-obi_threshold        = 0.45   # umbral OBI cuando el gate esté activo
+obi_threshold        = 0.15   # umbral Flag 2 confluencia: |obi_l5| > threshold → flag activo (escala [-1,1])
 
 # Sistema de confluencia v2 — shadow mode (grabar todo, subir min_confluence_score cuando haya 50+ señales)
 min_confluence_score = 1      # 1 = shadow mode; subir a 3 después de calibración

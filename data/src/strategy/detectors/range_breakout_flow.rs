@@ -88,11 +88,16 @@ fn score_confluence(
     // wall_target desactivado — 1×ATR es demasiado amplio, vetaba el 100% de señales.
     // Pendiente calibración con datos reales cuando haya 50+ señales con outcome.
 
-    // HVN entre entry y 50% del camino al target
-    let half_path = (target_price - entry_price).abs() * 0.5;
+    // HVN en el camino al target — solo veta si el HVN está ENTRE entry y target
+    // (dirección correcta) y en la primera mitad del recorrido desde entry.
+    let full_path = (target_price - entry_price).abs();
     let has_hvn_obstacle = gate.hvn_levels.iter().any(|&lvl| {
-        let dist = (lvl - entry_price).abs();
-        dist < half_path
+        let in_path = match direction {
+            RbfDirection::Short => lvl < entry_price && lvl > target_price,
+            RbfDirection::Long  => lvl > entry_price && lvl < target_price,
+        };
+        let dist_from_entry = (lvl - entry_price).abs();
+        in_path && dist_from_entry < full_path * 0.5
     });
     if has_hvn_obstacle {
         return (0, vec![], Some("hvn_target".into()));
@@ -116,8 +121,8 @@ fn score_confluence(
     }
 
     let obi_aligned = match direction {
-        RbfDirection::Short => obi < -0.15,
-        RbfDirection::Long  => obi >  0.15,
+        RbfDirection::Short => obi < -cfg.obi_threshold,
+        RbfDirection::Long  => obi >  cfg.obi_threshold,
     };
     if obi_aligned { score += 1; flags.push(ConfluenceFlag::ObiAlineado); }
 
@@ -286,6 +291,11 @@ impl RangeBreakoutState {
             bars_seen:          0,
             last_signal_bar:    0,
         }
+    }
+
+    /// Resetea el cooldown de señal tras warm-up para no bloquear la primera barra live.
+    pub fn reset_signal_cooldown(&mut self) {
+        self.last_signal_bar = 0;
     }
 
     /// OLS slope del CVD acumulado sobre las últimas `window` barras.
