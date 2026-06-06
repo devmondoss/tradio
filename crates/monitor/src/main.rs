@@ -2075,17 +2075,6 @@ impl BarState {
         self.micro_buffer.reset(next_open_ms);
         self.current_candle_open_ms = next_open_ms;
 
-        // ── Subdimi Parallel Observer ─────────────────────────────────────────
-        // Runs the 6 Subdimi detectors in parallel (no winner-takes-all).
-        // Signals are logged to lab_signals for comparison against DRR Core.
-        let parallel_signals = run_subdimi_parallel(&ctx, &cfg);
-        for sig in &parallel_signals {
-            if let Some(sb) = self.supabase.clone() {
-                let sig = sig.clone();
-                tokio::spawn(async move { sb.write_parallel_signal(&sig).await; });
-            }
-        }
-
         let near_misses = collect_near_misses(&ctx, &cfg, signal_fired);
 
         // Build compact skip summary for [bar] log (only when no signal fired)
@@ -3042,17 +3031,18 @@ async fn main() {
     println!("monitor: símbolos activos = {:?}", symbols);
 
     let mut tasks = vec![];
-    for symbol_str in symbols {
-        let sym = symbol_str.clone();
-        let tf  = tf_min;
+    for (i, symbol_str) in symbols.into_iter().enumerate() {
+        let sym      = symbol_str.clone();
+        let tf       = tf_min;
+        let primary  = i == 0; // solo el primer símbolo arranca el ws_server
         tasks.push(tokio::spawn(async move {
-            run_symbol(sym, tf).await;
+            run_symbol(sym, tf, primary).await;
         }));
     }
     futures::future::join_all(tasks).await;
 }
 
-async fn run_symbol(symbol_str: String, tf_min: u64) {
+async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     let tf_min: u64 = tf_min;
 
     let timeframe = match tf_min {
@@ -3123,10 +3113,14 @@ async fn run_symbol(symbol_str: String, tf_min: u64) {
     let mongo = MongoWriter::from_env();
     let supabase = SupabaseWriter::from_env();
 
-    // ── WebSocket server — dashboard web en tiempo real ───────────────────────
+    // ── WebSocket server — solo el task primario bindea el puerto ─────────────
     let ws_port: u16 = std::env::var("WS_PORT")
         .ok().and_then(|v| v.parse().ok()).unwrap_or(9001);
-    let ws_tx = ws_server::start(ws_port);
+    let ws_tx = if primary {
+        ws_server::start(ws_port)
+    } else {
+        ws_server::start(0) // puerto 0 = no bindea, devuelve sender nulo
+    };
     if supabase.is_none() {
         println!("[supabase] SUPABASE_URL not set — cloud persistence disabled");
     }
