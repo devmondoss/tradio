@@ -85,11 +85,8 @@ fn score_confluence(
     cfg: &RangeBreakoutConfig,
 ) -> (u8, Vec<String>, Option<String>) {
     // ── VETOS: cancelan la señal independientemente del score ─────────────────
-    match direction {
-        RbfDirection::Long  if gate.ask_wall_nearby => return (0, vec![], Some("wall_target".into())),
-        RbfDirection::Short if gate.bid_wall_nearby => return (0, vec![], Some("wall_target".into())),
-        _ => {}
-    }
+    // wall_target desactivado — 1×ATR es demasiado amplio, vetaba el 100% de señales.
+    // Pendiente calibración con datos reales cuando haya 50+ señales con outcome.
 
     // HVN entre entry y 50% del camino al target
     let half_path = (target_price - entry_price).abs() * 0.5;
