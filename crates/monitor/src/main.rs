@@ -2076,10 +2076,11 @@ impl BarState {
                     // Siempre escribir a Supabase (incluye señales vetadas, para calibración)
                     if let Some(sb) = self.supabase.clone() {
                         let sig_c = sig.clone();
+                        let sym_c = symbol.to_string();
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         self.rbf_pending_id_rx = Some(rx);
                         tokio::spawn(async move {
-                            let id = sb.write_rbf_signal_async(&sig_c).await;
+                            let id = sb.write_rbf_signal_async(&sig_c, &sym_c).await;
                             let _ = tx.send(id);
                         });
                     }
@@ -2127,6 +2128,7 @@ impl BarState {
                 data::session::TradingSession::LondonNyOverlap
             );
             sb.write_rbf_bar(
+                symbol,
                 bar_ms, &format!("{:?}", session.session),
                 o, h, l, c, vol, bar_delta,
                 cvd_slope, ctx.orderbook.obi_l5.unwrap_or(0.0), rbf_dz, rbf_vr,

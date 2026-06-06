@@ -341,8 +341,9 @@ impl SupabaseWriter {
     pub async fn write_rbf_signal_async(
         &self,
         sig: &data::strategy::detectors::range_breakout_flow::RbfSignal,
+        symbol: &str,
     ) -> Option<String> {
-        let body = self.rbf_signal_body(sig);
+        let body = self.rbf_signal_body(sig, symbol);
         let url = format!("{}/rest/v1/rbf_signals", self.url);
         let result = self
             .client
@@ -413,8 +414,10 @@ impl SupabaseWriter {
     fn rbf_signal_body(
         &self,
         sig: &data::strategy::detectors::range_breakout_flow::RbfSignal,
+        symbol: &str,
     ) -> serde_json::Value {
         serde_json::json!({
+            "symbol":             symbol,
             "timestamp_ms":       sig.timestamp_ms,
             "direction":          format!("{:?}", sig.direction),
             "session":            format!("{:?}", sig.session),
@@ -445,8 +448,8 @@ impl SupabaseWriter {
     }
 
     /// Escribe una señal RBF a Supabase. Fire-and-forget.
-    pub fn write_rbf_signal(&self, sig: &data::strategy::detectors::range_breakout_flow::RbfSignal) {
-        let body   = self.rbf_signal_body(sig);
+    pub fn write_rbf_signal(&self, sig: &data::strategy::detectors::range_breakout_flow::RbfSignal, symbol: &str) {
+        let body   = self.rbf_signal_body(sig, symbol);
         let writer = self.clone();
         tokio::spawn(async move {
             writer.post("rbf_signals", &body).await;
@@ -457,6 +460,7 @@ impl SupabaseWriter {
     #[allow(clippy::too_many_arguments)]
     pub fn write_rbf_bar(
         &self,
+        symbol: &str,
         ts_ms: i64, session: &str,
         open: f64, high: f64, low: f64, close: f64, volume: f64, bar_delta: f64,
         cvd_slope: Option<f64>, obi_l5: f64, dz: f64, vr: f64,
@@ -466,6 +470,7 @@ impl SupabaseWriter {
         vwap: Option<f64>, regime: &str, atr: f64, operative: bool,
     ) {
         let body = json!({
+            "symbol":      symbol,
             "ts_ms":       ts_ms,
             "session":     session,
             "open":        open,
