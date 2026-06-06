@@ -3023,11 +3023,37 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
 async fn main() {
     println!("monitor: starting up");
 
-    let symbol_str = std::env::var("SYMBOL").unwrap_or_else(|_| "BTCUSDT".to_string());
+    // SYMBOLS acepta lista separada por coma: "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT"
+    // SYMBOL (singular) sigue funcionando para compatibilidad
+    let symbols_raw = std::env::var("SYMBOLS")
+        .or_else(|_| std::env::var("SYMBOL"))
+        .unwrap_or_else(|_| "BTCUSDT".to_string());
+    let symbols: Vec<String> = symbols_raw
+        .split(',')
+        .map(|s| s.trim().to_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     let tf_min: u64 = std::env::var("TIMEFRAME_MIN")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(5);
+        .unwrap_or(1);
+
+    println!("monitor: símbolos activos = {:?}", symbols);
+
+    let mut tasks = vec![];
+    for symbol_str in symbols {
+        let sym = symbol_str.clone();
+        let tf  = tf_min;
+        tasks.push(tokio::spawn(async move {
+            run_symbol(sym, tf).await;
+        }));
+    }
+    futures::future::join_all(tasks).await;
+}
+
+async fn run_symbol(symbol_str: String, tf_min: u64) {
+    let tf_min: u64 = tf_min;
 
     let timeframe = match tf_min {
         1 => Timeframe::M1,
@@ -3109,7 +3135,7 @@ async fn main() {
     // so Railway deployments without a config/strategy.toml still work correctly.
     let mut base_cfg = StrategyConfig::load();
     base_cfg.enabled = true;
-    base_cfg.scalping.enabled = true; // siempre activo en Railway — el TOML puede no estar disponible
+    // scalping.enabled viene del strategy.toml — no hardcodear
     let config_loader = MongoConfigLoader::from_env(base_cfg);
 
     let footprint_step: PriceStep = ticker_info.min_ticksize.into();
