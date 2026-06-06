@@ -496,9 +496,15 @@ impl SupabaseWriter {
             "atr":         atr,
             "operative":   operative,
         });
+        let table = match symbol {
+            "ETHUSDT" => "eth_bars",
+            "BNBUSDT" => "bnb_bars",
+            "SOLUSDT" => "sol_bars",
+            _         => "btc_bars",
+        }.to_string();
         let writer = self.clone();
         tokio::spawn(async move {
-            writer.post("rbf_bars", &body).await;
+            writer.post(&table, &body).await;
         });
     }
 
