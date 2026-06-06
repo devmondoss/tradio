@@ -1,6 +1,6 @@
 # Estado presente y futuro — FlowSurface
 
-Ultima revision: 2026-06-02
+Ultima revision: 2026-06-06
 
 Este es el documento canonico para revisar el proyecto. Resume lo que esta vivo, lo que quedo obsoleto y que decisiones futuras dependen de datos.
 
@@ -8,111 +8,167 @@ Este es el documento canonico para revisar el proyecto. Resume lo que esta vivo,
 
 ## Estado presente
 
-El sistema tiene dos motores activos en Railway:
+### Sistema activo: Range Breakout Flow (RBF)
 
-### 1. Scalping S1/S2/S3 (circuit breaker activo)
+Un solo motor activo en Railway corriendo sobre BTCUSDT M1.
 
-Motor de scalping M1 con tres estrategias basadas en microestructura del libro de ordenes:
+**Hipotesis validada en backtest (30 dias M1, n=318 senales London+Overlap):**
+Un rango de consolidacion (0.08–0.55% del precio, 15–60 barras M1) donde el CVD acumula presion en una direccion, seguido de un cierre fuera del rango con VR >= 2x, produce edge positivo en horizonte 30–60 min.
 
-- **S1 OBI Maker** — sesgo de OBI + micro-precio → entry post-only
-- **S2 Absorption** — delta Z-score + VR en extremo de rango → reversal
-- **S3 CVD Divergence** — divergencia CVD/precio en swings → fade
+**Resultados reales acumulados (v1, 12 senales cerradas):**
 
-**Estado actual:** circuit breaker activo despues de 12 trades consecutivos con PnL neto negativo.
+| Segmento | n | Win rate | Avg R |
+|----------|---|----------|-------|
+| Total | 12 | 58% | +0.75R |
+| Shorts | 8 | 87.5% | +1.5R |
+| Longs | 4 | 0% | -1.0R |
+| LondonNyOverlap | 4 | 100% | +2.0R |
+| London | 7 | 43% | +0.3R |
 
-**Causa raiz identificada (sesion 2026-06-02):**
-- El target de S1 con multiplicador x1.2 era estructuralmente menor que las fees ($34.9 vs $40.3 de break-even). El fix a x1.8 esta en el codigo pero no deployado a Railway aun.
-- S1 entra en cierre de barra M5 pero el edge de OBI es de segundos — desajuste de timeframe.
-- 6 de 12 trades en sesion Asia antes de que el gate se deployara.
-
-**Backtest de conviction events (30 dias M1, n=559):** edge negativo — el spike aislado de DZ+VR no predice continuacion.
-
-### 2. RangeBreakoutFlow (nuevo — pendiente deploy)
-
-Detector validado en backtest de 30 dias M1 (43,200 barras):
-
-> Un rango de consolidacion (0.08–0.55% de precio, 15–60 barras M1) donde el CVD acumula presion en una direccion, seguido de un cierre fuera del rango con VR >= 2x, produce edge positivo.
-
-**Resultados del backtest (n=914 senales con CVD alineado):**
-
-| Setup | n | Horizonte | Win rate | Exp/trade |
-|-------|---|-----------|---------|----------|
-| SHORT breakdown + CVD bajista + VR>=2 | 187 | +60min | 13.9% | +0.061% |
-| LONG breakout + CVD alcista + VR>=2 + contra-tendencia | 196 | +30min | 12.8% | +0.093% |
-| London SHORT + VR>=3 + CVD bajista | 32 | +60min | 31.3% | +0.274% |
-
-Parametros del setup:
-- Rango: 15–60 barras M1, tamano 0.08–0.55% del precio
-- CVD: acumulado negativo (SHORT) o positivo (LONG) durante el rango
-- Breakout: cierre fuera del rango con VR >= 2x
-- Stop: 0.25% del precio
-- Target SHORT: 0.50% | Target LONG: 0.45%
-- Sesiones: London, LondonNyOverlap, NewYork
-
-**Estado:** codigo implementado, pendiente de:
-1. Correr `supabase/migration_rbf.sql` en Supabase SQL Editor
-2. Deploy a Railway con `git push`
+**V2 activo (desde 2026-06-05):** sistema de confluencia con 7 flags y 4 vetos. En shadow mode (min_confluence_score=1). Primeras senales v2 registradas con confluence_score y flags.
 
 ---
 
-## DB — Supabase (limpiada 2026-06-02)
+## Arquitectura del detector RBF
 
-**Tablas activas:**
+### Gates base (requisitos duros — sin estos no hay senal)
 
-| Tabla | Filas | Descripcion |
-|-------|-------|-------------|
-| `scalping_bars` | ~1,500+ | Una fila por barra M1 — DZ, VR, CVD, OBI, signal_fired, blocked_by |
-| `scalping_signals` | 16 | Senales S1/S2/S3 con contexto completo |
-| `scalping_trades` | 12 | Trades cerrados con PnL, MFE, MAE |
-| `regime_history` | 416 | Historial de cambios de regimen |
-| `micro_windows` | 1,960 | Micro-dinamica M1 por vela (5 buckets x 15s) |
-| `lab_signals` | 28 | Subdimi Parallel — referencia historica |
-| `deployed_params` | — | Hot-reload de config desde Railway |
-| `rbf_signals` | 0 | Tabla nueva para RangeBreakoutFlow (pendiente migracion) |
+| Gate | Valor | Razon |
+|------|-------|-------|
+| Sesion | London + LondonNyOverlap | NewYork: WR 24.7% excluido |
+| Tamano rango | 0.08%–0.55% | Rango real, no ruido ni tendencia |
+| Duracion rango | 15–60 barras M1 | Consolidacion genuina |
+| CVD acumulado | Alineado con direccion | Presion en la direccion del breakout |
+| VR en breakout | >= 2x promedio 50 barras | Volumen confirma la ruptura |
+| dz | 0.5 <= dz <= 3.0 | Elimina planos y eventos climaticos |
+| CVD slope | Confirma direccion | Pendiente del CVD alineada |
+| Cooldown | 60 barras M1 | Una senal por hora maximo |
 
-**Tablas eliminadas (2026-06-02):**
-- `shadow_signals`, `signal_outcomes` — eran del sistema DRR, vacias
-- `lab_outcomes`, `intrabar_outcomes`, `calibration_log`, `institutional_snapshots` — nunca recibieron datos
-- Vistas: `v_signals_with_outcomes`, `v_micro_with_outcomes`
+### Sistema de confluencia v2 (score 0–7)
+
+Cada flag que se cumple suma +1. La senal dispara si score >= min_confluence_score.
+
+| Flag | Condicion SHORT | Condicion LONG |
+|------|----------------|----------------|
+| cvd_slope | slope < -15 | slope > +15 |
+| obi | OBI L5 < -0.15 | OBI L5 > +0.15 |
+| stacked_imbalance | Imbalance bajista en ultimas 3 barras | Idem alcista |
+| absorption | Absorcion footprint bajista | Idem alcista |
+| lvn_thin | LVN cerca del nivel roto o thin zone en dir. | Idem |
+| vwap_bias | Precio bajo VWAP de sesion | Precio sobre VWAP |
+| oi_momentum | OI expandiendose + precio bajando | Idem subiendo |
+
+### Vetos duros (bloquean independientemente del score)
+
+| Veto | Condicion | Estado |
+|------|-----------|--------|
+| hvn_target | HVN en el 50% del camino al target | Activo |
+| vpin_toxic | VPIN > 0.65 | Activo |
+| long_bear_low_score | Long en Bear/BearPullback con score < 5 | Activo |
+| wall_target | Pared entre entry y target | **DESACTIVADO** — 1xATR era demasiado agresivo (vetaba 100% de senales). Pendiente calibracion con datos reales. |
+
+### Configuracion actual (strategy.toml)
+
+```toml
+[range_breakout]
+enabled          = true
+stop_pct         = 0.25        # 0.25% del precio
+target_short_pct = 0.50        # SHORT target: RR 2:1
+target_long_pct  = 0.45        # LONG target: RR 1.8:1
+min_rr           = 1.5
+cvd_slope_gate   = true
+dz_min           = 0.5
+dz_max           = 3.0
+min_confluence_score = 1       # shadow mode
+cvd_slope_threshold  = 15.0
+bear_long_min_score  = 5
+```
 
 ---
 
-## Que no es presente
+## Base de datos — Supabase
 
-No usar como estado actual:
+### Tablas activas
 
-- DRR como estrategia live — esta desactivado (`drr_enabled = false` en strategy.toml).
-- `shadow_signals` y `signal_outcomes` — eliminadas de Supabase.
-- Documentos anteriores al 2026-06-02 sobre el "estado del sistema" — todo cambio en esta sesion.
-- S1/S2/S3 como estrategia principal de largo plazo — son la base de datos mientras se valida RBF.
+| Tabla | Descripcion | Filas aprox |
+|-------|-------------|-------------|
+| `btc_bars` | OHLCV + microestructura BTC M1 (desde 2026-06-05) | creciendo |
+| `eth_bars` | Idem ETH (pendiente deploy) | 0 |
+| `bnb_bars` | Idem BNB (pendiente deploy) | 0 |
+| `sol_bars` | Idem SOL (pendiente deploy) | 0 |
+| `rbf_signals` | Senales RBF de todos los simbolos, campo symbol | 19 |
+| `regime_history` | Historial de cambios de regimen | varios |
+
+### Estructura de btc_bars (y sus equivalentes por simbolo)
+
+Cada fila = 1 barra M1. Captura todo lo necesario para backtest de RBF v2.
+
+**OHLCV:** open, high, low, close, volume, bar_delta
+**Microestructura:** cvd_slope, obi_l5, dz, vr, stacked_imb, absorption, thin_above, thin_below, bid_wall, ask_wall, vpin, oi_momentum, vwap
+**Contexto:** session, regime, atr, operative (London/Overlap = true)
+
+### Tablas eliminadas (2026-06-06)
+
+- scalping_signals, scalping_trades, scalping_bars — sistema S1/S2/S3 desactivado
+- micro_windows — sistema DRR obsoleto
+- lab_signals — Subdimi parallel obsoleto
+
+### Datos historicos
+
+scalping_bars (Jun 1-5, 5,599 filas) tiene microestructura parcial sin OHLCV. Candidata a backfill: fetchear OHLCV de Binance + merge por ts_ms para insertar en btc_bars e extender el historico.
+
+---
+
+## Sistemas desactivados
+
+### S1/S2/S3 Scalping (desactivado 2026-06-05)
+
+- **S1 OBI Maker:** 45 trades, 49% WR, avg_r=+0.07R — edge marginal
+- **S2 Absorption:** nunca disparo (umbrales muy estrictos o condiciones no presentadas)
+- **S3 CVD Divergence:** nunca disparo
+- Desactivado: `scalping.enabled = false` en strategy.toml
+
+### DRR — Delta Range Reversal (desactivado antes de Jun 2026)
+
+Sistema previo basado en M5. Reemplazado por RBF.
+
+---
+
+## Multi-simbolo (pendiente deploy)
+
+Arquitectura: una instancia Railway por simbolo, misma imagen Docker, distinto env var SYMBOL.
+
+| Servicio Railway | SYMBOL | Tabla destino |
+|-----------------|--------|---------------|
+| monitor-btc (activo) | BTCUSDT | btc_bars |
+| monitor-eth (pendiente) | ETHUSDT | eth_bars |
+| monitor-bnb (pendiente) | BNBUSDT | bnb_bars |
+| monitor-sol (pendiente) | SOLUSDT | sol_bars |
+
+rbf_signals es compartida — todas las instancias escriben ahi con su campo symbol.
 
 ---
 
 ## Proximos pasos
 
-1. **Deploy inmediato:** `git push` a Railway con el codigo nuevo (RBF detector + config).
-2. **Migracion DB:** correr `supabase/migration_rbf.sql` para crear `rbf_signals`.
-3. **Acumular senales RBF** durante 2–3 semanas en paper trading.
-4. **Primera evaluacion:** con 50+ senales `rbf_signals` cerradas, comparar outcomes reales vs backtest.
-5. **S1 fix pendiente:** si se quiere reactivar S1, primero deployar el fix de target x1.8 y verificar que el circuit breaker se resetea.
+| Prioridad | Accion | Condicion |
+|-----------|--------|-----------|
+| 1 | Correr migration_cleanup_and_multisymbol.sql en Supabase | Inmediato |
+| 2 | Backfill btc_bars con datos Jun 1-5 (Binance OHLCV + scalping_bars merge) | Inmediato |
+| 3 | Deploy ETH/BNB/SOL en Railway | Despues de migracion |
+| 4 | Primera evaluacion de RBF v2 | Con 50+ senales cerradas con confluence_score |
+| 5 | Calibrar wall_target veto con datos reales | Con 50+ senales |
+| 6 | Subir min_confluence_score a 3 | Cuando datos confirmen gradiente score->avg_r |
 
 ---
 
 ## Checklist para futuras revisiones
 
-Antes de evaluar cualquier estrategia:
-
-- Identificar de que tabla vienen los datos (`scalping_bars`, `rbf_signals`, etc).
-- Excluir datos anteriores al reset de cada sistema.
+- Los datos de microestructura que Binance no provee (obi_l5, cvd_slope, stacked_imb, absorption, vpin) solo estan disponibles desde el momento en que el monitor corre.
+- Para backtests usar siempre btc_bars (o equivalente por simbolo) — tiene OHLCV + microestructura juntos.
+- No evaluar estrategia con menos de 30 senales cerradas.
 - Medir por expectancy (wins x target + losses x stop) / n, no solo win rate.
-- Buscar segmentos con n >= 30 antes de sacar conclusiones.
-- No optimizar parametros con menos de 100 senales.
 
 ---
 
-## Documentos relacionados
-
-- [ESTADO_CHECKLIST.md](ESTADO_CHECKLIST.md): inventario tecnico por capas.
-- [DRR_IMPLEMENTACION.md](DRR_IMPLEMENTACION.md): bitacora tecnica de RangeDetector y micro-ventana.
-- [SESION_6_UI_DRR_DB.md](SESION_6_UI_DRR_DB.md): bitacora del deploy DRR (historico).
-- [BUILD.md](BUILD.md): setup local de build en Windows.
+*Actualizado 2026-06-06 — sistema RBF v2 activo, multi-simbolo pendiente deploy*

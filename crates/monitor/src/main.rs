@@ -1895,77 +1895,6 @@ impl BarState {
                 }
             }
 
-            // ── scalping_bars recorder (polyrec) — una fila por barra, siempre ──
-            if let Some(sb) = &self.supabase {
-                let dz    = self.scalping_state.compute_dz();
-                let vr    = self.scalping_state.compute_vr();
-                let slope = self.scalping_state.compute_cvd_slope(10);
-                let obi_fast = self.scalping_state.obi_ema_fast;
-                let obi_slow = self.scalping_state.obi_ema_slow;
-                let obi_l5_raw = ctx.orderbook.obi_l5.unwrap_or(0.0);
-                let obi_l5_norm = (obi_l5_raw + 1.0) / 2.0;
-
-                // Score de absorción en ambos lados para el universo de datos
-                let abs_long  = data::strategy::scalping::absorption::absorption_score(&scalp_ctx, data::strategy::types::Side::Long);
-                let abs_short = data::strategy::scalping::absorption::absorption_score(&scalp_ctx, data::strategy::types::Side::Short);
-
-                // Señal disparada en esta barra (se detectó arriba en el bloque de detección)
-                let (sig_fired, sig_score) = self.scalping_state.active_signal
-                    .as_ref()
-                    .filter(|_| {
-                        // Solo contar si la señal es nueva (se abrió en esta barra)
-                        self.scalping_state.signal_entry_ms == Some(bar_ms)
-                    })
-                    .map(|s| {
-                        let label = format!("{}_{:?}", s.strategy, s.side);
-                        (Some(label), Some(s.conviction_score))
-                    })
-                    .unwrap_or((None, None));
-
-                // Razón principal de bloqueo si no disparó
-                let blocked = if sig_fired.is_some() {
-                    None
-                } else if !data::strategy::scalping::is_scalping_session(session.session) {
-                    Some("off_session")
-                } else if self.scalping_state.paper.has_position() {
-                    Some("has_position")
-                } else if !self.scalping_state.paper.can_trade(
-                    cfg.scalping.max_trades_per_session,
-                    cfg.scalping.daily_loss_limit_pct,
-                    cfg.scalping.max_consecutive_losses,
-                ) {
-                    Some("circuit_breaker")
-                } else if dz.abs() < cfg.scalping.s2_dz_min {
-                    Some("dz_low")
-                } else if vr < cfg.scalping.s2_vr_min {
-                    Some("vr_low")
-                } else {
-                    Some("conviction")
-                };
-
-                sb.write_scalping_bar(
-                    bar_ms,
-                    &format!("{:?}", session.session),
-                    &format!("{:?}", effective_regime),
-                    o, h, l, c,
-                    atr,
-                    self.funding_rate,
-                    obi_fast,
-                    obi_slow,
-                    obi_l5_norm,
-                    self.scalping_state.cvd_session,
-                    slope,
-                    dz,
-                    vr,
-                    self.spread_ticks_now(),
-                    abs_long,
-                    abs_short,
-                    liq_ratio,
-                    sig_fired.as_deref(),
-                    sig_score,
-                    blocked,
-                );
-            }
         }
 
         // ── Broadcast barra al dashboard web ─────────────────────────────────
@@ -2141,33 +2070,7 @@ impl BarState {
             );
         }
 
-        // ── Micro-window capture ──────────────────────────────────────────────
-        // Mark trigger if DRR fired, then build and send the row for this candle.
-        if signal_fired {
-            self.micro_buffer.mark_trigger(bar_ms);
-        }
-        if let Some(sb) = self.supabase.clone() {
-            let in_drr_zone = ctx.range.as_ref().map(|r| {
-                matches!(
-                    r.location,
-                    data::detectors::range_detector::RangeLocation::NearHigh
-                    | data::detectors::range_detector::RangeLocation::NearLow
-                    | data::detectors::range_detector::RangeLocation::OutsideHigh
-                    | data::detectors::range_detector::RangeLocation::OutsideLow
-                )
-            });
-            let mw_ctx = data::strategy::micro_window::MicroCtx {
-                atr:         ctx.atr.unwrap_or(0.0),
-                range_loc:   ctx.range.as_ref().map(|r| r.location),
-                range_high:  ctx.range.as_ref().map(|r| r.range_high),
-                range_low:   ctx.range.as_ref().map(|r| r.range_low),
-                range_mid:   ctx.range.as_ref().map(|r| r.range_mid),
-                in_drr_zone,
-            };
-            let mw_row = self.micro_buffer.build_row(&mw_ctx, "binance", &ctx.symbol);
-            tokio::spawn(async move { sb.write_micro_window(&mw_row).await; });
-        }
-        // Reset buffer for the next candle (open = current bar open + 5 min)
+        // Reset micro buffer (legacy DRR system — writes removed, kept for state compat)
         let next_open_ms = bar_ms + 300_000;
         self.micro_buffer.reset(next_open_ms);
         self.current_candle_open_ms = next_open_ms;
