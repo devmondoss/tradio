@@ -628,6 +628,8 @@ struct BarState {
     scalping_state: ScalpingState,
     // Índice del último trade de scalping ya escrito a Supabase (evita doble escritura)
     scalping_paper_written_idx: usize,
+    // AMD (Accumulation · Manipulation · Distribution) detector state
+    amd_state: data::strategy::detectors::amd_detector::AmdDetectorState,
     // Range Breakout Flow detector state
     rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState,
     // RBF paper trader — trackea outcomes de señales RBF
@@ -708,6 +710,7 @@ impl BarState {
             tpo_tracker: data::strategy::tpo::TpoTracker::new(),
             scalping_state: ScalpingState::new(25),
             scalping_paper_written_idx: 0,
+            amd_state: data::strategy::detectors::amd_detector::AmdDetectorState::new(),
             rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState::new(),
             rbf_paper: data::strategy::detectors::rbf_paper::RbfPaperTrader::new(),
             rbf_pending_id_rx: None,
@@ -2021,6 +2024,64 @@ impl BarState {
             }
         }
 
+        // ── AMD detector ──────────────────────────────────────────────────────────
+        {
+            use data::strategy::detectors::amd_detector::AmdContext;
+
+            // Extraer midpoints de Order Blocks como niveles estructurales
+            let ob_levels: Vec<f64> = ctx.order_blocks.as_ref().map(|ob| {
+                let mut v: Vec<f64> = vec![];
+                if let Some(ref b) = ob.nearest_bullish { v.push((b.high + b.low) / 2.0); }
+                if let Some(ref b) = ob.nearest_bearish { v.push((b.high + b.low) / 2.0); }
+                v
+            }).unwrap_or_default();
+
+            // Extraer midpoints de FVGs como niveles estructurales
+            let fvg_levels: Vec<f64> = ctx.fvg.as_ref().map(|fvg| {
+                let mut v: Vec<f64> = vec![];
+                if let Some(ref b) = fvg.nearest_bullish { v.push((b.high + b.low) / 2.0); }
+                if let Some(ref b) = fvg.nearest_bearish { v.push((b.high + b.low) / 2.0); }
+                v
+            }).unwrap_or_default();
+
+            let amd_ctx = AmdContext {
+                vpin:         bar_vpin,
+                cvd_slope,
+                obi_l5:       ctx.orderbook.obi_l5,
+                vwap:         self.vwap_session,
+                lvn_levels:   ctx.volume_profile.lvn_nearby.clone(),
+                naked_pocs:   ctx.volume_profile.naked_pocs.clone(),
+                ob_levels,
+                fvg_levels,
+                funding_rate: self.funding_rate,
+                session_name: format!("{:?}", session.session),
+            };
+
+            if let Some(sig) = self.amd_state.on_bar_close(
+                h, l, c, vol, bar_delta, bar_ms,
+                &amd_ctx, &cfg.amd,
+            ) {
+                println!(
+                    "[amd] {:?} entry={:.1} stop={:.1} target={:.1} rr={:.2} \
+                     range={:.3}% bars={} spike={:?} vr_spike={:.2}x \
+                     vpin_spike={:.3} bar_delta_spike={:.1} target_src={:?} session={}",
+                    sig.direction, sig.entry_price, sig.stop_price, sig.target_price,
+                    sig.rr, sig.range_pct, sig.range_bars, sig.spike_direction,
+                    sig.vr_at_spike, sig.vpin_at_spike.unwrap_or(0.0),
+                    sig.bar_delta_at_spike, sig.target_source, sig.session_name,
+                );
+
+                // Escribir a Supabase (fire-and-forget)
+                if let Some(sb) = self.supabase.clone() {
+                    let sig_c = sig.clone();
+                    let sym_c = symbol.to_string();
+                    tokio::spawn(async move {
+                        sb.write_amd_signal(&sig_c, &sym_c).await;
+                    });
+                }
+            }
+        }
+
         // ── RBF bar capture — microestructura por barra M1 para backtest futuro ─
         if let Some(sb) = self.supabase.clone() {
             // dz: delta z-score normalizado sobre últimas 50 barras
@@ -2983,6 +3044,19 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         if state.bars.len() > VP_WINDOW {
             state.bars.pop_front();
         }
+        // Feed amd_state so VR/history buffers warm al arrancar.
+        {
+            let amd_ctx = data::strategy::detectors::amd_detector::AmdContext {
+                vpin: None, cvd_slope: None, obi_l5: None, vwap: None,
+                lvn_levels: vec![], naked_pocs: vec![], ob_levels: vec![], fvg_levels: vec![],
+                funding_rate: None, session_name: "warmup".into(),
+            };
+            let _ = state.amd_state.on_bar_close(
+                high, low, close, volume, bar_delta, open_ms,
+                &amd_ctx, &data::strategy::detectors::amd_detector::AmdDetectorConfig::default(),
+            );
+        }
+
         // Feed rbf_state so VR/delta/EMA480 buffers son warm al arrancar.
         // El resultado se descarta — solo queremos poblar el estado interno.
         let vwap = state.vwap_session;
@@ -3151,6 +3225,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     // Seed bar history from REST before the live stream starts
     warm_up_history(&mut state, &symbol_str, tf_min, 150).await;
     state.rbf_state.reset_signal_cooldown();
+    state.amd_state.reset_signal_cooldown();
 
     let tf_ms = timeframe.to_milliseconds();
     let mut pending: Option<(u64, Kline)> = None;

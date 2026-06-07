@@ -90,3 +90,42 @@ obi_threshold        = 0.15   # umbral Flag 2 confluencia: |obi_l5| > threshold 
 min_confluence_score = 1      # 1 = shadow mode; subir a 3 después de calibración
 cvd_slope_threshold  = 15.0   # |cvd_slope| mínimo para el flag CvdSlopeSostenido
 bear_long_min_score  = 5      # Long en Bear/BearPullback requiere este score mínimo
+
+# ============================================================================
+# AMD — Accumulation · Manipulation · Distribution
+# Estrategia de reversión post-spike basada en SMC.
+# El detector identifica: (1) rango de consolidación, (2) spike con divergencia
+# CVD/VPIN (manipulación), (3) primera barra de reversión confirmada (entry).
+# Sesiones: 24/7 — el patrón ocurre en cualquier horario.
+# ============================================================================
+[amd_detector]
+enabled = true                    # shadow mode activo — registra señales en amd_signals
+
+# Fase de acumulación
+# Sweep 4320 combos: rng_max=0.30 + acc_min=10-15 es el sweet spot (80% WR, +1.4 avgR)
+accum_range_min_pct       = 0.04  # mas permisivo que antes
+accum_range_max_pct       = 0.30  # rangos comprimidos dan mejor edge — no amplios
+accum_min_bars            = 10    # 10 barras M1 es suficiente para consolidacion real
+accum_max_bars            = 60    # timeout
+
+# Detección del spike de manipulación
+# Sweep: VR 1.5x + CVD diverge es el discriminador principal; VPIN rara vez > 0.60
+manip_min_vr              = 1.5   # bajado de 2.0 — spikes de 1.5x ya tienen edge
+manip_vpin_threshold      = 0.55  # bajado; pendiente calibrar con datos live
+
+# Entry de distribución (primera barra de reversión)
+# Sweep: VR entry 1.0x (cualquier VR basta); slope interno OLS no discrimina
+dist_min_vr               = 1.0   # bajado de 2.5 — la barra de entry no necesita ser de alto VR
+dist_cvd_slope            = 5.0   # relajado — slope OLS interno no es el mejor indicador
+dist_obi_confirm          = 0.08  # relajado levemente
+
+# Gestión del trade
+stop_buffer_pct           = 0.08  # buffer por encima/debajo del spike extreme (%)
+min_rr                    = 2.0   # R:R mínimo requerido para emitir señal
+cooldown_bars             = 30    # bajado de 45 — el patron puede repetirse mas rapido
+
+# Timeout de fase manipulación
+max_wait_bars_after_spike = 10    # barras maximas esperando reversion antes de reset
+
+# Nota: sesiones optimas = Asia + London (Short 100% WR, Long 50% WR en 14d)
+# NewYork excluido — edge negativo consistente con RBF

@@ -1082,6 +1082,11 @@ fn classify_detector_role(
             s.failed_auction += 0.10;
             s.footprint_absorption += 0.08;
         }
+        StrategyId::AmdDetector => {
+            s.liquidity_sweep += 0.20;
+            s.trapped += 0.15;
+            s.cvd_absorption += 0.10;
+        }
     }
 
     for det in detector_log {
@@ -1283,6 +1288,7 @@ fn detector_name(id: StrategyId) -> &'static str {
         StrategyId::SmartMoneyDivergence => "smd",
         StrategyId::CvdDivergenceReversal => "cdr",
         StrategyId::DeltaRangeReversal => "drr",
+        StrategyId::AmdDetector => "amd",
     }
 }
 

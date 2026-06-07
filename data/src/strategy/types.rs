@@ -47,6 +47,7 @@ pub enum StrategyId {
     SmartMoneyDivergence,
     CvdDivergenceReversal,
     DeltaRangeReversal,
+    AmdDetector,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -408,6 +409,9 @@ pub struct StrategyConfig {
 
     /// Configuración del detector Range Breakout Flow.
     pub range_breakout: crate::strategy::detectors::range_breakout_flow::RangeBreakoutConfig,
+
+    /// Configuración del detector AMD (Accumulation · Manipulation · Distribution).
+    pub amd: crate::strategy::detectors::amd_detector::AmdDetectorConfig,
 }
 
 /// Parámetros del motor de scalping.
@@ -486,6 +490,7 @@ impl Default for StrategyConfig {
             drr_enabled: true,
             scalping: ScalpingConfig::default(),
             range_breakout: crate::strategy::detectors::range_breakout_flow::RangeBreakoutConfig::default(),
+            amd: crate::strategy::detectors::amd_detector::AmdDetectorConfig::default(),
         }
     }
 }

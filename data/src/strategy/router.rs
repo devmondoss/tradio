@@ -85,6 +85,8 @@ fn session_valid_for(id: StrategyId, session: TradingSession) -> bool {
             session,
             TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
         ),
+        // AMD: 24/7 — el patrón ocurre en cualquier sesión
+        StrategyId::AmdDetector => true,
     }
 }
 
@@ -102,6 +104,7 @@ fn detector_name_for(id: Option<StrategyId>) -> &'static str {
         Some(StrategyId::FundingExhaustionReversal) => "FER",
         Some(StrategyId::SmartMoneyDivergence) => "SMD",
         Some(StrategyId::CvdDivergenceReversal) => "CDR",
+        Some(StrategyId::AmdDetector) => "AMD",
         None => "UNKNOWN",
     }
 }

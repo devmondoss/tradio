@@ -411,6 +411,45 @@ impl SupabaseWriter {
         });
     }
 
+    /// Inserta una señal AMD en `amd_signals`. Fire-and-forget.
+    pub async fn write_amd_signal(
+        &self,
+        sig: &data::strategy::detectors::amd_detector::AmdSignal,
+        symbol: &str,
+    ) {
+        let body = serde_json::json!({
+            "symbol":               symbol,
+            "timestamp_ms":         sig.timestamp_ms,
+            "direction":            format!("{:?}", sig.direction),
+            "entry_price":          sig.entry_price,
+            "stop_price":           sig.stop_price,
+            "target_price":         sig.target_price,
+            "rr":                   sig.rr,
+            // Acumulación
+            "range_high":           sig.range_high,
+            "range_low":            sig.range_low,
+            "range_pct":            sig.range_pct,
+            "range_bars":           sig.range_bars,
+            "cvd_in_range":         sig.cvd_in_range,
+            // Manipulación
+            "spike_extreme":        sig.spike_extreme,
+            "spike_direction":      format!("{:?}", sig.spike_direction),
+            "vr_at_spike":          sig.vr_at_spike,
+            "vpin_at_spike":        sig.vpin_at_spike,
+            "bar_delta_at_spike":   sig.bar_delta_at_spike,
+            // Entry
+            "vr_at_entry":          sig.vr_at_entry,
+            "cvd_slope_at_entry":   sig.cvd_slope_at_entry,
+            "obi_at_entry":         sig.obi_at_entry,
+            // Target
+            "target_source":        format!("{:?}", sig.target_source),
+            // Metadata
+            "session_name":         &sig.session_name,
+            "funding_at_entry":     sig.funding_at_entry,
+        });
+        self.post("amd_signals", &body).await;
+    }
+
     fn rbf_signal_body(
         &self,
         sig: &data::strategy::detectors::range_breakout_flow::RbfSignal,

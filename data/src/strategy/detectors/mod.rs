@@ -1,3 +1,4 @@
+pub mod amd_detector;
 pub mod cvd_divergence_reversal;
 pub mod delta_range_reversal;
 pub mod dom_imbalance_breakout;

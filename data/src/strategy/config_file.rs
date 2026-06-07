@@ -100,6 +100,24 @@ struct RangeBreakoutSection {
 }
 
 #[derive(Deserialize, Default)]
+struct AmdDetectorSection {
+    enabled:                   Option<bool>,
+    accum_range_min_pct:       Option<f64>,
+    accum_range_max_pct:       Option<f64>,
+    accum_min_bars:            Option<usize>,
+    accum_max_bars:            Option<usize>,
+    manip_min_vr:              Option<f64>,
+    manip_vpin_threshold:      Option<f64>,
+    dist_min_vr:               Option<f64>,
+    dist_cvd_slope:            Option<f64>,
+    dist_obi_confirm:          Option<f64>,
+    stop_buffer_pct:           Option<f64>,
+    min_rr:                    Option<f64>,
+    cooldown_bars:             Option<usize>,
+    max_wait_bars_after_spike: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
 struct StrategyConfigFile {
     #[serde(default)]
     general: GeneralSection,
@@ -113,6 +131,8 @@ struct StrategyConfigFile {
     scalping: ScalpingSection,
     #[serde(default)]
     range_breakout: RangeBreakoutSection,
+    #[serde(default)]
+    amd_detector: AmdDetectorSection,
 }
 
 const MIN_MS: i64 = 60 * 1000;
@@ -185,6 +205,22 @@ impl StrategyConfigFile {
         if let Some(v) = rb.min_confluence_score { cfg.range_breakout.min_confluence_score = v; }
         if let Some(v) = rb.cvd_slope_threshold  { cfg.range_breakout.cvd_slope_threshold  = v; }
         if let Some(v) = rb.bear_long_min_score  { cfg.range_breakout.bear_long_min_score  = v; }
+
+        let amd = self.amd_detector;
+        if let Some(v) = amd.enabled                   { cfg.amd.enabled                   = v; }
+        if let Some(v) = amd.accum_range_min_pct       { cfg.amd.accum_range_min_pct       = v; }
+        if let Some(v) = amd.accum_range_max_pct       { cfg.amd.accum_range_max_pct       = v; }
+        if let Some(v) = amd.accum_min_bars            { cfg.amd.accum_min_bars            = v; }
+        if let Some(v) = amd.accum_max_bars            { cfg.amd.accum_max_bars            = v; }
+        if let Some(v) = amd.manip_min_vr              { cfg.amd.manip_min_vr              = v; }
+        if let Some(v) = amd.manip_vpin_threshold      { cfg.amd.manip_vpin_threshold      = v; }
+        if let Some(v) = amd.dist_min_vr               { cfg.amd.dist_min_vr               = v; }
+        if let Some(v) = amd.dist_cvd_slope            { cfg.amd.dist_cvd_slope            = v; }
+        if let Some(v) = amd.dist_obi_confirm          { cfg.amd.dist_obi_confirm          = v; }
+        if let Some(v) = amd.stop_buffer_pct           { cfg.amd.stop_buffer_pct           = v; }
+        if let Some(v) = amd.min_rr                    { cfg.amd.min_rr                    = v; }
+        if let Some(v) = amd.cooldown_bars             { cfg.amd.cooldown_bars             = v; }
+        if let Some(v) = amd.max_wait_bars_after_spike { cfg.amd.max_wait_bars_after_spike = v; }
 
         cfg
     }
