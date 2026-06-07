@@ -611,6 +611,15 @@ struct BarState {
     last_intrabar_signal_ms: i64,
     // OBI L5 from the previous bar — injected into StrategyMarketContext for DIB persistence gate
     prev_obi_l5: f64,
+    // ICT AMD structural levels — acumulados barra a barra para backtest de estrategia
+    asian_high: Option<f64>,        // High de la sesión Asia del día actual (00:00–07:00 UTC)
+    asian_low:  Option<f64>,        // Low  de la sesión Asia del día actual
+    asian_day:  i64,                // día UTC de la sesión Asia activa (para reset diario)
+    prev_day_high: Option<f64>,     // PDH: High del día anterior completo
+    prev_day_low:  Option<f64>,     // PDL: Low  del día anterior completo
+    daily_high: f64,                // Acumulador del high del día en curso (UTC)
+    daily_low:  f64,                // Acumulador del low  del día en curso (UTC)
+    daily_day:  i64,                // día UTC del acumulador diario
     // VPIN rolling history for CDF (percentile rank) computation
     vpin_history: VecDeque<f64>,
     // Consecutive bars of CVD-vs-price divergence (positive=bearish, negative=bullish, 0=aligned)
@@ -701,6 +710,14 @@ impl BarState {
             intrabar_signal_fired: false,
             last_intrabar_signal_ms: 0,
             prev_obi_l5: 0.0,
+            asian_high:    None,
+            asian_low:     None,
+            asian_day:     -1,
+            prev_day_high: None,
+            prev_day_low:  None,
+            daily_high:    f64::NEG_INFINITY,
+            daily_low:     f64::INFINITY,
+            daily_day:     -1,
             vpin_history: VecDeque::with_capacity(51),
             cvd_divergence_bars: 0,
             vp_bias_tracker: data::strategy::vp_open_bias::DailyVpTracker::new(),
@@ -2117,6 +2134,50 @@ impl BarState {
                 data::session::TradingSession::London |
                 data::session::TradingSession::LondonNyOverlap
             );
+
+            // ── ICT AMD structural levels ─────────────────────────────────────
+            // UTC día actual (días desde epoch)
+            let bar_day = bar_ms / 86_400_000;
+            let bar_hour_utc = (bar_ms / 3_600_000) % 24;
+
+            // Asian session: 00:00–07:00 UTC — acumular H/L durante esa ventana
+            if bar_hour_utc < 7 {
+                if self.asian_day != bar_day {
+                    // nuevo día asiático — reset
+                    self.asian_high = Some(h);
+                    self.asian_low  = Some(l);
+                    self.asian_day  = bar_day;
+                } else {
+                    self.asian_high = Some(self.asian_high.map_or(h, |v| v.max(h)));
+                    self.asian_low  = Some(self.asian_low.map_or(l,  |v| v.min(l)));
+                }
+            }
+
+            // Daily H/L — día UTC completo; cuando cambia el día, guardar como prev_day
+            if self.daily_day != bar_day {
+                if self.daily_day >= 0 {
+                    self.prev_day_high = Some(self.daily_high);
+                    self.prev_day_low  = Some(self.daily_low);
+                }
+                self.daily_high = h;
+                self.daily_low  = l;
+                self.daily_day  = bar_day;
+            } else {
+                self.daily_high = self.daily_high.max(h);
+                self.daily_low  = self.daily_low.min(l);
+            }
+
+            // swing_high/low_50 — rolling max/min sobre las últimas 50 barras (excluyendo la actual)
+            let highs50: Vec<f64> = self.bars.iter().rev().take(50).map(|b| b.high.to_f32() as f64).collect();
+            let lows50:  Vec<f64> = self.bars.iter().rev().take(50).map(|b| b.low.to_f32()  as f64).collect();
+            let swing_high_50: Option<f64> = if highs50.is_empty() { None } else { Some(highs50.iter().cloned().fold(f64::NEG_INFINITY, f64::max)) };
+            let swing_low_50:  Option<f64> = if lows50.is_empty()  { None } else { Some(lows50.iter().cloned().fold(f64::INFINITY,     f64::min)) };
+
+            // equal_high/low — ¿el high/low de esta barra está a ≤0.03% de un swing previo en la ventana de 50?
+            let eq_tol = 0.0003; // 0.03%
+            let equal_high = swing_high_50.map_or(false, |sh| (h - sh).abs() / sh <= eq_tol && h >= sh * (1.0 - eq_tol));
+            let equal_low  = swing_low_50 .map_or(false, |sl| (l - sl).abs() / sl <= eq_tol && l <= sl * (1.0 + eq_tol));
+
             sb.write_rbf_bar(
                 symbol,
                 bar_ms, &format!("{:?}", session.session),
@@ -2128,6 +2189,10 @@ impl BarState {
                 bar_vpin, oi_momentum_aligned,
                 self.vwap_session, &format!("{:?}", effective_regime), atr,
                 operative,
+                self.asian_high, self.asian_low,
+                self.prev_day_high, self.prev_day_low,
+                swing_high_50, swing_low_50,
+                equal_high, equal_low,
             );
         }
 
