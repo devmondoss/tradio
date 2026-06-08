@@ -127,5 +127,11 @@ cooldown_bars             = 30    # bajado de 45 — el patron puede repetirse m
 # Timeout de fase manipulación
 max_wait_bars_after_spike = 10    # barras maximas esperando reversion antes de reset
 
+# Gates de microestructura en el spike (DESACTIVADOS — activar tras 30+ dias de datos)
+# Backtest Jun 1-5: ganadores liq=0.67, perdedores liq=1.51 → gate sugerido: 1.2
+# Backtest Jun 1-5: dz>=1.5 → WR 44% avgR +0.33 → gate sugerido: 1.0–1.5
+manip_liq_ratio_max  = 999.0  # 999 = desactivado; activar con: 1.5
+manip_dz_spike_min   = 0.0    # 0.0 = desactivado; activar con: 1.0
+
 # Nota: sesiones optimas = Asia + London (Short 100% WR, Long 50% WR en 14d)
 # NewYork excluido — edge negativo consistente con RBF

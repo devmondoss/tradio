@@ -611,6 +611,9 @@ struct BarState {
     last_intrabar_signal_ms: i64,
     // OBI L5 from the previous bar — injected into StrategyMarketContext for DIB persistence gate
     prev_obi_l5: f64,
+    // EMA suavizadas de OBI L5 — escritas a btc/eth/bnb/sol_bars cada barra
+    obi_ema_fast: f64,  // alpha = 2/(5+1)  ≈ 0.333
+    obi_ema_slow: f64,  // alpha = 2/(20+1) ≈ 0.095
     // ICT AMD structural levels — acumulados barra a barra para backtest de estrategia
     asian_high: Option<f64>,        // High de la sesión Asia del día actual (00:00–07:00 UTC)
     asian_low:  Option<f64>,        // Low  de la sesión Asia del día actual
@@ -709,8 +712,10 @@ impl BarState {
             intrabar_eval_count: 0,
             intrabar_signal_fired: false,
             last_intrabar_signal_ms: 0,
-            prev_obi_l5: 0.0,
-            asian_high:    None,
+            prev_obi_l5:  0.0,
+            obi_ema_fast: 0.0,
+            obi_ema_slow: 0.0,
+            asian_high:   None,
             asian_low:     None,
             asian_day:     -1,
             prev_day_high: None,
@@ -1754,20 +1759,27 @@ impl BarState {
         // Resolve outcomes that are at least one bar (5m) old
         self.resolve_outcomes(bar_ms, c);
 
+        // ── Microestructura por barra — siempre, independiente del scalping engine ──
+        let bar_liq_ratio = {
+            let snap = self.liq_tracker.snapshot(bar_ms);
+            snap.total_zscore.map(|z| z.abs()).unwrap_or(0.0)
+        };
+        let bar_spread_ticks = self.spread_ticks_now();
+        let bar_obi_l5 = ctx.orderbook.obi_l5.unwrap_or(0.0);
+        // EMA 5-bar y 20-bar de OBI L5
+        self.obi_ema_fast = self.obi_ema_fast * (1.0 - 0.333) + bar_obi_l5 * 0.333;
+        self.obi_ema_slow = self.obi_ema_slow * (1.0 - 0.095) + bar_obi_l5 * 0.095;
+
         // ── Scalping engine (S1/OBI, S2/Absorption, S3/CVD Divergence) ────────
         if cfg.scalping.enabled {
             let scalping_regime = match effective_regime {
                 Regime::TrendUp | Regime::TrendDown => ScalpingRegime::Trend,
                 _ => ScalpingRegime::Range,
             };
-            let liq_ratio = {
-                let liq_snap_local = self.liq_tracker.snapshot(bar_ms);
-                // Usamos el z-score de liquidaciones como proxy del ratio (>3 = elevated)
-                liq_snap_local.total_zscore.map(|z| z.abs()).unwrap_or(0.0)
-            };
-            let obi_l5 = ctx.orderbook.obi_l5.unwrap_or(0.0);
-            let micro_price = ctx.orderbook.microprice.unwrap_or(c);
-            let spread_ticks = self.spread_ticks_now();
+            let liq_ratio    = bar_liq_ratio;
+            let obi_l5       = bar_obi_l5;
+            let micro_price  = ctx.orderbook.microprice.unwrap_or(c);
+            let spread_ticks = bar_spread_ticks;
 
             // Actualizar historiales del scalping state
             self.scalping_state.on_bar_close(
@@ -2061,6 +2073,10 @@ impl BarState {
                 v
             }).unwrap_or_default();
 
+            // vwap_dz = (close - vwap) / atr — cuántas ATRs está el spike de la VWAP
+            let vwap_dz = self.vwap_session
+                .map(|vwap| if atr > 0.0 { (c - vwap) / atr } else { 0.0 });
+
             let amd_ctx = AmdContext {
                 vpin:         bar_vpin,
                 cvd_slope,
@@ -2072,6 +2088,8 @@ impl BarState {
                 fvg_levels,
                 funding_rate: self.funding_rate,
                 session_name: format!("{:?}", session.session),
+                vwap_dz,
+                liq_ratio:    bar_liq_ratio,
             };
 
             if let Some(sig) = self.amd_state.on_bar_close(
@@ -2080,11 +2098,12 @@ impl BarState {
             ) {
                 println!(
                     "[amd] {:?} entry={:.1} stop={:.1} target={:.1} rr={:.2} \
-                     range={:.3}% bars={} spike={:?} vr_spike={:.2}x \
-                     vpin_spike={:.3} bar_delta_spike={:.1} target_src={:?} session={}",
+                     range={:.3}% bars={} spike={:?} vr={:.2}x \
+                     liq={:.2} dz={:.2} delta={:.1} src={:?} ses={}",
                     sig.direction, sig.entry_price, sig.stop_price, sig.target_price,
                     sig.rr, sig.range_pct, sig.range_bars, sig.spike_direction,
-                    sig.vr_at_spike, sig.vpin_at_spike.unwrap_or(0.0),
+                    sig.vr_at_spike, sig.liq_ratio_at_spike,
+                    sig.dz_at_spike.unwrap_or(0.0),
                     sig.bar_delta_at_spike, sig.target_source, sig.session_name,
                 );
 
@@ -2182,7 +2201,9 @@ impl BarState {
                 symbol,
                 bar_ms, &format!("{:?}", session.session),
                 o, h, l, c, vol, bar_delta,
-                cvd_slope, ctx.orderbook.obi_l5.unwrap_or(0.0), rbf_dz, rbf_vr,
+                cvd_slope, ctx.orderbook.obi_l5.unwrap_or(0.0),
+                self.obi_ema_fast, self.obi_ema_slow,
+                rbf_dz, rbf_vr, bar_liq_ratio, bar_spread_ticks,
                 stacked_str, absorption_str,
                 ctx.orderbook.thin_zone_above, ctx.orderbook.thin_zone_below,
                 bid_wall_nearby, ask_wall_nearby,
@@ -3115,6 +3136,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                 vpin: None, cvd_slope: None, obi_l5: None, vwap: None,
                 lvn_levels: vec![], naked_pocs: vec![], ob_levels: vec![], fvg_levels: vec![],
                 funding_rate: None, session_name: "warmup".into(),
+                vwap_dz: None, liq_ratio: 0.0,
             };
             let _ = state.amd_state.on_bar_close(
                 high, low, close, volume, bar_delta, open_ms,

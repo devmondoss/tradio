@@ -67,7 +67,9 @@ pub struct AmdSignal {
     pub spike_direction:    SpikeDir,
     pub vr_at_spike:        f64,
     pub vpin_at_spike:      Option<f64>,
-    pub bar_delta_at_spike: f64,  // Negativo en spike UP = CVD diverge = manipulación
+    pub bar_delta_at_spike:  f64,  // Negativo en spike UP = CVD diverge = manipulación
+    pub liq_ratio_at_spike:  f64,  // Z-score de liquidaciones en el spike
+    pub dz_at_spike:         Option<f64>, // (close - vwap) / atr en el spike
 
     // Contexto del entry (primera barra de distribución)
     pub vr_at_entry:        f64,
@@ -106,6 +108,12 @@ pub struct AmdContext {
     pub funding_rate: Option<f64>,
     /// Nombre de sesión para registrar en la señal.
     pub session_name: String,
+    /// Z-score de precio respecto a VWAP de sesión (close - vwap) / atr.
+    /// Gate: abs >= manip_dz_spike_min para confirmar que el spike rompió zona significativa.
+    pub vwap_dz: Option<f64>,
+    /// Ratio de liquidaciones en el spike (z-score abs de liq tracker).
+    /// Gate: < manip_liq_ratio_max para filtrar cascadas (VPIN cascade = AMD falla).
+    pub liq_ratio: f64,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -129,17 +137,19 @@ enum AmdPhase {
         bars:        usize,
     },
     ManipulationDetected {
-        spike_extreme:      f64,
-        spike_dir:          SpikeDir,
-        vr_at_spike:        f64,
-        vpin_at_spike:      Option<f64>,
-        bar_delta_at_spike: f64,
-        range_high:         f64,
-        range_low:          f64,
-        range_bars:         usize,
-        cvd_in_range:       f64,
-        bars_since_spike:   usize,
-        spike_timestamp_ms: i64,
+        spike_extreme:       f64,
+        spike_dir:           SpikeDir,
+        vr_at_spike:         f64,
+        vpin_at_spike:       Option<f64>,
+        bar_delta_at_spike:  f64,
+        liq_ratio_at_spike:  f64,
+        dz_at_spike:         Option<f64>,
+        range_high:          f64,
+        range_low:           f64,
+        range_bars:          usize,
+        cvd_in_range:        f64,
+        bars_since_spike:    usize,
+        spike_timestamp_ms:  i64,
     },
 }
 
@@ -318,13 +328,19 @@ impl AmdDetectorState {
                     SpikeDir::Down => bar_delta > 0.0, // precio baja pero compradores dominan
                 };
 
-                if vpin_high && cvd_diverged {
+                // Gate microestructura en el spike (desactivados por defecto — calibrar con datos)
+                let liq_ok = ctx.liq_ratio <= cfg.manip_liq_ratio_max;
+                let dz_ok  = ctx.vwap_dz.map_or(true, |dz| dz.abs() >= cfg.manip_dz_spike_min);
+
+                if vpin_high && cvd_diverged && liq_ok && dz_ok {
                     self.phase = AmdPhase::ManipulationDetected {
                         spike_extreme,
                         spike_dir,
                         vr_at_spike:        vr,
                         vpin_at_spike:      ctx.vpin,
                         bar_delta_at_spike: bar_delta,
+                        liq_ratio_at_spike: ctx.liq_ratio,
+                        dz_at_spike:        ctx.vwap_dz,
                         range_high,
                         range_low,
                         range_bars:         bars,
@@ -333,7 +349,7 @@ impl AmdDetectorState {
                         spike_timestamp_ms: timestamp_ms,
                     };
                 } else {
-                    // Breakout limpio sin firma de manipulación → reset
+                    // Breakout limpio sin firma de manipulación (o gate microestructura falló)
                     self.phase = AmdPhase::Idle;
                 }
                 None
@@ -343,6 +359,7 @@ impl AmdDetectorState {
             AmdPhase::ManipulationDetected {
                 spike_extreme, spike_dir,
                 vr_at_spike, vpin_at_spike, bar_delta_at_spike,
+                liq_ratio_at_spike, dz_at_spike,
                 range_high, range_low, range_bars, cvd_in_range,
                 bars_since_spike, ..
             } => {
@@ -358,6 +375,8 @@ impl AmdDetectorState {
                     vr_at_spike,
                     vpin_at_spike,
                     bar_delta_at_spike,
+                    liq_ratio_at_spike,
+                    dz_at_spike,
                     range_high,
                     range_low,
                     range_bars,
@@ -417,10 +436,10 @@ impl AmdDetectorState {
 
                 Some(AmdSignal {
                     timestamp_ms,
-                    direction:          dist_dir,
-                    entry_price:        entry,
-                    stop_price:         stop,
-                    target_price:       target,
+                    direction:           dist_dir,
+                    entry_price:         entry,
+                    stop_price:          stop,
+                    target_price:        target,
                     rr,
                     range_high,
                     range_low,
@@ -428,16 +447,18 @@ impl AmdDetectorState {
                     range_bars,
                     cvd_in_range,
                     spike_extreme,
-                    spike_direction:    spike_dir,
+                    spike_direction:     spike_dir,
                     vr_at_spike,
                     vpin_at_spike,
                     bar_delta_at_spike,
-                    vr_at_entry:        vr,
-                    cvd_slope_at_entry: ctx.cvd_slope,
-                    obi_at_entry:       obi,
+                    liq_ratio_at_spike,
+                    dz_at_spike,
+                    vr_at_entry:         vr,
+                    cvd_slope_at_entry:  ctx.cvd_slope,
+                    obi_at_entry:        obi,
                     target_source,
-                    session_name:       ctx.session_name.clone(),
-                    funding_at_entry:   ctx.funding_rate,
+                    session_name:        ctx.session_name.clone(),
+                    funding_at_entry:    ctx.funding_rate,
                 })
             }
         }
@@ -510,6 +531,14 @@ pub struct AmdDetectorConfig {
     // Timeout de la fase de manipulación detectada
     /// Si no llega la barra de distribución en este tiempo, reset a Idle.
     pub max_wait_bars_after_spike: usize,
+
+    // Gates de microestructura en el spike (desactivados por defecto)
+    /// liq_ratio máximo permitido en el spike. 999.0 = desactivado.
+    /// Basado en análisis: ganadores median=0.67, perdedores=1.51. Gate sugerido: 1.2.
+    pub manip_liq_ratio_max: f64,
+    /// |dz_vwap| mínimo en el spike = spike rompió zona significativa. 0.0 = desactivado.
+    /// Basado en análisis: dz>=1.5 → WR 44%, avgR +0.33. Gate sugerido: 1.0–1.5.
+    pub manip_dz_spike_min: f64,
 }
 
 impl Default for AmdDetectorConfig {
@@ -529,6 +558,8 @@ impl Default for AmdDetectorConfig {
             min_rr:                    2.0,
             cooldown_bars:             45,
             max_wait_bars_after_spike: 10,
+            manip_liq_ratio_max:       999.0, // desactivado — activar tras 30+ días de datos
+            manip_dz_spike_min:        0.0,   // desactivado — activar tras 30+ días de datos
         }
     }
 }
