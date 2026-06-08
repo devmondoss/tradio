@@ -321,7 +321,8 @@ impl AmdDetectorState {
                     SpikeDir::Down => low,
                 };
 
-                // Firma de manipulación: VPIN alto Y CVD diverge del precio
+                // Firma de manipulación: VPIN alto O CVD diverge (cualquiera es suficiente)
+                // En M1 live la divergencia CVD es rara — basta con uno de los dos signals.
                 let vpin_high = ctx.vpin.map_or(false, |v| v > cfg.manip_vpin_threshold);
                 let cvd_diverged = match spike_dir {
                     SpikeDir::Up   => bar_delta < 0.0, // precio sube pero vendedores dominan
@@ -332,7 +333,7 @@ impl AmdDetectorState {
                 let liq_ok = ctx.liq_ratio <= cfg.manip_liq_ratio_max;
                 let dz_ok  = ctx.vwap_dz.map_or(true, |dz| dz.abs() >= cfg.manip_dz_spike_min);
 
-                if vpin_high && cvd_diverged && liq_ok && dz_ok {
+                if (vpin_high || cvd_diverged) && liq_ok && dz_ok {
                     self.phase = AmdPhase::ManipulationDetected {
                         spike_extreme,
                         spike_dir,
