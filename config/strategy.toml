@@ -111,7 +111,7 @@ accum_max_bars            = 60    # timeout
 # Detección del spike de manipulación
 # Sweep: VR 1.5x + CVD diverge es el discriminador principal; VPIN rara vez > 0.60
 manip_min_vr              = 1.5   # bajado de 2.0 — spikes de 1.5x ya tienen edge
-manip_vpin_threshold      = 0.55  # bajado; pendiente calibrar con datos live
+manip_vpin_threshold      = 0.30  # bajado para que fluyan señales; calibrar con datos reales
 
 # Entry de distribución (primera barra de reversión)
 # Sweep: VR entry 1.0x (cualquier VR basta); slope interno OLS no discrimina

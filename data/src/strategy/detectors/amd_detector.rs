@@ -401,8 +401,9 @@ impl AmdDetectorState {
                 // VR confirma volumen real en la nueva dirección
                 if vr < cfg.dist_min_vr { return None; }
 
-                // CVD slope confirma dirección de distribución
-                let cvd_ok = ctx.cvd_slope.map_or(false, |slope| match dist_dir {
+                // CVD slope confirma dirección de distribución.
+                // map_or(true): si el dato no está disponible, no bloquear.
+                let cvd_ok = ctx.cvd_slope.map_or(true, |slope| match dist_dir {
                     AmdDirection::Short => slope < -cfg.dist_cvd_slope,
                     AmdDirection::Long  => slope >  cfg.dist_cvd_slope,
                 });
@@ -586,6 +587,8 @@ mod tests {
             fvg_levels:   vec![],
             funding_rate: None,
             session_name: "London".into(),
+            vwap_dz:      None,
+            liq_ratio:    0.0,
         }
     }
 
@@ -595,6 +598,7 @@ mod tests {
             vwap: None, lvn_levels: vec![], naked_pocs: vec![],
             ob_levels: vec![], fvg_levels: vec![], funding_rate: None,
             session_name: "Test".into(),
+            vwap_dz: None, liq_ratio: 0.0,
         };
         for i in 0..n {
             let ts = (i as i64) * 60_000;
@@ -621,15 +625,20 @@ mod tests {
         assert!(sig.is_none(), "con enabled=false nunca emite señal");
     }
 
+    fn ctx_target(lvn: Vec<f64>, pocs: Vec<f64>) -> AmdContext {
+        AmdContext {
+            vpin: None, cvd_slope: None, obi_l5: None, vwap: None,
+            lvn_levels: lvn, naked_pocs: pocs, ob_levels: vec![], fvg_levels: vec![],
+            funding_rate: None, session_name: "Test".into(),
+            vwap_dz: None, liq_ratio: 0.0,
+        }
+    }
+
     #[test]
     fn fallback_target_gives_2r() {
         let entry = 60_000.0;
         let risk  = 200.0;
-        let ctx = AmdContext {
-            vpin: None, cvd_slope: None, obi_l5: None, vwap: None,
-            lvn_levels: vec![], naked_pocs: vec![], ob_levels: vec![], fvg_levels: vec![],
-            funding_rate: None, session_name: "Test".into(),
-        };
+        let ctx = ctx_target(vec![], vec![]);
         let (target, source) = AmdDetectorState::select_target(AmdDirection::Short, entry, risk, &ctx);
         assert_eq!(source, TargetSource::Fallback2R);
         assert!((target - (entry - risk * 2.0)).abs() < 0.01);
@@ -639,14 +648,7 @@ mod tests {
     fn lvn_target_preferred_over_fallback() {
         let entry = 60_000.0;
         let risk  = 200.0;
-        let ctx = AmdContext {
-            vpin: None, cvd_slope: None, obi_l5: None, vwap: None,
-            lvn_levels:  vec![59_500.0], // 500 pts below entry — valid for SHORT
-            naked_pocs:  vec![],
-            ob_levels:   vec![],
-            fvg_levels:  vec![],
-            funding_rate: None, session_name: "Test".into(),
-        };
+        let ctx = ctx_target(vec![59_500.0], vec![]);
         let (target, source) = AmdDetectorState::select_target(AmdDirection::Short, entry, risk, &ctx);
         assert_eq!(source, TargetSource::LvnNearby);
         assert!((target - 59_500.0).abs() < 0.01);
@@ -656,14 +658,7 @@ mod tests {
     fn nearest_structural_level_wins() {
         let entry = 60_000.0;
         let risk  = 200.0;
-        let ctx = AmdContext {
-            vpin: None, cvd_slope: None, obi_l5: None, vwap: None,
-            lvn_levels:  vec![59_200.0],  // 800 below
-            naked_pocs:  vec![59_700.0],  // 300 below — nearest
-            ob_levels:   vec![],
-            fvg_levels:  vec![],
-            funding_rate: None, session_name: "Test".into(),
-        };
+        let ctx = ctx_target(vec![59_200.0], vec![59_700.0]);
         let (target, source) = AmdDetectorState::select_target(AmdDirection::Short, entry, risk, &ctx);
         assert_eq!(source, TargetSource::NakedPoc, "Naked POC más cercano debe ganar");
         assert!((target - 59_700.0).abs() < 0.01);
