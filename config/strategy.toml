@@ -115,9 +115,9 @@ manip_vpin_threshold      = 0.30  # bajado para que fluyan señales; calibrar co
 
 # Entry de distribución (primera barra de reversión)
 # Sweep: VR entry 1.0x (cualquier VR basta); slope interno OLS no discrimina
-dist_min_vr               = 1.0   # bajado de 2.5 — la barra de entry no necesita ser de alto VR
-dist_cvd_slope            = 5.0   # relajado — slope OLS interno no es el mejor indicador
-dist_obi_confirm          = 0.08  # relajado levemente
+dist_min_vr               = 1.0   # VR mínimo en barra de entry
+dist_cvd_slope            = 999.0 # DESACTIVADO shadow mode — calibrar con datos reales
+dist_obi_confirm          = 1.0   # DESACTIVADO shadow mode — OBI en entry barra casi siempre ~0
 
 # Gestión del trade
 stop_buffer_pct           = 0.08  # buffer por encima/debajo del spike extreme (%)

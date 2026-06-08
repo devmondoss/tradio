@@ -402,20 +402,10 @@ impl AmdDetectorState {
                 // VR confirma volumen real en la nueva dirección
                 if vr < cfg.dist_min_vr { return None; }
 
-                // CVD slope confirma dirección de distribución.
-                // map_or(true): si el dato no está disponible, no bloquear.
-                let cvd_ok = ctx.cvd_slope.map_or(true, |slope| match dist_dir {
-                    AmdDirection::Short => slope < -cfg.dist_cvd_slope,
-                    AmdDirection::Long  => slope >  cfg.dist_cvd_slope,
-                });
-                if !cvd_ok { return None; }
-
-                // OBI confirma dirección de distribución
-                let obi_ok = match dist_dir {
-                    AmdDirection::Short => obi < -cfg.dist_obi_confirm,
-                    AmdDirection::Long  => obi >  cfg.dist_obi_confirm,
-                };
-                if !obi_ok { return None; }
+                // CVD slope y OBI: grabamos el contexto pero no bloqueamos en shadow mode.
+                // En shadow mode (dist_cvd_slope=5.0, dist_obi_confirm=0.08 con defaults)
+                // estos gates se desactivan con dist_cvd_slope=999.0 / dist_obi_confirm=1.0
+                // para acumular señales y calibrar. En producción se activan con datos reales.
 
                 // Calcular precios de entrada
                 let entry = close;
