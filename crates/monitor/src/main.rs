@@ -3159,7 +3159,10 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
             };
             let _ = state.amd_state.on_bar_close(
                 high, low, close, volume, bar_delta, open_ms,
-                &amd_ctx, &data::strategy::detectors::amd_detector::AmdDetectorConfig::default(),
+                &amd_ctx, &data::strategy::detectors::amd_detector::AmdDetectorConfig {
+                    enabled: true,
+                    ..data::strategy::detectors::amd_detector::AmdDetectorConfig::default()
+                },
             );
         }
 
