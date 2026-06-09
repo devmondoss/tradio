@@ -24,6 +24,16 @@ pub struct RestoredRbfPosition {
     pub entry_ms:     i64,
 }
 
+/// Posición AMD persistida en Supabase, restaurada al reiniciar el proceso.
+pub struct RestoredAmdPosition {
+    pub signal_id:    String,
+    pub direction:    data::strategy::detectors::amd_detector::AmdDirection,
+    pub entry_price:  f64,
+    pub stop_price:   f64,
+    pub target_price: f64,
+    pub entry_ms:     i64,
+}
+
 /// Contexto extra que se pasa junto a una ScalpingSignal para persistencia.
 pub struct ScalpingWriteCtx<'a> {
     pub session: &'a str,
@@ -504,13 +514,13 @@ impl SupabaseWriter {
         })
     }
 
-    /// Inserta una señal AMD en `amd_signals`. Fire-and-forget.
-    pub async fn write_amd_signal(
+    /// Posición AMD persistida en Supabase, restaurada al reiniciar el proceso.
+    pub fn amd_signal_body(
         &self,
         sig: &data::strategy::detectors::amd_detector::AmdSignal,
         symbol: &str,
-    ) {
-        let body = serde_json::json!({
+    ) -> serde_json::Value {
+        serde_json::json!({
             "symbol":               symbol,
             "timestamp_ms":         sig.timestamp_ms,
             "direction":            format!("{:?}", sig.direction),
@@ -518,13 +528,11 @@ impl SupabaseWriter {
             "stop_price":           sig.stop_price,
             "target_price":         sig.target_price,
             "rr":                   sig.rr,
-            // Acumulación
             "range_high":           sig.range_high,
             "range_low":            sig.range_low,
             "range_pct":            sig.range_pct,
             "range_bars":           sig.range_bars,
             "cvd_in_range":         sig.cvd_in_range,
-            // Manipulación
             "spike_extreme":        sig.spike_extreme,
             "spike_direction":      format!("{:?}", sig.spike_direction),
             "vr_at_spike":          sig.vr_at_spike,
@@ -532,23 +540,145 @@ impl SupabaseWriter {
             "bar_delta_at_spike":   sig.bar_delta_at_spike,
             "liq_ratio_at_spike":   sig.liq_ratio_at_spike,
             "dz_at_spike":          sig.dz_at_spike,
-            // Entry
             "vr_at_entry":          sig.vr_at_entry,
             "cvd_slope_at_entry":   sig.cvd_slope_at_entry,
             "obi_at_entry":         sig.obi_at_entry,
-            // Target
             "target_source":        format!("{:?}", sig.target_source),
-            // Metadata
             "session_name":         &sig.session_name,
             "funding_at_entry":     sig.funding_at_entry,
-            // Quality score (orderflow context — Fabio Valentini methodology)
             "quality_score":        sig.quality_score,
             "absorption_in_range":  sig.absorption_in_range,
             "absorption_at_spike":  sig.absorption_at_spike,
             "regime_is_trending":   sig.regime_is_trending,
             "session_cvd":          sig.session_cvd,
+        })
+    }
+
+    /// Inserta una señal AMD y retorna el UUID asignado (para PATCH de outcome).
+    pub async fn write_amd_signal_async(
+        &self,
+        sig: &data::strategy::detectors::amd_detector::AmdSignal,
+        symbol: &str,
+    ) -> Option<String> {
+        let body = self.amd_signal_body(sig, symbol);
+        let url = format!("{}/rest/v1/amd_signals", self.url);
+        let result = self
+            .client
+            .post(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&body)
+            .send()
+            .await;
+        match result {
+            Ok(r) if r.status().is_success() => {
+                let rows: serde_json::Value = r.json().await.unwrap_or_default();
+                rows.as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|o| o.get("id"))
+                    .and_then(|v| v.as_i64())
+                    .map(|id| id.to_string())
+            }
+            Ok(r) => { eprintln!("[supabase] write_amd_signal_async HTTP {}", r.status()); None }
+            Err(e) => { eprintln!("[supabase] write_amd_signal_async error: {e}"); None }
+        }
+    }
+
+    /// Actualiza el outcome de una señal AMD (PATCH por id).
+    pub fn update_amd_outcome(
+        &self,
+        id: &str,
+        trade: &data::strategy::detectors::amd_paper::AmdClosedTrade,
+    ) {
+        let closed_at_iso = chrono::DateTime::from_timestamp_millis(trade.exit_ms)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        let body = serde_json::json!({
+            "exit_price":   trade.exit_price,
+            "result_r":     trade.result_r,
+            "exit_reason":  trade.exit_reason.as_str(),
+            "closed_at_ms": trade.exit_ms,
+            "is_active":    false,
         });
-        self.post("amd_signals", &body).await;
+        let _ = closed_at_iso; // closed_at_ms es bigint en amd_signals
+        let url    = format!("{}/rest/v1/amd_signals?id=eq.{}", self.url, id);
+        let writer = self.clone();
+        let body_c = body.clone();
+        tokio::spawn(async move {
+            let result = writer
+                .client
+                .patch(&url)
+                .header("apikey", &writer.key)
+                .header("Authorization", format!("Bearer {}", writer.key))
+                .header("Content-Type", "application/json")
+                .header("Prefer", "return=minimal")
+                .json(&body_c)
+                .send()
+                .await;
+            if let Ok(r) = result {
+                if !r.status().is_success() {
+                    eprintln!("[supabase] update_amd_outcome HTTP {}", r.status());
+                }
+            }
+        });
+    }
+
+    /// Marca una señal AMD como posición activa del paper trader.
+    pub fn mark_amd_active(&self, id: &str) {
+        let body = serde_json::json!({ "is_active": true });
+        let url    = format!("{}/rest/v1/amd_signals?id=eq.{}", self.url, id);
+        let writer = self.clone();
+        tokio::spawn(async move {
+            let result = writer
+                .client
+                .patch(&url)
+                .header("apikey", &writer.key)
+                .header("Authorization", format!("Bearer {}", writer.key))
+                .header("Content-Type", "application/json")
+                .header("Prefer", "return=minimal")
+                .json(&body)
+                .send()
+                .await;
+            if let Ok(r) = result {
+                if !r.status().is_success() {
+                    eprintln!("[supabase] mark_amd_active HTTP {}", r.status());
+                }
+            }
+        });
+    }
+
+    /// Carga posición AMD activa desde Supabase al arrancar el proceso.
+    pub async fn load_amd_active(&self, symbol: &str) -> Option<RestoredAmdPosition> {
+        let url = format!(
+            "{}/rest/v1/amd_signals?is_active=eq.true&symbol=eq.{}&order=id.desc&limit=1",
+            self.url, symbol
+        );
+        let result = self
+            .client
+            .get(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Accept", "application/json")
+            .send()
+            .await;
+        let rows: serde_json::Value = match result {
+            Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
+            Ok(r) => { eprintln!("[supabase] load_amd_active HTTP {}", r.status()); return None; }
+            Err(e) => { eprintln!("[supabase] load_amd_active error: {e}"); return None; }
+        };
+        let row = rows.as_array()?.first()?;
+        let signal_id    = row.get("id")?.as_i64()?.to_string();
+        let dir_str      = row.get("direction")?.as_str()?;
+        let direction    = serde_json::from_str::<
+            data::strategy::detectors::amd_detector::AmdDirection
+        >(&format!("\"{}\"", dir_str)).ok()?;
+        let entry_price  = row.get("entry_price")?.as_f64()?;
+        let stop_price   = row.get("stop_price")?.as_f64()?;
+        let target_price = row.get("target_price")?.as_f64()?;
+        let entry_ms     = row.get("timestamp_ms")?.as_i64()?;
+        Some(RestoredAmdPosition { signal_id, direction, entry_price, stop_price, target_price, entry_ms })
     }
 
     fn rbf_signal_body(

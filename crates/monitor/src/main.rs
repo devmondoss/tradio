@@ -644,6 +644,14 @@ struct BarState {
     scalping_paper_written_idx: usize,
     // AMD (Accumulation · Manipulation · Distribution) detector state
     amd_state: data::strategy::detectors::amd_detector::AmdDetectorState,
+    // AMD paper trader — trackea outcomes de señales AMD
+    amd_paper: data::strategy::detectors::amd_paper::AmdPaperTrader,
+    // UUID pendiente de asignar al paper trader AMD (llega async tras write_amd_signal_async)
+    amd_pending_id_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
+    // Outcome AMD pendiente si el trade cerró antes de que llegara el supabase_id
+    amd_pending_outcome: Option<data::strategy::detectors::amd_paper::AmdClosedTrade>,
+    // Última sesión vista para AMD — detecta cambio y fuerza cierre SESSION_END
+    amd_last_session: data::session::session_tracker::TradingSession,
     // Range Breakout Flow detector state
     rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState,
     // RBF paper trader — trackea outcomes de señales RBF
@@ -739,6 +747,10 @@ impl BarState {
             scalping_state: ScalpingState::new(25),
             scalping_paper_written_idx: 0,
             amd_state: data::strategy::detectors::amd_detector::AmdDetectorState::new(),
+            amd_paper: data::strategy::detectors::amd_paper::AmdPaperTrader::new(),
+            amd_pending_id_rx: None,
+            amd_pending_outcome: None,
+            amd_last_session: data::session::session_tracker::TradingSession::OffHours,
             rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState::new(),
             rbf_paper: data::strategy::detectors::rbf_paper::RbfPaperTrader::new(),
             rbf_pending_id_rx: None,
@@ -2170,31 +2182,106 @@ impl BarState {
                 big_trade_cvd_bar:  ctx.flow.big_trade_cvd_bar,
             };
 
+            // ── AMD paper trader: resolver UUID pendiente ─────────────────────
+            if let Some(mut rx) = self.amd_pending_id_rx.take() {
+                match rx.try_recv() {
+                    Ok(maybe_id) => {
+                        if let Some(id) = maybe_id {
+                            if let Some(pending) = self.amd_pending_outcome.take() {
+                                if let Some(sb) = &self.supabase {
+                                    sb.update_amd_outcome(&id, &pending);
+                                }
+                            } else {
+                                if let Some(sb) = &self.supabase {
+                                    sb.mark_amd_active(&id);
+                                }
+                                self.amd_paper.set_supabase_id(id);
+                            }
+                        }
+                    }
+                    Err(_) => { self.amd_pending_id_rx = Some(rx); }
+                }
+            }
+
+            // ── AMD paper trader: cierre por cambio de sesión ─────────────────
+            macro_rules! write_amd_outcome {
+                ($trade:expr) => {{
+                    let trade = $trade;
+                    println!(
+                        "[amd_paper] {:?} {} entry={:.4} exit={:.4} R={:.2}",
+                        trade.direction, trade.exit_reason.as_str(),
+                        trade.entry_price, trade.exit_price, trade.result_r,
+                    );
+                    if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
+                        sb.update_amd_outcome(id, &trade);
+                    } else if trade.supabase_id.is_none() && self.amd_pending_id_rx.is_some() {
+                        self.amd_pending_outcome = Some(trade);
+                    }
+                }};
+            }
+
+            if session.session != self.amd_last_session {
+                let closed_by_price = if self.amd_paper.has_position() {
+                    if let Some(trade) = self.amd_paper.on_bar_close(h, l, bar_ms) {
+                        write_amd_outcome!(trade);
+                        true
+                    } else { false }
+                } else { false };
+                if !closed_by_price {
+                    if let Some(trade) = self.amd_paper.close_session(c, bar_ms) {
+                        write_amd_outcome!(trade);
+                    }
+                }
+                self.amd_last_session = session.session;
+            }
+
+            // ── AMD paper trader: chequeo stop/target en barra normal ─────────
+            if self.amd_paper.has_position() {
+                if let Some(trade) = self.amd_paper.on_bar_close(h, l, bar_ms) {
+                    write_amd_outcome!(trade);
+                }
+            }
+
+            // ── AMD detector ──────────────────────────────────────────────────
             if let Some(sig) = self.amd_state.on_bar_close(
                 h, l, c, vol, bar_delta, bar_ms,
                 &amd_ctx, &cfg.amd,
             ) {
                 println!(
-                    "[amd] {:?} entry={:.1} stop={:.1} target={:.1} rr={:.2} \
+                    "[amd] {:?} entry={:.4} stop={:.4} target={:.4} rr={:.2} \
                      range={:.3}% bars={} spike={:?} vr={:.2}x \
                      liq={:.2} dz={:.2} delta={:.1} src={:?} ses={} \
-                     quality={}/10 abs_range={} abs_spike={} trending={} ses_cvd={:.0}",
+                     quality={}/10",
                     sig.direction, sig.entry_price, sig.stop_price, sig.target_price,
                     sig.rr, sig.range_pct, sig.range_bars, sig.spike_direction,
                     sig.vr_at_spike, sig.liq_ratio_at_spike,
                     sig.dz_at_spike.unwrap_or(0.0),
                     sig.bar_delta_at_spike, sig.target_source, sig.session_name,
-                    sig.quality_score, sig.absorption_in_range,
-                    sig.absorption_at_spike, sig.regime_is_trending, sig.session_cvd,
+                    sig.quality_score,
                 );
 
-                // Escribir a Supabase (fire-and-forget)
-                if let Some(sb) = self.supabase.clone() {
-                    let sig_c = sig.clone();
-                    let sym_c = symbol.to_string();
-                    tokio::spawn(async move {
-                        sb.write_amd_signal(&sig_c, &sym_c).await;
-                    });
+                // Escribir a Supabase y abrir paper trade
+                if !self.amd_paper.has_position() {
+                    if let Some(sb) = self.supabase.clone() {
+                        let sig_c = sig.clone();
+                        let sym_c = symbol.to_string();
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        self.amd_pending_id_rx = Some(rx);
+                        tokio::spawn(async move {
+                            let id = sb.write_amd_signal_async(&sig_c, &sym_c).await;
+                            let _ = tx.send(id);
+                        });
+                    }
+                    self.amd_paper.open(&sig);
+                } else {
+                    // Ya hay posición abierta — solo guardar la señal, no abrir otra
+                    if let Some(sb) = self.supabase.clone() {
+                        let sig_c = sig.clone();
+                        let sym_c = symbol.to_string();
+                        tokio::spawn(async move {
+                            sb.write_amd_signal_async(&sig_c, &sym_c).await;
+                        });
+                    }
                 }
             }
         }
@@ -3354,7 +3441,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     state.rbf_state.reset_signal_cooldown();
     state.amd_state.reset_signal_cooldown();
 
-    // Restaurar posición RBF activa si el proceso se reinició con una trade abierto
+    // Restaurar posiciones activas si el proceso se reinició con trades abiertos
     if let Some(sb) = state.supabase.clone() {
         if let Some(pos) = sb.load_rbf_active(&symbol_str).await {
             println!(
@@ -3362,12 +3449,18 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
                 pos.direction, pos.entry_price, pos.stop_price, pos.target_price, pos.signal_id
             );
             state.rbf_paper.restore(
-                pos.signal_id,
-                pos.direction,
-                pos.entry_price,
-                pos.stop_price,
-                pos.target_price,
-                pos.entry_ms,
+                pos.signal_id, pos.direction,
+                pos.entry_price, pos.stop_price, pos.target_price, pos.entry_ms,
+            );
+        }
+        if let Some(pos) = sb.load_amd_active(&symbol_str).await {
+            println!(
+                "[amd_paper] RESTORED {:?} entry={:.4} stop={:.4} target={:.4} id={}",
+                pos.direction, pos.entry_price, pos.stop_price, pos.target_price, pos.signal_id
+            );
+            state.amd_paper.restore(
+                pos.signal_id, pos.direction,
+                pos.entry_price, pos.stop_price, pos.target_price, pos.entry_ms,
             );
         }
     }
