@@ -1987,26 +1987,11 @@ impl BarState {
                 }
             }
 
-            // 2) Cierre forzado por cambio de sesión
-            if session.session != self.rbf_last_session {
-                if let Some(trade) = self.rbf_paper.close_session(c, bar_ms) {
-                    println!(
-                        "[rbf_paper] SESSION_END {:?} entry={:.1} exit={:.1} R={:.2}",
-                        trade.direction, trade.entry_price, trade.exit_price, trade.result_r,
-                    );
-                    if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
-                        sb.update_rbf_outcome(id, &trade);
-                    } else if trade.supabase_id.is_none() && self.rbf_pending_id_rx.is_some() {
-                        // ID todavía en vuelo — guardar outcome para cuando llegue
-                        self.rbf_pending_outcome = Some(trade);
-                    }
-                }
-                self.rbf_last_session = session.session;
-            }
-
-            // 3) Chequear exit de posición abierta (stop/target)
-            if self.rbf_paper.has_position() {
-                if let Some(trade) = self.rbf_paper.on_bar_close(h, l, bar_ms) {
+            // Helper inline para escribir un outcome cerrado
+            // (evita duplicar la lógica en los dos bloques siguientes)
+            macro_rules! write_outcome {
+                ($trade:expr) => {{
+                    let trade = $trade;
                     println!(
                         "[rbf_paper] {:?} {} entry={:.1} exit={:.1} R={:.2} day_R={:.2}",
                         trade.direction, trade.exit_reason.as_str(),
@@ -2016,9 +2001,38 @@ impl BarState {
                     if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
                         sb.update_rbf_outcome(id, &trade);
                     } else if trade.supabase_id.is_none() && self.rbf_pending_id_rx.is_some() {
-                        // ID todavía en vuelo — guardar outcome para cuando llegue
                         self.rbf_pending_outcome = Some(trade);
                     }
+                }};
+            }
+
+            // 2) Cambio de sesión — stop/target tienen prioridad sobre SESSION_END.
+            //    Esto también cubre el caso de startup con posición restaurada: la primera
+            //    barra siempre ve un cambio de sesión (OffHours→X), pero si el precio ya
+            //    tocó stop/target lo cierra correctamente en lugar de usar el precio actual.
+            if session.session != self.rbf_last_session {
+                let closed_by_price = if self.rbf_paper.has_position() {
+                    if let Some(trade) = self.rbf_paper.on_bar_close(h, l, bar_ms) {
+                        write_outcome!(trade);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !closed_by_price {
+                    if let Some(trade) = self.rbf_paper.close_session(c, bar_ms) {
+                        write_outcome!(trade);
+                    }
+                }
+                self.rbf_last_session = session.session;
+            }
+
+            // 3) Chequear stop/target en barras normales (sin cambio de sesión)
+            if self.rbf_paper.has_position() {
+                if let Some(trade) = self.rbf_paper.on_bar_close(h, l, bar_ms) {
+                    write_outcome!(trade);
                 }
             }
 
