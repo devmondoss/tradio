@@ -648,6 +648,8 @@ struct BarState {
     rbf_paper: data::strategy::detectors::rbf_paper::RbfPaperTrader,
     // UUID pendiente de asignar al paper trader (llega async tras write_rbf_signal_async)
     rbf_pending_id_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
+    // Outcome pendiente de escribir: trade cerró antes de que llegara el supabase_id
+    rbf_pending_outcome: Option<data::strategy::detectors::rbf_paper::RbfClosedTrade>,
     // Última sesión vista — detecta cambio de sesión para forzar cierre de posición RBF abierta
     rbf_last_session: data::session::session_tracker::TradingSession,
     // WebSocket broadcast — envía barras y señales al dashboard web
@@ -736,6 +738,7 @@ impl BarState {
             rbf_state: data::strategy::detectors::range_breakout_flow::RangeBreakoutState::new(),
             rbf_paper: data::strategy::detectors::rbf_paper::RbfPaperTrader::new(),
             rbf_pending_id_rx: None,
+            rbf_pending_outcome: None,
             rbf_last_session: data::session::session_tracker::TradingSession::OffHours,
             ws_tx,
         }
@@ -1938,7 +1941,31 @@ impl BarState {
 
         // ── Range Breakout Flow detector + paper trader ───────────────────────
         {
-            // Cierre forzado por cambio de sesión — evita posiciones OPEN eternas en Supabase
+            // 1) Resolver UUID pendiente PRIMERO — antes de cualquier cierre de posición.
+            //    Así trades que cierran por session-end o stop en el mismo bar ya tienen el ID.
+            if let Some(mut rx) = self.rbf_pending_id_rx.take() {
+                match rx.try_recv() {
+                    Ok(maybe_id) => {
+                        if let Some(id) = maybe_id {
+                            // Si hay un outcome pendiente de escribir (trade cerró antes de que
+                            // llegara el ID), escribir ahora que tenemos el ID.
+                            if let Some(pending) = self.rbf_pending_outcome.take() {
+                                if let Some(sb) = &self.supabase {
+                                    sb.update_rbf_outcome(&id, &pending);
+                                }
+                            } else {
+                                self.rbf_paper.set_supabase_id(id);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Todavía no llegó — devolver al slot para el próximo bar
+                        self.rbf_pending_id_rx = Some(rx);
+                    }
+                }
+            }
+
+            // 2) Cierre forzado por cambio de sesión
             if session.session != self.rbf_last_session {
                 if let Some(trade) = self.rbf_paper.close_session(c, bar_ms) {
                     println!(
@@ -1947,24 +1974,15 @@ impl BarState {
                     );
                     if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
                         sb.update_rbf_outcome(id, &trade);
+                    } else if trade.supabase_id.is_none() && self.rbf_pending_id_rx.is_some() {
+                        // ID todavía en vuelo — guardar outcome para cuando llegue
+                        self.rbf_pending_outcome = Some(trade);
                     }
                 }
                 self.rbf_last_session = session.session;
             }
 
-            // Resolver UUID pendiente del write async anterior
-            if let Some(mut rx) = self.rbf_pending_id_rx.take() {
-                if let Ok(maybe_id) = rx.try_recv() {
-                    if let Some(id) = maybe_id {
-                        self.rbf_paper.set_supabase_id(id);
-                    }
-                } else {
-                    // todavía no llegó — devolver al slot para el próximo bar
-                    self.rbf_pending_id_rx = Some(rx);
-                }
-            }
-
-            // Chequear exit de posición abierta
+            // 3) Chequear exit de posición abierta (stop/target)
             if self.rbf_paper.has_position() {
                 if let Some(trade) = self.rbf_paper.on_bar_close(h, l, bar_ms) {
                     println!(
@@ -1975,6 +1993,9 @@ impl BarState {
                     );
                     if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
                         sb.update_rbf_outcome(id, &trade);
+                    } else if trade.supabase_id.is_none() && self.rbf_pending_id_rx.is_some() {
+                        // ID todavía en vuelo — guardar outcome para cuando llegue
+                        self.rbf_pending_outcome = Some(trade);
                     }
                 }
             }
