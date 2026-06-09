@@ -1972,6 +1972,10 @@ impl BarState {
                                     sb.update_rbf_outcome(&id, &pending);
                                 }
                             } else {
+                                // Marcar como activo en Supabase (persistencia cross-deploy)
+                                if let Some(sb) = &self.supabase {
+                                    sb.mark_rbf_active(&id);
+                                }
                                 self.rbf_paper.set_supabase_id(id);
                             }
                         }
@@ -3335,6 +3339,24 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     warm_up_history(&mut state, &symbol_str, tf_min, 150).await;
     state.rbf_state.reset_signal_cooldown();
     state.amd_state.reset_signal_cooldown();
+
+    // Restaurar posición RBF activa si el proceso se reinició con una trade abierto
+    if let Some(sb) = state.supabase.clone() {
+        if let Some(pos) = sb.load_rbf_active(&symbol_str).await {
+            println!(
+                "[rbf_paper] RESTORED {:?} entry={:.1} stop={:.1} target={:.1} id={}",
+                pos.direction, pos.entry_price, pos.stop_price, pos.target_price, pos.signal_id
+            );
+            state.rbf_paper.restore(
+                pos.signal_id,
+                pos.direction,
+                pos.entry_price,
+                pos.stop_price,
+                pos.target_price,
+                pos.entry_ms,
+            );
+        }
+    }
 
     let tf_ms = timeframe.to_milliseconds();
     let mut pending: Option<(u64, Kline)> = None;

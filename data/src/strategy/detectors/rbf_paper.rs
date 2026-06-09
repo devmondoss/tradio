@@ -111,6 +111,27 @@ impl RbfPaperTrader {
         }
     }
 
+    /// Restaura una posición abierta persistida en Supabase (cross-deploy survival).
+    /// Llamar durante el startup, después del warmup, si Supabase devuelve is_active=true.
+    pub fn restore(
+        &mut self,
+        signal_id:    String,
+        direction:    RbfDirection,
+        entry_price:  f64,
+        stop_price:   f64,
+        target_price: f64,
+        entry_ms:     i64,
+    ) {
+        self.active = Some(ActivePosition {
+            direction,
+            entry_price,
+            stop_price,
+            target_price,
+            entry_ms,
+            supabase_id: Some(signal_id),
+        });
+    }
+
     /// Llamar en cada cierre de barra M1.
     /// Retorna `Some(RbfClosedTrade)` si la posición cerró, `None` si sigue abierta.
     pub fn on_bar_close(&mut self, high: f64, low: f64, bar_ms: i64) -> Option<RbfClosedTrade> {

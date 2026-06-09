@@ -14,6 +14,16 @@ use data::strategy::{
 };
 use serde_json::{json, Value};
 
+/// Posición RBF persistida en Supabase, restaurada al reiniciar el proceso.
+pub struct RestoredRbfPosition {
+    pub signal_id:    String,
+    pub direction:    data::strategy::detectors::range_breakout_flow::RbfDirection,
+    pub entry_price:  f64,
+    pub stop_price:   f64,
+    pub target_price: f64,
+    pub entry_ms:     i64,
+}
+
 /// Contexto extra que se pasa junto a una ScalpingSignal para persistencia.
 pub struct ScalpingWriteCtx<'a> {
     pub session: &'a str,
@@ -388,6 +398,7 @@ impl SupabaseWriter {
             "result_r":     trade.result_r,
             "exit_reason":  trade.exit_reason.as_str(),
             "closed_at":    trade.exit_ms,
+            "is_active":    false,
         });
         let url    = format!("{}/rest/v1/rbf_signals?id=eq.{}", self.url, id);
         let writer = self.clone();
@@ -409,6 +420,84 @@ impl SupabaseWriter {
                 }
             }
         });
+    }
+
+    /// Marca una fila de rbf_signals como posición activa del paper trader.
+    /// Llamar cuando se conoce el supabase_id y la posición está abierta.
+    /// Permite restaurar el estado tras un reinicio (Railway redeploy).
+    pub fn mark_rbf_active(&self, id: &str) {
+        let body = serde_json::json!({ "is_active": true });
+        let url    = format!("{}/rest/v1/rbf_signals?id=eq.{}", self.url, id);
+        let writer = self.clone();
+        tokio::spawn(async move {
+            let result = writer
+                .client
+                .patch(&url)
+                .header("apikey", &writer.key)
+                .header("Authorization", format!("Bearer {}", writer.key))
+                .header("Content-Type", "application/json")
+                .header("Prefer", "return=minimal")
+                .json(&body)
+                .send()
+                .await;
+            if let Ok(r) = result {
+                if !r.status().is_success() {
+                    eprintln!("[supabase] mark_rbf_active HTTP {}", r.status());
+                }
+            }
+        });
+    }
+
+    /// Carga la posición activa del paper trader desde Supabase.
+    /// Retorna None si no hay posición activa para este símbolo.
+    pub async fn load_rbf_active(
+        &self,
+        symbol: &str,
+    ) -> Option<RestoredRbfPosition> {
+        let url = format!(
+            "{}/rest/v1/rbf_signals?is_active=eq.true&symbol=eq.{}&order=id.desc&limit=1",
+            self.url, symbol
+        );
+        let result = self
+            .client
+            .get(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Accept", "application/json")
+            .send()
+            .await;
+
+        let rows: serde_json::Value = match result {
+            Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
+            Ok(r) => {
+                eprintln!("[supabase] load_rbf_active HTTP {}", r.status());
+                return None;
+            }
+            Err(e) => {
+                eprintln!("[supabase] load_rbf_active error: {e}");
+                return None;
+            }
+        };
+
+        let row = rows.as_array()?.first()?;
+        let signal_id    = row.get("id")?.as_i64()?.to_string();
+        let dir_str      = row.get("direction")?.as_str()?;
+        let direction    = serde_json::from_str::<
+            data::strategy::detectors::range_breakout_flow::RbfDirection
+        >(&format!("\"{}\"", dir_str)).ok()?;
+        let entry_price  = row.get("entry_price")?.as_f64()?;
+        let stop_price   = row.get("stop_price")?.as_f64()?;
+        let target_price = row.get("target_price")?.as_f64()?;
+        let entry_ms     = row.get("timestamp_ms")?.as_i64()?;
+
+        Some(RestoredRbfPosition {
+            signal_id,
+            direction,
+            entry_price,
+            stop_price,
+            target_price,
+            entry_ms,
+        })
     }
 
     /// Inserta una señal AMD en `amd_signals`. Fire-and-forget.
