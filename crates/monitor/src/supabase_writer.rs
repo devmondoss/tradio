@@ -654,6 +654,7 @@ impl SupabaseWriter {
             "ETHUSDT" => "eth_bars",
             "BNBUSDT" => "bnb_bars",
             "SOLUSDT" => "sol_bars",
+            "XRPUSDT" => "xrp_bars",
             _         => "btc_bars",
         }.to_string();
         let writer = self.clone();
