@@ -453,6 +453,7 @@ impl SupabaseWriter {
             "absorption_in_range":  sig.absorption_in_range,
             "absorption_at_spike":  sig.absorption_at_spike,
             "regime_is_trending":   sig.regime_is_trending,
+            "session_cvd":          sig.session_cvd,
         });
         self.post("amd_signals", &body).await;
     }

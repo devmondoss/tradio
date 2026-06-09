@@ -1999,6 +1999,7 @@ impl BarState {
                     hvn_levels: hvn_nearby.clone(),
                     vpin: bar_vpin,
                     oi_momentum_aligned,
+                    session_cvd: self.scalping_state.cvd_session,
                 };
                 if let Some(sig) = self.rbf_state.on_bar_close(
                     o, h, l, c,
@@ -2095,6 +2096,7 @@ impl BarState {
                 regime_is_trending: matches!(regime, data::strategy::types::Regime::TrendUp
                     | data::strategy::types::Regime::TrendDown
                     | data::strategy::types::Regime::Expansion),
+                session_cvd:        self.scalping_state.cvd_session,
             };
 
             if let Some(sig) = self.amd_state.on_bar_close(
@@ -2105,14 +2107,14 @@ impl BarState {
                     "[amd] {:?} entry={:.1} stop={:.1} target={:.1} rr={:.2} \
                      range={:.3}% bars={} spike={:?} vr={:.2}x \
                      liq={:.2} dz={:.2} delta={:.1} src={:?} ses={} \
-                     quality={}/10 abs_range={} abs_spike={} trending={}",
+                     quality={}/10 abs_range={} abs_spike={} trending={} ses_cvd={:.0}",
                     sig.direction, sig.entry_price, sig.stop_price, sig.target_price,
                     sig.rr, sig.range_pct, sig.range_bars, sig.spike_direction,
                     sig.vr_at_spike, sig.liq_ratio_at_spike,
                     sig.dz_at_spike.unwrap_or(0.0),
                     sig.bar_delta_at_spike, sig.target_source, sig.session_name,
                     sig.quality_score, sig.absorption_in_range,
-                    sig.absorption_at_spike, sig.regime_is_trending,
+                    sig.absorption_at_spike, sig.regime_is_trending, sig.session_cvd,
                 );
 
                 // Escribir a Supabase (fire-and-forget)
@@ -3146,6 +3148,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                 funding_rate: None, session_name: "warmup".into(),
                 vwap_dz: None, liq_ratio: 0.0,
                 absorption_bid: false, absorption_ask: false, regime_is_trending: false,
+                session_cvd: 0.0,
             };
             let _ = state.amd_state.on_bar_close(
                 high, low, close, volume, bar_delta, open_ms,

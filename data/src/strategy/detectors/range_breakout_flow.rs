@@ -27,6 +27,7 @@ pub enum ConfluenceFlag {
     LvnOThinZone,
     VwapBias,
     OiMomentum,
+    SessionCvdAligned,
 }
 
 impl ConfluenceFlag {
@@ -39,6 +40,7 @@ impl ConfluenceFlag {
             Self::LvnOThinZone       => "lvn_thin",
             Self::VwapBias           => "vwap_bias",
             Self::OiMomentum         => "oi_momentum",
+            Self::SessionCvdAligned  => "session_cvd",
         }
     }
 }
@@ -71,6 +73,9 @@ pub struct RbfGateContext {
     pub vpin: Option<f64>,
     /// OI momentum alineado: precio + OI expandiéndose en la misma dirección.
     pub oi_momentum_aligned: Option<bool>,
+    /// CVD acumulado desde el inicio de la sesión (reset diario UTC).
+    /// Long positivo = sesión compradora neta; Short negativo = sesión vendedora neta.
+    pub session_cvd: f64,
 }
 
 fn score_confluence(
@@ -159,6 +164,17 @@ fn score_confluence(
     if gate.oi_momentum_aligned == Some(true) {
         score += 1;
         flags.push(ConfluenceFlag::OiMomentum);
+    }
+
+    // [+1] Session CVD alineado con dirección del breakout (Fabio: expansión de sesión)
+    // Threshold ±500 USD delta para ignorar CVD plano/ruidoso de inicio de sesión
+    let session_cvd_aligned = match direction {
+        RbfDirection::Long  => gate.session_cvd >  500.0,
+        RbfDirection::Short => gate.session_cvd < -500.0,
+    };
+    if session_cvd_aligned {
+        score += 1;
+        flags.push(ConfluenceFlag::SessionCvdAligned);
     }
 
     // Veto especial: Long contra tendencia bajista sin máxima confluencia
@@ -519,7 +535,7 @@ impl RangeBreakoutState {
             if let Some(ref reason) = veto_reason {
                 evidence.push(format!("veto={}", reason));
             } else {
-                evidence.push(format!("confluence={}/{}", confluence_score, 7));
+                evidence.push(format!("confluence={}/{}", confluence_score, 8));
             }
 
             self.last_signal_bar = self.bars_seen;

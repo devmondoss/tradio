@@ -84,11 +84,12 @@ pub struct AmdSignal {
     pub funding_at_entry:   Option<f64>,
 
     // Quality score (0-10) — basado en Fabio Valentini orderflow methodology
-    // Absorción primaria + CVD divergencia + VR extraordinario + dz + liq_ratio
+    // Absorción primaria + CVD divergencia + VR extraordinario + dz + liq_ratio + session_cvd
     pub quality_score:         u8,
     pub absorption_in_range:   u8,   // barras del rango con absorción activa
     pub absorption_at_spike:   bool, // absorción confirma manipulación en spike
     pub regime_is_trending:    bool, // régimen direccional en el momento de la señal
+    pub session_cvd:           f64,  // CVD acumulado de sesión al momento de la señal
 }
 
 // ── Contexto externo ───────────────────────────────────────────────────────────
@@ -129,6 +130,9 @@ pub struct AmdContext {
     pub absorption_ask: bool,
     /// Régimen direccional (TrendUp/TrendDown/Expansion) vs lateral (Chop/Compression).
     pub regime_is_trending: bool,
+    /// CVD acumulado desde el inicio de la sesión (reset diario UTC).
+    /// Fabio: CVD plano = contracción = no operar; CVD direccional confirma expansión.
+    pub session_cvd: f64,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -460,6 +464,7 @@ impl AmdDetectorState {
                     liq_ratio_at_spike,
                     absorption_in_range,
                     absorption_at_spike,
+                    ctx.session_cvd,
                 );
 
                 self.last_signal_bar = self.bars_seen;
@@ -494,6 +499,7 @@ impl AmdDetectorState {
                     absorption_in_range,
                     absorption_at_spike,
                     regime_is_trending:  ctx.regime_is_trending,
+                    session_cvd:         ctx.session_cvd,
                 })
             }
         }
@@ -527,13 +533,13 @@ impl AmdDetectorState {
 
     /// Quality score 0-10 inspirado en Fabio Valentini orderflow methodology.
     ///
-    /// Puntos por señal de manipulación real (no ruido):
-    ///   [0-2] Absorción en rango       — señal primaria: institucionales activos en el rango
-    ///   [0-2] Absorción en spike bar   — el spike fue absorbido (Fabio: "vendedores siendo absorbidos")
-    ///   [0-2] CVD diverge              — precio en una dirección, delta en la otra
-    ///   [0-2] VR extraordinario        — volumen ≥2x o ≥3x la media
-    ///   [0-1] dz ≥ 1.5                 — spike rompió zona significativa vs VWAP
-    ///   [0-1] liq_ratio < 1.2          — no es una cascada de liquidaciones pura
+    /// [0-2] Absorción en rango       — señal primaria: institucionales activos en el rango
+    /// [0-2] Absorción en spike bar   — el spike fue absorbido (Fabio: "vendedores siendo absorbidos")
+    /// [0-2] CVD diverge              — precio en una dirección, delta en la otra
+    /// [0-2] VR extraordinario        — volumen ≥2x o ≥3x la media
+    /// [0-1] dz ≥ 1.5                 — spike rompió zona significativa vs VWAP
+    /// [0-1] liq_ratio < 1.2          — no es una cascada de liquidaciones pura
+    /// [0-1] session CVD contradice spike — CVD de sesión opuesto al spike = manipulación fuerte
     fn compute_quality_score(
         vr_at_spike:         f64,
         bar_delta_at_spike:  f64,
@@ -542,6 +548,7 @@ impl AmdDetectorState {
         liq_ratio_at_spike:  f64,
         absorption_in_range: u8,
         absorption_at_spike: bool,
+        session_cvd:         f64,
     ) -> u8 {
         let mut score: u8 = 0;
 
@@ -567,6 +574,14 @@ impl AmdDetectorState {
 
         // [+0-1] liq_ratio bajo: no es una cascada pura de liquidaciones
         if liq_ratio_at_spike < 1.2 { score += 1; }
+
+        // [+0-1] session CVD contradice spike: sesión neta vendedora pero spike alcista = trampa
+        // Threshold ±500 USD delta para ignorar CVD plano/ruidoso de inicio de sesión
+        let session_cvd_contradicts = match spike_dir {
+            SpikeDir::Up   => session_cvd < -500.0,
+            SpikeDir::Down => session_cvd >  500.0,
+        };
+        if session_cvd_contradicts { score += 1; }
 
         score.min(10)
     }
@@ -683,7 +698,7 @@ mod tests {
             ob_levels: vec![], fvg_levels: vec![], funding_rate: None,
             session_name: "Test".into(),
             vwap_dz: None, liq_ratio: 0.0,
-            absorption_bid: false, absorption_ask: false, regime_is_trending: false,
+            absorption_bid: false, absorption_ask: false, regime_is_trending: false, session_cvd: 0.0,
         };
         for i in 0..n {
             let ts = (i as i64) * 60_000;
@@ -716,7 +731,7 @@ mod tests {
             lvn_levels: lvn, naked_pocs: pocs, ob_levels: vec![], fvg_levels: vec![],
             funding_rate: None, session_name: "Test".into(),
             vwap_dz: None, liq_ratio: 0.0,
-            absorption_bid: false, absorption_ask: false, regime_is_trending: false,
+            absorption_bid: false, absorption_ask: false, regime_is_trending: false, session_cvd: 0.0,
         }
     }
 
