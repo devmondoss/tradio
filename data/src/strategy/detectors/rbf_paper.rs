@@ -11,14 +11,16 @@ pub enum RbfExitReason {
     Target,
     Stop,
     SessionEnd,
+    DailyLimitHit,
 }
 
 impl RbfExitReason {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Target     => "TARGET",
-            Self::Stop       => "STOP",
-            Self::SessionEnd => "SESSION_END",
+            Self::Target         => "TARGET",
+            Self::Stop           => "STOP",
+            Self::SessionEnd     => "SESSION_END",
+            Self::DailyLimitHit  => "DAILY_LIMIT",
         }
     }
 }
@@ -48,15 +50,45 @@ struct ActivePosition {
 
 pub struct RbfPaperTrader {
     active: Option<ActivePosition>,
+
+    // ── Risk cap diario (Fabio: parar en pérdida Y en ganancia) ───────────────
+    /// R acumulado en el día UTC actual.
+    pub day_r: f64,
+    /// Pérdida máxima diaria en R antes de pausar (default -3.0R).
+    pub day_loss_limit: f64,
+    /// Ganancia máxima diaria en R antes de pausar (default +6.0R).
+    pub day_profit_cap: f64,
+    /// Día UTC (epoch_ms / 86400000) de la última sesión — detecta cambio de día.
+    last_bar_day: u32,
 }
 
 impl RbfPaperTrader {
     pub fn new() -> Self {
-        Self { active: None }
+        Self {
+            active:          None,
+            day_r:           0.0,
+            day_loss_limit:  -3.0,
+            day_profit_cap:   6.0,
+            last_bar_day:     0,
+        }
     }
 
     pub fn has_position(&self) -> bool {
         self.active.is_some()
+    }
+
+    /// Devuelve true si el límite diario (pérdida o ganancia) ya fue alcanzado.
+    pub fn is_daily_limit_hit(&self) -> bool {
+        self.day_r <= self.day_loss_limit || self.day_r >= self.day_profit_cap
+    }
+
+    /// Reset automático si el timestamp pertenece a un nuevo día UTC.
+    fn maybe_reset_day(&mut self, bar_ms: i64) {
+        let day = (bar_ms / 86_400_000) as u32;
+        if day != self.last_bar_day {
+            self.day_r        = 0.0;
+            self.last_bar_day = day;
+        }
     }
 
     /// Abre una nueva posición cuando el detector emite una señal.
@@ -82,16 +114,18 @@ impl RbfPaperTrader {
     /// Llamar en cada cierre de barra M1.
     /// Retorna `Some(RbfClosedTrade)` si la posición cerró, `None` si sigue abierta.
     pub fn on_bar_close(&mut self, high: f64, low: f64, bar_ms: i64) -> Option<RbfClosedTrade> {
+        self.maybe_reset_day(bar_ms);
+
         let pos = self.active.as_ref()?;
 
         let (stop_hit, target_hit) = match pos.direction {
             RbfDirection::Short => (
-                high >= pos.stop_price,   // stop = por encima de entrada
-                low  <= pos.target_price, // target = por debajo de entrada
+                high >= pos.stop_price,
+                low  <= pos.target_price,
             ),
             RbfDirection::Long => (
-                low  <= pos.stop_price,   // stop = por debajo de entrada
-                high >= pos.target_price, // target = por encima de entrada
+                low  <= pos.stop_price,
+                high >= pos.target_price,
             ),
         };
 
@@ -127,11 +161,12 @@ impl RbfPaperTrader {
             supabase_id: pos.supabase_id.clone(),
         };
 
-        self.active = None;
+        self.active  = None;
+        self.day_r  += result_r;
         Some(trade)
     }
 
-    /// Cierre forzado al fin de sesión.
+    /// Cierre forzado al fin de sesión (o cuando daily limit se alcanza con posición abierta).
     pub fn close_session(&mut self, price: f64, bar_ms: i64) -> Option<RbfClosedTrade> {
         let pos = self.active.as_ref()?;
         let risk = (pos.entry_price - pos.stop_price).abs();
@@ -152,7 +187,8 @@ impl RbfPaperTrader {
             supabase_id: pos.supabase_id.clone(),
         };
 
-        self.active = None;
+        self.active  = None;
+        self.day_r  += result_r;
         Some(trade)
     }
 }

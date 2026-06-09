@@ -42,6 +42,7 @@ pub enum TargetSource {
     NakedPoc,
     OrderBlock,
     Fvg,
+    ValueArea,  // VAL (Short) o VAH (Long) del Volume Profile de sesión
     Fallback2R, // No hay nivel estructural → 2× el risk
 }
 
@@ -133,6 +134,16 @@ pub struct AmdContext {
     /// CVD acumulado desde el inicio de la sesión (reset diario UTC).
     /// Fabio: CVD plano = contracción = no operar; CVD direccional confirma expansión.
     pub session_cvd: f64,
+
+    // ── Value Area + Walls (quality score + target) ─────────────────────────────
+    /// Value Area Low del Volume Profile de sesión. Para scoring (+1pt) y target (Short→VAL).
+    pub val: Option<f64>,
+    /// Value Area High del Volume Profile de sesión. Para scoring (+1pt) y target (Long→VAH).
+    pub vah: Option<f64>,
+    /// Pared de bids (≤1×ATR por debajo del precio) — confirma soporte para LONG.
+    pub bid_wall_nearby: bool,
+    /// Pared de asks (≤1×ATR por encima del precio) — confirma resistencia para SHORT.
+    pub ask_wall_nearby: bool,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -237,6 +248,26 @@ impl AmdDetectorState {
                 let is_nearer = best.as_ref().map_or(true, |(b, _)| dist < (b - entry).abs());
                 if is_nearer {
                     best = Some((lvl, *source));
+                }
+            }
+        }
+
+        // VAL (Short) / VAH (Long): target del Value Area (Fabio: rebalance al valor)
+        // Prioridad: más cercano que el mejor candidato actual, igual que los anteriores
+        let va_level = match dir {
+            AmdDirection::Short => ctx.val,
+            AmdDirection::Long  => ctx.vah,
+        };
+        if let Some(lvl) = va_level {
+            let in_dir = match dir {
+                AmdDirection::Short => lvl < entry - min_dist,
+                AmdDirection::Long  => lvl > entry + min_dist,
+            };
+            if in_dir {
+                let dist = (lvl - entry).abs();
+                let is_nearer = best.as_ref().map_or(true, |(b, _)| dist < (b - entry).abs());
+                if is_nearer {
+                    best = Some((lvl, TargetSource::ValueArea));
                 }
             }
         }
@@ -465,6 +496,9 @@ impl AmdDetectorState {
                     absorption_in_range,
                     absorption_at_spike,
                     ctx.session_cvd,
+                    range_high,
+                    range_low,
+                    ctx,
                 );
 
                 self.last_signal_bar = self.bars_seen;
@@ -531,7 +565,8 @@ impl AmdDetectorState {
         };
     }
 
-    /// Quality score 0-10 inspirado en Fabio Valentini orderflow methodology.
+    /// Quality score 0-12 inspirado en Fabio Valentini orderflow methodology.
+    /// Cap en 10 para normalizar la escala independientemente de cuántos puntos sumen.
     ///
     /// [0-2] Absorción en rango       — señal primaria: institucionales activos en el rango
     /// [0-2] Absorción en spike bar   — el spike fue absorbido (Fabio: "vendedores siendo absorbidos")
@@ -540,6 +575,9 @@ impl AmdDetectorState {
     /// [0-1] dz ≥ 1.5                 — spike rompió zona significativa vs VWAP
     /// [0-1] liq_ratio < 1.2          — no es una cascada de liquidaciones pura
     /// [0-1] session CVD contradice spike — CVD de sesión opuesto al spike = manipulación fuerte
+    /// [0-1] Value Area: rango en VAH (Short) o VAL (Long) — setup Fabio "low of value area"
+    /// [0-1] Wall confirma reversión  — ask_wall para Short, bid_wall para Long
+    #[allow(clippy::too_many_arguments)]
     fn compute_quality_score(
         vr_at_spike:         f64,
         bar_delta_at_spike:  f64,
@@ -549,6 +587,10 @@ impl AmdDetectorState {
         absorption_in_range: u8,
         absorption_at_spike: bool,
         session_cvd:         f64,
+        // Value Area y Walls (Fabio #4/#8)
+        range_high:          f64,
+        range_low:           f64,
+        ctx:                 &AmdContext,
     ) -> u8 {
         let mut score: u8 = 0;
 
@@ -582,6 +624,27 @@ impl AmdDetectorState {
             SpikeDir::Down => session_cvd >  500.0,
         };
         if session_cvd_contradicts { score += 1; }
+
+        // [+0-1] Value Area: spike Up desde VAH, spike Down desde VAL (Fabio: "rango en value area")
+        // El rango de acumulación estaba en el borde del Value Area — setup AAA clásico
+        let va_proximity_threshold = 0.007; // ±0.7% del precio = alineado con VAH/VAL
+        let va_aligned = match spike_dir {
+            SpikeDir::Up   => ctx.vah.map_or(false, |vah| {
+                (range_high - vah).abs() / vah < va_proximity_threshold
+            }),
+            SpikeDir::Down => ctx.val.map_or(false, |val| {
+                (range_low - val).abs() / val < va_proximity_threshold
+            }),
+        };
+        if va_aligned { score += 1; }
+
+        // [+0-1] Wall confirma reversión: ask_wall para SHORT, bid_wall para LONG
+        // (vendedores/compradores apilando en la dirección correcta = estructura de reversión)
+        let wall_confirms = match spike_dir {
+            SpikeDir::Up   => ctx.ask_wall_nearby, // sellers encima = SHORT confirmado
+            SpikeDir::Down => ctx.bid_wall_nearby,  // buyers abajo = LONG confirmado
+        };
+        if wall_confirms { score += 1; }
 
         score.min(10)
     }
@@ -654,7 +717,7 @@ impl Default for AmdDetectorConfig {
             stop_buffer_pct:           0.08,
             min_rr:                    2.0,
             cooldown_bars:             45,
-            max_wait_bars_after_spike: 10,
+            max_wait_bars_after_spike: 6,
             manip_liq_ratio_max:       999.0, // desactivado — activar tras 30+ días de datos
             manip_dz_spike_min:        0.0,   // desactivado — activar tras 30+ días de datos
         }
@@ -688,6 +751,11 @@ mod tests {
             absorption_bid:     false,
             absorption_ask:     false,
             regime_is_trending: false,
+            session_cvd:        0.0,
+            val:                None,
+            vah:                None,
+            bid_wall_nearby:    false,
+            ask_wall_nearby:    false,
         }
     }
 
@@ -699,6 +767,7 @@ mod tests {
             session_name: "Test".into(),
             vwap_dz: None, liq_ratio: 0.0,
             absorption_bid: false, absorption_ask: false, regime_is_trending: false, session_cvd: 0.0,
+            val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false,
         };
         for i in 0..n {
             let ts = (i as i64) * 60_000;
@@ -732,6 +801,7 @@ mod tests {
             funding_rate: None, session_name: "Test".into(),
             vwap_dz: None, liq_ratio: 0.0,
             absorption_bid: false, absorption_ask: false, regime_is_trending: false, session_cvd: 0.0,
+            val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false,
         }
     }
 

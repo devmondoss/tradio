@@ -1968,9 +1968,10 @@ impl BarState {
             if self.rbf_paper.has_position() {
                 if let Some(trade) = self.rbf_paper.on_bar_close(h, l, bar_ms) {
                     println!(
-                        "[rbf_paper] {:?} {} entry={:.1} exit={:.1} R={:.2}",
+                        "[rbf_paper] {:?} {} entry={:.1} exit={:.1} R={:.2} day_R={:.2}",
                         trade.direction, trade.exit_reason.as_str(),
                         trade.entry_price, trade.exit_price, trade.result_r,
+                        self.rbf_paper.day_r,
                     );
                     if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
                         sb.update_rbf_outcome(id, &trade);
@@ -2021,7 +2022,7 @@ impl BarState {
                         "[rbf] {:?} entry={:.1} rr={:.2} range={:.3}% vr={:.2}x {:?} score={}/{} veto={:?} trade={}",
                         sig.direction, sig.entry_price, sig.rr, sig.range_pct,
                         sig.vr_at_breakout, sig.macro_regime,
-                        sig.confluence_score, 7,
+                        sig.confluence_score, 8,
                         sig.veto_reason, tradeable,
                     );
                     // Broadcast señal al dashboard web
@@ -2046,9 +2047,16 @@ impl BarState {
                             let _ = tx.send(id);
                         });
                     }
-                    // Paper trade solo si pasa veto y score mínimo
+                    // Paper trade solo si pasa veto, score mínimo y no se alcanzó el límite diario
                     if tradeable {
-                        self.rbf_paper.open(&sig);
+                        if self.rbf_paper.is_daily_limit_hit() {
+                            println!(
+                                "[rbf_paper] daily limit hit (day_r={:.2}R) — señal bloqueada",
+                                self.rbf_paper.day_r,
+                            );
+                        } else {
+                            self.rbf_paper.open(&sig);
+                        }
                     }
                 }
             }
@@ -2097,6 +2105,10 @@ impl BarState {
                     | data::strategy::types::Regime::TrendDown
                     | data::strategy::types::Regime::Expansion),
                 session_cvd:        self.scalping_state.cvd_session,
+                val:                ctx.volume_profile.val,
+                vah:                ctx.volume_profile.vah,
+                bid_wall_nearby:    ctx.flow.bid_wall_nearby,
+                ask_wall_nearby:    ctx.flow.ask_wall_nearby,
             };
 
             if let Some(sig) = self.amd_state.on_bar_close(
@@ -3149,6 +3161,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                 vwap_dz: None, liq_ratio: 0.0,
                 absorption_bid: false, absorption_ask: false, regime_is_trending: false,
                 session_cvd: 0.0,
+                val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false,
             };
             let _ = state.amd_state.on_bar_close(
                 high, low, close, volume, bar_delta, open_ms,
