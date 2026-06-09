@@ -82,6 +82,13 @@ pub struct AmdSignal {
     // Metadata
     pub session_name:       String,
     pub funding_at_entry:   Option<f64>,
+
+    // Quality score (0-10) — basado en Fabio Valentini orderflow methodology
+    // Absorción primaria + CVD divergencia + VR extraordinario + dz + liq_ratio
+    pub quality_score:         u8,
+    pub absorption_in_range:   u8,   // barras del rango con absorción activa
+    pub absorption_at_spike:   bool, // absorción confirma manipulación en spike
+    pub regime_is_trending:    bool, // régimen direccional en el momento de la señal
 }
 
 // ── Contexto externo ───────────────────────────────────────────────────────────
@@ -114,6 +121,14 @@ pub struct AmdContext {
     /// Ratio de liquidaciones en el spike (z-score abs de liq tracker).
     /// Gate: < manip_liq_ratio_max para filtrar cascadas (VPIN cascade = AMD falla).
     pub liq_ratio: f64,
+
+    // ── Order flow context (quality score) ──────────────────────────────────────
+    /// Absorción bid: compradores absorbiendo presión vendedora (bullish).
+    pub absorption_bid: bool,
+    /// Absorción ask: vendedores absorbiendo presión compradora (bearish).
+    pub absorption_ask: bool,
+    /// Régimen direccional (TrendUp/TrendDown/Expansion) vs lateral (Chop/Compression).
+    pub regime_is_trending: bool,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -131,25 +146,28 @@ struct BarSnap {
 enum AmdPhase {
     Idle,
     Accumulating {
-        range_high:  f64,
-        range_low:   f64,
-        cvd_sum:     f64,
-        bars:        usize,
+        range_high:      f64,
+        range_low:       f64,
+        cvd_sum:         f64,
+        bars:            usize,
+        absorption_count: u8,  // barras con absorción durante el rango
     },
     ManipulationDetected {
-        spike_extreme:       f64,
-        spike_dir:           SpikeDir,
-        vr_at_spike:         f64,
-        vpin_at_spike:       Option<f64>,
-        bar_delta_at_spike:  f64,
-        liq_ratio_at_spike:  f64,
-        dz_at_spike:         Option<f64>,
-        range_high:          f64,
-        range_low:           f64,
-        range_bars:          usize,
-        cvd_in_range:        f64,
-        bars_since_spike:    usize,
-        spike_timestamp_ms:  i64,
+        spike_extreme:        f64,
+        spike_dir:            SpikeDir,
+        vr_at_spike:          f64,
+        vpin_at_spike:        Option<f64>,
+        bar_delta_at_spike:   f64,
+        liq_ratio_at_spike:   f64,
+        dz_at_spike:          Option<f64>,
+        range_high:           f64,
+        range_low:            f64,
+        range_bars:           usize,
+        cvd_in_range:         f64,
+        absorption_in_range:  u8,   // barras con absorción durante acumulación
+        absorption_at_spike:  bool, // absorción en dirección correcta en el spike
+        bars_since_spike:     usize,
+        spike_timestamp_ms:   i64,
     },
 }
 
@@ -269,7 +287,7 @@ impl AmdDetectorState {
             }
 
             // ── ACUMULANDO: extender rango o detectar spike ───────────────────
-            AmdPhase::Accumulating { range_high, range_low, cvd_sum, bars } => {
+            AmdPhase::Accumulating { range_high, range_low, cvd_sum, bars, absorption_count } => {
                 // Precio sigue dentro del rango → extender
                 if close > range_low && close < range_high {
                     let new_high = range_high.max(high);
@@ -277,22 +295,26 @@ impl AmdDetectorState {
                     let new_pct  = (new_high - new_low) / close * 100.0;
 
                     if new_pct > cfg.accum_range_max_pct {
-                        // Rango demasiado ancho → reset
                         self.phase = AmdPhase::Idle;
                         return None;
                     }
 
                     if bars + 1 > cfg.accum_max_bars {
-                        // Timeout de acumulación → reset
                         self.phase = AmdPhase::Idle;
                         return None;
                     }
 
+                    // Trackear barras con absorción (cualquier lado = actividad institucional)
+                    let new_absorption = absorption_count.saturating_add(
+                        if ctx.absorption_bid || ctx.absorption_ask { 1 } else { 0 }
+                    );
+
                     self.phase = AmdPhase::Accumulating {
-                        range_high: new_high,
-                        range_low:  new_low,
-                        cvd_sum:    cvd_sum + bar_delta,
-                        bars:       bars + 1,
+                        range_high:      new_high,
+                        range_low:       new_low,
+                        cvd_sum:         cvd_sum + bar_delta,
+                        bars:            bars + 1,
+                        absorption_count: new_absorption,
                     };
                     return None;
                 }
@@ -300,7 +322,6 @@ impl AmdDetectorState {
                 // Precio cerró FUERA del rango → posible spike
                 let range_pct = (range_high - range_low) / close * 100.0;
 
-                // Validar que el rango sea válido antes de seguir
                 if range_pct < cfg.accum_range_min_pct
                     || range_pct > cfg.accum_range_max_pct
                     || bars < cfg.accum_min_bars
@@ -309,7 +330,6 @@ impl AmdDetectorState {
                     return None;
                 }
 
-                // VR mínimo para que sea un spike real y no una filtración lenta
                 if vr < cfg.manip_min_vr {
                     self.phase = AmdPhase::Idle;
                     return None;
@@ -322,14 +342,20 @@ impl AmdDetectorState {
                 };
 
                 // Firma de manipulación: VPIN alto O CVD diverge (cualquiera es suficiente)
-                // En M1 live la divergencia CVD es rara — basta con uno de los dos signals.
                 let vpin_high = ctx.vpin.map_or(false, |v| v > cfg.manip_vpin_threshold);
                 let cvd_diverged = match spike_dir {
-                    SpikeDir::Up   => bar_delta < 0.0, // precio sube pero vendedores dominan
-                    SpikeDir::Down => bar_delta > 0.0, // precio baja pero compradores dominan
+                    SpikeDir::Up   => bar_delta < 0.0,
+                    SpikeDir::Down => bar_delta > 0.0,
                 };
 
-                // Gate microestructura en el spike (desactivados por defecto — calibrar con datos)
+                // Absorción en la dirección de la manipulación (Fabio: señal primaria)
+                // Spike Up (falso): queremos Ask absorption (vendedores absorbiendo el up move)
+                // Spike Down (falso): queremos Bid absorption (compradores absorbiendo el down move)
+                let absorption_at_spike = match spike_dir {
+                    SpikeDir::Up   => ctx.absorption_ask,
+                    SpikeDir::Down => ctx.absorption_bid,
+                };
+
                 let liq_ok = ctx.liq_ratio <= cfg.manip_liq_ratio_max;
                 let dz_ok  = ctx.vwap_dz.map_or(true, |dz| dz.abs() >= cfg.manip_dz_spike_min);
 
@@ -337,20 +363,21 @@ impl AmdDetectorState {
                     self.phase = AmdPhase::ManipulationDetected {
                         spike_extreme,
                         spike_dir,
-                        vr_at_spike:        vr,
-                        vpin_at_spike:      ctx.vpin,
-                        bar_delta_at_spike: bar_delta,
-                        liq_ratio_at_spike: ctx.liq_ratio,
-                        dz_at_spike:        ctx.vwap_dz,
+                        vr_at_spike:         vr,
+                        vpin_at_spike:       ctx.vpin,
+                        bar_delta_at_spike:  bar_delta,
+                        liq_ratio_at_spike:  ctx.liq_ratio,
+                        dz_at_spike:         ctx.vwap_dz,
                         range_high,
                         range_low,
-                        range_bars:         bars,
-                        cvd_in_range:       cvd_sum,
-                        bars_since_spike:   0,
-                        spike_timestamp_ms: timestamp_ms,
+                        range_bars:          bars,
+                        cvd_in_range:        cvd_sum,
+                        absorption_in_range: absorption_count,
+                        absorption_at_spike,
+                        bars_since_spike:    0,
+                        spike_timestamp_ms:  timestamp_ms,
                     };
                 } else {
-                    // Breakout limpio sin firma de manipulación (o gate microestructura falló)
                     self.phase = AmdPhase::Idle;
                 }
                 None
@@ -362,9 +389,9 @@ impl AmdDetectorState {
                 vr_at_spike, vpin_at_spike, bar_delta_at_spike,
                 liq_ratio_at_spike, dz_at_spike,
                 range_high, range_low, range_bars, cvd_in_range,
+                absorption_in_range, absorption_at_spike,
                 bars_since_spike, ..
             } => {
-                // Timeout: si pasan demasiadas barras sin reversión → reset
                 if bars_since_spike >= cfg.max_wait_bars_after_spike {
                     self.phase = AmdPhase::Idle;
                     return None;
@@ -382,6 +409,8 @@ impl AmdDetectorState {
                     range_low,
                     range_bars,
                     cvd_in_range,
+                    absorption_in_range,
+                    absorption_at_spike,
                     bars_since_spike: bars_since_spike + 1,
                     spike_timestamp_ms: timestamp_ms,
                 };
@@ -423,6 +452,16 @@ impl AmdDetectorState {
 
                 let range_pct = (range_high - range_low) / entry * 100.0;
 
+                let quality_score = Self::compute_quality_score(
+                    vr_at_spike,
+                    bar_delta_at_spike,
+                    spike_dir,
+                    dz_at_spike,
+                    liq_ratio_at_spike,
+                    absorption_in_range,
+                    absorption_at_spike,
+                );
+
                 self.last_signal_bar = self.bars_seen;
                 self.phase = AmdPhase::Idle;
 
@@ -451,6 +490,10 @@ impl AmdDetectorState {
                     target_source,
                     session_name:        ctx.session_name.clone(),
                     funding_at_entry:    ctx.funding_rate,
+                    quality_score,
+                    absorption_in_range,
+                    absorption_at_spike,
+                    regime_is_trending:  ctx.regime_is_trending,
                 })
             }
         }
@@ -477,8 +520,55 @@ impl AmdDetectorState {
             range_high,
             range_low,
             cvd_sum,
-            bars: cfg.accum_min_bars,
+            bars:             cfg.accum_min_bars,
+            absorption_count: 0,
         };
+    }
+
+    /// Quality score 0-10 inspirado en Fabio Valentini orderflow methodology.
+    ///
+    /// Puntos por señal de manipulación real (no ruido):
+    ///   [0-2] Absorción en rango       — señal primaria: institucionales activos en el rango
+    ///   [0-2] Absorción en spike bar   — el spike fue absorbido (Fabio: "vendedores siendo absorbidos")
+    ///   [0-2] CVD diverge              — precio en una dirección, delta en la otra
+    ///   [0-2] VR extraordinario        — volumen ≥2x o ≥3x la media
+    ///   [0-1] dz ≥ 1.5                 — spike rompió zona significativa vs VWAP
+    ///   [0-1] liq_ratio < 1.2          — no es una cascada de liquidaciones pura
+    fn compute_quality_score(
+        vr_at_spike:         f64,
+        bar_delta_at_spike:  f64,
+        spike_dir:           SpikeDir,
+        dz_at_spike:         Option<f64>,
+        liq_ratio_at_spike:  f64,
+        absorption_in_range: u8,
+        absorption_at_spike: bool,
+    ) -> u8 {
+        let mut score: u8 = 0;
+
+        // [+0-2] Absorción en rango (señal primaria según Fabio)
+        score += absorption_in_range.min(2);
+
+        // [+0-2] Absorción en el spike confirma que el move fue absorbido
+        if absorption_at_spike { score += 2; }
+
+        // [+0-2] CVD diverge: precio va en una dirección, delta en la otra
+        let cvd_diverged = match spike_dir {
+            SpikeDir::Up   => bar_delta_at_spike < 0.0,
+            SpikeDir::Down => bar_delta_at_spike > 0.0,
+        };
+        if cvd_diverged { score += 2; }
+
+        // [+0-2] Volumen extraordinario en el spike
+        if vr_at_spike >= 3.0      { score += 2; }
+        else if vr_at_spike >= 2.0 { score += 1; }
+
+        // [+0-1] dz ≥ 1.5: spike rompió zona significativa desde VWAP
+        if dz_at_spike.map_or(false, |dz| dz.abs() >= 1.5) { score += 1; }
+
+        // [+0-1] liq_ratio bajo: no es una cascada pura de liquidaciones
+        if liq_ratio_at_spike < 1.2 { score += 1; }
+
+        score.min(10)
     }
 }
 
@@ -568,18 +658,21 @@ mod tests {
 
     fn ctx_neutral() -> AmdContext {
         AmdContext {
-            vpin:         Some(0.30),
-            cvd_slope:    Some(-15.0),
-            obi_l5:       Some(-0.15),
-            vwap:         None,
-            lvn_levels:   vec![],
-            naked_pocs:   vec![],
-            ob_levels:    vec![],
-            fvg_levels:   vec![],
-            funding_rate: None,
-            session_name: "London".into(),
-            vwap_dz:      None,
-            liq_ratio:    0.0,
+            vpin:               Some(0.30),
+            cvd_slope:          Some(-15.0),
+            obi_l5:             Some(-0.15),
+            vwap:               None,
+            lvn_levels:         vec![],
+            naked_pocs:         vec![],
+            ob_levels:          vec![],
+            fvg_levels:         vec![],
+            funding_rate:       None,
+            session_name:       "London".into(),
+            vwap_dz:            None,
+            liq_ratio:          0.0,
+            absorption_bid:     false,
+            absorption_ask:     false,
+            regime_is_trending: false,
         }
     }
 
@@ -590,6 +683,7 @@ mod tests {
             ob_levels: vec![], fvg_levels: vec![], funding_rate: None,
             session_name: "Test".into(),
             vwap_dz: None, liq_ratio: 0.0,
+            absorption_bid: false, absorption_ask: false, regime_is_trending: false,
         };
         for i in 0..n {
             let ts = (i as i64) * 60_000;
@@ -622,6 +716,7 @@ mod tests {
             lvn_levels: lvn, naked_pocs: pocs, ob_levels: vec![], fvg_levels: vec![],
             funding_rate: None, session_name: "Test".into(),
             vwap_dz: None, liq_ratio: 0.0,
+            absorption_bid: false, absorption_ask: false, regime_is_trending: false,
         }
     }
 

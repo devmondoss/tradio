@@ -448,6 +448,11 @@ impl SupabaseWriter {
             // Metadata
             "session_name":         &sig.session_name,
             "funding_at_entry":     sig.funding_at_entry,
+            // Quality score (orderflow context — Fabio Valentini methodology)
+            "quality_score":        sig.quality_score,
+            "absorption_in_range":  sig.absorption_in_range,
+            "absorption_at_spike":  sig.absorption_at_spike,
+            "regime_is_trending":   sig.regime_is_trending,
         });
         self.post("amd_signals", &body).await;
     }

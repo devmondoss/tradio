@@ -2078,18 +2078,23 @@ impl BarState {
                 .map(|vwap| if atr > 0.0 { (c - vwap) / atr } else { 0.0 });
 
             let amd_ctx = AmdContext {
-                vpin:         bar_vpin,
+                vpin:               bar_vpin,
                 cvd_slope,
-                obi_l5:       ctx.orderbook.obi_l5,
-                vwap:         self.vwap_session,
-                lvn_levels:   ctx.volume_profile.lvn_nearby.clone(),
-                naked_pocs:   ctx.volume_profile.naked_pocs.clone(),
+                obi_l5:             ctx.orderbook.obi_l5,
+                vwap:               self.vwap_session,
+                lvn_levels:         ctx.volume_profile.lvn_nearby.clone(),
+                naked_pocs:         ctx.volume_profile.naked_pocs.clone(),
                 ob_levels,
                 fvg_levels,
-                funding_rate: self.funding_rate,
-                session_name: format!("{:?}", session.session),
+                funding_rate:       self.funding_rate,
+                session_name:       format!("{:?}", session.session),
                 vwap_dz,
-                liq_ratio:    bar_liq_ratio,
+                liq_ratio:          bar_liq_ratio,
+                absorption_bid:     footprint_absorption == AbsorptionSide::Bid,
+                absorption_ask:     footprint_absorption == AbsorptionSide::Ask,
+                regime_is_trending: matches!(regime, data::strategy::types::Regime::TrendUp
+                    | data::strategy::types::Regime::TrendDown
+                    | data::strategy::types::Regime::Expansion),
             };
 
             if let Some(sig) = self.amd_state.on_bar_close(
@@ -2099,12 +2104,15 @@ impl BarState {
                 println!(
                     "[amd] {:?} entry={:.1} stop={:.1} target={:.1} rr={:.2} \
                      range={:.3}% bars={} spike={:?} vr={:.2}x \
-                     liq={:.2} dz={:.2} delta={:.1} src={:?} ses={}",
+                     liq={:.2} dz={:.2} delta={:.1} src={:?} ses={} \
+                     quality={}/10 abs_range={} abs_spike={} trending={}",
                     sig.direction, sig.entry_price, sig.stop_price, sig.target_price,
                     sig.rr, sig.range_pct, sig.range_bars, sig.spike_direction,
                     sig.vr_at_spike, sig.liq_ratio_at_spike,
                     sig.dz_at_spike.unwrap_or(0.0),
                     sig.bar_delta_at_spike, sig.target_source, sig.session_name,
+                    sig.quality_score, sig.absorption_in_range,
+                    sig.absorption_at_spike, sig.regime_is_trending,
                 );
 
                 // Escribir a Supabase (fire-and-forget)
@@ -3137,6 +3145,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                 lvn_levels: vec![], naked_pocs: vec![], ob_levels: vec![], fvg_levels: vec![],
                 funding_rate: None, session_name: "warmup".into(),
                 vwap_dz: None, liq_ratio: 0.0,
+                absorption_bid: false, absorption_ask: false, regime_is_trending: false,
             };
             let _ = state.amd_state.on_bar_close(
                 high, low, close, volume, bar_delta, open_ms,
