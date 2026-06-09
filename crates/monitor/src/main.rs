@@ -58,7 +58,7 @@ use data::strategy::{
         derive_regime_with_hysteresis, derive_stacked_imbalance, derive_stacked_imbalance_from_levels,
         wall_nearby, SWING_CONFIRM_BARS,
     },
-    intent_logger::collect_near_misses,
+
     micro_window::{CandleMicroBuffer, MicroCtx, MicroTrade, MicroWindowConfig},
     paper::PaperAccount,
     scalping::{
@@ -2265,43 +2265,6 @@ impl BarState {
         self.micro_buffer.reset(next_open_ms);
         self.current_candle_open_ms = next_open_ms;
 
-        let near_misses = collect_near_misses(&ctx, &cfg, signal_fired);
-
-        // Build compact skip summary for [bar] log (only when no signal fired)
-        let skip_str: String = if signal_fired || near_misses.is_empty() {
-            String::new()
-        } else {
-            near_misses
-                .iter()
-                .filter(|nm| !nm.blocked.is_empty())
-                .map(|nm| {
-                    let abbr = match nm.detector {
-                        "VwapValuePullbackContinuation" => "VWAP",
-                        "LvnLiquidityVacuumBreakout" => "LVN",
-                        "ValueAreaFailedAuction" => "VAFA",
-                        "LiquidationHunt" => "LIQ",
-                        "FundingExhaustionReversal" => "FUND",
-                        "SmartMoneyDivergence" => "SMD",
-                        other => other,
-                    };
-                    let top = nm
-                        .blocked
-                        .iter()
-                        .take(2)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join("+");
-                    format!("{abbr}/{}:{top}", &nm.side[..1])
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-
-        for nm in &near_misses {
-            if let Ok(json) = serde_json::to_string(nm) {
-                println!("[near_miss] {json}");
-            }
-        }
 
         // Take the OID of the currently open position BEFORE processing the new signal —
         // a new signal clears pending_signal_oid, which would cause write_trade to skip
@@ -2346,13 +2309,6 @@ impl BarState {
             }
         }
 
-        let missing_str = signal
-            .missing
-            .iter()
-            .map(|m| format!("{m:?}"))
-            .collect::<Vec<_>>()
-            .join(",");
-
         let processing_ms = proc_start.elapsed().as_millis();
         let inst_ref = ctx.institutional.as_ref();
         let (inst_ok, inst_total) = self.freshness.quality(self.metrics.liq_raw_messages);
@@ -2375,15 +2331,14 @@ impl BarState {
             self.streams.klines, self.streams.depth, self.streams.liq
         );
         let liq_age = self.freshness.liq_age_str();
+        let rbf_pos = if self.rbf_paper.has_position() { "open" } else { "-" };
         println!(
             "[bar] ts={bar_ms} close={c:.2} regime={effective_regime:?} \
              slow={slow_slope:.3} fast={fast_slope:.3} \
              funding={:.4} basis={:.3}% oi_delta={:.0} \
              vwap={:.2} cvd={:.1} ob={} \
              inst={inst_label} ls_top={:.1}%/{:.1}% liq={:.0}$ liq_age={liq_age} \
-             ws=[{ws_label}] \
-             action={:?} score={:.3} bss={} delivery={delivery_lag_ms}ms proc={processing_ms}ms equity={:.2} \
-             missing=[{missing_str}] skip=[{skip_str}]",
+             ws=[{ws_label}] rbf={rbf_pos} bss={} delivery={delivery_lag_ms}ms proc={processing_ms}ms",
             self.funding_rate.unwrap_or(0.0) * 10_000.0,
             basis.unwrap_or(0.0),
             oi_delta.unwrap_or(0.0),
@@ -2397,10 +2352,7 @@ impl BarState {
                 .map(|i| i.ls_ratio.retail_long_pct * 100.0)
                 .unwrap_or(0.0),
             inst_ref.map(|i| i.liquidations.total_usd_5m).unwrap_or(0.0),
-            signal.action,
-            signal.score,
             self.metrics.bars_since_signal,
-            self.paper.equity,
         );
 
         // Freeze bar-level context for intrabar evaluation during the next bar.
