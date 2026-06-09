@@ -220,10 +220,10 @@ const DZ_WINDOW:      usize = 50;
 const CVD_SLOPE_WIN:  usize = 20;
 const EMA_MACRO:      usize = 480;
 
-/// Sessions operativas — London (08-13 UTC) y Overlap (13-17 UTC).
-/// NewYork excluido por backtest: WR 24.7% avgR -0.065.
+/// Sessions operativas — London, Overlap y NewYork.
+/// Asia y OffHours excluidos (volumen insuficiente para RBF).
 const fn is_operative(s: TradingSession) -> bool {
-    matches!(s, TradingSession::London | TradingSession::LondonNyOverlap)
+    matches!(s, TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork)
 }
 
 // ── Tipos públicos ─────────────────────────────────────────────────────────────
