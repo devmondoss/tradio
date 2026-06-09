@@ -170,21 +170,26 @@ fn score_confluence(
         flags.push(ConfluenceFlag::OiMomentum);
     }
 
-    // [+1] Session CVD alineado con dirección del breakout (Fabio: expansión de sesión)
-    // Threshold ±500 USD delta para ignorar CVD plano/ruidoso de inicio de sesión
+    // [+1] Session CVD alineado con dirección del breakout (Fabio: expansión de sesión).
+    // session_cvd está en unidades de moneda; multiplicar por entry_price da USD.
+    // Threshold ±$500k: sesión con >$500k net alineado con breakout = expansión real.
+    let session_cvd_usd = gate.session_cvd * entry_price;
     let session_cvd_aligned = match direction {
-        RbfDirection::Long  => gate.session_cvd >  500.0,
-        RbfDirection::Short => gate.session_cvd < -500.0,
+        RbfDirection::Long  => session_cvd_usd >  500_000.0,
+        RbfDirection::Short => session_cvd_usd < -500_000.0,
     };
     if session_cvd_aligned {
         score += 1;
         flags.push(ConfluenceFlag::SessionCvdAligned);
     }
 
-    // [+1] Big trade CVD alineado: breakout respaldado por órdenes grandes (Fabio: "big trades filter")
+    // [+1] Big trade CVD alineado: breakout respaldado por órdenes grandes (Fabio: "big trades filter").
+    // big_trade_cvd_session en unidades de moneda → USD. Threshold $2M: acumulación significativa
+    // de órdenes grandes (≥$100k c/u) en la dirección del breakout durante la sesión.
+    let big_cvd_usd = gate.big_trade_cvd_session * entry_price;
     let big_cvd_aligned = match direction {
-        RbfDirection::Long  => gate.big_trade_cvd_session >  2.0,  // ≥2 BTC net big buys en sesión
-        RbfDirection::Short => gate.big_trade_cvd_session < -2.0,
+        RbfDirection::Long  => big_cvd_usd >  2_000_000.0,
+        RbfDirection::Short => big_cvd_usd < -2_000_000.0,
     };
     if big_cvd_aligned {
         score += 1;
@@ -486,9 +491,10 @@ impl RangeBreakoutState {
 
             // OBI alineado: SHORT quiere obi < threshold, LONG quiere obi > (1 - threshold)
             if cfg.obi_gate {
+                // obi ∈ [-1, +1]: SHORT quiere obi < -threshold (ask dominante), LONG quiere obi > threshold (bid dominante)
                 let obi_ok = match direction {
-                    RbfDirection::Short => obi < cfg.obi_threshold,
-                    RbfDirection::Long  => obi > (1.0 - cfg.obi_threshold),
+                    RbfDirection::Short => obi < -cfg.obi_threshold,
+                    RbfDirection::Long  => obi >  cfg.obi_threshold,
                 };
                 if !obi_ok { continue; }
             }

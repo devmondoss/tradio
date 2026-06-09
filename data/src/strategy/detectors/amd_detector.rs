@@ -171,21 +171,21 @@ enum AmdPhase {
         absorption_count: u8,  // barras con absorción durante el rango
     },
     ManipulationDetected {
-        spike_extreme:        f64,
-        spike_dir:            SpikeDir,
-        vr_at_spike:          f64,
-        vpin_at_spike:        Option<f64>,
-        bar_delta_at_spike:   f64,
-        liq_ratio_at_spike:   f64,
-        dz_at_spike:          Option<f64>,
-        range_high:           f64,
-        range_low:            f64,
-        range_bars:           usize,
-        cvd_in_range:         f64,
-        absorption_in_range:  u8,   // barras con absorción durante acumulación
-        absorption_at_spike:  bool, // absorción en dirección correcta en el spike
-        bars_since_spike:     usize,
-        spike_timestamp_ms:   i64,
+        spike_extreme:           f64,
+        spike_dir:               SpikeDir,
+        vr_at_spike:             f64,
+        vpin_at_spike:           Option<f64>,
+        bar_delta_at_spike:      f64,
+        liq_ratio_at_spike:      f64,
+        dz_at_spike:             Option<f64>,
+        range_high:              f64,
+        range_low:               f64,
+        range_bars:              usize,
+        cvd_in_range:            f64,
+        absorption_in_range:     u8,   // barras con absorción durante acumulación
+        absorption_at_spike:     bool, // absorción en dirección correcta en el spike
+        big_trade_cvd_at_spike:  f64,  // big CVD de la barra del spike (no la de distribución)
+        bars_since_spike:        usize,
     },
 }
 
@@ -401,19 +401,19 @@ impl AmdDetectorState {
                     self.phase = AmdPhase::ManipulationDetected {
                         spike_extreme,
                         spike_dir,
-                        vr_at_spike:         vr,
-                        vpin_at_spike:       ctx.vpin,
-                        bar_delta_at_spike:  bar_delta,
-                        liq_ratio_at_spike:  ctx.liq_ratio,
-                        dz_at_spike:         ctx.vwap_dz,
+                        vr_at_spike:            vr,
+                        vpin_at_spike:          ctx.vpin,
+                        bar_delta_at_spike:     bar_delta,
+                        liq_ratio_at_spike:     ctx.liq_ratio,
+                        dz_at_spike:            ctx.vwap_dz,
                         range_high,
                         range_low,
-                        range_bars:          bars,
-                        cvd_in_range:        cvd_sum,
-                        absorption_in_range: absorption_count,
+                        range_bars:             bars,
+                        cvd_in_range:           cvd_sum,
+                        absorption_in_range:    absorption_count,
                         absorption_at_spike,
-                        bars_since_spike:    0,
-                        spike_timestamp_ms:  timestamp_ms,
+                        big_trade_cvd_at_spike: ctx.big_trade_cvd_bar,  // capturar spike bar, no distribución
+                        bars_since_spike:       0,
                     };
                 } else {
                     self.phase = AmdPhase::Idle;
@@ -428,7 +428,8 @@ impl AmdDetectorState {
                 liq_ratio_at_spike, dz_at_spike,
                 range_high, range_low, range_bars, cvd_in_range,
                 absorption_in_range, absorption_at_spike,
-                bars_since_spike, ..
+                big_trade_cvd_at_spike,
+                bars_since_spike,
             } => {
                 if bars_since_spike >= cfg.max_wait_bars_after_spike {
                     self.phase = AmdPhase::Idle;
@@ -449,8 +450,8 @@ impl AmdDetectorState {
                     cvd_in_range,
                     absorption_in_range,
                     absorption_at_spike,
+                    big_trade_cvd_at_spike,
                     bars_since_spike: bars_since_spike + 1,
-                    spike_timestamp_ms: timestamp_ms,
                 };
 
                 let dist_dir = match spike_dir {
@@ -502,6 +503,8 @@ impl AmdDetectorState {
                     range_high,
                     range_low,
                     ctx,
+                    entry,              // para normalizar session_cvd a USD
+                    big_trade_cvd_at_spike,  // big CVD del spike, no del entry bar
                 );
 
                 self.last_signal_bar = self.bars_seen;
@@ -580,20 +583,23 @@ impl AmdDetectorState {
     /// [0-1] session CVD contradice spike — CVD de sesión opuesto al spike = manipulación fuerte
     /// [0-1] Value Area: rango en VAH (Short) o VAL (Long) — setup Fabio "low of value area"
     /// [0-1] Wall confirma reversión  — ask_wall para Short, bid_wall para Long
+    /// [0-1] Big trade CVD contradice spike — big sellers absorbieron el spike alcista falso
     #[allow(clippy::too_many_arguments)]
     fn compute_quality_score(
-        vr_at_spike:         f64,
-        bar_delta_at_spike:  f64,
-        spike_dir:           SpikeDir,
-        dz_at_spike:         Option<f64>,
-        liq_ratio_at_spike:  f64,
-        absorption_in_range: u8,
-        absorption_at_spike: bool,
-        session_cvd:         f64,
+        vr_at_spike:            f64,
+        bar_delta_at_spike:     f64,
+        spike_dir:              SpikeDir,
+        dz_at_spike:            Option<f64>,
+        liq_ratio_at_spike:     f64,
+        absorption_in_range:    u8,
+        absorption_at_spike:    bool,
+        session_cvd:            f64,
         // Value Area y Walls (Fabio #4/#8)
-        range_high:          f64,
-        range_low:           f64,
-        ctx:                 &AmdContext,
+        range_high:             f64,
+        range_low:              f64,
+        ctx:                    &AmdContext,
+        entry_price:            f64,            // para normalizar CVD a USD
+        big_trade_cvd_at_spike: f64,            // big CVD capturado en la barra del spike
     ) -> u8 {
         let mut score: u8 = 0;
 
@@ -620,11 +626,13 @@ impl AmdDetectorState {
         // [+0-1] liq_ratio bajo: no es una cascada pura de liquidaciones
         if liq_ratio_at_spike < 1.2 { score += 1; }
 
-        // [+0-1] session CVD contradice spike: sesión neta vendedora pero spike alcista = trampa
-        // Threshold ±500 USD delta para ignorar CVD plano/ruidoso de inicio de sesión
+        // [+0-1] session CVD contradice spike en USD.
+        // session_cvd está en unidades de moneda → multiplicar por precio da USD.
+        // Threshold ±$500k: sesión con >$500k net en contra del spike indica bias institucional claro.
+        let session_cvd_usd = session_cvd * entry_price;
         let session_cvd_contradicts = match spike_dir {
-            SpikeDir::Up   => session_cvd < -500.0,
-            SpikeDir::Down => session_cvd >  500.0,
+            SpikeDir::Up   => session_cvd_usd < -500_000.0,
+            SpikeDir::Down => session_cvd_usd >  500_000.0,
         };
         if session_cvd_contradicts { score += 1; }
 
@@ -649,10 +657,12 @@ impl AmdDetectorState {
         if wall_confirms { score += 1; }
 
         // [+0-1] Big trade CVD contradice el spike (Fabio: "las órdenes grandes son las que importan")
-        // Spike Up pero big sellers dominaron la barra del spike → spike absorbido institucionalmente
+        // Usa big_trade_cvd_at_spike (capturado en la barra del spike, no la de distribución).
+        // Threshold en USD: ≥$100k net en contra del spike = una orden grande absorbió el move.
+        let big_cvd_usd = big_trade_cvd_at_spike * entry_price;
         let big_cvd_contradicts = match spike_dir {
-            SpikeDir::Up   => ctx.big_trade_cvd_bar < -1.0,  // ≥1 BTC net en big sells
-            SpikeDir::Down => ctx.big_trade_cvd_bar >  1.0,  // ≥1 BTC net en big buys
+            SpikeDir::Up   => big_cvd_usd < -100_000.0,
+            SpikeDir::Down => big_cvd_usd >  100_000.0,
         };
         if big_cvd_contradicts { score += 1; }
 
@@ -766,6 +776,7 @@ mod tests {
             vah:                None,
             bid_wall_nearby:    false,
             ask_wall_nearby:    false,
+            big_trade_cvd_bar:  0.0,
         }
     }
 

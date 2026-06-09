@@ -452,7 +452,7 @@ fn bootstrap_detectors(klines: &[Kline]) -> DetectorBootstrap {
         let body = c - o;
         let estimated_delta = body * v / (h - l + 1e-9);
         let session = data::session::classify_session(ts).session;
-        scalping_state.on_bar_close(c, estimated_delta, v, h, l, session);
+        scalping_state.on_bar_close(c, estimated_delta, v, h, l, session, 0.0, 0.0);
         // Calentamos el RBF pero descartamos señales del bootstrap
         let _ = rbf_state.on_bar_close(
             o, h, l, c, v, estimated_delta, session, ts,
@@ -2001,6 +2001,8 @@ impl KlineChart {
                 bar_high,
                 bar_low,
                 current_session,
+                0.0, // big_cvd no disponible en UI (solo en monitor live)
+                0.0, // bar_vol_usd no disponible en UI
             );
 
             let cfg_scalping = &cfg.scalping;
