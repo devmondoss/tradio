@@ -140,6 +140,14 @@ pub struct ScalpingState {
     /// Sesión anterior para detectar cambio de sesión
     pub last_session: TradingSession,
 
+    /// CVD acumulado solo de big trades (≥$100k notional) desde apertura de sesión.
+    /// Fabio: "las órdenes grandes son las que importan".
+    pub big_cvd_session: f64,
+    /// Volumen total de sesión en USD. Fabio: milestones 1B/2B/3B.
+    pub session_vol_usd: f64,
+    /// Último milestone cruzado: 0=ninguno, 1=1B, 2=2B, 3=3B.
+    pub session_vol_milestone: u32,
+
     /// Historial de CVD por barra (para S3 divergencia de swings)
     pub cvd_bar_history: VecDeque<f64>,
     /// Historial de máximos por barra (para S3)
@@ -172,6 +180,9 @@ impl ScalpingState {
             cvd_session: 0.0,
             cvd_session_baseline: 0.0,
             last_session: TradingSession::OffHours,
+            big_cvd_session: 0.0,
+            session_vol_usd: 0.0,
+            session_vol_milestone: 0,
             cvd_bar_history: VecDeque::with_capacity(lookback + 5),
             high_bar_history: VecDeque::with_capacity(lookback + 5),
             low_bar_history: VecDeque::with_capacity(lookback + 5),
@@ -197,7 +208,7 @@ impl ScalpingState {
         self.obi_ema_slow = self.obi_ema_slow + alpha_slow * (obi - self.obi_ema_slow);
     }
 
-    /// Llamar al cierre de cada barra M5 para actualizar historiales.
+    /// Llamar al cierre de cada barra M1 para actualizar historiales.
     pub fn on_bar_close(
         &mut self,
         cvd: f64,
@@ -206,6 +217,8 @@ impl ScalpingState {
         bar_high: f64,
         bar_low: f64,
         current_session: TradingSession,
+        bar_big_cvd: f64,
+        bar_vol_usd: f64,
     ) {
         // Detectar cambio de sesión
         if current_session != self.last_session {
@@ -214,18 +227,31 @@ impl ScalpingState {
                 TradingSession::Asia | TradingSession::London | TradingSession::NewYork
             );
             if is_new_trading_session {
-                // Guardar el CVD del indicador en el momento de apertura de sesión
-                // para calcular el CVD relativo a esa sesión
                 self.cvd_session_baseline = cvd;
+                self.big_cvd_session = 0.0;
+                self.session_vol_usd = 0.0;
+                self.session_vol_milestone = 0;
             }
-            // Reset diario al inicio del día (transición a Asia = medianoche UTC)
             if current_session == TradingSession::Asia {
                 self.paper.reset_daily();
             }
             self.last_session = current_session;
         }
-        // CVD de sesión = delta acumulado DESDE que abrió esta sesión
         self.cvd_session = cvd - self.cvd_session_baseline;
+
+        // Acumular big-trade CVD y volumen de sesión
+        self.big_cvd_session += bar_big_cvd;
+        self.session_vol_usd += bar_vol_usd;
+
+        // Milestones de volumen de sesión (Fabio: 1B, 2B, 3B)
+        for (i, &threshold) in [1e9_f64, 2e9, 3e9].iter().enumerate() {
+            let lvl = (i + 1) as u32;
+            if self.session_vol_milestone < lvl && self.session_vol_usd >= threshold {
+                self.session_vol_milestone = lvl;
+                println!("[vol_milestone] {}B USD — session_vol={:.2}B big_cvd={:+.1}",
+                    lvl, self.session_vol_usd / 1e9, self.big_cvd_session);
+            }
+        }
 
         // Actualizar historiales con límite de lookback
         push_bounded(&mut self.cvd_bar_history, cvd, self.lookback);

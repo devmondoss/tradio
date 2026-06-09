@@ -144,6 +144,9 @@ pub struct AmdContext {
     pub bid_wall_nearby: bool,
     /// Pared de asks (≤1×ATR por encima del precio) — confirma resistencia para SHORT.
     pub ask_wall_nearby: bool,
+    /// CVD de big trades (≥$100k notional) en la barra del spike.
+    /// Negativo = big sellers dominaron spike alcista → señal fuerte de absorción institucional.
+    pub big_trade_cvd_bar: f64,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -639,12 +642,19 @@ impl AmdDetectorState {
         if va_aligned { score += 1; }
 
         // [+0-1] Wall confirma reversión: ask_wall para SHORT, bid_wall para LONG
-        // (vendedores/compradores apilando en la dirección correcta = estructura de reversión)
         let wall_confirms = match spike_dir {
-            SpikeDir::Up   => ctx.ask_wall_nearby, // sellers encima = SHORT confirmado
-            SpikeDir::Down => ctx.bid_wall_nearby,  // buyers abajo = LONG confirmado
+            SpikeDir::Up   => ctx.ask_wall_nearby,
+            SpikeDir::Down => ctx.bid_wall_nearby,
         };
         if wall_confirms { score += 1; }
+
+        // [+0-1] Big trade CVD contradice el spike (Fabio: "las órdenes grandes son las que importan")
+        // Spike Up pero big sellers dominaron la barra del spike → spike absorbido institucionalmente
+        let big_cvd_contradicts = match spike_dir {
+            SpikeDir::Up   => ctx.big_trade_cvd_bar < -1.0,  // ≥1 BTC net en big sells
+            SpikeDir::Down => ctx.big_trade_cvd_bar >  1.0,  // ≥1 BTC net en big buys
+        };
+        if big_cvd_contradicts { score += 1; }
 
         score.min(10)
     }
@@ -767,7 +777,7 @@ mod tests {
             session_name: "Test".into(),
             vwap_dz: None, liq_ratio: 0.0,
             absorption_bid: false, absorption_ask: false, regime_is_trending: false, session_cvd: 0.0,
-            val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false,
+            val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false, big_trade_cvd_bar: 0.0,
         };
         for i in 0..n {
             let ts = (i as i64) * 60_000;
@@ -801,7 +811,7 @@ mod tests {
             funding_rate: None, session_name: "Test".into(),
             vwap_dz: None, liq_ratio: 0.0,
             absorption_bid: false, absorption_ask: false, regime_is_trending: false, session_cvd: 0.0,
-            val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false,
+            val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false, big_trade_cvd_bar: 0.0,
         }
     }
 

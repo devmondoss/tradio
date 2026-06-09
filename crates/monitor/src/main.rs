@@ -547,6 +547,8 @@ struct BarState {
     footprint_step: PriceStep,
     bar_buy_vol: f64,
     bar_sell_vol: f64,
+    bar_big_buy_vol: f64,
+    bar_big_sell_vol: f64,
     vwap_cum_pv: f64,
     vwap_cum_vol: f64,
     vwap_day: i64,
@@ -667,6 +669,8 @@ impl BarState {
             footprint_step,
             bar_buy_vol: 0.0,
             bar_sell_vol: 0.0,
+            bar_big_buy_vol: 0.0,
+            bar_big_sell_vol: 0.0,
             vwap_cum_pv: 0.0,
             vwap_cum_vol: 0.0,
             vwap_day: -1,
@@ -761,12 +765,15 @@ impl BarState {
         self.bar_footprint
             .add_trade_to_nearest_bin(trade, self.footprint_step);
         let delta = f64::from(qty);
+        let is_big = delta * price >= 100_000.0;
         if is_sell {
             self.bar_sell_vol += delta;
             self.cvd -= delta;
+            if is_big { self.bar_big_sell_vol += delta; }
         } else {
             self.bar_buy_vol += delta;
             self.cvd += delta;
+            if is_big { self.bar_big_buy_vol += delta; }
         }
         self.metrics.trade_count += 1;
         self.metrics.last_trade_at = Some(Instant::now());
@@ -778,7 +785,7 @@ impl BarState {
                 price,
                 size:    f64::from(qty),
                 is_buy:  !is_sell,
-                is_big:  false,  // per-trade big detection not yet available
+                is_big,
                 liq_usd: 0.0,    // liquidations come from separate @forceOrder stream
             };
             self.micro_buffer.on_trade(&mw_trade);
@@ -1255,8 +1262,13 @@ impl BarState {
         } else {
             None
         };
+        let bar_big_cvd = self.bar_big_buy_vol - self.bar_big_sell_vol;
+        let bar_vol_usd = (bar_buy + bar_sell) * c;
+
         self.bar_buy_vol = 0.0;
         self.bar_sell_vol = 0.0;
+        self.bar_big_buy_vol = 0.0;
+        self.bar_big_sell_vol = 0.0;
 
         self.bars.push_back(bar);
         if self.bars.len() > VP_WINDOW {
@@ -1635,6 +1647,10 @@ impl BarState {
             let recent: Vec<f64> = self.bar_delta_history.iter().copied().collect();
             flow.delta_velocity = derive_delta_velocity(&recent, 5, atr);
         }
+        // Big-trade tape metrics (Fabio: "las órdenes grandes son las que importan")
+        flow.big_trade_cvd_bar     = bar_big_cvd;
+        flow.big_trade_cvd_session = self.scalping_state.big_cvd_session;
+        flow.session_vol_usd       = self.scalping_state.session_vol_usd;
 
         self.ms_tracker.push_bar(o, h, l, c, bar_ms);
         let market_structure = self.ms_tracker.snapshot();
@@ -1792,6 +1808,8 @@ impl BarState {
                 h,
                 l,
                 session.session,
+                bar_big_cvd,
+                bar_vol_usd,
             );
 
             // Construir ScalpingContext para los detectores
@@ -2021,7 +2039,8 @@ impl BarState {
                     hvn_levels: hvn_nearby.clone(),
                     vpin: bar_vpin,
                     oi_momentum_aligned,
-                    session_cvd: self.scalping_state.cvd_session,
+                    session_cvd:           self.scalping_state.cvd_session,
+                    big_trade_cvd_session: self.scalping_state.big_cvd_session,
                 };
                 if let Some(sig) = self.rbf_state.on_bar_close(
                     o, h, l, c,
@@ -2043,7 +2062,7 @@ impl BarState {
                         "[rbf] {:?} entry={:.1} rr={:.2} range={:.3}% vr={:.2}x {:?} score={}/{} veto={:?} trade={}",
                         sig.direction, sig.entry_price, sig.rr, sig.range_pct,
                         sig.vr_at_breakout, sig.macro_regime,
-                        sig.confluence_score, 8,
+                        sig.confluence_score, 9,
                         sig.veto_reason, tradeable,
                     );
                     // Broadcast señal al dashboard web
@@ -2130,6 +2149,7 @@ impl BarState {
                 vah:                ctx.volume_profile.vah,
                 bid_wall_nearby:    ctx.flow.bid_wall_nearby,
                 ask_wall_nearby:    ctx.flow.ask_wall_nearby,
+                big_trade_cvd_bar:  ctx.flow.big_trade_cvd_bar,
             };
 
             if let Some(sig) = self.amd_state.on_bar_close(
@@ -3135,6 +3155,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                 absorption_bid: false, absorption_ask: false, regime_is_trending: false,
                 session_cvd: 0.0,
                 val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false,
+                big_trade_cvd_bar: 0.0,
             };
             let _ = state.amd_state.on_bar_close(
                 high, low, close, volume, bar_delta, open_ms,

@@ -28,6 +28,7 @@ pub enum ConfluenceFlag {
     VwapBias,
     OiMomentum,
     SessionCvdAligned,
+    BigCvdAligned,
 }
 
 impl ConfluenceFlag {
@@ -41,6 +42,7 @@ impl ConfluenceFlag {
             Self::VwapBias           => "vwap_bias",
             Self::OiMomentum         => "oi_momentum",
             Self::SessionCvdAligned  => "session_cvd",
+            Self::BigCvdAligned      => "big_cvd",
         }
     }
 }
@@ -74,8 +76,10 @@ pub struct RbfGateContext {
     /// OI momentum alineado: precio + OI expandiéndose en la misma dirección.
     pub oi_momentum_aligned: Option<bool>,
     /// CVD acumulado desde el inicio de la sesión (reset diario UTC).
-    /// Long positivo = sesión compradora neta; Short negativo = sesión vendedora neta.
     pub session_cvd: f64,
+    /// CVD acumulado de big trades (≥$100k notional) desde apertura de sesión.
+    /// Fabio: "las órdenes grandes son las que importan" — si el breakout viene con big_cvd alineado, es real.
+    pub big_trade_cvd_session: f64,
 }
 
 fn score_confluence(
@@ -175,6 +179,16 @@ fn score_confluence(
     if session_cvd_aligned {
         score += 1;
         flags.push(ConfluenceFlag::SessionCvdAligned);
+    }
+
+    // [+1] Big trade CVD alineado: breakout respaldado por órdenes grandes (Fabio: "big trades filter")
+    let big_cvd_aligned = match direction {
+        RbfDirection::Long  => gate.big_trade_cvd_session >  2.0,  // ≥2 BTC net big buys en sesión
+        RbfDirection::Short => gate.big_trade_cvd_session < -2.0,
+    };
+    if big_cvd_aligned {
+        score += 1;
+        flags.push(ConfluenceFlag::BigCvdAligned);
     }
 
     // Veto especial: Long contra tendencia bajista sin máxima confluencia

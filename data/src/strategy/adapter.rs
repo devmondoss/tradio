@@ -187,6 +187,9 @@ pub fn build_flow_context(
         big_trade_bullish: false,
         big_trade_bearish: false,
         delta_velocity: None,
+        big_trade_cvd_bar: 0.0,
+        big_trade_cvd_session: 0.0,
+        session_vol_usd: 0.0,
     }
 }
 

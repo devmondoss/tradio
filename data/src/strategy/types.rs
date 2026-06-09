@@ -228,6 +228,18 @@ pub struct OrderFlowContext {
     /// None until ≥5 bars of history.
     #[serde(default)]
     pub delta_velocity: Option<f64>,
+    /// CVD computed from big trades only (≥$100k notional per trade) for this bar.
+    /// Positive = big buyers dominated; Negative = big sellers dominated.
+    /// Key Fabio signal: if spike UP but big_trade_cvd_bar < 0, big sellers absorbed the spike.
+    #[serde(default)]
+    pub big_trade_cvd_bar: f64,
+    /// Cumulative big-trade CVD since session open (resets at each session change).
+    #[serde(default)]
+    pub big_trade_cvd_session: f64,
+    /// Total session volume in USD (buy+sell). Resets at each session change.
+    /// Fabio: watches 1B/2B/3B as liquidity milestones — higher = more reliable setups.
+    #[serde(default)]
+    pub session_vol_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
