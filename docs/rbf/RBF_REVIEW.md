@@ -63,10 +63,17 @@ Tabla de rendimiento desglosada por sesión, símbolo y dirección.
 Capital:          $500    Riesgo/trade:  $10 (2% fijo)
 VR mínimo:        3.0×    Sesiones OK:   London, LondonNyOverlap, NewYork
 Breakout ext min: 0.1%    VWAP gate:     max 0.3% bajo VWAP
-Trail ATR:        1.2×    Activa trail:  1.5R
+Trail ATR:        1.2×    Activa trail Short: 1.75R  (calibrado 2026-06-10)
+                          Activa trail Long:  1.5R
 Time stop:        30 bars Cooldown:      60 barras
 RR Short:         2.0     Solo Shorts    (Longs desactivados — WR=14%)
 ```
+
+**Calibración trailing (2026-06-10):** 4 Short trailing cases salieron a +0.90–1.32R cuando el
+target era 2R. TRAIL_ACTIVATE_R_SHORT subido de 1.5 a 1.75 para reducir exits prematuros.
+
+**Live (2026-06-02 → 2026-06-10):** 72 trades en BTC/ETH/BNB/SOL/XRP.
+Ver [RBF_CALIBRACION_POR_ACTIVO.md](RBF_CALIBRACION_POR_ACTIVO.md) para análisis por símbolo.
 
 El script no replica fielmente todos los filtros del monitor live (le faltan `obi_l5`, `cvd_slope`,
 `stacked_imb` que son NULL en el backfill histórico). Es una aproximación válida para OHLCV + flow.

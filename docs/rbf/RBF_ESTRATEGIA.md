@@ -1,6 +1,6 @@
 # Range Breakout Flow (RBF) — Documentación completa
 
-Última revisión: 2026-06-10
+Última revisión: 2026-06-10 (calibración v2 aplicada — 72 trades live)
 
 ---
 
@@ -13,6 +13,9 @@ Cuando el precio consolida en un rango estrecho (0.08–0.55% del precio) y el C
 
 **Validado en backtest:** 30 días M1, 43,200 barras, n=914 señales con CVD alineado.
 VR mínimo: 3× (no 2×). Stop dinámico: 1.0×ATR.
+
+**Live (2026-06-02 → 2026-06-10):** 72 trades en 5 símbolos (BTC/ETH/BNB/SOL/XRP).
+Ver análisis completo en [RBF_CALIBRACION_POR_ACTIVO.md](RBF_CALIBRACION_POR_ACTIVO.md).
 
 ---
 
@@ -98,13 +101,32 @@ sobre M1 mostró que 1.0×ATR minimiza stops en barra 1 (era 67% con 0.7×ATR).
 Una vez abierta la posición, el stop se gestiona de forma dinámica:
 
 ```
-TRAIL_ACTIVATE_R = 1.5R   → el trailing se activa cuando la posición llega a +1.5R
-TRAIL_ATR_K      = 1.2    → distancia del stop al extremo favorable = 1.2 × ATR
-TIME_STOP_BARS   = 15     → si a los 15 min la posición está en pérdida, cierra al mercado
+TRAIL_ACTIVATE_R_SHORT = 1.75R  → Shorts activan trailing al llegar a 1.75R (target 2R)
+TRAIL_ACTIVATE_R_LONG  = 1.5R   → Longs activan trailing al llegar a 1.5R (target 1.8R)
+TRAIL_ATR_K            = 1.2    → distancia del stop al extremo favorable = 1.2 × ATR
+TIME_STOP_BARS         = 30     → si a los 30 min la posición está en pérdida, cierra al mercado
 ```
 
-Con 1.2×ATR de trailing, la captura esperada en un movimiento de 3R es ~2.8R
-(vs ~2R con el trail anterior de 0.5×ATR).
+**Calibración 2026-06-10:** 4 trades Short salieron por trailing a +0.90–1.32R cuando el target
+era 2R — cedieron ~0.97R/trade. Raising Short threshold 1.5→1.75 reduce exits prematuros sin
+eliminar la protección ante reversales.
+
+### 5c. Filtro expansion_bars_recent
+
+Introducido en la calibración 2026-06-10. En las últimas 25 barras M1 previas a la señal,
+cuenta cuántas estuvieron en régimen `Expansion`. Si ese conteo supera el umbral del símbolo,
+la señal se descarta (el movimiento ya está maduro).
+
+| Símbolo | `expansion_max_bars` | Razón |
+|---------|---------------------|-------|
+| BTCUSDT | 3 | Losses tenían 7.2 barras expansion vs 4.0 en wins |
+| ETHUSDT | 3 | Losses 4.8 vs wins 1.3 |
+| BNBUSDT | 3 | Losses 7.8 vs wins 3.6 (mayor diferencia de todos) |
+| SOLUSDT | None (bypass) | Correlación invertida: wins tienen MÁS expansion (5.2 vs 4.2) |
+| XRPUSDT | None (bypass) | Muestra insuficiente (n=1) |
+
+El conteo se pasa via `RbfGateContext.expansion_bars_recent`. SOL/XRP reciben 0 (bypass).
+Ver [RBF_CALIBRACION_POR_ACTIVO.md](RBF_CALIBRACION_POR_ACTIVO.md) para el análisis completo.
 
 ### 6. Cooldown
 
@@ -209,16 +231,38 @@ Esto permite reconstruir el contexto completo de cualquier señal juntando `rbf_
 
 ---
 
-## Resultados primer día live (2026-06-02)
+## Resultados live (2026-06-02 → 2026-06-10)
 
-| Señal | Dir | Contexto | VR | CVD rango | Resultado | R |
-|-------|-----|----------|----|-----------|-----------|---|
-| 08:48 | Short | TrendDown pre, 1 conviction event | 3.22× | −69 | ✅ Target | +2.1R |
-| 10:11 | Long | Rebote contra Bear macro, CVD alcista en rango | 2.85× | +616 | ❌ Stop | −1.1R |
-| 12:18 | Short | CVD slope −38 sostenido, 30m presión bajista | 3.95× | −476 | ✅ Target | +2.2R |
-| 16:36 | Short | CVD sesión −4,889, slope −114, VR 5.14× | 5.14× | −1,778 | ⏳ Abierto | — |
+**72 trades en 5 símbolos** — resumen por sesión:
 
-**Conclusión día 1:** 2 de 3 resueltas ganaron. El único perdedor fue el Long en régimen Bear — exactamente el patrón que el backtest identificó como el de menor edge.
+| Sesión | n | WR | PnL |
+|--------|---|----|-----|
+| London | 45 | 33% | +0.65R |
+| LondonNyOverlap | 22 | 50% | +6.47R |
+| NewYork | 5 | 60% | +2.57R |
+
+**Por símbolo:**
+
+| Símbolo | n | WR | PnL |
+|---------|----|-----|-----|
+| BTCUSDT | 32 | 41% | +6.37R |
+| SOLUSDT | 11 | 55% | +5.80R |
+| BNBUSDT | 17 | 41% | +1.40R |
+| ETHUSDT | 11 | 27% | −2.88R |
+| XRPUSDT | 1  | 0%  | −1.00R |
+
+**Insight clave (entry lag):** el detector dispara cuando el movimiento ya consumió 32–54% del
+desplazamiento total. Las señales bearish de microestructura aparecen ~24 barras antes. Si se
+entrara al inicio del move, el target potencial sería 4.30R vs 2.00R actual.
+
+**Primer día (2026-06-02):**
+
+| Señal | Dir | Contexto | VR | Resultado | R |
+|-------|-----|----------|----|-----------|---|
+| 08:48 | Short | TrendDown, 1 conviction event | 3.22× | ✅ Target | +2.1R |
+| 10:11 | Long | Rebote contra Bear macro | 2.85× | ❌ Stop | −1.1R |
+| 12:18 | Short | CVD slope −38 sostenido | 3.95× | ✅ Target | +2.2R |
+| 14:01 | Short | CVD sesión −854, VR 3.29× | 3.29× | ✅ Target | +2.0R |
 
 ---
 
@@ -238,14 +282,17 @@ Esto permite reconstruir el contexto completo de cualquier señal juntando `rbf_
 
 | Archivo | Descripción |
 |---------|-------------|
-| `data/src/strategy/detectors/range_breakout_flow.rs` | Detector: lógica de detección, RbfSignal, RangeBreakoutState |
+| `data/src/strategy/detectors/range_breakout_flow.rs` | Detector: lógica de detección, RbfGateContext (expansion_bars_recent), RangeBreakoutConfig |
+| `data/src/strategy/detectors/rbf_paper.rs` | Paper trader: trailing direction-aware (1.75/1.5), time stop 30 barras |
 | `config/strategy.toml` → `[range_breakout]` | Parámetros: stop_pct, target_short_pct, target_long_pct, min_rr |
 | `data/src/strategy/config_file.rs` | Parser del toml — RangeBreakoutSection |
-| `crates/monitor/src/main.rs` | Wiring en el pipeline M1 de Railway |
+| `crates/monitor/src/main.rs` | Wiring en el pipeline M1: regime_hist_25, expansion_bars_recent, per-symbol config |
 | `crates/monitor/src/supabase_writer.rs` | write_rbf_signal() → tabla rbf_signals |
 | `src/chart/kline.rs` | Overlay visual en la UI local |
 | `supabase/migration_rbf.sql` | Tabla rbf_signals + índices + vista v_rbf_summary |
 | `supabase/migration_rbf_v2.sql` | ALTER TABLE: 5 campos de contexto adicionales |
+| `docs/rbf/RBF_CALIBRACION_POR_ACTIVO.md` | Análisis per-símbolo: 72 trades, microestructura, filtros aplicados |
+| `scripts/_analysis_calibration.py` | Script de re-análisis cuando n≥25 por símbolo |
 
 ---
 

@@ -4,6 +4,12 @@
 **Script:** `scripts/rbf_backtest.py --extended --days 14`  
 **Símbolo:** BTCUSDT perpetual (Binance FAPI)
 
+> **Nota (2026-06-10):** Este backtest es la referencia pre-live. El sistema ya tiene
+> **72 trades live** en 5 símbolos (BTC/ETH/BNB/SOL/XRP). Resultados live y calibraciones
+> aplicadas en [RBF_CALIBRACION_POR_ACTIVO.md](RBF_CALIBRACION_POR_ACTIVO.md).
+> Cambios implementados post-backtest: expansion_max_bars filter + trailing direction-aware.
+
+
 ---
 
 ## 1. Fuentes de datos
@@ -266,21 +272,26 @@ Jun 6: 2W / 2L, 50% WR, avgR +0.45 con solo datos del fin de semana lateral. En 
 
 ### Qué se necesita para calibrar
 
-| Umbral | Para qué | ETA estimado |
+| Umbral | Para qué | Estado |
 |---|---|---|
-| 30 señales en btc_bars | Primera lectura de score vs outcome con datos homogéneos | ~2 semanas |
-| 50 señales en btc_bars | Queries 1–4 del plan de calibración válidas | ~3–4 semanas |
-| 100 señales en btc_bars | Fijar `min_confluence_score` real | ~6–8 semanas |
+| 30 señales en btc_bars | Primera lectura de score vs outcome con datos homogéneos | ✅ Completado |
+| 50 señales en btc_bars | Queries 1–4 del plan de calibración válidas | ✅ Completado (72 trades) |
+| 100 señales en btc_bars | Fijar `min_confluence_score` real | En progreso |
 
-### Anomalía a investigar
+### Anomalía investigada (2026-06-10)
 
-**cvd_slope aparece más en losers que en winners** en el backtest extendido (-27.5pp). Posibles explicaciones:
-- Proxy de momentum extremo → señales "tarde" en el movimiento que ya se agotó
-- Sesgo de período (May 26-31 tuvo más señales con cvd_slope activo y fue el peor sub-período)
-- El threshold de 15 USD/barra puede ser demasiado bajo y no filtrar suficiente
+**Score 4 tiene el peor outcome (WR=17%, −11.15R en 72 trades live)** — confirmado. La causa raíz
+es que score alto = múltiples flags alineados = movimiento ya en Expansion avanzada = entrada tardía.
+El filtro `expansion_max_bars=3` implementado aborda esto directamente.
 
-A vigilar cuando haya 50+ señales homogéneas en btc_bars.
+**cvd_slope aparece más en losers que en winners** — sigue vigente como hipótesis. Cuando se
+confirme con n≥50 homogéneos, revisar si `cvd_slope_gate` necesita ajuste de threshold (>15).
+
+### Calibraciones aplicadas post-backtest (2026-06-10)
+
+1. `expansion_max_bars = Some(3)` para BTC/ETH/BNB — bloquea señales cuando expansion_bars_recent > 3
+2. `TRAIL_ACTIVATE_R_SHORT = 1.75` (antes 1.5) — 4 trailing Shorts cedieron avg 0.97R/trade
 
 ---
 
-*Próxima revisión: cuando btc_bars acumule 30+ señales cerradas con confluence_score registrado.*
+*Próxima revisión: cuando cada símbolo alcance n=25 Shorts cerrados para calibración per-símbolo completa.*

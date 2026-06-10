@@ -271,13 +271,27 @@ cantidad de backfill histórico.
 
 ## Milestones de calibración con estos datos
 
-| Condición | Acción |
-|-----------|--------|
-| 30 señales cerradas | Primera lectura de distribución de scores |
-| 50 señales cerradas | Verificar gradiente score → avg_r. Decidir si los flags discriminan. |
-| 100 señales cerradas | Fijar `min_confluence_score` real (subir de 1 a 3) en strategy.toml |
-| 200 señales cerradas | Validar vetos: ¿bloquearon principalmente losers? Calibrar wall_target. |
-| 200+ señales, WR > 55% | Considerar escalar tamaño de posición |
+| Condición | Acción | Estado |
+|-----------|--------|--------|
+| 30 señales cerradas | Primera lectura de distribución de scores | ✅ Completado |
+| 50 señales cerradas | Verificar gradiente score → avg_r. Decidir si los flags discriminan. | ✅ 72 trades live (2026-06-10) |
+| 100 señales cerradas | Fijar `min_confluence_score` real (subir de 1 a 3) en strategy.toml | En progreso |
+| n=25 Shorts por símbolo | Calibración per-símbolo completa (cum_delta threshold, OBI gate ETH) | En progreso |
+| 200 señales cerradas | Validar vetos: ¿bloquearon principalmente losers? Calibrar wall_target. | Pendiente |
+| 200+ señales, WR > 55% | Considerar escalar tamaño de posición | Pendiente |
+
+### Calibraciones implementadas (2026-06-10)
+
+**Expansion filter** (`expansion_bars_recent` / `expansion_max_bars`):
+- Campo `expansion_bars_recent: u8` en `RbfGateContext` — conteo de barras Expansion en últimas 25 M1
+- Campo `expansion_max_bars: Option<u8>` en `RangeBreakoutConfig` — filtro por símbolo
+- BTC/ETH/BNB: max=3. SOL/XRP: bypass (correlación invertida / muestra insuficiente)
+
+**Trailing direction-aware:**
+- `TRAIL_ACTIVATE_R_SHORT = 1.75` (antes 1.5). 4 Shorts trailing cedieron avg 0.97R/trade.
+- `TRAIL_ACTIVATE_R_LONG  = 1.5` — sin cambio
+
+Ver análisis completo en `docs/rbf/RBF_CALIBRACION_POR_ACTIVO.md`.
 
 ---
 

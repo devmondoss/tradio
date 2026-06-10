@@ -1,9 +1,11 @@
 # RBF v2 — Plan Completo: Implementación, Calibración y Expectativas
 
-**Fecha:** 2026-06-04
-**Versión anterior:** RBF v1 (detector base: rango + CVD + VR)
-**Esta versión:** RBF v2 (sistema de confluencia por capas de order flow)
-**Estado al escribir este doc:** RBF v1 deployado en Railway, 4 señales live (día 1), pendiente migración DB v3
+**Fecha:** 2026-06-04  
+**Actualizado:** 2026-06-10 (72 trades live, calibración por activo)  
+**Versión anterior:** RBF v1 (detector base: rango + CVD + VR)  
+**Esta versión:** RBF v2 (sistema de confluencia por capas de order flow)  
+**Estado actual:** Fase 2 completada — 72 trades con datos. Calibraciones expansion filter +
+trailing direction-aware deployadas. Próximo umbral: n=25 Shorts por símbolo.
 
 ---
 
@@ -352,20 +354,53 @@ Los umbrales actuales (cvd_slope < −15, obi_l5 < −0.15, score ≥ 3) son hip
 
 **Por eso el shadow mode con `min_confluence_score = 1` es obligatorio.** Si despliegas con score ≥ 3 desde el día 1, nunca sabrás cómo le fue a las señales con score 1 o 2 y no podrás calibrar el umbral.
 
-### Fase 1 — Shadow mode (semanas 1–3)
+### Fase 1 — Shadow mode (semanas 1–3) ✅ COMPLETADA
 
 **Objetivo:** acumular 50+ señales cerradas con `confluence_score` y `result_r` registrados.
 
-Configuración:
-- `min_confluence_score = 1` → dispara toda señal que pase los requisitos duros
-- Paper trading (sin dinero real)
-- Grabar `confluence_score`, `confluence_flags`, `obi_at_breakout`, `veto_reason` en cada señal
+**Estado:** Completada. 72 trades live (2026-06-02 → 2026-06-10) en 5 símbolos.
 
-Lo que NO hacer durante esta fase:
-- No ajustar umbrales basándose en las primeras 10-20 señales
-- No subir `min_confluence_score` hasta tener el análisis de fase 2
+Configuración durante la fase:
+- `min_confluence_score = 1` → disparó toda señal que pasó los requisitos duros
+- Paper trading ($50 capital, 10× leverage, $5 riesgo/trade)
+- Grabando `confluence_score`, `confluence_flags`, `obi_at_breakout`, `veto_reason` en cada señal
 
-### Fase 2 — Primera calibración (con 50+ señales cerradas)
+### Fase 2 — Primera calibración (con 50+ señales cerradas) ✅ EJECUTADA
+
+**Estado:** Ejecutada 2026-06-10. Análisis completo en `scripts/rbf_microstructure.csv` +
+`scripts/rbf_entry_lag.csv` + `scripts/rbf_pnl_450.csv`. Implementación en `scripts/_analysis_calibration.py`.
+
+#### Hallazgos principales de la fase 2
+
+**Score 4 paradox:**
+- Score 4: WR=17%, −11.15R (el peor outcome de todos los scores)
+- Causa raíz: score alto = múltiples flags = movimiento ya en Expansion avanzada = entrada tardía
+- BTC losses tenían 7.2 barras Expansion vs 4.0 en wins; BNB: 7.8 vs 3.6 (mayor diferencia)
+- **Solución implementada:** `expansion_max_bars=3` para BTC/ETH/BNB
+
+**Entry lag:**
+- Las señales bearish de microestructura aparecen ~24 barras antes del detector
+- El mercado lleva 32–54% del movimiento consumido cuando se entra
+- Si se entrara al inicio del move: target potencial 4.30R vs 2.00R actual
+- Primera propuesta de entrada anticipada (pre-breakout entry) — pendiente de implementar
+
+**Trailing premature exits:**
+- 4 Shorts trailing cedieron avg 0.97R/trade (salieron a +0.90–1.32R, target era 2R)
+- **Solución implementada:** `TRAIL_ACTIVATE_R_SHORT = 1.75` (antes 1.5)
+
+**Per-symbol microstructure:**
+- SOL: correlación expansion invertida (wins tienen MÁS expansion) — bypass aplicado
+- ETH: OBI invertido (wins tienen OBI más negativo que losses) — pendiente obi_gate
+- BNB: cum_delta discrimina mejor (wins −78, losses −1357) — pendiente filtro n≥25
+- BTC: losses tienen cum_delta positivo (+377) — entrada contra flujo real en fakeouts
+
+**Calibraciones deployadas (commit 1e4914d, 2026-06-10):**
+1. `expansion_bars_recent: u8` en `RbfGateContext` + `expansion_max_bars: Option<u8>` en `RangeBreakoutConfig`
+2. `TRAIL_ACTIVATE_R_SHORT = 1.75`, `TRAIL_ACTIVATE_R_LONG = 1.5`
+3. `regime_hist_25: VecDeque<Regime>` en `BarState` del monitor
+4. Per-symbol config clone con `expansion_max_bars` en `crates/monitor/src/main.rs`
+
+#### Queries de fase 2 ejecutadas
 
 **Query 1: ¿CVD slope realmente predice mejor outcome?**
 
@@ -547,14 +582,15 @@ GROUP BY 1 ORDER BY n DESC;
 
 ### Milestones con criterios de éxito claros
 
-| Señales cerradas | Qué analizar | Decisión a tomar |
+| Señales cerradas | Qué analizar | Estado |
 |---|---|---|
-| 30 | Primera lectura de distribución de scores | ¿El sistema genera scores ≥ 3 con frecuencia suficiente? |
-| 50 | Queries 1–4 de calibración | ¿Hay gradiente score→avg_r? ¿Qué flags correlacionan con outcomes? |
-| 70/30 split | Test de overfitting | ¿Los umbrales encontrados en las 70 primeras funcionan en las 30 últimas? |
-| 100 | Fijación de `min_confluence_score` real | Activar umbral calibrado. Considerar sizing diferencial. |
-| 200 | Validación de vetos | ¿Los vetos bloquearon principalmente losers? |
-| 200+ win rate > 55% sostenido | Decisión de escalar | Aumentar tamaño base de posición |
+| 30 | Primera lectura de distribución de scores | ✅ Completado |
+| 50 | Queries 1–4 de calibración | ✅ 72 trades, calibraciones aplicadas |
+| 70/30 split | Test de overfitting de umbrales | ⏳ Pendiente |
+| n=25 Shorts/símbolo | Calibración per-símbolo completa (cum_delta, OBI gate ETH) | En progreso |
+| 100 | Fijación de `min_confluence_score` real | Pendiente |
+| 200 | Validación de vetos | Pendiente |
+| 200+ win rate > 55% sostenido | Decisión de escalar | Pendiente |
 
 ### Señal de alerta temprana — cuándo replantear
 
@@ -593,4 +629,5 @@ Si los vetos están bloqueando más del 40% de las señales que pasarían en v1,
 
 ---
 
-*Documento generado en sesión 2026-06-04. Próxima revisión: cuando haya 50+ señales cerradas con `confluence_score` registrado.*
+*Documento original: 2026-06-04. Actualizado 2026-06-10 con resultados de fase 2 (72 trades).*
+*Próxima revisión: cuando cada símbolo alcance n=25 Shorts cerrados para completar calibración per-símbolo.*

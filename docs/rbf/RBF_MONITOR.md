@@ -2,7 +2,7 @@
 
 **Crate:** `crates/rbf_monitor/`
 **Binario:** `cargo run -p rbf_monitor`
-**Última actualización:** 2026-06-04
+**Última actualización:** 2026-06-10
 
 ---
 
@@ -145,8 +145,47 @@ cargo run -p rbf_monitor
 
 ---
 
+## Calibraciones en `crates/monitor/src/main.rs` (2026-06-10)
+
+El `monitor` de Railway (`crates/monitor/src/main.rs`) incorpora lógica de calibración por símbolo:
+
+### regime_hist_25
+
+Cada `BarState` mantiene un `VecDeque<Regime>` de las últimas 25 barras M1:
+```rust
+regime_hist_25: VecDeque<data::strategy::types::Regime>
+```
+Se actualiza después de calcular `effective_regime` en cada cierre de barra.
+
+### expansion_bars_recent
+
+Antes de construir `RbfGateContext`, cuenta barras Expansion en la ventana de 25:
+```rust
+let expansion_bars_recent: u8 = if symbol == "SOLUSDT" || symbol == "XRPUSDT" {
+    0  // bypass — correlación invertida / muestra insuficiente
+} else {
+    self.regime_hist_25.iter()
+        .filter(|&&r| r == Regime::Expansion)
+        .count().min(25) as u8
+};
+```
+
+### Config por símbolo
+
+Se clona el config antes de llamar al detector, modificando `expansion_max_bars` por símbolo:
+```rust
+let mut rbf_cfg = cfg.range_breakout.clone();
+rbf_cfg.expansion_max_bars = match symbol {
+    "SOLUSDT" | "XRPUSDT" => None,
+    _                      => Some(3),
+};
+```
+
+---
+
 ## Pendiente (segunda fase)
 
 - Señales en tiempo real desde el monitor (actualmente solo historial de Supabase)
 - Marcadores de señales sobre las velas del chart
 - Panel de confluencia flags breakdown
+- cum_delta threshold filter por símbolo (pendiente n≥25 Shorts por símbolo)
