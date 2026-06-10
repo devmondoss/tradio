@@ -123,9 +123,9 @@ pub struct AmdSignal {
     // HTF H4 estructura (FASE 2.6)
     /// Tendencia H4 al momento de la señal: "Bull" / "Bear" / None si aún sin warmup.
     /// Deriva de EMA-240M1: precio > EMA → Bull.
-    pub htf_h4_trend: Option<String>,
+    pub htf_h1_trend: Option<String>,
     /// True si la reversión AMD va en dirección del H4 trend (Long+Bull o Short+Bear).
-    pub htf_h4_aligned: Option<bool>,
+    pub htf_h1_aligned: Option<bool>,
 
     // Score continuo + sizing dinámico (FASE 4)
     /// Score continuo 0–1 combinando quality_score, delta_dz, kill zone, bars_to_entry, H4.
@@ -206,7 +206,7 @@ pub struct AmdContext {
     /// Negativo = bullish div (precio bajo, CVD sube) → confirma reversión LONG AMD.
     pub cvd_divergence_bars: Option<i32>,
     /// Tendencia H4 al momento de la señal: Some("Bull") / Some("Bear") / None si sin warmup.
-    pub htf_h4_trend: Option<String>,
+    pub htf_h1_trend: Option<String>,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -619,7 +619,7 @@ impl AmdDetectorState {
                 let bars_to_entry = bars_since_spike + 1;
 
                 // ── Score continuo (FASE 4) ───────────────────────────────────
-                let h4_amd_aligned = ctx.htf_h4_trend.as_ref().map(|t| {
+                let h4_amd_aligned = ctx.htf_h1_trend.as_ref().map(|t| {
                     matches!((dist_dir, t.as_str()), (AmdDirection::Long,"Bull")|(AmdDirection::Short,"Bear"))
                 });
                 let amd_score_v2 = {
@@ -677,8 +677,8 @@ impl AmdDetectorState {
                     bars_to_entry,
                     spike_extension_pct,
                     range_spike_ratio,
-                    htf_h4_aligned: h4_amd_aligned,
-                    htf_h4_trend:   ctx.htf_h4_trend.clone(),
+                    htf_h1_aligned: h4_amd_aligned,
+                    htf_h1_trend:   ctx.htf_h1_trend.clone(),
                     signal_score_v2: amd_score_v2,
                     sizing_multiplier: amd_sizing,
                 })
@@ -920,7 +920,7 @@ mod tests {
             big_trade_cvd_bar:  0.0,
             oi_delta_pct:       None,
             cvd_divergence_bars: None,
-            htf_h4_trend:       None,
+            htf_h1_trend:       None,
         }
     }
 
@@ -933,7 +933,7 @@ mod tests {
             vwap_dz: None, liq_ratio: 0.0,
             absorption_bid: false, absorption_ask: false, regime_is_trending: false, session_cvd: 0.0,
             val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false, big_trade_cvd_bar: 0.0,
-            oi_delta_pct: None, cvd_divergence_bars: None, htf_h4_trend: None,
+            oi_delta_pct: None, cvd_divergence_bars: None, htf_h1_trend: None,
         };
         for i in 0..n {
             let ts = (i as i64) * 60_000;
@@ -968,7 +968,7 @@ mod tests {
             vwap_dz: None, liq_ratio: 0.0,
             absorption_bid: false, absorption_ask: false, regime_is_trending: false, session_cvd: 0.0,
             val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false, big_trade_cvd_bar: 0.0,
-            oi_delta_pct: None, cvd_divergence_bars: None, htf_h4_trend: None,
+            oi_delta_pct: None, cvd_divergence_bars: None, htf_h1_trend: None,
         }
     }
 

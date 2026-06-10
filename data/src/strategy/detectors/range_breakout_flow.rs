@@ -89,7 +89,7 @@ pub struct RbfGateContext {
     pub cvd_divergence_bars: Option<i32>,
     /// Tendencia H4 al momento del breakout: Some("Bull") / Some("Bear") / None si aún sin warmup (< 240 barras M1).
     /// Deriva de EMA-240M1 (≈ 4H): precio > EMA → Bull.
-    pub htf_h4_trend: Option<String>,
+    pub htf_h1_trend: Option<String>,
     /// VP Open Variant del día actual (FASE 2.1): "InsideValue", "OutsideVaInsidePa", "TrendDay", "FadeGap".
     /// Clasifica el tipo de apertura de sesión vs el Value Area del día anterior.
     pub vp_open_bias: Option<String>,
@@ -327,13 +327,13 @@ pub struct RbfSignal {
 
     // HTF H4 estructura (FASE 2.6)
     /// Tendencia H4 al momento del breakout: "Bull" (precio > EMA-240M1), "Bear", o None si sin warmup.
-    pub htf_h4_trend: Option<String>,
+    pub htf_h1_trend: Option<String>,
     // VP Open Variant (FASE 2.1)
     /// Variante del día: "InsideValue", "OutsideVaInsidePa", "TrendDay", "FadeGap", o None.
     pub vp_open_bias: Option<String>,
     /// True si la dirección del trade está alineada con la tendencia H4.
     /// Long+Bull o Short+Bear = alineado; contra-tendencia = false.
-    pub htf_h4_aligned: Option<bool>,
+    pub htf_h1_aligned: Option<bool>,
 
     // Score continuo + sizing dinámico (FASE 4)
     /// Score continuo 0–1 ponderando absorción, VR tier, extensión, H4 alineamiento y confluencia.
@@ -657,7 +657,7 @@ impl RangeBreakoutState {
             self.last_signal_bar = self.bars_seen;
 
             // ── Score continuo (FASE 4) ───────────────────────────────────────
-            let h4_aligned = gate.and_then(|g| g.htf_h4_trend.as_ref().map(|t| {
+            let h4_aligned = gate.and_then(|g| g.htf_h1_trend.as_ref().map(|t| {
                 matches!((direction, t.as_str()), (RbfDirection::Long,"Bull")|(RbfDirection::Short,"Bear"))
             }));
             let signal_score_v2 = {
@@ -708,8 +708,8 @@ impl RangeBreakoutState {
                 breakout_extension_pct,
                 signal_score_v2,
                 sizing_multiplier,
-                htf_h4_trend: gate.and_then(|g| g.htf_h4_trend.clone()),
-                htf_h4_aligned: h4_aligned,
+                htf_h1_trend: gate.and_then(|g| g.htf_h1_trend.clone()),
+                htf_h1_aligned: h4_aligned,
                 vp_open_bias: gate.and_then(|g| g.vp_open_bias.clone()),
                 confluence_score,
                 confluence_flags,
