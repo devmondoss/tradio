@@ -91,6 +91,58 @@ pub struct AmdSignal {
     pub absorption_at_spike:   bool, // absorción confirma manipulación en spike
     pub regime_is_trending:    bool, // régimen direccional en el momento de la señal
     pub session_cvd:           f64,  // CVD acumulado de sesión al momento de la señal
+
+    // Absorción continua (FASE 1.1): delta z-score del spike y del entry bar
+    /// Delta z-score normalizado de la barra del spike (rolling 50 barras).
+    /// Negativo para SpikeDir::Up = sellers dominando durante spike alcista → manipulación.
+    pub delta_dz_at_spike:     f64,
+    /// Delta z-score normalizado de la barra de distribución/entry.
+    /// Confirma presión en la dirección del trade de reversión.
+    pub delta_dz_at_entry:     f64,
+
+    // OI delta % en evento (FASE 1.2)
+    /// % cambio de Open Interest en la ventana reciente al momento del spike.
+    /// Negativo en spike alcista = OI cayendo (coberturas) → confirma falsa ruptura.
+    pub oi_delta_pct_at_spike: Option<f64>,
+    /// % cambio de Open Interest en la barra de distribución/entry.
+    pub oi_delta_pct_at_entry: Option<f64>,
+
+    // CVD divergencia explícita (FASE 1.3)
+    /// Barras de divergencia CVD-precio en el momento de la señal.
+    /// Negativo = bullish div (precio bajo, CVD arriba) → confirma reversión LONG.
+    /// Positivo = bearish div → confirma reversión SHORT.
+    pub cvd_divergence_bars: Option<i32>,
+
+    // Kill Zones (FASE 2.4)
+    /// Señal emitida durante Kill Zone (London 07-09 UTC o NY 13:30-15:30 UTC).
+    /// Kill zones = mayor probabilidad de manipulación AMD por actividad institucional.
+    pub is_kill_zone: bool,
+    /// Nombre de la Kill Zone si aplica: "London", "NewYork" o "" si no aplica.
+    pub kill_zone_name: String,
+
+    // HTF H4 estructura (FASE 2.6)
+    /// Tendencia H4 al momento de la señal: "Bull" / "Bear" / None si aún sin warmup.
+    /// Deriva de EMA-240M1: precio > EMA → Bull.
+    pub htf_h4_trend: Option<String>,
+    /// True si la reversión AMD va en dirección del H4 trend (Long+Bull o Short+Bear).
+    pub htf_h4_aligned: Option<bool>,
+
+    // Score continuo + sizing dinámico (FASE 4)
+    /// Score continuo 0–1 combinando quality_score, delta_dz, kill zone, bars_to_entry, H4.
+    pub signal_score_v2: f64,
+    /// Multiplicador sugerido: 0.5×, 1.0×, 1.5×, 2.0× según score.
+    pub sizing_multiplier: f64,
+
+    // Spike quality metrics (FASE 2.5)
+    /// Barras desde el spike hasta la barra de distribución/entry.
+    /// 1 = barra inmediatamente siguiente (más limpio); alto = rango post-spike más largo.
+    pub bars_to_entry: usize,
+    /// Extensión del spike más allá del rango (%).
+    /// spike_extreme / range_high (SpikeDir::Up) − 1 * 100 = cuánto sobre-extendió.
+    pub spike_extension_pct: f64,
+    /// CVD acumulado en el rango / extensión del spike en %. Mayor ratio = mayor absorción
+    /// institucional por punto de precio de spike.
+    pub range_spike_ratio: f64,
 }
 
 // ── Contexto externo ───────────────────────────────────────────────────────────
@@ -147,6 +199,14 @@ pub struct AmdContext {
     /// CVD de big trades (≥$100k notional) en la barra del spike.
     /// Negativo = big sellers dominaron spike alcista → señal fuerte de absorción institucional.
     pub big_trade_cvd_bar: f64,
+    /// % de cambio de Open Interest en la ventana reciente (~6 lecturas).
+    /// Positivo = contratos expandiéndose (convicción); negativo = cerrando posiciones.
+    pub oi_delta_pct: Option<f64>,
+    /// Barras consecutivas de divergencia CVD-precio.
+    /// Negativo = bullish div (precio bajo, CVD sube) → confirma reversión LONG AMD.
+    pub cvd_divergence_bars: Option<i32>,
+    /// Tendencia H4 al momento de la señal: Some("Bull") / Some("Bear") / None si sin warmup.
+    pub htf_h4_trend: Option<String>,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -178,6 +238,8 @@ enum AmdPhase {
         bar_delta_at_spike:      f64,
         liq_ratio_at_spike:      f64,
         dz_at_spike:             Option<f64>,
+        delta_dz_at_spike:       f64,   // rolling delta z-score del spike bar (FASE 1.1)
+        oi_delta_pct_at_spike:   Option<f64>,  // % cambio OI en el spike bar (FASE 1.2)
         range_high:              f64,
         range_low:               f64,
         range_bars:              usize,
@@ -193,6 +255,7 @@ pub struct AmdDetectorState {
     phase:           AmdPhase,
     history:         VecDeque<BarSnap>,
     vol_hist:        VecDeque<f64>,
+    delta_hist:      VecDeque<f64>,  // rolling 50-bar delta para compute_delta_dz
     bars_seen:       usize,
     last_signal_bar: usize,
 }
@@ -203,6 +266,7 @@ impl AmdDetectorState {
             phase:           AmdPhase::Idle,
             history:         VecDeque::with_capacity(65),
             vol_hist:        VecDeque::with_capacity(VR_WINDOW + 5),
+            delta_hist:      VecDeque::with_capacity(VR_WINDOW + 5),
             bars_seen:       0,
             last_signal_bar: 0,
         }
@@ -217,6 +281,17 @@ impl AmdDetectorState {
         if self.vol_hist.is_empty() { return 1.0; }
         let mean = self.vol_hist.iter().sum::<f64>() / self.vol_hist.len() as f64;
         if mean > 0.0 { volume / mean } else { 1.0 }
+    }
+
+    /// Delta z-score de la barra actual (rolling 50 barras). Igual al de RBF.
+    fn compute_delta_dz(&self, bar_delta: f64) -> f64 {
+        let n = self.delta_hist.len();
+        if n < 5 { return 0.0; }
+        let mean = self.delta_hist.iter().sum::<f64>() / n as f64;
+        let var  = self.delta_hist.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / n as f64;
+        let std  = var.sqrt();
+        if std < 1e-8 { return 0.0; }
+        (bar_delta - mean) / std
     }
 
     /// Selecciona el target estructural más cercano en la dirección de distribución.
@@ -303,6 +378,9 @@ impl AmdDetectorState {
         // Mantener buffers
         self.vol_hist.push_back(volume);
         if self.vol_hist.len() > VR_WINDOW { self.vol_hist.pop_front(); }
+
+        self.delta_hist.push_back(bar_delta);
+        if self.delta_hist.len() > VR_WINDOW { self.delta_hist.pop_front(); }
 
         self.history.push_back(BarSnap { high, low, close, volume, delta: bar_delta });
         let max_hist = cfg.accum_max_bars + 10;
@@ -406,6 +484,8 @@ impl AmdDetectorState {
                         bar_delta_at_spike:     bar_delta,
                         liq_ratio_at_spike:     ctx.liq_ratio,
                         dz_at_spike:            ctx.vwap_dz,
+                        delta_dz_at_spike:      self.compute_delta_dz(bar_delta),
+                        oi_delta_pct_at_spike:  ctx.oi_delta_pct,
                         range_high,
                         range_low,
                         range_bars:             bars,
@@ -425,7 +505,8 @@ impl AmdDetectorState {
             AmdPhase::ManipulationDetected {
                 spike_extreme, spike_dir,
                 vr_at_spike, vpin_at_spike, bar_delta_at_spike,
-                liq_ratio_at_spike, dz_at_spike,
+                liq_ratio_at_spike, dz_at_spike, delta_dz_at_spike,
+                oi_delta_pct_at_spike,
                 range_high, range_low, range_bars, cvd_in_range,
                 absorption_in_range, absorption_at_spike,
                 big_trade_cvd_at_spike,
@@ -444,6 +525,8 @@ impl AmdDetectorState {
                     bar_delta_at_spike,
                     liq_ratio_at_spike,
                     dz_at_spike,
+                    delta_dz_at_spike,
+                    oi_delta_pct_at_spike,
                     range_high,
                     range_low,
                     range_bars,
@@ -510,6 +593,50 @@ impl AmdDetectorState {
                 self.last_signal_bar = self.bars_seen;
                 self.phase = AmdPhase::Idle;
 
+                // Kill Zone: London 07:00–09:00 UTC, NY 13:30–15:30 UTC
+                let kill_zone_info: (bool, String) = {
+                    let mins_utc = (timestamp_ms / 60_000).rem_euclid(24 * 60) as u32;
+                    if mins_utc >= 7*60 && mins_utc < 9*60 {
+                        (true, "London".into())
+                    } else if mins_utc >= 13*60+30 && mins_utc < 15*60+30 {
+                        (true, "NewYork".into())
+                    } else {
+                        (false, "".into())
+                    }
+                };
+
+                // Spike quality metrics (FASE 2.5)
+                let spike_extension_pct = match spike_dir {
+                    SpikeDir::Up   => (spike_extreme - range_high) / range_high * 100.0,
+                    SpikeDir::Down => (range_low - spike_extreme) / range_low * 100.0,
+                }.max(0.0);
+                let range_spike_ratio = if spike_extension_pct > 1e-6 {
+                    cvd_in_range.abs() / spike_extension_pct
+                } else {
+                    0.0
+                };
+                // bars_since_spike es el valor pre-incremento (incrementamos arriba al actualizar phase)
+                let bars_to_entry = bars_since_spike + 1;
+
+                // ── Score continuo (FASE 4) ───────────────────────────────────
+                let h4_amd_aligned = ctx.htf_h4_trend.as_ref().map(|t| {
+                    matches!((dist_dir, t.as_str()), (AmdDirection::Long,"Bull")|(AmdDirection::Short,"Bear"))
+                });
+                let amd_score_v2 = {
+                    let mut s = 0.0_f64;
+                    s += (quality_score as f64 / 10.0) * 0.30;
+                    s += delta_dz_at_spike.abs().min(3.0) / 3.0 * 0.20;
+                    s += if kill_zone_info.0 { 0.15 } else { 0.0 };
+                    let bars_norm = (6usize.saturating_sub(bars_to_entry)) as f64 / 5.0;
+                    s += bars_norm * 0.15;
+                    s += if h4_amd_aligned.unwrap_or(false) { 0.20 } else { 0.0 };
+                    s.min(1.0_f64)
+                };
+                let amd_sizing: f64 = if amd_score_v2 >= 0.70 { 2.0 }
+                    else if amd_score_v2 >= 0.50 { 1.5 }
+                    else if amd_score_v2 >= 0.30 { 1.0 }
+                    else { 0.5 };
+
                 Some(AmdSignal {
                     timestamp_ms,
                     direction:           dist_dir,
@@ -540,6 +667,20 @@ impl AmdDetectorState {
                     absorption_at_spike,
                     regime_is_trending:  ctx.regime_is_trending,
                     session_cvd:         ctx.session_cvd,
+                    delta_dz_at_spike,
+                    delta_dz_at_entry:      self.compute_delta_dz(bar_delta),
+                    oi_delta_pct_at_spike,
+                    oi_delta_pct_at_entry:  ctx.oi_delta_pct,
+                    cvd_divergence_bars:    ctx.cvd_divergence_bars,
+                    is_kill_zone:           kill_zone_info.0,
+                    kill_zone_name:         kill_zone_info.1,
+                    bars_to_entry,
+                    spike_extension_pct,
+                    range_spike_ratio,
+                    htf_h4_aligned: h4_amd_aligned,
+                    htf_h4_trend:   ctx.htf_h4_trend.clone(),
+                    signal_score_v2: amd_score_v2,
+                    sizing_multiplier: amd_sizing,
                 })
             }
         }
@@ -777,6 +918,9 @@ mod tests {
             bid_wall_nearby:    false,
             ask_wall_nearby:    false,
             big_trade_cvd_bar:  0.0,
+            oi_delta_pct:       None,
+            cvd_divergence_bars: None,
+            htf_h4_trend:       None,
         }
     }
 
@@ -789,6 +933,7 @@ mod tests {
             vwap_dz: None, liq_ratio: 0.0,
             absorption_bid: false, absorption_ask: false, regime_is_trending: false, session_cvd: 0.0,
             val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false, big_trade_cvd_bar: 0.0,
+            oi_delta_pct: None, cvd_divergence_bars: None, htf_h4_trend: None,
         };
         for i in 0..n {
             let ts = (i as i64) * 60_000;
@@ -823,6 +968,7 @@ mod tests {
             vwap_dz: None, liq_ratio: 0.0,
             absorption_bid: false, absorption_ask: false, regime_is_trending: false, session_cvd: 0.0,
             val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false, big_trade_cvd_bar: 0.0,
+            oi_delta_pct: None, cvd_divergence_bars: None, htf_h4_trend: None,
         }
     }
 

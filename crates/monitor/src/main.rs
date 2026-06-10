@@ -662,6 +662,9 @@ struct BarState {
     rbf_pending_outcome: Option<data::strategy::detectors::rbf_paper::RbfClosedTrade>,
     // Última sesión vista — detecta cambio de sesión para forzar cierre de posición RBF abierta
     rbf_last_session: data::session::session_tracker::TradingSession,
+    // H4 EMA (FASE 2.6) — EMA-240M1 ≈ 4H para contexto estructural de RBF y AMD
+    ema_h4: f64,          // EMA exponencial alpha = 2/(240+1)
+    ema_h4_bars: usize,   // barras acumuladas hasta warmup (warmup = 240)
     // WebSocket broadcast — envía barras y señales al dashboard web
     ws_tx: ws_server::Sender,
 }
@@ -756,6 +759,8 @@ impl BarState {
             rbf_pending_id_rx: None,
             rbf_pending_outcome: None,
             rbf_last_session: data::session::session_tracker::TradingSession::OffHours,
+            ema_h4:      0.0,
+            ema_h4_bars: 0,
             ws_tx,
         }
     }
@@ -1800,6 +1805,18 @@ impl BarState {
         // EMA 5-bar y 20-bar de OBI L5
         self.obi_ema_fast = self.obi_ema_fast * (1.0 - 0.333) + bar_obi_l5 * 0.333;
         self.obi_ema_slow = self.obi_ema_slow * (1.0 - 0.095) + bar_obi_l5 * 0.095;
+        // EMA-240M1 ≈ 4H para contexto estructural HTF (FASE 2.6)
+        {
+            const H4_ALPHA: f64 = 2.0 / (240.0 + 1.0); // ≈ 0.00830
+            if self.ema_h4_bars == 0 { self.ema_h4 = c; }
+            else { self.ema_h4 = self.ema_h4 * (1.0 - H4_ALPHA) + c * H4_ALPHA; }
+            if self.ema_h4_bars < 240 { self.ema_h4_bars += 1; }
+        }
+        let htf_h4_trend: Option<String> = if self.ema_h4_bars >= 240 {
+            Some(if c > self.ema_h4 { "Bull".into() } else { "Bear".into() })
+        } else {
+            None
+        };
 
         // ── Scalping engine (S1/OBI, S2/Absorption, S3/CVD Divergence) ────────
         if cfg.scalping.enabled {
@@ -2071,6 +2088,13 @@ impl BarState {
                     oi_momentum_aligned,
                     session_cvd:           self.scalping_state.cvd_session,
                     big_trade_cvd_session: self.scalping_state.big_cvd_session,
+                    oi_delta_pct: {
+                        let front = self.oi_history.front().copied().unwrap_or(0.0);
+                        oi_delta.map(|d| if front.abs() > 1e-9 { d / front * 100.0 } else { 0.0 })
+                    },
+                    cvd_divergence_bars: ctx.flow.cvd_divergence_persistence,
+                    htf_h4_trend: htf_h4_trend.clone(),
+                    vp_open_bias: ctx.vp_open_bias.as_ref().map(|v| format!("{:?}", v.bias)),
                 };
                 if let Some(sig) = self.rbf_state.on_bar_close(
                     o, h, l, c,
@@ -2180,6 +2204,12 @@ impl BarState {
                 bid_wall_nearby:    ctx.flow.bid_wall_nearby,
                 ask_wall_nearby:    ctx.flow.ask_wall_nearby,
                 big_trade_cvd_bar:  ctx.flow.big_trade_cvd_bar,
+                oi_delta_pct: {
+                    let front = self.oi_history.front().copied().unwrap_or(0.0);
+                    oi_delta.map(|d| if front.abs() > 1e-9 { d / front * 100.0 } else { 0.0 })
+                },
+                cvd_divergence_bars: ctx.flow.cvd_divergence_persistence,
+                htf_h4_trend: htf_h4_trend.clone(),
             };
 
             // ── AMD paper trader: resolver UUID pendiente ─────────────────────
@@ -3261,6 +3291,9 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                 session_cvd: 0.0,
                 val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false,
                 big_trade_cvd_bar: 0.0,
+                oi_delta_pct: None,
+                cvd_divergence_bars: None,
+                htf_h4_trend: None,
             };
             let _ = state.amd_state.on_bar_close(
                 high, low, close, volume, bar_delta, open_ms,

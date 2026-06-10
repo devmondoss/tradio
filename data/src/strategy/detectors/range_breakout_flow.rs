@@ -80,6 +80,19 @@ pub struct RbfGateContext {
     /// CVD acumulado de big trades (≥$100k notional) desde apertura de sesión.
     /// Fabio: "las órdenes grandes son las que importan" — si el breakout viene con big_cvd alineado, es real.
     pub big_trade_cvd_session: f64,
+    /// % de cambio en Open Interest en la ventana reciente (~6 lecturas).
+    /// Positivo = contratos abiertos creciendo (nuevas posiciones = convicción).
+    /// Negativo = posiciones cerrando (cobertura / liquidación = debilidad).
+    pub oi_delta_pct: Option<f64>,
+    /// Barras consecutivas de divergencia CVD-precio al momento de evaluar el breakout.
+    /// Negativo = bullish div (útil para LONG); positivo = bearish div (útil para SHORT).
+    pub cvd_divergence_bars: Option<i32>,
+    /// Tendencia H4 al momento del breakout: Some("Bull") / Some("Bear") / None si aún sin warmup (< 240 barras M1).
+    /// Deriva de EMA-240M1 (≈ 4H): precio > EMA → Bull.
+    pub htf_h4_trend: Option<String>,
+    /// VP Open Variant del día actual (FASE 2.1): "InsideValue", "OutsideVaInsidePa", "TrendDay", "FadeGap".
+    /// Clasifica el tipo de apertura de sesión vs el Value Area del día anterior.
+    pub vp_open_bias: Option<String>,
 }
 
 fn score_confluence(
@@ -275,6 +288,58 @@ pub struct RbfSignal {
     pub dz_at_entry:        f64,
     /// Order Book Imbalance en la barra de ruptura (bid-ask / total).
     pub obi_at_entry:       f64,
+
+    // Microestructura de absorción (FASE 1.1)
+    /// Intensidad de delta direccional normalizada (0–1). max(dz_dir,0)/3.
+    /// 0 = sin presión alineada, 1 = dz≥3 en la dirección del breakout.
+    pub absorption_score:   f64,
+    /// Ratio cuerpo/rango de la vela de ruptura (0–1). 0 = pin bar, 1 = marubozu.
+    /// Bajo valor = precio apenas se desplazó pese al delta → absorción.
+    pub bar_displacement:   f64,
+
+    // OI delta % en evento (FASE 1.2)
+    /// Cambio porcentual de Open Interest en la ventana reciente al momento del breakout.
+    /// Positivo = expansión (nueva convicción); negativo = cierre de posiciones.
+    pub oi_delta_pct:       Option<f64>,
+
+    // CVD divergencia explícita (FASE 1.3)
+    /// Barras consecutivas de divergencia CVD-precio al momento del breakout.
+    /// Positivo = bearish div (precio sube pero CVD no); negativo = bullish div (precio baja pero CVD sube).
+    /// Valor absoluto alto = divergencia persistente = mayor convicción en el breakout contrario.
+    pub cvd_divergence_bars: Option<i32>,
+
+    // VR tier (FASE 2.2)
+    /// Categoría de volumen relativo: 1=2-3×, 2=3-4×, 3=4×+.
+    /// Tier 3 = breakout real con volumen extraordinario (análogos a eventos institucionales).
+    pub vr_tier: u8,
+
+    // Calidad del rango (FASE 2.3)
+    /// Touches del lado opuesto al breakout vs del mismo lado (0–1).
+    /// Cerca de 0.5 = rango simétrico (ambos lados tocados igualmente).
+    /// Cerca de 1 o 0 = asimétrico (muchos rechazos en un solo lado).
+    pub range_touch_symmetry: f64,
+    /// CVD acumulado en rango / número de barras. Mide densidad de presión direccional.
+    /// Valor absoluto alto = mucho CVD por barra = acumulación intensa.
+    pub cvd_per_bar: f64,
+    /// % de extensión del close más allá del rango (distancia desde el nivel roto).
+    /// Ej: 0.02 = close está 0.02% más allá del range_high/low.
+    pub breakout_extension_pct: f64,
+
+    // HTF H4 estructura (FASE 2.6)
+    /// Tendencia H4 al momento del breakout: "Bull" (precio > EMA-240M1), "Bear", o None si sin warmup.
+    pub htf_h4_trend: Option<String>,
+    // VP Open Variant (FASE 2.1)
+    /// Variante del día: "InsideValue", "OutsideVaInsidePa", "TrendDay", "FadeGap", o None.
+    pub vp_open_bias: Option<String>,
+    /// True si la dirección del trade está alineada con la tendencia H4.
+    /// Long+Bull o Short+Bear = alineado; contra-tendencia = false.
+    pub htf_h4_aligned: Option<bool>,
+
+    // Score continuo + sizing dinámico (FASE 4)
+    /// Score continuo 0–1 ponderando absorción, VR tier, extensión, H4 alineamiento y confluencia.
+    pub signal_score_v2: f64,
+    /// Multiplicador sugerido: 0.5× (<0.3), 1.0× (0.3–0.5), 1.5× (0.5–0.7), 2.0× (≥0.7).
+    pub sizing_multiplier: f64,
 
     // Confluencia v2
     /// Puntuación de confluencia (0–7). Señales con veto tienen score calculado antes del veto.
@@ -540,6 +605,37 @@ impl RangeBreakoutState {
 
             let range_touch_count = if breaks_down { touches_low } else { touches_high };
 
+            // ── VR tier (FASE 2.2) ───────────────────────────────────────────
+            let vr_tier: u8 = if vr >= 4.0 { 3 } else if vr >= 3.0 { 2 } else { 1 };
+
+            // ── Calidad del rango (FASE 2.3) ─────────────────────────────────
+            // Simetría de toques: cuánto balance había entre ambos lados del rango
+            let total_touches = (touches_high + touches_low) as f64;
+            let range_touch_symmetry = if total_touches > 0.0 {
+                let hi_ratio = touches_high as f64 / total_touches;
+                // 0.5 = simétrico, 0 o 1 = todos los toques en un lado
+                1.0 - (hi_ratio - 0.5).abs() * 2.0
+            } else {
+                0.5
+            };
+            // CVD acumulado por barra del rango
+            let cvd_per_bar = if range_bars > 0 { cvd_in_range / range_bars as f64 } else { 0.0 };
+            // Extensión del cierre más allá del rango roto (%)
+            let breakout_extension_pct = match direction {
+                RbfDirection::Short => (range_low - close) / close * 100.0,
+                RbfDirection::Long  => (close - range_high) / close * 100.0,
+            }.max(0.0);
+
+            // ── Absorción (FASE 1.1) ──────────────────────────────────────────
+            // Intensidad del delta direccional normalizada: max(dz_dir,0)/3 ∈ [0,1]
+            let absorption_score = (dz_dir.max(0.0) / 3.0).min(1.0);
+            // Ratio cuerpo/rango: low = pin bar / absorbed; high = engulfing candle
+            let bar_displacement = if high > low {
+                (close - open).abs() / (high - low)
+            } else {
+                0.5
+            };
+
             // ── Confluencia v2 ────────────────────────────────────────────────
             let (confluence_score, confluence_flags, veto_reason) = if let Some(g) = gate {
                 score_confluence(
@@ -559,6 +655,24 @@ impl RangeBreakoutState {
             }
 
             self.last_signal_bar = self.bars_seen;
+
+            // ── Score continuo (FASE 4) ───────────────────────────────────────
+            let h4_aligned = gate.and_then(|g| g.htf_h4_trend.as_ref().map(|t| {
+                matches!((direction, t.as_str()), (RbfDirection::Long,"Bull")|(RbfDirection::Short,"Bear"))
+            }));
+            let signal_score_v2 = {
+                let mut s = 0.0_f64;
+                s += absorption_score * 0.25;
+                s += (vr_tier as f64 - 1.0) / 2.0 * 0.20;
+                s += breakout_extension_pct.min(0.10) / 0.10 * 0.15;
+                s += if h4_aligned.unwrap_or(false) { 0.15 } else { 0.0 };
+                s += (confluence_score as f64 / 9.0) * 0.25;
+                s.min(1.0_f64)
+            };
+            let sizing_multiplier: f64 = if signal_score_v2 >= 0.70 { 2.0 }
+                else if signal_score_v2 >= 0.50 { 1.5 }
+                else if signal_score_v2 >= 0.30 { 1.0 }
+                else { 0.5 };
 
             return Some(RbfSignal {
                 direction,
@@ -584,6 +698,19 @@ impl RangeBreakoutState {
                 cvd_slope_at_entry:  cvd_slope,
                 dz_at_entry:         dz,
                 obi_at_entry:        obi,
+                absorption_score,
+                bar_displacement,
+                oi_delta_pct:        gate.map(|g| g.oi_delta_pct).flatten(),
+                cvd_divergence_bars: gate.map(|g| g.cvd_divergence_bars).flatten(),
+                vr_tier,
+                range_touch_symmetry,
+                cvd_per_bar,
+                breakout_extension_pct,
+                signal_score_v2,
+                sizing_multiplier,
+                htf_h4_trend: gate.and_then(|g| g.htf_h4_trend.clone()),
+                htf_h4_aligned: h4_aligned,
+                vp_open_bias: gate.and_then(|g| g.vp_open_bias.clone()),
                 confluence_score,
                 confluence_flags,
                 veto_reason,

@@ -551,6 +551,20 @@ impl SupabaseWriter {
             "absorption_at_spike":  sig.absorption_at_spike,
             "regime_is_trending":   sig.regime_is_trending,
             "session_cvd":          sig.session_cvd,
+            "delta_dz_at_spike":    sig.delta_dz_at_spike,
+            "delta_dz_at_entry":    sig.delta_dz_at_entry,
+            "oi_delta_pct_at_spike":  sig.oi_delta_pct_at_spike,
+            "oi_delta_pct_at_entry":  sig.oi_delta_pct_at_entry,
+            "cvd_divergence_bars":    sig.cvd_divergence_bars,
+            "is_kill_zone":           sig.is_kill_zone,
+            "kill_zone_name":         &sig.kill_zone_name,
+            "bars_to_entry":          sig.bars_to_entry as i64,
+            "spike_extension_pct":    sig.spike_extension_pct,
+            "range_spike_ratio":      sig.range_spike_ratio,
+            "htf_h4_trend":           sig.htf_h4_trend.as_deref(),
+            "htf_h4_aligned":         sig.htf_h4_aligned,
+            "signal_score_v2":        sig.signal_score_v2,
+            "sizing_multiplier":      sig.sizing_multiplier,
         })
     }
 
@@ -714,6 +728,19 @@ impl SupabaseWriter {
             "confluence_score":   sig.confluence_score as i64,
             "confluence_flags":   sig.confluence_flags,
             "veto_reason":        sig.veto_reason,
+            "absorption_score":   sig.absorption_score,
+            "bar_displacement":   sig.bar_displacement,
+            "oi_delta_pct":              sig.oi_delta_pct,
+            "cvd_divergence_bars":       sig.cvd_divergence_bars,
+            "vr_tier":                   sig.vr_tier as i64,
+            "range_touch_symmetry":      sig.range_touch_symmetry,
+            "cvd_per_bar":               sig.cvd_per_bar,
+            "breakout_extension_pct":    sig.breakout_extension_pct,
+            "htf_h4_trend":              sig.htf_h4_trend.as_deref(),
+            "htf_h4_aligned":            sig.htf_h4_aligned,
+            "vp_open_bias":              sig.vp_open_bias.as_deref(),
+            "signal_score_v2":           sig.signal_score_v2,
+            "sizing_multiplier":         sig.sizing_multiplier,
         })
     }
 
