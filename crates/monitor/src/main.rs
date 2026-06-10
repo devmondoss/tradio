@@ -2041,7 +2041,7 @@ impl BarState {
             //    tocó stop/target lo cierra correctamente en lugar de usar el precio actual.
             if session.session != self.rbf_last_session {
                 let closed_by_price = if self.rbf_paper.has_position() {
-                    if let Some(trade) = self.rbf_paper.on_bar_close(h, l, bar_ms) {
+                    if let Some(trade) = self.rbf_paper.on_bar_close(h, l, c, bar_ms, atr) {
                         write_outcome!(trade);
                         true
                     } else {
@@ -2060,7 +2060,7 @@ impl BarState {
 
             // 3) Chequear stop/target en barras normales (sin cambio de sesión)
             if self.rbf_paper.has_position() {
-                if let Some(trade) = self.rbf_paper.on_bar_close(h, l, bar_ms) {
+                if let Some(trade) = self.rbf_paper.on_bar_close(h, l, c, bar_ms, atr) {
                     write_outcome!(trade);
                 }
             }
@@ -2095,6 +2095,7 @@ impl BarState {
                     cvd_divergence_bars: ctx.flow.cvd_divergence_persistence,
                     htf_h1_trend: htf_h1_trend.clone(),
                     vp_open_bias: ctx.vp_open_bias.as_ref().map(|v| format!("{:?}", v.bias)),
+                    atr,
                 };
                 if let Some(sig) = self.rbf_state.on_bar_close(
                     o, h, l, c,
@@ -2149,7 +2150,7 @@ impl BarState {
                                 self.rbf_paper.day_r,
                             );
                         } else {
-                            self.rbf_paper.open(&sig);
+                            self.rbf_paper.open(&sig, atr);
                         }
                     }
                 }
