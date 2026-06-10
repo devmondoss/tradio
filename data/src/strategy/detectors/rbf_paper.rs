@@ -3,13 +3,28 @@
 //! Opera en barras M1: en cada cierre chequea si el precio tocó stop o target.
 //! Cuando cierra, emite un `RbfClosedTrade` que el monitor persiste en Supabase
 //! actualizando la fila original de `rbf_signals`.
+//!
+//! Gestión de posición activa:
+//!   - Stop dinámico + trailing: se activa al llegar a TRAIL_ACTIVATE_R (1.5R),
+//!     luego el stop sigue el extremo favorable con TRAIL_ATR_K × ATR de distancia.
+//!   - Time stop: si a los TIME_STOP_BARS la posición está en pérdida, cierra
+//!     al precio actual para evitar que los perdedores se extiendan.
 
 use super::range_breakout_flow::{RbfDirection, RbfSignal};
+
+/// R necesario para activar el trailing stop.
+const TRAIL_ACTIVATE_R: f64 = 1.5;
+/// Distancia del trailing en múltiplos de ATR.
+const TRAIL_ATR_K: f64 = 1.2;
+/// Barras máximas en una posición perdedora antes de cerrar.
+const TIME_STOP_BARS: u32 = 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RbfExitReason {
     Target,
     Stop,
+    TrailingStop,
+    TimeStop,
     SessionEnd,
     DailyLimitHit,
 }
@@ -17,10 +32,12 @@ pub enum RbfExitReason {
 impl RbfExitReason {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Target         => "TARGET",
-            Self::Stop           => "STOP",
-            Self::SessionEnd     => "SESSION_END",
-            Self::DailyLimitHit  => "DAILY_LIMIT",
+            Self::Target        => "TARGET",
+            Self::Stop          => "STOP",
+            Self::TrailingStop  => "TRAILING_STOP",
+            Self::TimeStop      => "TIME_STOP",
+            Self::SessionEnd    => "SESSION_END",
+            Self::DailyLimitHit => "DAILY_LIMIT",
         }
     }
 }
@@ -40,12 +57,20 @@ pub struct RbfClosedTrade {
 
 #[derive(Debug, Clone)]
 struct ActivePosition {
-    direction:   RbfDirection,
-    entry_price: f64,
-    stop_price:  f64,
+    direction:    RbfDirection,
+    entry_price:  f64,
+    stop_price:   f64,
     target_price: f64,
-    entry_ms:    i64,
-    supabase_id: Option<String>,
+    entry_ms:     i64,
+    supabase_id:  Option<String>,
+    /// Barras transcurridas desde la apertura.
+    bars_held:    u32,
+    /// ATR en la barra de entrada (para trailing stop).
+    atr_at_entry: f64,
+    /// Extremo más favorable alcanzado (high para Long, low para Short).
+    best_extreme: f64,
+    /// True cuando el trailing stop ya fue activado (precio alcanzó TRAIL_ACTIVATE_R).
+    trailing_active: bool,
 }
 
 pub struct RbfPaperTrader {
@@ -92,15 +117,22 @@ impl RbfPaperTrader {
     }
 
     /// Abre una nueva posición cuando el detector emite una señal.
-    /// `supabase_id` se asigna más tarde via `set_supabase_id` cuando llega el UUID.
-    pub fn open(&mut self, sig: &RbfSignal) {
+    pub fn open(&mut self, sig: &RbfSignal, atr: f64) {
+        let best_extreme = match sig.direction {
+            RbfDirection::Long  => sig.entry_price,
+            RbfDirection::Short => sig.entry_price,
+        };
         self.active = Some(ActivePosition {
-            direction:    sig.direction,
-            entry_price:  sig.entry_price,
-            stop_price:   sig.stop_price,
-            target_price: sig.target_price,
-            entry_ms:     sig.timestamp_ms,
-            supabase_id:  None,
+            direction:       sig.direction,
+            entry_price:     sig.entry_price,
+            stop_price:      sig.stop_price,
+            target_price:    sig.target_price,
+            entry_ms:        sig.timestamp_ms,
+            supabase_id:     None,
+            bars_held:       0,
+            atr_at_entry:    atr,
+            best_extreme,
+            trailing_active: false,
         });
     }
 
@@ -112,7 +144,6 @@ impl RbfPaperTrader {
     }
 
     /// Restaura una posición abierta persistida en Supabase (cross-deploy survival).
-    /// Llamar durante el startup, después del warmup, si Supabase devuelve is_active=true.
     pub fn restore(
         &mut self,
         signal_id:    String,
@@ -122,40 +153,103 @@ impl RbfPaperTrader {
         target_price: f64,
         entry_ms:     i64,
     ) {
+        let best_extreme = entry_price;
         self.active = Some(ActivePosition {
             direction,
             entry_price,
             stop_price,
             target_price,
             entry_ms,
-            supabase_id: Some(signal_id),
+            supabase_id:     Some(signal_id),
+            bars_held:       0,
+            atr_at_entry:    0.0,  // unknown on restore; trailing disabled
+            best_extreme,
+            trailing_active: false,
         });
     }
 
     /// Llamar en cada cierre de barra M1.
+    /// `close` se usa para time stop y trailing stop updates.
+    /// `atr` actual — si 0.0, usa el ATR guardado al abrir.
     /// Retorna `Some(RbfClosedTrade)` si la posición cerró, `None` si sigue abierta.
-    pub fn on_bar_close(&mut self, high: f64, low: f64, bar_ms: i64) -> Option<RbfClosedTrade> {
+    pub fn on_bar_close(
+        &mut self,
+        high:   f64,
+        low:    f64,
+        close:  f64,
+        bar_ms: i64,
+        atr:    f64,
+    ) -> Option<RbfClosedTrade> {
         self.maybe_reset_day(bar_ms);
 
-        let pos = self.active.as_ref()?;
+        let pos = self.active.as_mut()?;
+        pos.bars_held += 1;
 
+        let risk = (pos.entry_price - pos.stop_price).abs();
+        if risk < 1e-10 {
+            return None;
+        }
+
+        let effective_atr = if atr > 0.0 { atr } else { pos.atr_at_entry };
+
+        // ── Actualizar extremo favorable y trailing stop ──────────────────────
+        match pos.direction {
+            RbfDirection::Long => {
+                if high > pos.best_extreme { pos.best_extreme = high; }
+                let fav_r = (pos.best_extreme - pos.entry_price) / risk;
+                if fav_r >= TRAIL_ACTIVATE_R && !pos.trailing_active {
+                    pos.trailing_active = true;
+                    println!("[rbf_paper] trailing stop activado en {:.2}R", fav_r);
+                }
+                if pos.trailing_active && effective_atr > 0.0 {
+                    let trail_stop = pos.best_extreme - TRAIL_ATR_K * effective_atr;
+                    if trail_stop > pos.stop_price {
+                        pos.stop_price = trail_stop;
+                    }
+                }
+            }
+            RbfDirection::Short => {
+                if low < pos.best_extreme { pos.best_extreme = low; }
+                let fav_r = (pos.entry_price - pos.best_extreme) / risk;
+                if fav_r >= TRAIL_ACTIVATE_R && !pos.trailing_active {
+                    pos.trailing_active = true;
+                    println!("[rbf_paper] trailing stop activado en {:.2}R", fav_r);
+                }
+                if pos.trailing_active && effective_atr > 0.0 {
+                    let trail_stop = pos.best_extreme + TRAIL_ATR_K * effective_atr;
+                    if trail_stop < pos.stop_price {
+                        pos.stop_price = trail_stop;
+                    }
+                }
+            }
+        }
+
+        // ── Evaluar stop y target ─────────────────────────────────────────────
         let (stop_hit, target_hit) = match pos.direction {
-            RbfDirection::Short => (
-                high >= pos.stop_price,
-                low  <= pos.target_price,
-            ),
-            RbfDirection::Long => (
-                low  <= pos.stop_price,
-                high >= pos.target_price,
-            ),
+            RbfDirection::Short => (high >= pos.stop_price, low  <= pos.target_price),
+            RbfDirection::Long  => (low  <= pos.stop_price, high >= pos.target_price),
         };
 
         // Si ambos tocan en la misma barra asumimos el peor caso (stop)
         let reason = if stop_hit {
-            RbfExitReason::Stop
+            if pos.trailing_active { RbfExitReason::TrailingStop } else { RbfExitReason::Stop }
         } else if target_hit {
             RbfExitReason::Target
         } else {
+            // ── Time stop: bar 15+ y posición en pérdida → cierra al close ───
+            if pos.bars_held >= TIME_STOP_BARS {
+                let current_pnl = match pos.direction {
+                    RbfDirection::Short => pos.entry_price - close,
+                    RbfDirection::Long  => close - pos.entry_price,
+                };
+                if current_pnl < 0.0 {
+                    println!(
+                        "[rbf_paper] time stop bar {} pnl={:.3}R",
+                        pos.bars_held, current_pnl / risk
+                    );
+                    return self.close_at(close, bar_ms, RbfExitReason::TimeStop);
+                }
+            }
             return None;
         };
 
@@ -164,6 +258,11 @@ impl RbfPaperTrader {
             _                     => pos.stop_price,
         };
 
+        self.close_at(exit_price, bar_ms, reason)
+    }
+
+    fn close_at(&mut self, exit_price: f64, bar_ms: i64, reason: RbfExitReason) -> Option<RbfClosedTrade> {
+        let pos = self.active.as_ref()?;
         let risk = (pos.entry_price - pos.stop_price).abs();
         let pnl  = match pos.direction {
             RbfDirection::Short => pos.entry_price - exit_price,
@@ -189,27 +288,6 @@ impl RbfPaperTrader {
 
     /// Cierre forzado al fin de sesión (o cuando daily limit se alcanza con posición abierta).
     pub fn close_session(&mut self, price: f64, bar_ms: i64) -> Option<RbfClosedTrade> {
-        let pos = self.active.as_ref()?;
-        let risk = (pos.entry_price - pos.stop_price).abs();
-        let pnl  = match pos.direction {
-            RbfDirection::Short => pos.entry_price - price,
-            RbfDirection::Long  => price - pos.entry_price,
-        };
-        let result_r = if risk > 1e-10 { pnl / risk } else { 0.0 };
-
-        let trade = RbfClosedTrade {
-            direction:   pos.direction,
-            entry_price: pos.entry_price,
-            exit_price:  price,
-            result_r,
-            exit_reason: RbfExitReason::SessionEnd,
-            entry_ms:    pos.entry_ms,
-            exit_ms:     bar_ms,
-            supabase_id: pos.supabase_id.clone(),
-        };
-
-        self.active  = None;
-        self.day_r  += result_r;
-        Some(trade)
+        self.close_at(price, bar_ms, RbfExitReason::SessionEnd)
     }
 }
