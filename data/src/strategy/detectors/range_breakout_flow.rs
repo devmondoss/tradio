@@ -563,8 +563,9 @@ impl RangeBreakoutState {
             if !cvd_aligned { continue; }
 
             // ── Gate de microestructura ────────────────────────────────────────
-            // cvd_slope alineado: SHORT quiere slope negativo, LONG positivo
             let cvd_slope_dir = cvd_slope.map(|s| sign * (-s));
+            // cvd_slope_gate desactivado: backtest 30d muestra que slope>=0
+            // (absorción de compradores) tiene mejor WR que slope<0 (continuación pura).
             if cfg.cvd_slope_gate {
                 if let Some(sd) = cvd_slope_dir {
                     if sd <= 0.0 { continue; }
@@ -572,12 +573,11 @@ impl RangeBreakoutState {
             }
 
             // dz alineado con la dirección
-            let dz_dir = sign * (-dz); // SHORT quiere dz negativo (vendedores), LONG positivo
+            let dz_dir = sign * (-dz);
             if dz_dir < cfg.dz_min || dz_dir > cfg.dz_max { continue; }
 
-            // OBI alineado: SHORT quiere obi < threshold, LONG quiere obi > (1 - threshold)
+            // OBI gate
             if cfg.obi_gate {
-                // obi ∈ [-1, +1]: SHORT quiere obi < -threshold (ask dominante), LONG quiere obi > threshold (bid dominante)
                 let obi_ok = match direction {
                     RbfDirection::Short => obi < -cfg.obi_threshold,
                     RbfDirection::Long  => obi >  cfg.obi_threshold,
@@ -585,7 +585,32 @@ impl RangeBreakoutState {
                 if !obi_ok { continue; }
             }
 
-                        // Stop = techo/piso del rango de consolidación (estructura de mercado real).
+            // ── VSWAP proximity gate ───────────────────────────────────────────
+            // No shortar cuando precio ya está extendido bajo el VWAP.
+            // Backtest 30d: precio <-0.3% del VWAP → WR=6.5%; dentro del -0.3% → WR=37.3%.
+            if cfg.vswap_gate {
+                if let Some(v) = vwap.filter(|&v| v > 0.0) {
+                    let pct = (close - v) / v;
+                    let ok = match direction {
+                        RbfDirection::Short => pct > -cfg.vswap_max_dev,
+                        RbfDirection::Long  => pct <  cfg.vswap_max_dev,
+                    };
+                    if !ok { continue; }
+                }
+            }
+
+            // ── Breakout extension gate ────────────────────────────────────────
+            // El close debe romper con convicción (>X% más allá del nivel roto).
+            // Backtest 30d: ext<0.1% WR=18.8%; ext>0.1% WR=44.4%; ext>0.2% WR=53.8%.
+            if cfg.breakout_ext_gate {
+                let ext = match direction {
+                    RbfDirection::Short => (range_low - close) / range_low,
+                    RbfDirection::Long  => (close - range_high) / range_high,
+                };
+                if ext < cfg.breakout_ext_min { continue; }
+            }
+
+            // Stop = techo/piso del rango de consolidación (estructura de mercado real).
             // ATR M1 (~0.1%) era ruido puro — el stop quedaba DENTRO de la consolidación,
             // no encima de ella. Si el precio regresa al rango, el breakout falló.
             let rr_short = cfg.target_short_pct / cfg.stop_pct; // e.g. 0.50/0.25 = 2.0
@@ -776,6 +801,17 @@ pub struct RangeBreakoutConfig {
     pub cvd_slope_threshold: f64,
     /// Score mínimo requerido para Long en régimen Bear/BearPullback.
     pub bear_long_min_score: u8,
+
+    // ── Filtros validados backtest 30d ─────────────────────────────────────────
+    /// Activar filtro VWAP proximity: rechaza entries muy extendidos del VWAP.
+    pub vswap_gate:          bool,
+    /// Desviación máxima del VWAP permitida (0.003 = 0.3%).
+    /// Short rechazado si close < vwap*(1-vswap_max_dev).
+    pub vswap_max_dev:       f64,
+    /// Activar filtro de extensión de breakout.
+    pub breakout_ext_gate:   bool,
+    /// Extensión mínima del close más allá del nivel roto (0.001 = 0.1%).
+    pub breakout_ext_min:    f64,
 }
 
 impl Default for RangeBreakoutConfig {
@@ -796,6 +832,11 @@ impl Default for RangeBreakoutConfig {
             min_confluence_score: 1,
             cvd_slope_threshold:  15.0,
             bear_long_min_score:  5,
+            // Filtros validados backtest 30d (activados)
+            vswap_gate:        true,
+            vswap_max_dev:     0.003,  // rechaza si precio > 0.3% bajo VWAP
+            breakout_ext_gate: true,
+            breakout_ext_min:  0.001,  // close debe romper >0.1% más allá del nivel
         }
     }
 }

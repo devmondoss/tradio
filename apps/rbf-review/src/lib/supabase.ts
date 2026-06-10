@@ -1,0 +1,41 @@
+import { createClient } from '@supabase/supabase-js'
+
+const SUPABASE_URL = 'https://ztdhvmcisjjyhbqlgkzm.supabase.co'
+const SUPABASE_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9' +
+  '.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp0ZGh2bWNpc2pqeWhicWxna3ptIiwicm9sZSI6' +
+  'InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3ODk0MTc1MiwiZXhwIjoyMDk0NTE3NzUyfQ' +
+  '.sqMh9Jcxrxyg-ZBYWPaNN8DB9kf-KkC7ARPLucItN1Y'
+
+export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
+
+export interface RbfSignal {
+  id: string
+  timestamp_ms: number
+  symbol: string
+  direction: 'Short' | 'Long'
+  session: string
+  session_phase: string
+  macro_regime: string
+  entry_price: number
+  stop_price: number
+  target_price: number
+  exit_price: number | null
+  result_r: number | null
+  exit_reason: string | null
+  closed_at: string | null
+  vr_at_breakout: number | null
+  cvd_in_range: number | null
+  range_pct: number | null
+  range_bars: number | null
+  confluence_score: number | null
+  confluence_flags: string[] | null
+  evidence: string[] | null
+  cvd_slope_at_entry: number | null
+  obi_at_entry: number | null
+  dz_at_entry: number | null
+  price_vs_vwap_pct: number | null
+  funding_at_entry: number | null
+  range_touch_count: number | null
+  veto_reason: string | null
+}

@@ -79,14 +79,22 @@ target_short_pct = 0.50   # RR ratio: 0.50/0.25 = 2.0 → target = entry - 2×(r
 target_long_pct  = 0.45   # RR ratio: 0.45/0.25 = 1.8 → target = entry + 1.8×(entry - range_low)
 min_rr           = 1.5    # R:R mínimo para emitir señal
 
-# Gates de microestructura (backtest 30d: +11pp WR al filtrar por slope)
-cvd_slope_gate   = true   # slope CVD debe confirmar dirección del breakout
+# Gates de microestructura
+# cvd_slope_gate DESACTIVADO: backtest 30d muestra que slope>=0 (absorción) tiene WR>40%
+# vs slope<0 (continuación) WR=22%. El filtro estaba inversamente correlacionado.
+cvd_slope_gate   = false  # desactivado — absorción de compradores es la señal real
 dz_min           = 0.5    # dz mínimo alineado (elimina breakouts sin presión)
 dz_max           = 3.0    # dz máximo (extremos >3 revierten — fakeout)
-obi_gate             = false  # OBI gate desactivado (pendiente validación datos reales)
-obi_threshold        = 0.15   # umbral Flag 2 confluencia: |obi_l5| > threshold → flag activo (escala [-1,1])
+obi_gate             = false  # OBI gate desactivado (inversamente correlacionado en datos reales)
+obi_threshold        = 0.15   # umbral confluencia: |obi_l5| > threshold → flag activo
 
-# Sistema de confluencia v2 — shadow mode (grabar todo, subir min_confluence_score cuando haya 50+ señales)
+# Filtros validados backtest 30d (feature mining sobre 98 trades, 30 días)
+vswap_gate           = true   # rechaza entries extendidos del VWAP
+vswap_max_dev        = 0.003  # max 0.3% bajo VWAP; >0.5% bajo → WR=6.5%
+breakout_ext_gate    = true   # close debe romper con convicción
+breakout_ext_min     = 0.001  # >0.1% más allá del nivel → WR=44.4%; <0.1% → WR=18.8%
+
+# Sistema de confluencia v2 — shadow mode
 min_confluence_score = 1      # 1 = shadow mode; subir a 3 después de calibración
 cvd_slope_threshold  = 15.0   # |cvd_slope| mínimo para el flag CvdSlopeSostenido
 bear_long_min_score  = 5      # Long en Bear/BearPullback requiere este score mínimo
