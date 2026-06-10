@@ -68,15 +68,15 @@ ttl_min                = 20         # TTL de la señal (minutos)
 
 # ============================================================================
 # RANGE BREAKOUT FLOW — detector validado en backtest 30 días M1 (n=318)
-# Rango de consolidación (0.08–0.55%) + CVD acumulado + VR≥2 en breakout
-# Sessions: London (08-13 UTC) + Overlap (13-17 UTC) — NewYork excluido (WR 24.7%)
+# Rango de consolidación (0.08–0.55%) + CVD acumulado + VR≥3 en breakout
+# Sessions: London + Overlap + NewYork — evaluar por sesión con datos reales
 # Gate microestructura: cvd_slope confirma + dz entre 0.5 y 3.0
 # ============================================================================
 [range_breakout]
 enabled          = true
-stop_pct         = 0.25   # stop en % del precio (0.25% = ~$175 en BTC $70k)
-target_short_pct = 0.50   # target SHORT: 0.5% → RR 2:1
-target_long_pct  = 0.45   # target LONG: 0.45% → RR 1.8:1
+stop_pct         = 0.25   # fallback si range_high no disponible; stop real = range_high
+target_short_pct = 0.50   # RR ratio: 0.50/0.25 = 2.0 → target = entry - 2×(range_high - entry)
+target_long_pct  = 0.45   # RR ratio: 0.45/0.25 = 1.8 → target = entry + 1.8×(entry - range_low)
 min_rr           = 1.5    # R:R mínimo para emitir señal
 
 # Gates de microestructura (backtest 30d: +11pp WR al filtrar por slope)

@@ -3315,6 +3315,24 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
             warm_session, open_ms, &rbf_warm_cfg,
             vwap, None, 0.0, 0.0, None, None,
         );
+
+        // Feed rbf_paper si hay posición restaurada — detecta SL/TP que ocurrieron
+        // durante el downtime (barras posteriores a la entrada).
+        if state.rbf_paper.has_position() {
+            if let Some(entry_ms) = state.rbf_paper.entry_ms() {
+                if open_ms > entry_ms {
+                    if let Some(trade) = state.rbf_paper.on_bar_close(high, low, close, open_ms, 0.0) {
+                        println!(
+                            "[rbf_paper] warm-up close {:?} entry={:.4} exit={:.4} R={:.3}",
+                            trade.exit_reason, trade.entry_price, trade.exit_price, trade.result_r
+                        );
+                        if let (Some(sb), Some(id)) = (&state.supabase, &trade.supabase_id) {
+                            sb.update_rbf_outcome(id, &trade);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Prime last_regime_enum so hysteresis starts with the correct state
@@ -3471,12 +3489,8 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     let mut state = BarState::new(mongo, supabase, config_loader, footprint_step, Arc::clone(&liq_raw_counter), Arc::clone(&liq_global_raw_counter), ws_tx);
     state.intrabar_cfg.log_boot();
 
-    // Seed bar history from REST before the live stream starts
-    warm_up_history(&mut state, &symbol_str, tf_min, 150).await;
-    state.rbf_state.reset_signal_cooldown();
-    state.amd_state.reset_signal_cooldown();
-
-    // Restaurar posiciones activas si el proceso se reinició con trades abiertos
+    // Restaurar posiciones activas ANTES del warm-up para que las barras históricas
+    // sean evaluadas por el paper trader y detecten SL/TP ocurridos durante el downtime.
     if let Some(sb) = state.supabase.clone() {
         if let Some(pos) = sb.load_rbf_active(&symbol_str).await {
             println!(
@@ -3499,6 +3513,12 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
             );
         }
     }
+
+    // Seed bar history from REST — si hay posición restaurada, warm_up_history también
+    // la alimenta al paper trader para cerrar cualquier SL/TP ocurrido durante downtime.
+    warm_up_history(&mut state, &symbol_str, tf_min, 150).await;
+    state.rbf_state.reset_signal_cooldown();
+    state.amd_state.reset_signal_cooldown();
 
     let tf_ms = timeframe.to_milliseconds();
     let mut pending: Option<(u64, Kline)> = None;

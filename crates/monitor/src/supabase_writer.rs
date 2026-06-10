@@ -469,7 +469,7 @@ impl SupabaseWriter {
         symbol: &str,
     ) -> Option<RestoredRbfPosition> {
         let url = format!(
-            "{}/rest/v1/rbf_signals?is_active=eq.true&symbol=eq.{}&order=id.desc&limit=1",
+            "{}/rest/v1/rbf_signals?is_active=eq.true&result_r=is.null&symbol=eq.{}&order=id.desc&limit=1",
             self.url, symbol
         );
         let result = self

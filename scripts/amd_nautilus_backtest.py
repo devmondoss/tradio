@@ -7,9 +7,10 @@ y simula fills con el matching engine de Nautilus.
 
 Uso:
     python scripts/amd_nautilus_backtest.py
-    python scripts/amd_nautilus_backtest.py --days 30
+    python scripts/amd_nautilus_backtest.py --days 90
     python scripts/amd_nautilus_backtest.py --no-slope
     python scripts/amd_nautilus_backtest.py --symbol ETHUSDT --days 14
+    python scripts/amd_nautilus_backtest.py --all-symbols --days 90
     python scripts/amd_nautilus_backtest.py --load-parquet  # usa dataset/ si existe
 """
 
@@ -48,18 +49,20 @@ from nautilus_trader.config import StrategyConfig
 DATASET_DIR = Path(__file__).parent.parent / "dataset"
 FAPI = "https://fapi.binance.com"
 
-# ── Parametros AMD (mismos que amd_backtest.py) ────────────────────────────────
+ALL_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
+
+# ── Parametros AMD — sincronizados con config/strategy.toml ───────────────────
 AMD_CFG = {
-    "accum_range_min_pct":       0.06,
-    "accum_range_max_pct":       0.45,
-    "accum_min_bars":            8,
-    "accum_max_bars":            50,
-    "manip_min_vr":              1.2,
-    "dist_min_vr":               1.5,
-    "dist_cvd_slope":            10.0,
+    "accum_range_min_pct":       0.04,
+    "accum_range_max_pct":       0.30,
+    "accum_min_bars":            10,
+    "accum_max_bars":            60,
+    "manip_min_vr":              1.5,
+    "dist_min_vr":               1.0,
+    "dist_cvd_slope":            5.0,
     "stop_buffer_pct":           0.08,
     "min_rr":                    2.0,
-    "cooldown_bars":             45,
+    "cooldown_bars":             30,
     "max_wait_bars_after_spike": 10,
     "max_hold_bars":             120,
     "warmup_bars":               60,
@@ -286,6 +289,7 @@ class AmdState:
 
             sig = {
                 "ts_ms": ts_ms,
+                "symbol": None,  # inyectado por la estrategia
                 "direction": dist_dir,
                 "entry": entry, "stop": stop, "target": target,
                 "rr": round(rr, 3),
@@ -323,6 +327,7 @@ def _session(ts_ms):
 
 class AmdStrategyConfig(StrategyConfig, frozen=True):
     instrument_id: str
+    symbol: str = "BTCUSDT"
     use_slope_gate: bool = True
     require_diverge: bool = True
     max_hold_bars: int = 120
@@ -335,6 +340,7 @@ class AmdStrategy(Strategy):
             use_slope_gate=config.use_slope_gate,
             require_diverge=config.require_diverge,
         )
+        self._symbol = config.symbol
         self._bar_type: BarType | None = None    # inyectado antes de run()
         self._delta_map: dict[int, float] = {}   # ts_ns -> bar_delta
         self._open_trades: list[dict] = []
@@ -401,6 +407,7 @@ class AmdStrategy(Strategy):
         # Correr detector AMD
         sig = self.amd.on_bar(ts_ms, high, low, close, vol, bar_delta)
         if sig is not None:
+            sig["symbol"] = self._symbol
             sig.setdefault("open_bar", self.amd.bars_seen)
             sig.setdefault("exit_bar", None)
             if sig.get("exit") == "VETOED":
@@ -468,7 +475,7 @@ def make_instrument(symbol: str, venue_str: str = "BINANCE") -> CryptoPerpetual:
 
 # ── Analisis de resultados ─────────────────────────────────────────────────────
 
-def print_results(signals: list, use_slope_gate: bool, days: int):
+def print_results(signals: list, use_slope_gate: bool, days: int, title_suffix: str = ""):
     vetoed   = [s for s in signals if s.get("exit") == "VETOED"]
     tradeable = [s for s in signals if s.get("exit") != "VETOED"]
     closed   = [s for s in tradeable if s["exit"] in ("TARGET", "STOP")]
@@ -476,9 +483,10 @@ def print_results(signals: list, use_slope_gate: bool, days: int):
     open_    = [s for s in tradeable if s["exit"] == "OPEN"]
     weeks    = days / 7
 
-    mode = "slope direccional ON + veto Asia Long" if use_slope_gate else "slope OFF + veto Asia Long"
+    mode = "slope ON" if use_slope_gate else "slope OFF"
+    suffix = f" — {title_suffix}" if title_suffix else ""
     print(f"\n{'='*70}")
-    print(f"  AMD Backtest NautilusTrader [{mode}]")
+    print(f"  AMD Backtest NautilusTrader [{mode}]{suffix}")
     print(f"{'='*70}")
     print(f"  Periodo       : {days} dias ({weeks:.1f} semanas)")
     print(f"  Senales totales generadas : {len(signals)}  ({len(signals)/weeks:.1f}/semana)")
@@ -543,6 +551,11 @@ def print_results(signals: list, use_slope_gate: bool, days: int):
     group_table("Por direccion (tradeadas)", lambda s: s["direction"])
     group_table("Por spike direction",       lambda s: f"Spike {s['spike_dir']} -> {s['direction']}")
 
+    # breakdown por simbolo (si hay mas de uno)
+    symbols_present = {s.get("symbol") for s in signals if s.get("symbol")}
+    if len(symbols_present) > 1:
+        group_table("Por simbolo (tradeadas)", lambda s: s.get("symbol", "?"))
+
     print(f"\n  -- Ultimas {min(30, len(tradeable))} senales tradeadas --")
     print(f"  {'Fecha':16} {'Dir':6} {'Ses':9} {'slope':>7} {'exit':>7} {'R':>6}")
     print(f"  {'-'*58}")
@@ -555,48 +568,37 @@ def print_results(signals: list, use_slope_gate: bool, days: int):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--symbol",       default="BTCUSDT")
-    parser.add_argument("--days",         type=int, default=30)
-    parser.add_argument("--no-slope",     action="store_true")
-    parser.add_argument("--diverge",       action="store_true",
-                        help="Activar gate CVD diverge en spike (default OFF)")
-    parser.add_argument("--load-parquet", action="store_true",
-                        help="Cargar desde dataset/*.parquet si existe")
-    args = parser.parse_args()
-
-    # ── 1. Datos ───────────────────────────────────────────────────────────────
-    parquet_path = DATASET_DIR / f"{args.symbol.lower()}_{args.days}m.parquet"
-    if args.load_parquet and parquet_path.exists():
-        print(f"[data] Cargando {parquet_path}")
+def run_one_symbol(symbol: str, days: int, use_slope: bool, require_diverge: bool,
+                   load_parquet: bool) -> list[dict]:
+    """Corre el backtest para un símbolo, devuelve la lista de señales."""
+    # ── Datos ──────────────────────────────────────────────────────────────────
+    parquet_path = DATASET_DIR / f"{symbol.lower()}_{days}m.parquet"
+    if load_parquet and parquet_path.exists():
+        print(f"[data] {symbol}: cargando {parquet_path}")
         df = pd.read_parquet(parquet_path)
     else:
         now_ms   = int(time_mod.time() * 1000)
-        start_ms = now_ms - args.days * 86_400_000
-        raw = fetch_klines(args.symbol, start_ms, now_ms)
+        start_ms = now_ms - days * 86_400_000
+        raw = fetch_klines(symbol, start_ms, now_ms)
         if not raw:
-            print("Error: sin datos de Binance")
-            return
-        df = klines_to_df(raw, args.symbol)
+            print(f"[warn] {symbol}: sin datos de Binance, omitiendo")
+            return []
+        df = klines_to_df(raw, symbol)
 
     df = df.sort_values("ts_ms").reset_index(drop=True)
-    print(f"[data] {len(df):,} barras M1  {df['ts_ms'].iloc[0]} -> {df['ts_ms'].iloc[-1]}")
+    print(f"[data] {symbol}: {len(df):,} barras M1")
 
-    # ── 2. Instrumento Nautilus ────────────────────────────────────────────────
-    venue_str = "BINANCE"
-    instrument = make_instrument(args.symbol, venue_str)
-    bar_type = BarType(
+    # ── Instrumento Nautilus ───────────────────────────────────────────────────
+    venue_str  = "BINANCE"
+    instrument = make_instrument(symbol, venue_str)
+    bar_type   = BarType(
         instrument_id=instrument.id,
         bar_spec=BarSpecification(1, BarAggregation.MINUTE, PriceType.LAST),
         aggregation_source=AggregationSource.EXTERNAL,
     )
-    bar_type_str = str(bar_type)
 
-    # ── 3. Wrangling de barras ─────────────────────────────────────────────────
-    print("[wrangler] Convirtiendo dataframe -> Nautilus Bars...")
+    # ── Wrangling ──────────────────────────────────────────────────────────────
     wrangler = BarDataWrangler(bar_type=bar_type, instrument=instrument)
-
     df_nautilus = pd.DataFrame({
         "open":      df["open"].astype(float),
         "high":      df["high"].astype(float),
@@ -605,24 +607,17 @@ def main():
         "volume":    df["volume"].astype(float),
         "timestamp": pd.to_datetime(df["ts_ms"], unit="ms", utc=True),
     }).set_index("timestamp")
-
     bars: list[Bar] = wrangler.process(df_nautilus)
-    print(f"  {len(bars):,} Bar objects creados")
 
-    # delta_map: ts_ns -> bar_delta (para lookup en on_bar)
     delta_map = {
         int(ts * 1_000_000): float(d)
         for ts, d in zip(df["ts_ms"].values, df["bar_delta"].values)
     }
 
-    # ── 4. BacktestEngine ──────────────────────────────────────────────────────
-    print("[engine] Configurando NautilusTrader BacktestEngine...")
+    # ── BacktestEngine ─────────────────────────────────────────────────────────
     engine = BacktestEngine(
-        config=BacktestEngineConfig(
-            logging=LoggingConfig(log_level="ERROR"),  # silenciar logs internos
-        )
+        config=BacktestEngineConfig(logging=LoggingConfig(log_level="ERROR"))
     )
-
     engine.add_venue(
         venue=Venue(venue_str),
         oms_type=OmsType.NETTING,
@@ -633,67 +628,104 @@ def main():
     engine.add_instrument(instrument)
     engine.add_data(bars)
 
-    # ── 5. Estrategia AMD ──────────────────────────────────────────────────────
     strategy_cfg = AmdStrategyConfig(
         instrument_id=str(instrument.id),
-        use_slope_gate=not args.no_slope,
-        require_diverge=args.diverge,
+        symbol=symbol,
+        use_slope_gate=use_slope,
+        require_diverge=require_diverge,
     )
     strategy = AmdStrategy(config=strategy_cfg)
     strategy.set_bar_type(bar_type)
     strategy.set_delta_map(delta_map)
     engine.add_strategy(strategy)
 
-    # ── 6. Run ─────────────────────────────────────────────────────────────────
-    print("[run] Corriendo backtest...")
     t0 = time_mod.time()
     engine.run()
     elapsed = time_mod.time() - t0
-    print(f"  Completado en {elapsed:.2f}s")
 
-    # ── 7. Resultados ──────────────────────────────────────────────────────────
     all_signals = strategy.signals + list(strategy._open_trades)
-    print_results(all_signals, use_slope_gate=not args.no_slope, days=args.days)
+    closed = [s for s in all_signals if s.get("exit") in ("TARGET", "STOP")]
+    wins   = sum(1 for s in closed if s.get("result_r", 0) > 0)
+    avg_r  = sum(s["result_r"] for s in closed) / len(closed) if closed else 0.0
+    wr     = wins / len(closed) * 100 if closed else 0.0
+    print(f"  {symbol}: {elapsed:.1f}s  señales={len(all_signals)}  closed={len(closed)}  WR={wr:.1f}%  avgR={avg_r:+.3f}")
 
-    # Diagnóstico de filtros
+    # Diagnóstico
     d = strategy.amd.diag
-    total_rejected = sum(v for k, v in d.items() if k not in ("signals_emitted", "signals_vetoed"))
-    print(f"\n{'='*50}")
-    print(f"  DIAGNOSTICO DE FILTROS")
-    print(f"{'='*50}")
-    print(f"  {'Gate':<30} {'bloqueadas':>10}")
-    print(f"  {'-'*42}")
-    labels = [
-        ("accum_range_fail",         "rango acum invalido"),
-        ("accum_max_bars_exceeded",  "accum > max_bars"),
-        ("spike_vr_fail",            "spike VR < 2.0"),
-        ("spike_cvd_div_fail",       "spike CVD no diverge"),
-        ("entry_closes_wrong",       "price no retrocede"),
-        ("entry_vr_fail",            "entry VR < 1.5"),
-        ("entry_slope_fail",         "slope direccional fail"),
-        ("entry_risk_too_small",     "risk < $1"),
-        ("entry_rr_fail",            "RR < 2.0"),
-    ]
-    for key, label in labels:
-        v = d[key]
-        if v > 0:
-            print(f"  {label:<30} {v:>10,}")
-    print(f"  {'-'*42}")
-    print(f"  {'TOTAL BLOQUEADAS':<30} {total_rejected:>10,}")
-    print(f"  {'Emitidas (tradeadas)':<30} {d['signals_emitted']:>10}")
-    print(f"  {'Emitidas (vetadas)':<30} {d['signals_vetoed']:>10}")
-
-    # Guardar CSV
-    if all_signals:
-        import csv
-        out = DATASET_DIR / f"amd_signals_{args.symbol}_{args.days}d.csv"
-        DATASET_DIR.mkdir(exist_ok=True)
-        with open(out, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=list(all_signals[0].keys()))
-            w.writeheader(); w.writerows(all_signals)
-        print(f"\n[output] {out}  ({len(all_signals)} senales)")
+    total_rej = sum(v for k, v in d.items() if k not in ("signals_emitted", "signals_vetoed"))
+    print(f"  {symbol}: bloqueadas={total_rej:,}  emitidas={d['signals_emitted']}")
 
     engine.dispose()
+    return all_signals
+
+
+def print_diag_combined(all_symbols_signals: list, days: int):
+    """Tabla simple de resumen por símbolo."""
+    weeks = days / 7
+    symbols = sorted({s.get("symbol", "?") for s in all_symbols_signals})
+    print(f"\n{'='*65}")
+    print(f"  RESUMEN POR SIMBOLO")
+    print(f"{'='*65}")
+    print(f"  {'Simbolo':10} {'señales':>8} {'sig/sem':>8} {'closed':>7} {'WR%':>7} {'avgR':>8}")
+    print(f"  {'-'*55}")
+    for sym in symbols:
+        sigs  = [s for s in all_symbols_signals if s.get("symbol") == sym]
+        cl    = [s for s in sigs if s.get("exit") in ("TARGET", "STOP")]
+        w     = sum(1 for s in cl if s.get("result_r", 0) > 0)
+        wr    = w / len(cl) * 100 if cl else 0.0
+        avg_r = sum(s["result_r"] for s in cl) / len(cl) if cl else 0.0
+        sig_s = len(sigs) / weeks
+        print(f"  {sym:10} {len(sigs):>8} {sig_s:>8.1f} {len(cl):>7} {wr:>7.1f}% {avg_r:>+8.3f}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--symbol",       default="BTCUSDT")
+    parser.add_argument("--all-symbols",  action="store_true",
+                        help=f"Correr todos los activos: {ALL_SYMBOLS}")
+    parser.add_argument("--days",         type=int, default=90)
+    parser.add_argument("--no-slope",     action="store_true")
+    parser.add_argument("--diverge",      action="store_true",
+                        help="Activar gate CVD diverge en spike (default OFF)")
+    parser.add_argument("--load-parquet", action="store_true",
+                        help="Cargar desde dataset/*.parquet si existe")
+    args = parser.parse_args()
+
+    symbols = ALL_SYMBOLS if args.all_symbols else [args.symbol]
+    use_slope = not args.no_slope
+
+    combined: list[dict] = []
+    for sym in symbols:
+        sigs = run_one_symbol(
+            symbol=sym,
+            days=args.days,
+            use_slope=use_slope,
+            require_diverge=args.diverge,
+            load_parquet=args.load_parquet,
+        )
+        combined.extend(sigs)
+
+    if not combined:
+        print("Sin señales.")
+        return
+
+    if args.all_symbols:
+        print_diag_combined(combined, args.days)
+        title = f"TODOS ({', '.join(symbols)})"
+    else:
+        title = symbols[0]
+
+    print_results(combined, use_slope_gate=use_slope, days=args.days, title_suffix=title)
+
+    # Guardar CSV combinado
+    import csv
+    sym_tag = "all" if args.all_symbols else args.symbol
+    out = DATASET_DIR / f"amd_signals_{sym_tag}_{args.days}d.csv"
+    DATASET_DIR.mkdir(exist_ok=True)
+    with open(out, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(combined[0].keys()))
+        w.writeheader(); w.writerows(combined)
+    print(f"\n[output] {out}  ({len(combined)} señales)")
 
 
 if __name__ == "__main__":

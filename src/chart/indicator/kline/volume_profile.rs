@@ -386,17 +386,8 @@ impl KlineIndicatorImpl for VolumeProfileIndicator {
         }
     }
 
-    fn overlay_bands(&self, earliest: u64, latest: u64) -> Vec<Vec<(u64, f32, f32)>> {
-        let levels = match self.latest_levels() {
-            Some(l) if l.vah > l.val && l.vah.is_finite() && l.val.is_finite() => l,
-            _ => return vec![],
-        };
-
-        let band = vec![
-            (earliest, levels.vah, levels.val),
-            (latest, levels.vah, levels.val),
-        ];
-        vec![band]
+    fn overlay_bands(&self, _earliest: u64, _latest: u64) -> Vec<Vec<(u64, f32, f32)>> {
+        vec![]
     }
 
     fn latest_vol_profile_levels(&self) -> Option<(f64, f64, f64)> {

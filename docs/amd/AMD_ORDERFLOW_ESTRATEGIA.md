@@ -123,8 +123,8 @@ Reversión agresiva SHORT desde el máximo. CVD revirtió negativamente con fuer
 **Resultado:**
 ```
 Entry:  ~$61,792
-Stop:   $40,474 / $404.73 (0.65%) → ~$62,197
-Target: $90,896 / $908.95 (1.46%) → ~$60,883
+Stop:   $404.73 (0.65%) → ~$62,197
+Target: $908.95 (1.46%) → ~$60,883
 RR:     2.25
 PnL:    +$908.95 (Qty: 0.618)
 ```
@@ -169,7 +169,7 @@ Reversión alcista agresiva desde el mínimo. Target en $89,839 / +$898.38 (1.52
 ```
 Entry:  ~$59,646
 Stop:   $404.73 (0.68%) — debajo del mínimo del spike
-Target: $898.38 (1.52%) → $89,839
+Target: $898.38 (1.52%) → ~$60,553
 RR:     2.22
 PnL:    +$898.38 (Qty: 0.618)
 ```
@@ -209,7 +209,7 @@ SHORT agresivo. Target en $90,896 alcanzado.
 
 **Resultado:**
 ```
-Target: $908.95 (1.47%) → $90,896
+Target: $908.95 (1.47%) → ~$60,472
 Stop:   $404.73 (0.65%)
 RR:     2.25
 PnL:    +$908.95 (Qty: 0.618)
@@ -226,7 +226,7 @@ Acumulación larga (01:30–03:30), manipulación alcista falsa hacia ~$60,094, 
 
 **Resultado:**
 ```
-Target: $908.95 (1.50%) → $90,896
+Target: $908.95 (1.50%) → ~$59,087
 Stop:   $404.73 (0.67%)
 RR:     2.25
 PnL:    +$908.95 (Qty: 0.618)
@@ -246,7 +246,7 @@ Reversión alcista inmediata y vertical. Target de +$898.38 alcanzado en pocas b
 
 **Resultado:**
 ```
-Target: $898.38 (1.50%) → $89,839
+Target: $898.38 (1.50%) → ~$60,872
 Stop:   $404.73 (0.67%)
 RR:     2.22
 PnL:    +$898.38 (Qty: 0.618)
@@ -263,7 +263,7 @@ La acumulación ocurrió entre 06:30–09:00. El spike de manipulación alcanzó
 
 **Resultado:**
 ```
-Target: $908.95 (1.48%) → $90,896
+Target: $908.95 (1.48%) → ~$59,979
 Stop:   $404.73 (0.66%)
 RR:     2.25
 PnL:    +$908.95 (Qty: 0.618)

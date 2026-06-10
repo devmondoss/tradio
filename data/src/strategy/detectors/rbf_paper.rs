@@ -17,7 +17,8 @@ const TRAIL_ACTIVATE_R: f64 = 1.5;
 /// Distancia del trailing en múltiplos de ATR.
 const TRAIL_ATR_K: f64 = 1.2;
 /// Barras máximas en una posición perdedora antes de cerrar.
-const TIME_STOP_BARS: u32 = 15;
+/// Con stop = range_high (~0.4%), el target es ~0.8% → necesita más tiempo que el ATR stop anterior.
+const TIME_STOP_BARS: u32 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RbfExitReason {
@@ -100,6 +101,11 @@ impl RbfPaperTrader {
 
     pub fn has_position(&self) -> bool {
         self.active.is_some()
+    }
+
+    /// Timestamp de apertura de la posición activa (para filtrar barras pre-entrada en warm-up).
+    pub fn entry_ms(&self) -> Option<i64> {
+        self.active.as_ref().map(|p| p.entry_ms)
     }
 
     /// Devuelve true si el límite diario (pérdida o ganancia) ya fue alcanzado.

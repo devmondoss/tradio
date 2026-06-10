@@ -585,22 +585,20 @@ impl RangeBreakoutState {
                 if !obi_ok { continue; }
             }
 
-            // Stop dinámico: 0.7×ATR si disponible; fallback a stop_pct fijo.
-            // Datos: stop fijo = 2.63×ATR promedio → demasiado ancho para M1.
-            let atr_ctx = gate.and_then(|ctx| if ctx.atr > 0.0 { Some(ctx.atr) } else { None });
-            let stop_distance = match atr_ctx {
-                Some(atr) => ATR_STOP_K * atr,
-                None      => cfg.stop_pct / 100.0 * close,
-            };
+                        // Stop = techo/piso del rango de consolidación (estructura de mercado real).
+            // ATR M1 (~0.1%) era ruido puro — el stop quedaba DENTRO de la consolidación,
+            // no encima de ella. Si el precio regresa al rango, el breakout falló.
+            let rr_short = cfg.target_short_pct / cfg.stop_pct; // e.g. 0.50/0.25 = 2.0
+            let rr_long  = cfg.target_long_pct  / cfg.stop_pct;
             let (stop_price, target_price) = match direction {
-                RbfDirection::Short => (
-                    close + stop_distance,
-                    close - stop_distance * (cfg.target_short_pct / cfg.stop_pct),
-                ),
-                RbfDirection::Long => (
-                    close - stop_distance,
-                    close + stop_distance * (cfg.target_long_pct / cfg.stop_pct),
-                ),
+                RbfDirection::Short => {
+                    let s = range_high;
+                    (s, close - rr_short * (s - close))
+                }
+                RbfDirection::Long => {
+                    let s = range_low;
+                    (s, close + rr_long * (close - s))
+                }
             };
             let risk   = (close - stop_price).abs();
             let reward = (target_price - close).abs();

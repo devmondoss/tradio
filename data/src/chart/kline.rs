@@ -359,11 +359,7 @@ impl Default for Config {
         Self {
             show_key_levels: true,
             show_session_lines: true,
-            // Cambiado a true en la migración local-Mongo (2026-05-20):
-            // el overlay arranca encendido por default así las señales empiezan
-            // a escribir a Mongo sin click adicional. Para apagar: clic en la
-            // estrella del Strategy Monitor pane, o env var FLOWSURFACE_FORCE_STRATEGY=0.
-            strategy_overlay_enabled: true,
+            strategy_overlay_enabled: false,
             show_order_blocks: true,
             show_fvgs: true,
             show_structure: true,
