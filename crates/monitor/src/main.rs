@@ -2397,6 +2397,10 @@ impl BarState {
             let equal_high = swing_high_50.map_or(false, |sh| (h - sh).abs() / sh <= eq_tol && h >= sh * (1.0 - eq_tol));
             let equal_low  = swing_low_50 .map_or(false, |sl| (l - sl).abs() / sl <= eq_tol && l <= sl * (1.0 + eq_tol));
 
+            let cvd_div_str = cvd_divergence.as_ref().map(|d| match d {
+                data::strategy::types::CvdDivergence::BearishAbsorption => "BearishAbsorption",
+                data::strategy::types::CvdDivergence::BullishAbsorption  => "BullishAbsorption",
+            });
             sb.write_rbf_bar(
                 symbol,
                 bar_ms, &format!("{:?}", session.session),
@@ -2414,6 +2418,8 @@ impl BarState {
                 self.prev_day_high, self.prev_day_low,
                 swing_high_50, swing_low_50,
                 equal_high, equal_low,
+                cvd_div_str,
+                sweep_confirmed,
             );
         }
 
