@@ -1,6 +1,6 @@
 # Range Breakout Flow (RBF) — Documentación completa
 
-Última revisión: 2026-06-02
+Última revisión: 2026-06-10
 
 ---
 
@@ -12,6 +12,7 @@ RBF es el detector principal del sistema. Reemplaza el enfoque de scalping micro
 Cuando el precio consolida en un rango estrecho (0.08–0.55% del precio) y el CVD acumula presión en una dirección durante esa consolidación, el breakout del rango con volumen confirmado (VR ≥ 2×) produce un movimiento sostenido de 0.5–1%+ en la misma dirección.
 
 **Validado en backtest:** 30 días M1, 43,200 barras, n=914 señales con CVD alineado.
+VR mínimo: 3× (no 2×). Stop dinámico: 1.0×ATR.
 
 ---
 
@@ -48,7 +49,7 @@ El `bar_delta` es la diferencia entre volumen comprador y vendedor de cada barra
 
 ### 3. Breakout confirmado
 
-La señal dispara cuando **la barra actual cierra fuera del rango** con **VR ≥ 2×**:
+La señal dispara cuando **la barra actual cierra fuera del rango** con **VR ≥ 3×**:
 - Cierre bajo `range_low` → **SHORT breakdown**
 - Cierre sobre `range_high` → **LONG breakout**
 
@@ -77,15 +78,33 @@ El detector calcula una EMA de 480 barras M1 (~8 horas) del precio de cierre. Es
 
 ```
 Entry:  cierre de la barra de breakout
-Stop:   entry × (1 + 0.25%)  para SHORT  |  entry × (1 - 0.25%)  para LONG
-Target: entry × (1 - 0.50%)  para SHORT  |  entry × (1 + 0.45%)  para LONG
-RR:     ≈ 2:1
+Stop:   entry ± 1.0 × ATR(14)                    → distancia dinámica
+Target: entry ∓ 2.0 × ATR   para SHORT  (RR 2:1)
+        entry ± 1.8 × ATR   para LONG   (RR 1.8:1)
+RR mínimo requerido: 1.5
 ```
 
-A $70,000 BTC:
-- Stop = $175 contra la entrada
-- Target SHORT = $350 a favor
-- Target LONG = $315 a favor
+A $70,000 BTC con ATR ≈ $50 (M1 típico):
+- Stop ≈ $50 contra la entrada
+- Target SHORT ≈ $100 a favor
+- Target LONG ≈ $90 a favor
+
+El stop es **dinámico**: se usa `1.0 × ATR(14)` en vez de un porcentaje fijo.
+Razón: el stop fijo (0.25% ≈ 2.6×ATR promedio) era demasiado ancho; el grid search
+sobre M1 mostró que 1.0×ATR minimiza stops en barra 1 (era 67% con 0.7×ATR).
+
+### 5b. Trailing stop
+
+Una vez abierta la posición, el stop se gestiona de forma dinámica:
+
+```
+TRAIL_ACTIVATE_R = 1.5R   → el trailing se activa cuando la posición llega a +1.5R
+TRAIL_ATR_K      = 1.2    → distancia del stop al extremo favorable = 1.2 × ATR
+TIME_STOP_BARS   = 15     → si a los 15 min la posición está en pérdida, cierra al mercado
+```
+
+Con 1.2×ATR de trailing, la captura esperada en un movimiento de 3R es ~2.8R
+(vs ~2R con el trail anterior de 0.5×ATR).
 
 ### 6. Cooldown
 
@@ -134,6 +153,10 @@ Una vez disparada una señal, el detector espera **60 barras M1 (60 minutos)** a
 ---
 
 ### NewYork — 17:00 a 22:00 UTC
+
+> **Estado:** operativa desde 2026-06-09. Habilitada para acumular datos reales
+> y evaluar el edge con n≥15. No hay suficientes señales live todavía para
+> confirmar o descartar.
 
 **Características:** London cerró. Solo participantes americanos. Menor liquidez que el Overlap pero mayor que London solo. NYSE cierra a las 20:00 UTC.
 
