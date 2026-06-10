@@ -241,6 +241,8 @@ const ATR_STOP_K:       f64 = 1.0;
 const MIN_RANGE_ATR_RATIO: f64 = 1.5;
 const CVD_SLOPE_WIN:  usize = 20;
 const EMA_MACRO:      usize = 480;
+// Backtest 3.5d (n=83): Longs WR=14% AvgR=-0.695 → desactivados hasta reunir edge positivo.
+const LONGS_ENABLED:  bool  = false;
 
 /// Sessions operativas — London, Overlap y NewYork.
 /// Asia y OffHours excluidos (volumen insuficiente para RBF).
@@ -550,6 +552,7 @@ impl RangeBreakoutState {
             if !breaks_down && !breaks_up { continue; }
 
             let direction = if breaks_down { RbfDirection::Short } else { RbfDirection::Long };
+            if direction == RbfDirection::Long && !LONGS_ENABLED { continue; }
             let sign: f64 = if breaks_down { 1.0 } else { -1.0 }; // sign para "move in direction"
 
             // CVD acumulado en rango alineado con dirección
