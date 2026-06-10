@@ -2,7 +2,7 @@
 //!
 //! Hipótesis validada en backtest (30 días M1, n=318 señales London+Overlap):
 //!   Rango de consolidación (0.08–0.55%, 15–60 barras M1) + CVD acumulado alineado
-//!   + VR ≥ 2× en breakout → edge positivo en horizonte 30–60 min.
+//!   + VR ≥ 3× en breakout → edge positivo en horizonte 30–60 min.
 //!
 //! Gate de microestructura (backtest offline 30d):
 //!   cvd_slope confirma dirección  (+11pp WR en Q4 vs Q1)
@@ -93,6 +93,9 @@ pub struct RbfGateContext {
     /// VP Open Variant del día actual (FASE 2.1): "InsideValue", "OutsideVaInsidePa", "TrendDay", "FadeGap".
     /// Clasifica el tipo de apertura de sesión vs el Value Area del día anterior.
     pub vp_open_bias: Option<String>,
+    /// ATR(14) de la barra de breakout. Se usa para stop dinámico y filtro range/ATR.
+    /// 0.0 si no disponible (warmup).
+    pub atr: f64,
 }
 
 fn score_confluence(
@@ -224,12 +227,18 @@ fn score_confluence(
 
 // ── Parámetros del detector ───────────────────────────────────────────────────
 
-const RANGE_WINDOWS:  &[usize] = &[15, 20, 30, 45, 60];
-const RANGE_MIN_PCT:  f64 = 0.08;
-const RANGE_MAX_PCT:  f64 = 0.55;
-const BREAKOUT_VR_MIN: f64 = 2.0;
-const VR_WINDOW:      usize = 50;
-const DZ_WINDOW:      usize = 50;
+const RANGE_WINDOWS:    &[usize] = &[15, 20, 30, 45, 60];
+const RANGE_MIN_PCT:    f64 = 0.08;
+const RANGE_MAX_PCT:    f64 = 0.55;
+const BREAKOUT_VR_MIN:  f64 = 3.0;
+const VR_WINDOW:        usize = 50;
+const DZ_WINDOW:        usize = 50;
+// Stop dinámico: stop = ATR_STOP_K × ATR. Reemplaza stop_pct fijo cuando ATR disponible.
+// Grid search M1: 1.0×ATR óptimo. 0.7 era demasiado ajustado (67% stops en barra 1).
+const ATR_STOP_K:       f64 = 1.0;
+// Filtro de potencial: rango debe ser al menos MIN_RANGE_ATR_RATIO veces el ATR.
+// Trades con rango < 1.5×ATR no tienen espacio real para desarrollarse (MFE < 1R).
+const MIN_RANGE_ATR_RATIO: f64 = 1.5;
 const CVD_SLOPE_WIN:  usize = 20;
 const EMA_MACRO:      usize = 480;
 
@@ -522,6 +531,15 @@ impl RangeBreakoutState {
 
             if range_pct < RANGE_MIN_PCT || range_pct > RANGE_MAX_PCT { continue; }
 
+            // Filtro de potencial: rango debe ser ≥ MIN_RANGE_ATR_RATIO × ATR.
+            // Rangos menores al ATR típico no tienen espacio real para desarrollarse.
+            if let Some(ctx) = gate {
+                if ctx.atr > 0.0 {
+                    let range_abs = range_high - range_low;
+                    if range_abs < MIN_RANGE_ATR_RATIO * ctx.atr { continue; }
+                }
+            }
+
             let cvd_in_range: f64 = window.iter().map(|b| b.delta).sum();
 
             let touches_high = window.iter().filter(|b| b.high >= range_high * 0.999 && b.close < range_high).count();
@@ -564,15 +582,22 @@ impl RangeBreakoutState {
                 if !obi_ok { continue; }
             }
 
-            // Calcular stop y target
-            let stop_pct   = cfg.stop_pct / 100.0;
-            let target_pct = match direction {
-                RbfDirection::Short => cfg.target_short_pct / 100.0,
-                RbfDirection::Long  => cfg.target_long_pct  / 100.0,
+            // Stop dinámico: 0.7×ATR si disponible; fallback a stop_pct fijo.
+            // Datos: stop fijo = 2.63×ATR promedio → demasiado ancho para M1.
+            let atr_ctx = gate.and_then(|ctx| if ctx.atr > 0.0 { Some(ctx.atr) } else { None });
+            let stop_distance = match atr_ctx {
+                Some(atr) => ATR_STOP_K * atr,
+                None      => cfg.stop_pct / 100.0 * close,
             };
             let (stop_price, target_price) = match direction {
-                RbfDirection::Short => (close * (1.0 + stop_pct),   close * (1.0 - target_pct)),
-                RbfDirection::Long  => (close * (1.0 - stop_pct),   close * (1.0 + target_pct)),
+                RbfDirection::Short => (
+                    close + stop_distance,
+                    close - stop_distance * (cfg.target_short_pct / cfg.stop_pct),
+                ),
+                RbfDirection::Long => (
+                    close - stop_distance,
+                    close + stop_distance * (cfg.target_long_pct / cfg.stop_pct),
+                ),
             };
             let risk   = (close - stop_price).abs();
             let reward = (target_price - close).abs();
