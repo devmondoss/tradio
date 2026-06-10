@@ -1,6 +1,6 @@
 # Dataset — FlowSurface
 
-*Última revisión: 2026-06-06*
+*Última revisión: 2026-06-10*
 
 ---
 
@@ -19,11 +19,15 @@ Un dataset de microestructura de mercado en tiempo real para 4 activos (BTC, ETH
 
 ## Tablas activas
 
-### `btc_bars` / `eth_bars` / `bnb_bars` / `sol_bars`
+### `btc_bars` / `eth_bars` / `bnb_bars` / `sol_bars` / `xrp_bars`
 
-Una fila por barra M1 por símbolo. Misma estructura en las 4 tablas.
+Una fila por barra M1 por símbolo. Misma estructura en las 5 tablas.
 
-**Frecuencia:** 1 fila/minuto = ~1,440 filas/día por tabla = ~5,760 filas/día total los 4 símbolos.
+**Frecuencia:** 1 fila/minuto = ~1,440 filas/día por tabla = ~7,200 filas/día total los 5 símbolos.
+
+**Cobertura histórica:** backfill M1 desde 2026-05-11 para los 5 símbolos (ver sección Backfill).
+Los campos de order book (`obi_l5`, `cvd_slope`, etc.) son NULL en el período de backfill —
+solo están poblados desde que el monitor live arrancó (Jun 5–9 según símbolo).
 
 #### Columnas completas
 
@@ -63,6 +67,20 @@ Una fila por barra M1 por símbolo. Misma estructura en las 4 tablas.
 | `vwap` | float4 | VWAP de sesión. Reset 00:00 UTC. Referencia de algoritmos institucionales. |
 | `atr` | float4 | ATR(14) Wilder. Volatilidad normalizada de la barra. |
 | `regime` | text | Régimen de mercado: TrendUp / TrendDown / Expansion / Chop. |
+| | | |
+| **ICT / AMD structural levels** | | |
+| `asian_high` | float4 | Máximo de la sesión Asia (00:00–09:00 UTC) |
+| `asian_low` | float4 | Mínimo de la sesión Asia |
+| `prev_day_high` | float4 | PDH — máximo del día anterior (nivel clave institucional) |
+| `prev_day_low` | float4 | PDL — mínimo del día anterior |
+| `swing_high_50` | float4 | Máximo swing en las últimas 50 barras |
+| `swing_low_50` | float4 | Mínimo swing en las últimas 50 barras |
+| `equal_high` | boolean | true = high actual está a ≤0.03% de un swing previo (liquidity pool) |
+| `equal_low` | boolean | true = low actual está a ≤0.03% de un swing previo |
+| | | |
+| **Microestructura adicional** *(añadidos 2026-06-10)* | | |
+| `cvd_divergence` | text | `BearishAbsorption` cuando precio sube pero CVD cae — distribución silenciosa dentro del rango. `BullishAbsorption` cuando precio baja y CVD sube. NULL el resto del tiempo. Señal temprana de 5–10 barras antes del breakout. |
+| `sweep_confirmed` | boolean | true = en las últimas 3 barras hubo un wick que superó un swing extremo pero el precio cerró de vuelta dentro. Liquidity grab clásico previo al movimiento real. |
 
 ---
 
@@ -189,11 +207,65 @@ GROUP BY symbol;
 | eth_bars | ~1,440 | ~6 MB | ~72 MB |
 | bnb_bars | ~1,440 | ~6 MB | ~72 MB |
 | sol_bars | ~1,440 | ~6 MB | ~72 MB |
+| xrp_bars | ~1,440 | ~6 MB | ~72 MB |
 | rbf_signals | ~2–5 | < 1 MB | < 5 MB |
 | regime_history | ~10–20 | < 1 MB | < 5 MB |
-| **Total** | ~5,760 | **~25 MB** | **~290 MB** |
+| **Total** | ~7,200 | **~31 MB** | **~365 MB** |
 
 Supabase free tier: 500 MB. Sin problema por más de 1 año.
+
+---
+
+## Backfill histórico
+
+El script `scripts/backfill_bars.py` rellena los `*_bars` con datos de Binance Futures
+(`/fapi/v1/klines`) para el período antes de que el monitor live arrancara.
+
+### Qué calcula del OHLCV histórico
+
+| Campo | Cómo | Exactitud |
+|-------|------|-----------|
+| `bar_delta` | `2 × takerBuyVol − totalVol` (campo 9 de klines Binance) | Exacto |
+| `vr` | `volume / avg_30bars` | Exacto |
+| `atr` | EMA14 del True Range | Exacto |
+| `vwap` | VWAP acumulado con reset UTC 00:00 | Exacto |
+| `session` | Clasificación por minutos UTC (espejo de session_tracker.rs) | Exacto |
+
+### Qué NO puede reconstruirse (queda NULL en backfill)
+
+`cvd_slope`, `obi_l5`, `obi_fast`, `obi_slow`, `dz`, `liq_ratio`, `spread_ticks`,
+`stacked_imb`, `absorption`, `thin_above`, `thin_below`, `bid_wall`, `ask_wall`,
+`vpin`, `oi_momentum`, `cvd_divergence`, `sweep_confirmed`, todos los ICT levels.
+
+Estos requieren snapshots del orderbook o flujo de trades en tiempo real — una vez que pasa,
+se pierde para siempre.
+
+### Uso
+
+```bash
+# Backfill normal (detecta qué falta y lo rellena)
+python scripts/backfill_bars.py
+
+# Forzar re-backfill (sobreescribe el período histórico con merge-duplicates)
+# Útil si cambiaste el intervalo (ej: de M5 a M1)
+python scripts/backfill_bars.py --force
+
+# Solo un símbolo
+python scripts/backfill_bars.py --symbol BTCUSDT
+
+# Ver cuánto traería sin insertar nada
+python scripts/backfill_bars.py --dry-run
+```
+
+El script detecta automáticamente el "primer bar live" (el primero con `obi_l5 NOT NULL`)
+para no sobreescribir datos live que ya tienen microestructura real.
+
+### Limitación importante
+
+El backfill OHLCV sirve para el detector básico de RBF (range + VR + session + VWAP).
+Para analizar los filtros de microestructura (`obi_l5 gate`, `stacked_imb`, etc.) solo
+sirven los datos live. Cada día adicional del monitor en Railway vale más que cualquier
+cantidad de backfill histórico.
 
 ---
 
@@ -209,4 +281,15 @@ Supabase free tier: 500 MB. Sin problema por más de 1 año.
 
 ---
 
-*Dataset activo desde 2026-06-06. BTC, ETH, BNB, SOL corriendo en paralelo en un solo servicio Railway.*
+---
+
+## Historial de cambios
+
+| Fecha | Cambio |
+|-------|--------|
+| 2026-06-06 | Dataset arranca. BTC, ETH, BNB, SOL. Monitor M1 en Railway. |
+| 2026-06-09 | XRP añadido. 5 símbolos activos. |
+| 2026-06-10 | Backfill M1 desde 2026-05-11 para los 5 símbolos (~188k filas). Script `backfill_bars.py`. |
+| 2026-06-10 | Nuevas columnas `cvd_divergence` y `sweep_confirmed` en todas las tablas `*_bars`. |
+
+*Dataset activo desde 2026-06-06. 5 símbolos (BTC/ETH/BNB/SOL/XRP) en Railway M1.*
