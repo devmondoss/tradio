@@ -569,12 +569,18 @@ impl SupabaseWriter {
     }
 
     /// Inserta una señal AMD y retorna el UUID asignado (para PATCH de outcome).
+    /// `is_paper_trade=true` escribe is_active=true en el INSERT — elimina el race condition
+    /// con Railway redeployments que causaba que mark_amd_active nunca llegara.
     pub async fn write_amd_signal_async(
         &self,
         sig: &data::strategy::detectors::amd_detector::AmdSignal,
         symbol: &str,
+        is_paper_trade: bool,
     ) -> Option<String> {
-        let body = self.amd_signal_body(sig, symbol);
+        let mut body = self.amd_signal_body(sig, symbol);
+        if is_paper_trade {
+            body["is_active"] = serde_json::json!(true);
+        }
         let url = format!("{}/rest/v1/amd_signals", self.url);
         let result = self
             .client

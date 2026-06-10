@@ -2218,13 +2218,12 @@ impl BarState {
                     Ok(maybe_id) => {
                         if let Some(id) = maybe_id {
                             if let Some(pending) = self.amd_pending_outcome.take() {
+                                // El trade cerró antes de que llegara el UUID — escribir outcome ahora
                                 if let Some(sb) = &self.supabase {
                                     sb.update_amd_outcome(&id, &pending);
                                 }
                             } else {
-                                if let Some(sb) = &self.supabase {
-                                    sb.mark_amd_active(&id);
-                                }
+                                // is_active ya fue true en el INSERT — solo guardar el id en memoria
                                 self.amd_paper.set_supabase_id(id);
                             }
                         }
@@ -2298,7 +2297,9 @@ impl BarState {
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         self.amd_pending_id_rx = Some(rx);
                         tokio::spawn(async move {
-                            let id = sb.write_amd_signal_async(&sig_c, &sym_c).await;
+                            // is_paper_trade=true → is_active=true en el INSERT
+                            // elimina race condition con redeployments
+                            let id = sb.write_amd_signal_async(&sig_c, &sym_c, true).await;
                             let _ = tx.send(id);
                         });
                     }
@@ -2309,7 +2310,7 @@ impl BarState {
                         let sig_c = sig.clone();
                         let sym_c = symbol.to_string();
                         tokio::spawn(async move {
-                            sb.write_amd_signal_async(&sig_c, &sym_c).await;
+                            sb.write_amd_signal_async(&sig_c, &sym_c, false).await;
                         });
                     }
                 }
