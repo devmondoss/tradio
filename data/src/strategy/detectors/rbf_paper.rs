@@ -12,13 +12,18 @@
 
 use super::range_breakout_flow::{RbfDirection, RbfSignal};
 
-/// R necesario para activar el trailing stop.
-const TRAIL_ACTIVATE_R: f64 = 1.5;
 /// Distancia del trailing en múltiplos de ATR.
 const TRAIL_ATR_K: f64 = 1.2;
 /// Barras máximas en una posición perdedora antes de cerrar.
-/// Con stop = range_high (~0.4%), el target es ~0.8% → necesita más tiempo que el ATR stop anterior.
 const TIME_STOP_BARS: u32 = 30;
+
+// Calibración trailing (datos live 72 trades, 2026-06-10):
+// 4 Shorts salieron por trailing avg +0.90–1.32R vs target 2R → cedieron ~0.97R/trade.
+// Raising TRAIL_ACTIVATE_R 1.5 → 1.75: activa más cerca del target (0.25R antes),
+// reduce exits prematuros sin eliminar la protección ante reversales bruscos.
+// Por dirección: Shorts target=2R → activar en 1.75. Longs target=1.8R → 1.5 (sin cambio).
+const TRAIL_ACTIVATE_R_SHORT: f64 = 1.75;
+const TRAIL_ACTIVATE_R_LONG:  f64 = 1.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RbfExitReason {
@@ -124,10 +129,7 @@ impl RbfPaperTrader {
 
     /// Abre una nueva posición cuando el detector emite una señal.
     pub fn open(&mut self, sig: &RbfSignal, atr: f64) {
-        let best_extreme = match sig.direction {
-            RbfDirection::Long  => sig.entry_price,
-            RbfDirection::Short => sig.entry_price,
-        };
+        let best_extreme = sig.entry_price;
         self.active = Some(ActivePosition {
             direction:       sig.direction,
             entry_price:     sig.entry_price,
@@ -168,7 +170,7 @@ impl RbfPaperTrader {
             entry_ms,
             supabase_id:     Some(signal_id),
             bars_held:       0,
-            atr_at_entry:    0.0,  // unknown on restore; trailing disabled
+            atr_at_entry:    0.0,
             best_extreme,
             trailing_active: false,
         });
@@ -198,14 +200,20 @@ impl RbfPaperTrader {
 
         let effective_atr = if atr > 0.0 { atr } else { pos.atr_at_entry };
 
-        // ── Actualizar extremo favorable y trailing stop ──────────────────────
+        // ── Actualizar extremo favorable y trailing stop ─────────────────────
+        // Threshold por dirección: Shorts activan más tarde (1.75R) para no cortar
+        // moves que van a target 2R. Longs mantienen 1.5R (target 1.8R, menos margen).
+        let trail_activate_r = match pos.direction {
+            RbfDirection::Short => TRAIL_ACTIVATE_R_SHORT,
+            RbfDirection::Long  => TRAIL_ACTIVATE_R_LONG,
+        };
         match pos.direction {
             RbfDirection::Long => {
                 if high > pos.best_extreme { pos.best_extreme = high; }
                 let fav_r = (pos.best_extreme - pos.entry_price) / risk;
-                if fav_r >= TRAIL_ACTIVATE_R && !pos.trailing_active {
+                if fav_r >= trail_activate_r && !pos.trailing_active {
                     pos.trailing_active = true;
-                    println!("[rbf_paper] trailing stop activado en {:.2}R", fav_r);
+                    println!("[rbf_paper] trailing activado en {:.2}R (threshold={:.2}R)", fav_r, trail_activate_r);
                 }
                 if pos.trailing_active && effective_atr > 0.0 {
                     let trail_stop = pos.best_extreme - TRAIL_ATR_K * effective_atr;
@@ -217,9 +225,9 @@ impl RbfPaperTrader {
             RbfDirection::Short => {
                 if low < pos.best_extreme { pos.best_extreme = low; }
                 let fav_r = (pos.entry_price - pos.best_extreme) / risk;
-                if fav_r >= TRAIL_ACTIVATE_R && !pos.trailing_active {
+                if fav_r >= trail_activate_r && !pos.trailing_active {
                     pos.trailing_active = true;
-                    println!("[rbf_paper] trailing stop activado en {:.2}R", fav_r);
+                    println!("[rbf_paper] trailing activado en {:.2}R (threshold={:.2}R)", fav_r, trail_activate_r);
                 }
                 if pos.trailing_active && effective_atr > 0.0 {
                     let trail_stop = pos.best_extreme + TRAIL_ATR_K * effective_atr;

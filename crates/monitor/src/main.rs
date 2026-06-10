@@ -597,6 +597,8 @@ struct BarState {
     last_regime_enum: data::strategy::types::Regime,
     // Timestamp (ms) when the current regime started — for duration_ms in regime_history
     regime_started_at_ms: Option<i64>,
+    // Rolling window de los últimos 25 regímenes (1 por barra M1) para el filtro expansion_n de RBF.
+    regime_hist_25: VecDeque<data::strategy::types::Regime>,
     // Health monitoring
     freshness: DataFreshness,
     streams: StreamStates,
@@ -718,6 +720,7 @@ impl BarState {
             last_regime: None,
             last_regime_enum: data::strategy::types::Regime::Unknown,
             regime_started_at_ms: None,
+            regime_hist_25: VecDeque::with_capacity(26),
             freshness: DataFreshness::default(),
             streams: StreamStates::default(),
             pending_outcomes: Vec::new(),
@@ -1343,6 +1346,10 @@ impl BarState {
             self.last_regime = Some(regime_str.clone());
             self.last_regime_enum = regime;
         }
+        // Mantener ventana de 25 regímenes para el filtro expansion_n del detector RBF.
+        self.regime_hist_25.push_back(effective_regime);
+        if self.regime_hist_25.len() > 25 { self.regime_hist_25.pop_front(); }
+
         let cvd_slope = compute_cvd_slope(&self.cvd_history);
         let cvd_divergence = derive_cvd_divergence(&highs, &lows, cvd_slope);
 
@@ -2073,6 +2080,17 @@ impl BarState {
             let _ = liq_ratio_rbf; // usado dentro del bloque
             if !self.rbf_paper.has_position() {
                 // Construir contexto de confluencia v2
+                // Contar barras en régimen Expansion de las últimas 25.
+                // SOL tiene correlación invertida con expansion_n → se pasa 0 para
+                // que el filtro nunca se active (expansion_bars_recent=0 ≤ cualquier max).
+                let expansion_bars_recent: u8 = if symbol == "SOLUSDT" || symbol == "XRPUSDT" {
+                    0
+                } else {
+                    self.regime_hist_25.iter()
+                        .filter(|&&r| r == data::strategy::types::Regime::Expansion)
+                        .count()
+                        .min(25) as u8
+                };
                 let rbf_gate = data::strategy::detectors::range_breakout_flow::RbfGateContext {
                     stacked_imbalance_bearish: stacked_imbalance == ImbalanceSide::Bearish,
                     stacked_imbalance_bullish: stacked_imbalance == ImbalanceSide::Bullish,
@@ -2096,6 +2114,15 @@ impl BarState {
                     htf_h1_trend: htf_h1_trend.clone(),
                     vp_open_bias: ctx.vp_open_bias.as_ref().map(|v| format!("{:?}", v.bias)),
                     atr,
+                    expansion_bars_recent,
+                };
+                // Config por símbolo: expansion_max_bars calibrado con datos live (n=30 Shorts).
+                // BTC/ETH/BNB: Some(3) → WR=60% vs WR=40% sin filtro.
+                // SOL/XRP: None → expansion_bars_recent se pasa como 0, filtro nunca activa.
+                let mut rbf_cfg = cfg.range_breakout.clone();
+                rbf_cfg.expansion_max_bars = match symbol {
+                    "SOLUSDT" | "XRPUSDT" => None,
+                    _                      => Some(3),
                 };
                 if let Some(sig) = self.rbf_state.on_bar_close(
                     o, h, l, c,
@@ -2103,7 +2130,7 @@ impl BarState {
                     bar_delta,
                     session.session,
                     bar_ms,
-                    &cfg.range_breakout,
+                    &rbf_cfg,
                     self.vwap_session,
                     self.funding_rate,
                     liq_ratio_rbf,
@@ -2112,7 +2139,7 @@ impl BarState {
                     Some(&rbf_gate),
                 ) {
                     let tradeable = sig.veto_reason.is_none()
-                        && sig.confluence_score >= cfg.range_breakout.min_confluence_score;
+                        && sig.confluence_score >= rbf_cfg.min_confluence_score;
                     println!(
                         "[rbf] {:?} entry={:.1} rr={:.2} range={:.3}% vr={:.2}x {:?} score={}/{} veto={:?} trade={}",
                         sig.direction, sig.entry_price, sig.rr, sig.range_pct,

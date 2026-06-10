@@ -96,6 +96,12 @@ pub struct RbfGateContext {
     /// ATR(14) de la barra de breakout. Se usa para stop dinámico y filtro range/ATR.
     /// 0.0 si no disponible (warmup).
     pub atr: f64,
+    /// Barras en régimen Expansion en las últimas 25 barras M1 pre-breakout.
+    /// Derivado del campo `regime` de los bars. 0 = rango todavía comprimido.
+    /// Valores altos (>4) indican que el move ya comenzó antes de que el detector lo confirme.
+    /// Calibración n=30 Shorts: expansion_n≤3 → WR=60% +8.1R; sin filtro WR=40% +2.3R.
+    /// NOTA: SOL muestra correlación invertida — pasar 0 para desactivar el filtro por símbolo.
+    pub expansion_bars_recent: u8,
 }
 
 fn score_confluence(
@@ -540,6 +546,13 @@ impl RangeBreakoutState {
                     let range_abs = range_high - range_low;
                     if range_abs < MIN_RANGE_ATR_RATIO * ctx.atr { continue; }
                 }
+                // Filtro de régimen expansión: si el mercado ya entró en expansión hace
+                // varias barras, el move está maduro y el edge desaparece.
+                // Calibración n=30 Shorts: expansion_n≤3 → WR=60%; sin filtro → WR=40%.
+                // Pasar expansion_bars_recent=0 para símbolos donde no aplica (ej: SOL).
+                if let Some(max_exp) = cfg.expansion_max_bars {
+                    if ctx.expansion_bars_recent > max_exp { continue; }
+                }
             }
 
             let cvd_in_range: f64 = window.iter().map(|b| b.delta).sum();
@@ -812,6 +825,12 @@ pub struct RangeBreakoutConfig {
     pub breakout_ext_gate:   bool,
     /// Extensión mínima del close más allá del nivel roto (0.001 = 0.1%).
     pub breakout_ext_min:    f64,
+
+    // ── Filtro de régimen expansión (calibrado con datos live 72 trades) ──────
+    /// Máximo de barras en régimen Expansion permitidas en las 25 barras pre-entry.
+    /// None = no filtrar. Calibración: BTC/ETH/BNB → Some(3). SOL → None (inv. correlación).
+    /// Shorts n=30: expansion_n≤3 WR=60% +8.1R vs sin filtro WR=40% +2.3R.
+    pub expansion_max_bars: Option<u8>,
 }
 
 impl Default for RangeBreakoutConfig {
@@ -837,6 +856,9 @@ impl Default for RangeBreakoutConfig {
             vswap_max_dev:     0.003,  // rechaza si precio > 0.3% bajo VWAP
             breakout_ext_gate: true,
             breakout_ext_min:  0.001,  // close debe romper >0.1% más allá del nivel
+            // Filtro expansion: None por defecto. El caller lo sobrescribe por símbolo.
+            // BTC/ETH/BNB → Some(3). SOL/XRP → None.
+            expansion_max_bars: None,
         }
     }
 }
