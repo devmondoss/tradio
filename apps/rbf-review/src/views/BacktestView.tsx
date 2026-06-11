@@ -77,7 +77,7 @@ export default function BacktestView() {
           <span style={{ display: 'block', color: 'var(--text3)', fontSize: 9, marginTop: 3 }}>
             ETH: London skip · CVD≥−700 · OBI≤0.10 &nbsp;|&nbsp;
             BNB: cum_delta≥−500 &nbsp;|&nbsp; BTC: cum_delta≤+200<br />
-            Expansion gate: BTC/ETH/BNB ≤3 barras exp. últimas 25
+            Expansion gate: BTC/ETH/BNB ≤1 barra exp. últimas 25 · Pre-CVD 5b ≤ 0
           </span>
           {dataFrom && (
             <div style={{ marginTop: 6, color: 'var(--yellow)', fontSize: 10 }}>

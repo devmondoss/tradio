@@ -733,6 +733,15 @@ impl RangeBreakoutState {
             // por cvd_aligned; gate explícito para documentación y futuros Longs.
             if session == TradingSession::London && cvd_in_range > 200.0 { continue; }
 
+            // Pre-CVD gate (últimas 5 barras del rango): autopsia 39 trades.
+            // Si compradores activos justo antes del breakout → breakdown falso (WR=0%, n=7).
+            // NO activamos cooldown → la barra siguiente re-escanea el mismo rango;
+            // si para entonces el pre_cvd giró negativo (sellers absorbieron), entra 1-2 barras después.
+            if direction == RbfDirection::Short {
+                let pre5: f64 = window.iter().rev().take(5).map(|b| b.delta).sum();
+                if pre5 > 0.0 { continue; }
+            }
+
             // ── Gate de microestructura ────────────────────────────────────────
             let cvd_slope_dir = cvd_slope.map(|s| sign * (-s));
             // cvd_slope_gate desactivado: backtest 30d muestra que slope>=0

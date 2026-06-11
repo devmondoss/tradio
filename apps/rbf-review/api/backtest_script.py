@@ -222,6 +222,12 @@ def detect(sym, bars, idx_off, equity_start):
                 # En London, si la presión compradora fue fuerte durante el rango → fakeout.
                 cvd_sum_win = sum(d or 0 for d in deltas)
                 if ses == 'London' and cvd_sum_win > 200: continue
+                # Pre-CVD gate: últimas 5 barras del rango.
+                # Autopsia 39 trades: pre_cvd_5b > 0 → WR=0% (n=7). Compradores no capitularon.
+                # "En su lugar": no activamos fired/last_sig → la barra siguiente re-escanea
+                # el mismo rango; si CVD giró negativo, entra 1-2 barras después (entrada diferida).
+                pre5 = sum(d or 0 for d in deltas[-5:])
+                if pre5 > 0: continue
                 # ETH gates (calibración 2026-06-10, live n=11):
                 #   cvd_in_range < -700 → agotamiento vendedor, fakeout (WR=14%)
                 #   obi_l5 > 0.10       → compradores dominan, breakout resistido
@@ -250,6 +256,11 @@ def detect(sym, bars, idx_off, equity_start):
                     and close <= lo * (1.0 + PRE_ZONE_PCT)
                     and cvd_ok
                     and i - last_pre_sig >= COOLDOWN_BARS):
+                # Pre-CVD gate: si compradores activos en últimas 5 barras → no entrar.
+                # Autopsia 39 trades: pre_cvd_5b > 0 → WR=0% (n=7). Entrada diferida:
+                # no seteamos fired/last_sig → barra siguiente re-escanea el mismo rango.
+                pre5 = sum(d or 0 for d in deltas[-5:])
+                if pre5 > 0: continue
                 entry  = close
                 stop_p = hi
                 risk   = stop_p - entry
