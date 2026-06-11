@@ -8,16 +8,22 @@ type Panel = 'trades' | 'stats'
 
 const STRATEGY_META = {
   rbf: {
-    apiPath: '/api/backtest',
-    label: 'Backtest RBF — Python backend · $500 capital · $10/trade',
-    detail: 'VR≥3× · CVD rango < 0 · Ext>0.1% · VWAP gate · Stop = Range HIGH\nTrail ATR 1.2× (activa 1.75R Short / 1.5R Long) · Time stop 30 bars · Cooldown 60 bars\nSessions: London · Overlap · NY',
-    detail2: 'ETH: London skip · CVD≥−700 · OBI≤0.10 | BNB: cum_delta≥−500 | BTC: cum_delta≤+200\nExpansion gate: BTC/ETH/BNB ≤1 barra exp. últimas 25 · Pre-CVD 5b ≤ 0',
+    apiPath:    '/api/backtest',
+    label:      'Backtest RBF — Python backend · $500 capital · $10/trade',
+    detail:     'VR≥3× · CVD rango < 0 · Ext>0.1% · VWAP gate · Stop = Range HIGH\nTrail ATR 1.2× (activa 1.75R Short / 1.5R Long) · Time stop 30 bars · Cooldown 60 bars\nSessions: London · Overlap · NY',
+    detail2:    'ETH: London skip · CVD≥−700 · OBI≤0.10 | BNB: cum_delta≥−500 | BTC: cum_delta≤+200\nExpansion gate: BTC/ETH/BNB ≤1 barra exp. últimas 25 · Pre-CVD 5b ≤ 0',
+    presets:    [1, 3, 7, 14, 30] as number[],
+    maxDays:    null as number | null,   // limitado por Supabase (necesita cvd_slope/vwap)
+    defaultDays: null as number | null,  // null = usar todos los disponibles en Supabase
   },
   be: {
-    apiPath: '/api/backtest/be',
-    label: 'Backtest BE — Python backend · $500 capital · $10/trade',
-    detail: 'VR≥2.5× · CVD rango > 0 (compradores atrapados) · Giro CVD ≥40% · Stop = Range HIGH\nTime stop 30 bars · Cooldown 60 bars · close_location ≤0.35 · bear_body ≥0.35',
-    detail2: 'Sessions: London · Overlap | Todos los símbolos',
+    apiPath:    '/api/backtest/be',
+    label:      'Backtest BE — Python backend · $500 capital · $10/trade',
+    detail:     'VR≥2.5× · CVD rango > 0 (compradores atrapados) · Giro CVD ≥40% · Stop = Range HIGH\nTime stop 30 bars · Cooldown 60 bars · close_location ≤0.35 · bear_body ≥0.35',
+    detail2:    'Sessions: London · Overlap | bar_delta via Supabase (reciente) + Binance API (histórico)',
+    presets:    [14, 30, 60, 90, 180] as number[],
+    maxDays:    180 as number | null,    // Binance cubre hasta ~2 años; limitamos a 180d razonable
+    defaultDays: 180 as number | null,  // auto-run con 180d
   },
 }
 
@@ -27,13 +33,22 @@ export default function BacktestView({ strategy = 'rbf' }: { strategy?: 'rbf' | 
   const [trades,   setTrades]  = useState<Trade[]>([])
   const [loading,  setLoading] = useState(false)
   const [error,    setError]   = useState<string | null>(null)
-  const [days,     setDays]    = useState(14)
+  const [days,     setDays]    = useState(meta_cfg.defaultDays ?? 14)
   const [ran,      setRan]     = useState(false)
   const [meta,     setMeta]    = useState<{ n: number; wins: number; equity: number; actualDays: number; microStart: string | null } | null>(null)
   const [dataFrom,     setDataFrom]     = useState<string | null>(null)
-  const [availableDays, setAvailableDays] = useState<number | null>(null)
+  const [availableDays, setAvailableDays] = useState<number | null>(meta_cfg.maxDays)
 
   useEffect(() => {
+    if (meta_cfg.maxDays !== null) {
+      // BE y otras estrategias con fuente histórica (Binance): no necesitamos
+      // consultar Supabase para saber cuántos días hay disponibles.
+      const d = meta_cfg.defaultDays ?? meta_cfg.maxDays
+      setDays(d)
+      triggerRun(d)
+      return
+    }
+    // RBF: limitado por datos de microestructura en Supabase (cvd_slope/vwap)
     supabase
       .from('btc_bars')
       .select('ts_ms')
@@ -41,9 +56,9 @@ export default function BacktestView({ strategy = 'rbf' }: { strategy?: 'rbf' | 
       .limit(1)
       .then(({ data }) => {
         if (!data?.length) return
-        const ms      = data[0].ts_ms as number
-        const nDays   = Math.round((Date.now() - ms) / 86_400_000)
-        const label   = new Date(ms).toLocaleDateString('es', { day: 'numeric', month: 'short' })
+        const ms    = data[0].ts_ms as number
+        const nDays = Math.round((Date.now() - ms) / 86_400_000)
+        const label = new Date(ms).toLocaleDateString('es', { day: 'numeric', month: 'short' })
         setDataFrom(`${label} (~${nDays}d)`)
         setAvailableDays(nDays)
         setDays(nDays)
@@ -97,7 +112,8 @@ export default function BacktestView({ strategy = 'rbf' }: { strategy?: 'rbf' | 
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ color: 'var(--text3)', fontSize: 10 }}>Ultimos</span>
-          {availableDays != null && (
+          {/* Botón "Todo" para RBF (limitado por Supabase) */}
+          {meta_cfg.maxDays === null && availableDays != null && (
             <button onClick={() => { setDays(availableDays); triggerRun(availableDays) }} style={{
               padding: '3px 10px', borderRadius: 4, fontSize: 10, cursor: 'pointer', fontFamily: 'inherit',
               background: days === availableDays ? 'var(--blue)' : 'var(--bg3)',
@@ -106,14 +122,15 @@ export default function BacktestView({ strategy = 'rbf' }: { strategy?: 'rbf' | 
               fontWeight: 700,
             }}>Todo ({availableDays}d)</button>
           )}
-          {[1, 3, 7, 14, 30]
-            .filter(d => availableDays == null || d < availableDays)
+          {meta_cfg.presets
+            .filter(d => availableDays == null || d <= availableDays)
             .map(d => (
               <button key={d} onClick={() => { setDays(d); triggerRun(d) }} style={{
                 padding: '3px 10px', borderRadius: 4, fontSize: 10, cursor: 'pointer', fontFamily: 'inherit',
                 background: days === d ? 'var(--blue)' : 'var(--bg3)',
                 border: `1px solid ${days === d ? 'var(--blue)' : 'var(--border2)'}`,
                 color: days === d ? '#fff' : 'var(--text2)',
+                fontWeight: days === d ? 700 : 400,
               }}>{d}d</button>
             ))
           }
@@ -225,7 +242,7 @@ export default function BacktestView({ strategy = 'rbf' }: { strategy?: 'rbf' | 
         )}
 
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center' }}>
-          {availableDays != null && (
+          {meta_cfg.maxDays === null && availableDays != null && (
             <button onClick={() => { setDays(availableDays); triggerRun(availableDays) }} style={{
               padding: '2px 8px', borderRadius: 3, fontSize: 9, cursor: 'pointer', fontFamily: 'inherit',
               background: days === availableDays ? 'var(--blue)' : 'var(--bg3)',
@@ -233,14 +250,15 @@ export default function BacktestView({ strategy = 'rbf' }: { strategy?: 'rbf' | 
               color: days === availableDays ? '#fff' : 'var(--text3)', fontWeight: 700,
             }}>Todo ({availableDays}d)</button>
           )}
-          {[1, 3, 7, 14, 30]
-            .filter(d => availableDays == null || d < availableDays)
+          {meta_cfg.presets
+            .filter(d => availableDays == null || d <= availableDays)
             .map(d => (
               <button key={d} onClick={() => { setDays(d); triggerRun(d) }} style={{
                 padding: '2px 8px', borderRadius: 3, fontSize: 9, cursor: 'pointer', fontFamily: 'inherit',
                 background: days === d ? 'var(--blue)' : 'var(--bg3)',
                 border: `1px solid ${days === d ? 'var(--blue)' : 'var(--border2)'}`,
                 color: days === d ? '#fff' : 'var(--text3)',
+                fontWeight: days === d ? 700 : 400,
               }}>{d}d</button>
             ))
           }
