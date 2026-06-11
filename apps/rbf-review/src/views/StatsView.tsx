@@ -101,7 +101,7 @@ function EquityChart({ trades }: { trades: Trade[] }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', padding: '6px 8px 0', minHeight: 0, flex: 1 }}>
       <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', marginBottom: 4 }}>
-        Equity Curve — ${ACCOUNT} → <span style={{ color, fontWeight: 700 }}>${final.toFixed(2)}</span>
+        Equity Curve — ${ACCOUNT} → <span style={{ color, fontWeight: 700 }}>${final.toFixed(3)}</span>
         <span style={{ marginLeft: 8, color: 'var(--text3)' }}>({closed.length} closed)</span>
       </div>
       <div style={{ flex: 1, minHeight: 0, background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 5, padding: '6px 4px' }}>
@@ -133,6 +133,45 @@ function EquityChart({ trades }: { trades: Trade[] }) {
   )
 }
 
+// ─── Capital summary ──────────────────────────────────────────────────────────
+
+function CapitalSummary({ trades }: { trades: Trade[] }) {
+  const closed  = trades.filter(t => !t.isOpen)
+  const final   = closed.length ? closed[closed.length - 1].equity : ACCOUNT
+  const gain    = final - ACCOUNT
+  const pct     = (gain / ACCOUNT) * 100
+  const color   = gain >= 0 ? 'var(--green)' : 'var(--red)'
+  const sign    = gain >= 0 ? '+' : ''
+
+  return (
+    <div style={{
+      display: 'flex', gap: 0, flexShrink: 0,
+      borderBottom: '1px solid var(--border)',
+      background: 'var(--bg2)',
+    }}>
+      {[
+        { label: 'Capital Inicial', value: `$${ACCOUNT.toFixed(2)}`,           color: 'var(--text)' },
+        { label: 'Capital Final',   value: `$${final.toFixed(3)}`,              color },
+        { label: 'Ganancia',        value: `${sign}$${Math.abs(gain).toFixed(3)}`, color },
+        { label: 'Retorno',         value: `${sign}${pct.toFixed(2)}%`,         color },
+      ].map((item, i) => (
+        <div key={i} style={{
+          flex: 1, padding: '8px 12px',
+          borderRight: i < 3 ? '1px solid var(--border)' : 'none',
+          display: 'flex', flexDirection: 'column', gap: 3,
+        }}>
+          <span style={{ fontSize: 9, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: 1 }}>
+            {item.label}
+          </span>
+          <span style={{ fontSize: 15, fontWeight: 700, color: item.color, fontFamily: 'var(--mono)' }}>
+            {item.value}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function StatsView({ trades }: Props) {
@@ -148,6 +187,8 @@ export default function StatsView({ trades }: Props) {
   const byDir = dirs.map(d => ({ label: d, trades: trades.filter(t => t.dir === d) })).filter(g => g.trades.length)
 
   return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+      <CapitalSummary trades={trades} />
     <div style={{
       flex: 1,
       display: 'grid',
@@ -175,6 +216,7 @@ export default function StatsView({ trades }: Props) {
       <div style={{ gridColumn: '3', gridRow: '2', display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
         <StatTable title="Long vs Short" groups={byDir} />
       </div>
+    </div>
     </div>
   )
 }

@@ -364,8 +364,8 @@ export default function TradeChart({ trade }: Props) {
     if(sh>14){ctx.fillStyle='rgba(248,81,73,0.6)';ctx.fillText('STOP LOSS',x0+w2/2,sy0+sh/2+4)}
     if(th>14){ctx.fillStyle='rgba(63,185,80,0.6)';ctx.fillText('TAKE PROFIT',x0+w2/2,ty0+th/2+4)}
     ctx.textAlign='left'
-    const rStr=t.isOpen?'OPEN':((t.resultR??0)>=0?'+':'')+(t.resultR??0).toFixed(2)+'R'
-    const uStr=t.isOpen?'':` ${t.pnlUsd>=0?'+$':'-$'}${Math.abs(t.pnlUsd).toFixed(2)}`
+    const rStr=t.isOpen?'OPEN':((t.resultR??0)>=0?'+':'')+(t.resultR??0).toFixed(3)+'R'
+    const uStr=t.isOpen?'':` ${t.pnlUsd>=0?'+$':'-$'}${Math.abs(t.pnlUsd).toFixed(3)}`
     const rCol=t.isOpen?'rgba(56,139,253,0.9)':(t.resultR??0)>0?'rgba(63,185,80,0.95)':'rgba(248,81,73,0.95)'
     ctx.font='bold 13px monospace';ctx.fillStyle=rCol
     const badgeY=Math.min(sy0,ty0)-8;ctx.fillText(rStr+uStr,x0+6,badgeY>16?badgeY:16)
@@ -760,6 +760,22 @@ export default function TradeChart({ trade }: Props) {
           }}>✕</button>
         )}
       </div>
+
+      {/* Auto-center button — top-right */}
+      <button
+        title="Centrar trade (reset Y)"
+        onClick={() => {
+          chartRef.current?.timeScale().fitContent()
+          serRef.current?.priceScale().applyOptions({ autoScale: true })
+        }}
+        style={{
+          position:'absolute',top:8,right:8,zIndex:10,
+          width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',
+          background:'rgba(13,17,23,0.88)',border:'1px solid rgba(33,38,45,0.8)',
+          borderRadius:5,color:'#8b949e',fontSize:15,cursor:'pointer',
+          backdropFilter:'blur(6px)',fontFamily:'monospace',
+        }}
+      >⊕</button>
     </div>
   )
 }

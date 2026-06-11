@@ -27,17 +27,32 @@ export default function TradeList({ trades, selected, onSelect }: Props) {
       {/* header */}
       <div style={{
         padding: '5px 8px', borderBottom: '1px solid var(--border)',
-        display: 'flex', gap: 6, alignItems: 'center',
+        display: 'flex', flexDirection: 'column', gap: 3,
         fontSize: 10, color: 'var(--text2)', flexShrink: 0,
       }}>
-        <span><b style={{ color: 'var(--text)' }}>{trades.length}</b> trades</span>
-        <span>WR=<b style={{ color: 'var(--text)' }}>{wr}%</b></span>
-        <span style={{ marginLeft: 'auto', fontWeight: 700, fontSize: 11, color: equity >= ACCOUNT ? 'var(--green)' : 'var(--red)' }}>
-          ${equity.toFixed(2)}
-        </span>
-        <span style={{ fontSize: 10, color: totalR >= 0 ? 'var(--green)' : 'var(--red)' }}>
-          {fmtR(totalR)}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span><b style={{ color: 'var(--text)' }}>{trades.length}</b> trades</span>
+          <span>WR=<b style={{ color: 'var(--text)' }}>{wr}%</b></span>
+          <span style={{ marginLeft: 'auto', color: totalR >= 0 ? 'var(--green)' : 'var(--red)', fontSize: 10 }}>
+            {fmtR(totalR)}
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+          <span style={{ color: 'var(--text2)', fontWeight: 600 }}>${ACCOUNT.toFixed(2)}</span>
+          <span style={{ color: 'var(--text2)', fontWeight: 700 }}>→</span>
+          <span style={{ fontWeight: 800, fontSize: 13, color: equity >= ACCOUNT ? 'var(--green)' : 'var(--red)' }}>
+            ${equity.toFixed(3)}
+          </span>
+          <span style={{
+            fontWeight: 700, fontSize: 10,
+            color: '#fff',
+            background: equity >= ACCOUNT ? 'rgba(63,185,80,0.25)' : 'rgba(248,81,73,0.25)',
+            border: `1px solid ${equity >= ACCOUNT ? 'rgba(63,185,80,0.5)' : 'rgba(248,81,73,0.5)'}`,
+            borderRadius: 4, padding: '1px 5px',
+          }}>
+            {equity >= ACCOUNT ? '+' : ''}{((equity - ACCOUNT) / ACCOUNT * 100).toFixed(2)}%
+          </span>
+        </div>
       </div>
 
       {/* list — only this inner div scrolls */}

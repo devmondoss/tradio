@@ -2136,10 +2136,10 @@ impl BarState {
                 };
                 // Config por símbolo — todas las calibraciones con datos live.
                 let mut rbf_cfg = cfg.range_breakout.clone();
-                // expansion_max_bars: BTC/ETH/BNB → Some(3) WR 40%→60%. SOL/XRP bypass.
+                // expansion_max_bars: BTC/ETH/BNB → Some(1) (análisis 72 trades: ≤1→WR=54.5% vs ≤3→48.8%).
                 rbf_cfg.expansion_max_bars = match symbol {
                     "SOLUSDT" | "XRPUSDT" => None,
-                    _                      => Some(3),
+                    _                      => Some(1),
                 };
                 // cum_delta gates por símbolo (calibración n=30 Shorts 2026-06-10):
                 // BNB: wins avg -78 vs losses -1357 → rechazar si cum_delta < -500
@@ -2186,8 +2186,10 @@ impl BarState {
                         Some(&rbf_gate),
                     )
                 } {
+                    // score=4: WR=16.7% avg=-0.62R n=18 → no operar (sigue registrando en Supabase)
                     let tradeable = sig.veto_reason.is_none()
-                        && sig.confluence_score >= rbf_cfg.min_confluence_score;
+                        && sig.confluence_score >= rbf_cfg.min_confluence_score
+                        && sig.confluence_score != 4;
                     println!(
                         "[rbf] {:?} entry={:.1} rr={:.2} range={:.3}% vr={:.2}x {:?} score={}/{} veto={:?} trade={}",
                         sig.direction, sig.entry_price, sig.rr, sig.range_pct,

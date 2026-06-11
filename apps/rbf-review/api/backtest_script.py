@@ -172,17 +172,19 @@ def detect(sym, bars, idx_off, equity_start):
         vr  = b.get('vr') or 0
         atr = b.get('atr') or 0
         if ses not in SESSIONS_OK: continue
+        # ETH London skip (live n=11: WR=14% London → excluir)
+        if sym == 'ETHUSDT' and ses == 'London': continue
         if atr <= 0: continue
         # Solo barras con microestructura real (monitor live)
         if b.get('cvd_slope') is None or b.get('vwap') is None: continue
 
         # expansion_bars_recent: cuenta barras Expansion en las 25 anteriores.
         # SOL/XRP: bypass (correlación invertida / muestra insuficiente).
-        # BTC/ETH/BNB: filtro ≤3 calibrado (WR 40%→60%).
+        # BTC/ETH/BNB: filtro ≤1 (análisis 72 trades: ≤1→WR=54.5% vs ≤3→48.8%).
         if sym not in ('SOLUSDT', 'XRPUSDT'):
             exp_window = bars[max(0, i-25):i]
             exp_count  = sum(1 for x in exp_window if x.get('regime') == 'Expansion')
-            if exp_count > 3: continue
+            if exp_count > 1: continue
         if i - last_sig < COOLDOWN_BARS: continue
         vwap = b.get('vwap')
         if vwap and vwap > 0 and (b['close'] - vwap) / vwap < -VSWAP_MAX_DEV: continue
@@ -216,6 +218,17 @@ def detect(sym, bars, idx_off, equity_start):
                 ext = (lo - close) / lo
                 if ext < BREAKOUT_EXT_MIN: continue
                 if not cvd_ok: continue
+                # CVD London gate (análisis 72 trades): ganadores CVD=-597 vs perdedores=+1979.
+                # En London, si la presión compradora fue fuerte durante el rango → fakeout.
+                cvd_sum_win = sum(d or 0 for d in deltas)
+                if ses == 'London' and cvd_sum_win > 200: continue
+                # ETH gates (calibración 2026-06-10, live n=11):
+                #   cvd_in_range < -700 → agotamiento vendedor, fakeout (WR=14%)
+                #   obi_l5 > 0.10       → compradores dominan, breakout resistido
+                if sym == 'ETHUSDT':
+                    cvd_sum = sum(d or 0 for d in deltas)
+                    if cvd_sum < -700: continue
+                    if (b.get('obi_l5') or 0) > 0.10: continue
                 entry  = close
                 stop_p = hi
                 target = entry - RR_SHORT * (stop_p - entry)

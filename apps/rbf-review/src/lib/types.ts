@@ -39,6 +39,5 @@ export interface Trade {
   isOpen: boolean
 }
 
-export const ACCOUNT = 50
-export const LEVERAGE = 15
-export const POSITION = ACCOUNT * LEVERAGE
+export const ACCOUNT  = 500
+export const RISK_USD = ACCOUNT * 0.02   // $10 — riesgo fijo 2% por trade

@@ -1,6 +1,6 @@
 import { supabase } from './supabase'
 import type { Trade } from './types'
-import { POSITION, ACCOUNT } from './types'
+import { RISK_USD, ACCOUNT } from './types'
 
 // ─── params (mirrors config/strategy.toml + range_breakout_flow.rs) ───────────
 const CONS_MIN          = 15
@@ -112,9 +112,12 @@ function simulate(
   return { r: 0, exit: 0, reason: 'DATA_END', durationMin: 0, closedAt: '' }
 }
 
+const COOLDOWN_BARS = 60  // mirrors last_signal_bar cooldown en Rust (range_breakout_flow.rs:489)
+
 function runOnBars(sym: string, bars: Bar[], idxOffset: number, equityStart: number): Trade[] {
   const trades: Trade[] = []
   let equity = equityStart
+  let lastSignalBar = -COOLDOWN_BARS  // permite señal desde el principio
 
   for (let i = CONS_MAX; i < bars.length - TIME_STOP_BARS; i++) {
     const bar = bars[i]
@@ -123,15 +126,14 @@ function runOnBars(sym: string, bars: Bar[], idxOffset: number, equityStart: num
     if (!SESSIONS_OK.has(bar.session ?? '')) continue
     if ((bar.vr ?? 0) < VR_MIN)             continue
     if ((bar.atr ?? 0) <= 0)                continue
+    if (i - lastSignalBar < COOLDOWN_BARS)  continue
 
-    // DZ gate
-    if (bar.dz != null) {
-      const dzDir = Math.max(-bar.dz, 0)
-      if (dzDir < DZ_MIN || dzDir > DZ_MAX) continue
-    }
+    // DZ gate ELIMINADO del backtest offline: el dz almacenado en btc_bars es
+    // calculado por el monitor con su propio buffer, diferente al buffer interno
+    // del detector Rust. Aplicarlo aquí reduce señales 20× sin reflejo en live.
+    // El DZ sigue almacenándose como campo informativo por trade.
 
     // VSWAP proximity gate: no short si precio >0.3% bajo el VWAP
-    // Backtest 30d: precio <-0.3% VWAP → WR=6.5%; dentro → WR=37.3%
     if (bar.vwap != null && bar.vwap > 0) {
       const pct = (bar.close - bar.vwap) / bar.vwap
       if (pct < -0.003) continue
@@ -171,7 +173,7 @@ function runOnBars(sym: string, bars: Bar[], idxOffset: number, equityStart: num
       const stop     = hi                        // techo del rango de consolidación
       const target   = entry - RR * (stop - entry)
       const stopPct  = (stop - entry) / entry
-      const riskUsd  = POSITION * stopPct
+      const riskUsd  = RISK_USD
 
       const sim = simulate(bars.slice(i + 1, i + 1 + TIME_STOP_BARS + 30), entry, stop, target, atr, bar.ts_ms)
 
@@ -225,7 +227,8 @@ function runOnBars(sym: string, bars: Bar[], idxOffset: number, equityStart: num
       }
       trades.push(t)
       found = true
-      i++ // evitar señales solapadas
+      lastSignalBar = i
+      i += COOLDOWN_BARS  // saltar el cooldown (mirrors last_signal_bar en Rust)
     }
   }
   return trades

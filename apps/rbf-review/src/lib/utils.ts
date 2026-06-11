@@ -1,12 +1,12 @@
 import type { RbfSignal } from './supabase'
 import type { Trade } from './types'
-import { POSITION, ACCOUNT } from './types'
+import { RISK_USD, ACCOUNT } from './types'
 
 export function signalToTrade(sig: RbfSignal, idx: number, equity: number): Trade {
   const entry   = sig.entry_price ?? 1
   const stop    = sig.stop_price  ?? entry
   const stopPct = Math.abs(entry - stop) / entry
-  const riskUsd = POSITION * stopPct
+  const riskUsd = RISK_USD
   const r       = sig.result_r ?? null
   const pnlUsd  = r != null ? r * riskUsd : 0
   const isOpen  = sig.result_r == null
@@ -76,11 +76,11 @@ export function sesLabel(s: string) {
 
 export function fmtR(r: number | null) {
   if (r == null) return '—'
-  return (r >= 0 ? '+' : '') + r.toFixed(2) + 'R'
+  return (r >= 0 ? '+' : '') + r.toFixed(3) + 'R'
 }
 
 export function fmtUsd(n: number) {
-  return (n >= 0 ? '+$' : '-$') + Math.abs(n).toFixed(2)
+  return (n >= 0 ? '+$' : '-$') + Math.abs(n).toFixed(3)
 }
 
 export function fmtDur(m: number | null) {

@@ -728,6 +728,11 @@ impl RangeBreakoutState {
                 }
             }
 
+            // London CVD gate: compradores activos en rango durante London = fakeout probable.
+            // Análisis 72 trades: winners cvd=-597 vs losers cvd=+1979. Para Shorts ya cubierto
+            // por cvd_aligned; gate explícito para documentación y futuros Longs.
+            if session == TradingSession::London && cvd_in_range > 200.0 { continue; }
+
             // ── Gate de microestructura ────────────────────────────────────────
             let cvd_slope_dir = cvd_slope.map(|s| sign * (-s));
             // cvd_slope_gate desactivado: backtest 30d muestra que slope>=0
