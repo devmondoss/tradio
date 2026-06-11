@@ -1,6 +1,6 @@
 # Range Breakout Flow (RBF) — Documentación completa
 
-Última revisión: 2026-06-10 (calibración v2 aplicada — 72 trades live)
+Última revisión: 2026-06-11 (OBI intrabar 10s · spread gate · OI covering gate · multi-depth confluence)
 
 ---
 
@@ -119,14 +119,42 @@ la señal se descarta (el movimiento ya está maduro).
 
 | Símbolo | `expansion_max_bars` | Razón |
 |---------|---------------------|-------|
-| BTCUSDT | 3 | Losses tenían 7.2 barras expansion vs 4.0 en wins |
-| ETHUSDT | 3 | Losses 4.8 vs wins 1.3 |
-| BNBUSDT | 3 | Losses 7.8 vs wins 3.6 (mayor diferencia de todos) |
+| BTCUSDT | **1** | Análisis 72 trades: ≤1 → WR=54.5% vs ≤3 → 48.8% |
+| ETHUSDT | **1** | Losses 4.8 vs wins 1.3 |
+| BNBUSDT | **1** | Losses 7.8 vs wins 3.6 (mayor diferencia de todos) |
 | SOLUSDT | None (bypass) | Correlación invertida: wins tienen MÁS expansion (5.2 vs 4.2) |
-| XRPUSDT | None (bypass) | Muestra insuficiente (n=1) |
+| XRPUSDT | None (bypass) | Muestra insuficiente |
 
 El conteo se pasa via `RbfGateContext.expansion_bars_recent`. SOL/XRP reciben 0 (bypass).
 Ver [RBF_CALIBRACION_POR_ACTIVO.md](RBF_CALIBRACION_POR_ACTIVO.md) para el análisis completo.
+
+### 5d. Gates adicionales (2026-06-11)
+
+**Pre-CVD gate:** en el path Short, si la suma de `bar_delta` de las últimas 5 barras del rango
+es positiva (compradores activos al final de la consolidación), se salta la señal sin activar cooldown.
+Análisis live n=7: WR=0%, avg=−1.38R. El skip sin cooldown permite re-escanear el mismo rango en la barra siguiente.
+
+**Score ≠ 4 gate:** score=4 es la zona "ambigua" — suficiente para pasar el min_score pero con más
+factores en contra que a favor. Análisis live n=11: WR=9%, total=−10.68R → se registra en Supabase pero no opera.
+
+**London CVD gate:** si `session == London` y `cvd_in_range > 200` → skip. Fakeout con compradores activos en el rango.
+
+**Spread gate:** `spread_bps > 5` → veto `spread_wide`. Mercado ilíquido = breakout de noise.
+
+**OI covering gate:** Short con `oi_delta_pct < −10%` → veto `oi_covering`. Longs cerrando = presión compradora.
+
+### 5e. OBI multi-depth y OBI intrabar (2026-06-11)
+
+**obi_multi_depth (+1 score):** requiere que tanto `obi_l10 < −0.05` como `obi_l20 < −0.03` para Shorts. El OBI L5 puede ser
+spoofed con órdenes en los primeros niveles; L10 y L20 son más difíciles de manipular.
+
+**obi_intrabar_mean (+1 score):** durante cada barra M1 se toman muestras de OBI cada 10 segundos (~6 muestras/barra).
+La media de esas muestras se pasa al scorer. Si la media < −0.05 para Shorts, suma +1. Detecta presión sostenida
+vs spike puntual al cierre de barra.
+
+Ambas muestras se guardan en la tabla `obi_10s` de Supabase para análisis futuro.
+
+**Score máximo actual: 11** (era 9 antes del 2026-06-11).
 
 ### 6. Cooldown
 
@@ -233,9 +261,9 @@ Esto permite reconstruir el contexto completo de cualquier señal juntando `rbf_
 
 ---
 
-## Resultados live (2026-06-02 → 2026-06-10)
+## Resultados live (2026-06-02 → 2026-06-11)
 
-**72 trades en 5 símbolos** — resumen por sesión:
+**72 trades en 5 símbolos** (pre-calibración v3) — resumen por sesión:
 
 | Sesión | n | WR | PnL |
 |--------|---|----|-----|
@@ -259,6 +287,20 @@ entrara al inicio del move, el target potencial sería 4.30R vs 2.00R actual.
 
 **Modo pre-breakout (activo desde 2026-06-10):** entra en `range_low` antes del VR≥3×.
 Entry en `pct_done≈0%`, target=3R, gate=`oi_mom_bars_recent≤3`. Ver [RBF_REGLAS_ACTIVAS.md](RBF_REGLAS_ACTIVAS.md).
+
+**Curva OBI vs WR (53 trades con resultado, 2026-06-11):**
+
+| OBI en entrada | n | WR | avgR |
+|---|---|---|---|
+| < −0.50 | 13 | 54% | +0.43 |
+| −0.50 a −0.20 | 3 | 67% | +0.93 |
+| −0.20 a −0.05 | 4 | 50% | +0.33 |
+| −0.05 a 0 | 4 | 25% | −0.58 |
+| 0 a +0.20 | 6 | 25% | −0.49 |
+| +0.20 a +0.60 | 8 | 25% | −0.19 |
+| > +0.60 | 10 | 40% | +0.24 |
+
+Zona óptima actual: OBI < −0.20 (WR=60%+, avgR=+0.6R+). Los flags `obi_multi_depth` y `obi_intrabar_mean` acumulan evidencia para refinar este gate.
 
 **Primer día (2026-06-02):**
 
@@ -287,18 +329,34 @@ Entry en `pct_done≈0%`, target=3R, gate=`oi_mom_bars_recent≤3`. Ver [RBF_REG
 
 | Archivo | Descripción |
 |---------|-------------|
-| `data/src/strategy/detectors/range_breakout_flow.rs` | Detector: lógica de detección, RbfGateContext (expansion_bars_recent), RangeBreakoutConfig |
+| `data/src/strategy/detectors/range_breakout_flow.rs` | Detector: RbfGateContext (11 campos), ConfluenceFlag (11 variantes), score_confluence, gates |
 | `data/src/strategy/detectors/rbf_paper.rs` | Paper trader: trailing direction-aware (1.75/1.5), time stop 30 barras |
 | `config/strategy.toml` → `[range_breakout]` | Parámetros: stop_pct, target_short_pct, target_long_pct, min_rr |
 | `data/src/strategy/config_file.rs` | Parser del toml — RangeBreakoutSection |
-| `crates/monitor/src/main.rs` | Wiring en el pipeline M1: regime_hist_25, expansion_bars_recent, per-symbol config |
-| `crates/monitor/src/supabase_writer.rs` | write_rbf_signal() → tabla rbf_signals |
+| `crates/monitor/src/main.rs` | Wiring: regime_hist_25, obi_intrabar Vec (10s), expansion_bars_recent, per-symbol config |
+| `crates/monitor/src/supabase_writer.rs` | write_rbf_signal(), write_rbf_bar() (con obi_l10/l20), write_obi_batch() |
 | `src/chart/kline.rs` | Overlay visual en la UI local |
 | `supabase/migration_rbf.sql` | Tabla rbf_signals + índices + vista v_rbf_summary |
 | `supabase/migration_rbf_v2.sql` | ALTER TABLE: 5 campos de contexto adicionales |
-| `docs/rbf/RBF_CALIBRACION_POR_ACTIVO.md` | Análisis per-símbolo: 72 trades, microestructura, filtros aplicados |
-| `docs/rbf/RBF_REGLAS_ACTIVAS.md` | Referencia única: todas las reglas vigentes por símbolo (post + pre breakout) |
-| `scripts/_analysis_calibration.py` | Script de re-análisis cuando n≥25 por símbolo |
+| `docs/rbf/RBF_CALIBRACION_POR_ACTIVO.md` | Análisis per-símbolo: 72 trades, microestructura, filtros por símbolo |
+| `docs/rbf/RBF_REGLAS_ACTIVAS.md` | Referencia única: todas las reglas vigentes (post + pre breakout + OBI gates) |
+| `scripts/rbf_entry_autopsy.py` | Análisis barra-a-barra de trades live: MAE, MFE, pre_cvd_5b, death classification |
+| `scripts/rbf_microstructure_analysis.py` | Análisis microestructura por símbolo: OBI, cum_delta, expansion segmentado |
+
+**SQL para Supabase (ejecutar en Dashboard si no está hecho):**
+```sql
+-- obi_l10/l20 en tablas de barras
+ALTER TABLE btc_bars ADD COLUMN IF NOT EXISTS obi_l10 FLOAT;
+ALTER TABLE btc_bars ADD COLUMN IF NOT EXISTS obi_l20 FLOAT;
+-- (igual para eth_bars, bnb_bars, sol_bars, xrp_bars)
+
+-- Tabla nueva muestras OBI 10s
+CREATE TABLE IF NOT EXISTS obi_10s (
+    ts_ms BIGINT NOT NULL, symbol TEXT NOT NULL,
+    obi_l5 FLOAT, obi_l10 FLOAT, obi_l20 FLOAT, spread_bps FLOAT,
+    PRIMARY KEY (ts_ms, symbol)
+);
+```
 
 ---
 

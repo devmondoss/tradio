@@ -1,7 +1,11 @@
-# RBF — Calibración por Activo (2026-06-10)
+# RBF — Calibración por Activo (2026-06-11)
 
 Análisis basado en **72 trades live** (2026-06-02 → 2026-06-10).
 Dataset: `scripts/rbf_microstructure.csv`, `scripts/rbf_pnl_450.csv`, `scripts/rbf_entry_lag.csv`.
+
+> **Nota calibración v3 (2026-06-11):** `expansion_max_bars` bajado de 3 a **1** para BTC/ETH/BNB tras análisis comparativo.
+> Se añadieron: pre-CVD gate, score≠4 gate, London CVD gate, spread gate, OI covering gate, OBI multi-depth (+1), OBI intrabar mean (+1).
+> Ver [RBF_REGLAS_ACTIVAS.md](RBF_REGLAS_ACTIVAS.md) para el estado actual completo.
 
 ---
 
@@ -39,7 +43,7 @@ Dataset: `scripts/rbf_microstructure.csv`, `scripts/rbf_pnl_450.csv`, `scripts/r
 **Hallazgo BTC:** Las pérdidas en BTC Short tienen delta acumulado **positivo** (+377). Hay compradores activos cuando el sistema entra short — es una entrada contra el flujo real. Las wins tienen delta apenas negativo (-127) con OBI positivo (bids al entrar), lo que señala absorción real: precio rompe con flujo comprador siendo absorbido.
 
 ### Calibración aplicada
-- **`expansion_max_bars = Some(3)`** — filtro activo. Barras con expansion>3 en la ventana pre-entry indican move maduro.
+- **`expansion_max_bars = Some(1)`** — filtro activo. Barras con expansion>3 en la ventana pre-entry indican move maduro.
 - **Trailing Short: 1.75R** (antes 1.5R) — BTC tuvo 2 trailing cases (+1.32R, +1.00R) cuando target era 2R.
 
 ### Pendiente
@@ -72,7 +76,7 @@ Dataset: `scripts/rbf_microstructure.csv`, `scripts/rbf_pnl_450.csv`, `scripts/r
 3. **OI momentum:** losses tienen 8.2 barras con OI alineado — señal de move maduro.
 
 ### Calibración aplicada
-- **`expansion_max_bars = Some(3)`** — filtro activo. Wins tienen avg 1.3 barras expansion vs 4.8 en losses.
+- **`expansion_max_bars = Some(1)`** — filtro activo. Wins tienen avg 1.3 barras expansion vs 4.8 en losses.
 - **Trailing Short: 1.75R** — ETH no tuvo trailing cases, pero la calibración por dirección aplica.
 - **expansion_bars_recent** se pasa con conteo real (no bypass como SOL).
 
@@ -107,7 +111,7 @@ Dataset: `scripts/rbf_microstructure.csv`, `scripts/rbf_pnl_450.csv`, `scripts/r
 El mayor impacto del filtro expansion se ve aquí: losses tienen 7.8 barras expansion vs 3.6 en wins.
 
 ### Calibración aplicada
-- **`expansion_max_bars = Some(3)`** — filtro más impactante en BNB (diferencia 4.2 barras).
+- **`expansion_max_bars = Some(1)`** — filtro más impactante en BNB (diferencia 4.2 barras).
 - **Trailing Short: 1.75R** — BNB tuvo los peores trailing cases: 2 trades salieron a +0.90R y +0.80R cuando target era 2R. Diferencia de −1.10R por trade. El 1.75R reduce drásticamente estos exits prematuros.
 
 ### Pendiente
