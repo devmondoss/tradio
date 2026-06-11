@@ -13,15 +13,17 @@ function pythonBacktest(): Plugin {
         const url = req.url ?? ''
         if (!url.startsWith('/api/backtest')) return next()
 
-        const qs    = url.includes('?') ? url.slice(url.indexOf('?') + 1) : ''
+        const qs     = url.includes('?') ? url.slice(url.indexOf('?') + 1) : ''
         const params = new URLSearchParams(qs)
-        const days  = params.get('days') ?? '14'
-        const script = path.join(server.config.root, 'api', 'backtest_script.py')
+        const days   = params.get('days') ?? '14'
+        const isBe   = url.startsWith('/api/backtest/be')
+        const scriptName = isBe ? 'be_backtest_script.py' : 'backtest_script.py'
+        const script = path.join(server.config.root, 'api', scriptName)
 
         // Windows puede tener el ejecutable como 'python' o 'py'
         const pyCmd = process.platform === 'win32' ? 'python' : 'python3'
 
-        console.log(`[backtest] corriendo ${pyCmd} ${script} --days ${days}`)
+        console.log(`[backtest${isBe ? '/be' : ''}] corriendo ${pyCmd} ${script} --days ${days}`)
 
         const py = spawn(pyCmd, [script, '--days', days])
 

@@ -4,11 +4,25 @@ import StatsView from './StatsView'
 import type { Trade } from '../lib/types'
 import { supabase } from '../lib/supabase'
 
-const API = ''  // mismo origen — Vite intercepta /api/backtest
-
 type Panel = 'trades' | 'stats'
 
-export default function BacktestView() {
+const STRATEGY_META = {
+  rbf: {
+    apiPath: '/api/backtest',
+    label: 'Backtest RBF — Python backend · $500 capital · $10/trade',
+    detail: 'VR≥3× · CVD rango < 0 · Ext>0.1% · VWAP gate · Stop = Range HIGH\nTrail ATR 1.2× (activa 1.75R Short / 1.5R Long) · Time stop 30 bars · Cooldown 60 bars\nSessions: London · Overlap · NY',
+    detail2: 'ETH: London skip · CVD≥−700 · OBI≤0.10 | BNB: cum_delta≥−500 | BTC: cum_delta≤+200\nExpansion gate: BTC/ETH/BNB ≤1 barra exp. últimas 25 · Pre-CVD 5b ≤ 0',
+  },
+  be: {
+    apiPath: '/api/backtest/be',
+    label: 'Backtest BE — Python backend · $500 capital · $10/trade',
+    detail: 'VR≥2.5× · CVD rango > 0 (compradores atrapados) · Giro CVD ≥40% · Stop = Range HIGH\nTime stop 30 bars · Cooldown 60 bars · close_location ≤0.35 · bear_body ≥0.35',
+    detail2: 'Sessions: London · Overlap | Todos los símbolos',
+  },
+}
+
+export default function BacktestView({ strategy = 'rbf' }: { strategy?: 'rbf' | 'be' }) {
+  const meta_cfg = STRATEGY_META[strategy]
   const [panel,    setPanel]   = useState<Panel>('trades')
   const [trades,   setTrades]  = useState<Trade[]>([])
   const [loading,  setLoading] = useState(false)
@@ -32,10 +46,9 @@ export default function BacktestView() {
         const label   = new Date(ms).toLocaleDateString('es', { day: 'numeric', month: 'short' })
         setDataFrom(`${label} (~${nDays}d)`)
         setAvailableDays(nDays)
-        const d = Math.min(days, nDays)
-        setDays(d)
-        // Auto-run al montar — no esperar click
-        triggerRun(d)
+        setDays(nDays)
+        // Auto-run con todos los datos disponibles — crece 1 día automáticamente cada día
+        triggerRun(nDays)
       })
   }, [])
 
@@ -45,7 +58,7 @@ export default function BacktestView() {
     setTrades([])
     setMeta(null)
     try {
-      const res  = await fetch(`${API}/api/backtest?days=${d}`)
+      const res  = await fetch(`${meta_cfg.apiPath}?days=${d}`)
       const text = await res.text()
       let data: any
       try { data = JSON.parse(text) } catch {
@@ -68,16 +81,12 @@ export default function BacktestView() {
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }}>
         <div style={{ color: 'var(--text2)', fontSize: 11, textAlign: 'center', lineHeight: 1.8 }}>
-          Backtest RBF — Python backend · $500 capital · $10/trade<br />
-          <span style={{ color: 'var(--text3)', fontSize: 10 }}>
-            VR≥3× · CVD rango &lt; 0 · Ext&gt;0.1% · VWAP gate · Stop = Range HIGH<br />
-            Trail ATR 1.2× (activa 1.75R Short / 1.5R Long) · Time stop 30 bars · Cooldown 60 bars<br />
-            Sessions: London · Overlap · NY
+          {meta_cfg.label}<br />
+          <span style={{ color: 'var(--text3)', fontSize: 10, whiteSpace: 'pre-line' }}>
+            {meta_cfg.detail}
           </span>
-          <span style={{ display: 'block', color: 'var(--text3)', fontSize: 9, marginTop: 3 }}>
-            ETH: London skip · CVD≥−700 · OBI≤0.10 &nbsp;|&nbsp;
-            BNB: cum_delta≥−500 &nbsp;|&nbsp; BTC: cum_delta≤+200<br />
-            Expansion gate: BTC/ETH/BNB ≤1 barra exp. últimas 25 · Pre-CVD 5b ≤ 0
+          <span style={{ display: 'block', color: 'var(--text3)', fontSize: 9, marginTop: 3, whiteSpace: 'pre-line' }}>
+            {meta_cfg.detail2}
           </span>
           {dataFrom && (
             <div style={{ marginTop: 6, color: 'var(--yellow)', fontSize: 10 }}>
@@ -88,8 +97,17 @@ export default function BacktestView() {
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ color: 'var(--text3)', fontSize: 10 }}>Ultimos</span>
+          {availableDays != null && (
+            <button onClick={() => { setDays(availableDays); triggerRun(availableDays) }} style={{
+              padding: '3px 10px', borderRadius: 4, fontSize: 10, cursor: 'pointer', fontFamily: 'inherit',
+              background: days === availableDays ? 'var(--blue)' : 'var(--bg3)',
+              border: `1px solid ${days === availableDays ? 'var(--blue)' : 'var(--border2)'}`,
+              color: days === availableDays ? '#fff' : 'var(--text2)',
+              fontWeight: 700,
+            }}>Todo ({availableDays}d)</button>
+          )}
           {[1, 3, 7, 14, 30]
-            .filter(d => availableDays == null || d <= availableDays)
+            .filter(d => availableDays == null || d < availableDays)
             .map(d => (
               <button key={d} onClick={() => { setDays(d); triggerRun(d) }} style={{
                 padding: '3px 10px', borderRadius: 4, fontSize: 10, cursor: 'pointer', fontFamily: 'inherit',
@@ -206,11 +224,30 @@ export default function BacktestView() {
           </span>
         )}
 
-        <span style={{ marginLeft: 'auto' }}>
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center' }}>
+          {availableDays != null && (
+            <button onClick={() => { setDays(availableDays); triggerRun(availableDays) }} style={{
+              padding: '2px 8px', borderRadius: 3, fontSize: 9, cursor: 'pointer', fontFamily: 'inherit',
+              background: days === availableDays ? 'var(--blue)' : 'var(--bg3)',
+              border: `1px solid ${days === availableDays ? 'var(--blue)' : 'var(--border2)'}`,
+              color: days === availableDays ? '#fff' : 'var(--text3)', fontWeight: 700,
+            }}>Todo ({availableDays}d)</button>
+          )}
+          {[1, 3, 7, 14, 30]
+            .filter(d => availableDays == null || d < availableDays)
+            .map(d => (
+              <button key={d} onClick={() => { setDays(d); triggerRun(d) }} style={{
+                padding: '2px 8px', borderRadius: 3, fontSize: 9, cursor: 'pointer', fontFamily: 'inherit',
+                background: days === d ? 'var(--blue)' : 'var(--bg3)',
+                border: `1px solid ${days === d ? 'var(--blue)' : 'var(--border2)'}`,
+                color: days === d ? '#fff' : 'var(--text3)',
+              }}>{d}d</button>
+            ))
+          }
           <button onClick={() => triggerRun(days)} style={{
             padding: '2px 8px', borderRadius: 3, fontSize: 9, cursor: 'pointer', fontFamily: 'inherit',
             background: 'var(--bg3)', border: '1px solid var(--border2)', color: 'var(--text3)',
-          }}>↺ Re-run</button>
+          }}>↺</button>
         </span>
       </div>
 
