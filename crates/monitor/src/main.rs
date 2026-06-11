@@ -599,6 +599,8 @@ struct BarState {
     regime_started_at_ms: Option<i64>,
     // Rolling window de los últimos 25 regímenes (1 por barra M1) para el filtro expansion_n de RBF.
     regime_hist_25: VecDeque<data::strategy::types::Regime>,
+    // Rolling window de los últimos 25 valores de oi_momentum_aligned para el gate pre-breakout.
+    oi_mom_hist_25: VecDeque<bool>,
     // Health monitoring
     freshness: DataFreshness,
     streams: StreamStates,
@@ -720,7 +722,8 @@ impl BarState {
             last_regime: None,
             last_regime_enum: data::strategy::types::Regime::Unknown,
             regime_started_at_ms: None,
-            regime_hist_25: VecDeque::with_capacity(26),
+            regime_hist_25:   VecDeque::with_capacity(26),
+            oi_mom_hist_25:   VecDeque::with_capacity(26),
             freshness: DataFreshness::default(),
             streams: StreamStates::default(),
             pending_outcomes: Vec::new(),
@@ -1421,6 +1424,9 @@ impl BarState {
             let price_rising = c > px_5bars_ago;
             delta > 0.0 && (price_rising == (delta > 0.0))
         });
+        // Mantener ventana de 25 valores de OI momentum para el gate pre-breakout de RBF.
+        self.oi_mom_hist_25.push_back(oi_momentum_aligned.unwrap_or(false));
+        if self.oi_mom_hist_25.len() > 25 { self.oi_mom_hist_25.pop_front(); }
 
         // --- Market structure: MSS, sweep, AVWAP-BOS ---
         // Use a lookback of 10 bars for swing detection.
@@ -2091,6 +2097,10 @@ impl BarState {
                         .count()
                         .min(25) as u8
                 };
+                let oi_mom_bars_recent: u8 = self.oi_mom_hist_25.iter()
+                    .filter(|&&v| v)
+                    .count()
+                    .min(25) as u8;
                 let rbf_gate = data::strategy::detectors::range_breakout_flow::RbfGateContext {
                     stacked_imbalance_bearish: stacked_imbalance == ImbalanceSide::Bearish,
                     stacked_imbalance_bullish: stacked_imbalance == ImbalanceSide::Bullish,
@@ -2115,6 +2125,7 @@ impl BarState {
                     vp_open_bias: ctx.vp_open_bias.as_ref().map(|v| format!("{:?}", v.bias)),
                     atr,
                     expansion_bars_recent,
+                    oi_mom_bars_recent,
                 };
                 // Config por símbolo: expansion_max_bars calibrado con datos live (n=30 Shorts).
                 // BTC/ETH/BNB: Some(3) → WR=60% vs WR=40% sin filtro.

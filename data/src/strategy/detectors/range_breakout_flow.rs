@@ -102,6 +102,11 @@ pub struct RbfGateContext {
     /// Calibración n=30 Shorts: expansion_n≤3 → WR=60% +8.1R; sin filtro WR=40% +2.3R.
     /// NOTA: SOL muestra correlación invertida — pasar 0 para desactivar el filtro por símbolo.
     pub expansion_bars_recent: u8,
+    /// Barras con OI momentum alineado (precio + OI expandiéndose en misma dirección) en
+    /// las últimas 25 barras M1. Gate de pre-breakout: oi_mom_bars_recent <= pre_breakout_oi_max.
+    /// Calibración n=30 Shorts: oi_mom_n≤3 → WR=58%; oi_mom_n≤4 → WR=57%.
+    /// Pasar 0 para desactivar el gate o si el símbolo no tiene datos de OI.
+    pub oi_mom_bars_recent: u8,
 }
 
 fn score_confluence(
@@ -365,6 +370,10 @@ pub struct RbfSignal {
     pub confluence_flags: Vec<String>,
     /// Razón de veto si la señal fue vetada (no se abre posición, sí se registra en DB).
     pub veto_reason: Option<String>,
+    /// True si es una entrada pre-breakout: precio estaba dentro del rango, cerca del borde,
+    /// antes de que el VR≥3× confirmara el breakout. Stop = range_high, RR = pre_breakout_rr.
+    /// El flag "pre_breakout" también se incluye en confluence_flags para queries Supabase.
+    pub is_pre_breakout: bool,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -392,6 +401,7 @@ pub struct RangeBreakoutState {
     ema480_initialized:   bool,
     bars_seen:            usize,
     last_signal_bar:      usize,
+    last_pre_signal_bar:  usize,
 }
 
 impl RangeBreakoutState {
@@ -405,8 +415,9 @@ impl RangeBreakoutState {
             ema480:             0.0,
             ema480_prev:        0.0,
             ema480_initialized: false,
-            bars_seen:          0,
-            last_signal_bar:    0,
+            bars_seen:             0,
+            last_signal_bar:       0,
+            last_pre_signal_bar:   0,
         }
     }
 
@@ -500,7 +511,16 @@ impl RangeBreakoutState {
         let mean_vol = if self.vol_hist.is_empty() { 1.0 }
             else { self.vol_hist.iter().sum::<f64>() / self.vol_hist.len() as f64 };
         let vr = if mean_vol > 0.0 { volume / mean_vol } else { 0.0 };
-        if vr < BREAKOUT_VR_MIN { return None; }
+
+        // pre_eligible: condiciones para el path de entrada anticipada.
+        // Se evalúa antes del cooldown para que el check sea barato.
+        let pre_eligible = cfg.pre_breakout_enabled
+            && vr >= cfg.pre_breakout_vr_min
+            && self.bars_seen.saturating_sub(self.last_pre_signal_bar) >= 60;
+
+        // Salida rápida: VR insuficiente incluso para pre-breakout
+        let effective_vr_min = if pre_eligible { cfg.pre_breakout_vr_min } else { BREAKOUT_VR_MIN };
+        if vr < effective_vr_min { return None; }
 
         // Microestructura en esta barra
         let dz         = self.compute_dz(bar_delta);
@@ -562,7 +582,114 @@ impl RangeBreakoutState {
 
             let breaks_down = close < range_low;
             let breaks_up   = close > range_high;
+
+            // ── PRE-BREAKOUT PATH ──────────────────────────────────────────────────
+            // Precio dentro del rango, cerca del borde inferior (Short).
+            // Entra antes del VR≥3× — gate compensador: expansion_bars_recent + oi_mom.
+            // Calibración n=30 Shorts: pct_done=54% en modo actual → entrada aquí captura
+            // el move completo (pre_move_r avg 2.63R + 2R target = 4.6R potencial desde range_low).
+            if pre_eligible && !breaks_down && !breaks_up {
+                let near_low = close <= range_low * (1.0 + cfg.pre_breakout_zone_pct);
+                // LONGS desactivados → solo verificar near_low (Short pre-breakout)
+                if near_low && cvd_in_range < 0.0 {
+                    // OI momentum gate: oi_mom_n alto = move ya maduro, evitar entrar
+                    let oi_gate_ok = cfg.pre_breakout_oi_max.map_or(true, |max| {
+                        gate.map_or(true, |g| g.oi_mom_bars_recent <= max)
+                    });
+                    if oi_gate_ok {
+                        let stop_price = range_high;
+                        let risk = stop_price - close;
+                        if risk > 1e-6 {
+                            let rr = cfg.pre_breakout_rr;
+                            let target_price = close - rr * risk;
+                            if rr >= cfg.min_rr {
+                                let (confluence_score, mut confluence_flags, veto_reason) = if let Some(g) = gate {
+                                    score_confluence(
+                                        RbfDirection::Short, macro_regime,
+                                        cvd_slope, obi, vwap,
+                                        close, target_price, g, cfg,
+                                    )
+                                } else {
+                                    (0, vec![], None)
+                                };
+                                // Solo emitir si no hay veto y score mínimo
+                                if veto_reason.is_none()
+                                    && confluence_score >= cfg.min_confluence_score
+                                {
+                                    confluence_flags.push("pre_breakout".to_string());
+                                    let vr_tier: u8 = if vr >= 4.0 { 3 } else if vr >= 2.0 { 2 } else { 1 };
+                                    let cvd_per_bar = if range_bars > 0 { cvd_in_range / range_bars as f64 } else { 0.0 };
+                                    let dz_dir_pb = -dz; // Short: selling pressure = dz negativo
+                                    let absorption_score_pb = (dz_dir_pb.max(0.0) / 3.0).min(1.0);
+                                    let bar_disp_pb = if high > low { (close - open).abs() / (high - low) } else { 0.5 };
+                                    self.last_pre_signal_bar = self.bars_seen;
+                                    self.last_signal_bar     = self.bars_seen;
+                                    let price_vs_vwap_pct_pb = vwap.filter(|&v| v > 0.0).map(|v| (close - v) / v * 100.0);
+                                    println!(
+                                        "[rbf_pre] Short entry={:.2} stop={:.2} target={:.2} rr={:.1} exp={} oi_mom={}",
+                                        close, stop_price, target_price, rr,
+                                        gate.map(|g| g.expansion_bars_recent).unwrap_or(0),
+                                        gate.map(|g| g.oi_mom_bars_recent).unwrap_or(0),
+                                    );
+                                    return Some(RbfSignal {
+                                        direction:           RbfDirection::Short,
+                                        entry_price:         close,
+                                        stop_price,
+                                        target_price,
+                                        rr,
+                                        range_high,
+                                        range_low,
+                                        range_pct,
+                                        range_bars,
+                                        cvd_in_range,
+                                        vr_at_breakout:      vr,
+                                        macro_regime,
+                                        session,
+                                        timestamp_ms,
+                                        evidence: vec![
+                                            "pre_breakout".to_string(),
+                                            format!("range_pct={:.3}%", range_pct),
+                                            format!("vr={:.2}x", vr),
+                                            format!("rr={:.1}", rr),
+                                        ],
+                                        range_touch_count:   touches_low,
+                                        session_phase,
+                                        price_vs_vwap_pct:   price_vs_vwap_pct_pb,
+                                        funding_at_entry:    funding_rate,
+                                        liq_ratio_pre:       liq_ratio,
+                                        cvd_slope_at_entry:  cvd_slope,
+                                        dz_at_entry:         dz,
+                                        obi_at_entry:        obi,
+                                        absorption_score:    absorption_score_pb,
+                                        bar_displacement:    bar_disp_pb,
+                                        oi_delta_pct:        gate.and_then(|g| g.oi_delta_pct),
+                                        cvd_divergence_bars: gate.and_then(|g| g.cvd_divergence_bars),
+                                        vr_tier,
+                                        range_touch_symmetry: 0.5,
+                                        cvd_per_bar,
+                                        breakout_extension_pct: 0.0,
+                                        signal_score_v2:     0.0,
+                                        sizing_multiplier:   1.0,
+                                        htf_h1_trend:        gate.and_then(|g| g.htf_h1_trend.clone()),
+                                        htf_h1_aligned:      None,
+                                        vp_open_bias:        gate.and_then(|g| g.vp_open_bias.clone()),
+                                        confluence_score,
+                                        confluence_flags,
+                                        veto_reason:         None,
+                                        is_pre_breakout:     true,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                continue; // pre-breakout no disparó — próxima ventana de rango
+            }
+
+            // ── POST-BREAKOUT PATH (precio fuera del rango, VR≥3×) ───────────────
             if !breaks_down && !breaks_up { continue; }
+            // Requiere VR completo para confirmar el breakout
+            if vr < BREAKOUT_VR_MIN { continue; }
 
             let direction = if breaks_down { RbfDirection::Short } else { RbfDirection::Long };
             if direction == RbfDirection::Long && !LONGS_ENABLED { continue; }
@@ -778,6 +905,7 @@ impl RangeBreakoutState {
                 confluence_score,
                 confluence_flags,
                 veto_reason,
+                is_pre_breakout: false,
             });
         }
 
@@ -831,6 +959,26 @@ pub struct RangeBreakoutConfig {
     /// None = no filtrar. Calibración: BTC/ETH/BNB → Some(3). SOL → None (inv. correlación).
     /// Shorts n=30: expansion_n≤3 WR=60% +8.1R vs sin filtro WR=40% +2.3R.
     pub expansion_max_bars: Option<u8>,
+
+    // ── Entrada anticipada pre-breakout (calibrada con datos live 72 trades) ──
+    /// Activar modo de entrada anticipada: entra cuando precio toca el borde del rango
+    /// con condiciones de microestructura, ANTES de esperar VR≥3× de confirmación.
+    /// Gate compensador: expansion_max_bars + oi_mom_bars_recent reemplazan el VR≥3×.
+    /// Calibración: pct_done=54% en modo actual → potencial 4.6R desde range_low vs 2R.
+    pub pre_breakout_enabled:  bool,
+    /// Zona alrededor del borde inferior del rango que activa el pre-breakout (fracción).
+    /// Si close ≤ range_low × (1 + zone_pct): trigger para Short pre-breakout.
+    /// 0.001 = 0.1% — precio a menos de 0.1% por encima de range_low.
+    pub pre_breakout_zone_pct: f64,
+    /// RR objetivo del pre-breakout. Más profundo que post-breakout (3.0 vs 2.0) porque
+    /// se entra antes del move: potencial avg 4.6R desde range_low.
+    pub pre_breakout_rr:       f64,
+    /// VR mínimo para activar pre-breakout. Más bajo que BREAKOUT_VR_MIN=3×.
+    /// Requiere actividad de volumen en el borde del rango sin exigir breakout confirmado.
+    pub pre_breakout_vr_min:   f64,
+    /// Barras máximas con OI momentum en las 25 pre-entry para el gate de pre-breakout.
+    /// Calibración: oi_mom_n≤3 → WR=58%; oi_mom_n≤4 → WR=57%. None = gate desactivado.
+    pub pre_breakout_oi_max:   Option<u8>,
 }
 
 impl Default for RangeBreakoutConfig {
@@ -859,6 +1007,13 @@ impl Default for RangeBreakoutConfig {
             // Filtro expansion: None por defecto. El caller lo sobrescribe por símbolo.
             // BTC/ETH/BNB → Some(3). SOL/XRP → None.
             expansion_max_bars: None,
+            // Pre-breakout: desactivado por defecto hasta calibración con datos.
+            // Activar cuando haya n≥30 trades pre-breakout para medir WR real.
+            pre_breakout_enabled:  false,
+            pre_breakout_zone_pct: 0.001,  // 0.1% por encima de range_low
+            pre_breakout_rr:       3.0,    // target 3× vs 2× en post-breakout
+            pre_breakout_vr_min:   1.5,    // requiere VR≥1.5× en borde del rango
+            pre_breakout_oi_max:   Some(3), // oi_mom_n≤3 → WR=58%
         }
     }
 }

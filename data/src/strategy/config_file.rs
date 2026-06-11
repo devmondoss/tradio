@@ -97,6 +97,11 @@ struct RangeBreakoutSection {
     min_confluence_score: Option<u8>,
     cvd_slope_threshold:  Option<f64>,
     bear_long_min_score:  Option<u8>,
+    pre_breakout_enabled:  Option<bool>,
+    pre_breakout_zone_pct: Option<f64>,
+    pre_breakout_rr:       Option<f64>,
+    pre_breakout_vr_min:   Option<f64>,
+    pre_breakout_oi_max:   Option<u8>,
 }
 
 #[derive(Deserialize, Default)]
@@ -205,6 +210,11 @@ impl StrategyConfigFile {
         if let Some(v) = rb.min_confluence_score { cfg.range_breakout.min_confluence_score = v; }
         if let Some(v) = rb.cvd_slope_threshold  { cfg.range_breakout.cvd_slope_threshold  = v; }
         if let Some(v) = rb.bear_long_min_score  { cfg.range_breakout.bear_long_min_score  = v; }
+        if let Some(v) = rb.pre_breakout_enabled  { cfg.range_breakout.pre_breakout_enabled  = v; }
+        if let Some(v) = rb.pre_breakout_zone_pct { cfg.range_breakout.pre_breakout_zone_pct = v; }
+        if let Some(v) = rb.pre_breakout_rr       { cfg.range_breakout.pre_breakout_rr       = v; }
+        if let Some(v) = rb.pre_breakout_vr_min   { cfg.range_breakout.pre_breakout_vr_min   = v; }
+        if rb.pre_breakout_oi_max.is_some() { cfg.range_breakout.pre_breakout_oi_max = rb.pre_breakout_oi_max; }
 
         let amd = self.amd_detector;
         if let Some(v) = amd.enabled                   { cfg.amd.enabled                   = v; }
