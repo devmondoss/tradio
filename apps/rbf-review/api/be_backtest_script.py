@@ -34,6 +34,7 @@ RANGE_MAX_PCT      = 0.50    # (high-low)/price % máximo
 PRE_CVD_BARS       = 5       # últimas N barras para medir giro
 CVD_FLIP_RATIO_MIN = 0.40    # |pre_cvd| / range_cvd >= ratio
 VR_MIN             = 2.5     # VR de la barra de ruptura
+VR_WINDOW          = 50      # ventana para calcular VR (BuyerExhaustionConfig.vr_window)
 CLOSE_LOC_MAX      = 0.35    # (close - low) / (high - low) <= 0.35
 BEAR_BODY_MIN      = 0.35    # |close - open| / (high - low) >= 0.35
 UPPER_WICK_MAX     = 0.30    # (high - max(o,c)) / (high - low) <= 0.30
@@ -47,7 +48,9 @@ TABLES = {
     'BTCUSDT': 'btc_bars', 'ETHUSDT': 'eth_bars', 'BNBUSDT': 'bnb_bars',
     'SOLUSDT': 'sol_bars', 'XRPUSDT': 'xrp_bars',
 }
-BAR_COLS = 'ts_ms,open,high,low,close,volume,bar_delta,vr,atr,session,cvd_slope'
+# El vr pre-almacenado usa ventana mucho más larga que los 50 bars de BE.
+# Lo calculamos nosotros para que coincida con lo que hace el live detector.
+BAR_COLS = 'ts_ms,open,high,low,close,volume,bar_delta,atr,session'
 
 # ─── Supabase helpers ─────────────────────────────────────────────────────────
 
@@ -114,9 +117,7 @@ def detect(sym, bars, idx_off, equity_start):
         ses = b.get('session') or ''
         if ses not in SESSIONS_OK: continue
 
-        # Necesitamos bar_delta para calcular CVD del rango
         if b.get('bar_delta') is None: continue
-        if b.get('vr') is None: continue
         if i - last_sig < COOLDOWN_BARS: continue
 
         win = bars[i - RANGE_WINDOW : i]
@@ -145,7 +146,11 @@ def detect(sym, bars, idx_off, equity_start):
         close = b['close']
         if close >= lo: continue  # debe cerrar por debajo del rango
 
-        vr = b.get('vr') or 0
+        # VR auto-calculado con ventana 50 (= BuyerExhaustionConfig.vr_window)
+        # El vr pre-almacenado usa ventana mucho más larga y daría casi 0 trades
+        vol_hist = [bars[j]['volume'] for j in range(max(0, i - VR_WINDOW), i)]
+        avg_vol  = sum(vol_hist) / len(vol_hist) if vol_hist else 1.0
+        vr       = b['volume'] / avg_vol if avg_vol > 0 else 0.0
         if vr < VR_MIN: continue
 
         bd = b.get('bar_delta') or 0
