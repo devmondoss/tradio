@@ -846,6 +846,17 @@ impl RangeBreakoutState {
             // ── Absorción (FASE 1.1) ──────────────────────────────────────────
             // Intensidad del delta direccional normalizada: max(dz_dir,0)/3 ∈ [0,1]
             let absorption_score = (dz_dir.max(0.0) / 3.0).min(1.0);
+
+            // Divergencia CVD durante el rango: % de barras con delta en dirección del breakout.
+            // Traders de orderflow: "presión sostenida durante la consolidación = instituciones distribuyendo"
+            // Short: queremos alta % de barras con delta < 0 (sellers activos mientras rango aguantaba).
+            // Long: queremos alta % de barras con delta > 0 (compradores activos durante consolidación).
+            let cvd_neg_bars = window.iter().filter(|b| b.delta < 0.0).count();
+            let cvd_neg_ratio = cvd_neg_bars as f64 / window.len().max(1) as f64;
+            let cvd_divergence_range = match direction {
+                RbfDirection::Short => cvd_neg_ratio,
+                RbfDirection::Long  => 1.0 - cvd_neg_ratio,
+            };
             // Ratio cuerpo/rango: low = pin bar / absorbed; high = engulfing candle
             let bar_displacement = if high > low {
                 (close - open).abs() / (high - low)
@@ -884,6 +895,9 @@ impl RangeBreakoutState {
                 s += breakout_extension_pct.min(0.10) / 0.10 * 0.15;
                 s += if h4_aligned.unwrap_or(false) { 0.15 } else { 0.0 };
                 s += (confluence_score as f64 / 9.0) * 0.25;
+                // Divergencia CVD durante el rango: presión sostenida = mayor convicción en el breakout.
+                // Fuente: múltiples traders orderflow (Yush, Brando, Umar) — "CVD declining during range = distribution".
+                s += cvd_divergence_range * 0.10;
                 s.min(1.0_f64)
             };
             let sizing_multiplier: f64 = if signal_score_v2 >= 0.70 { 2.0 }

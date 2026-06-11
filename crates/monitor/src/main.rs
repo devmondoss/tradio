@@ -2225,6 +2225,10 @@ impl BarState {
                                 self.rbf_paper.day_r,
                             );
                         } else {
+                            println!(
+                                "[rbf_paper] open {:?} score_v2={:.2} sizing={:.1}x entry={:.2}",
+                                sig.direction, sig.signal_score_v2, sig.sizing_multiplier, sig.entry_price,
+                            );
                             self.rbf_paper.open(&sig, atr);
                         }
                     }

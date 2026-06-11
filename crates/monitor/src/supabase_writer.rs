@@ -407,13 +407,14 @@ impl SupabaseWriter {
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_default();
         let body = serde_json::json!({
-            "status":       trade.exit_reason.as_str(),
-            "exit_price":   trade.exit_price,
-            "result_r":     trade.result_r,
-            "exit_reason":  trade.exit_reason.as_str(),
-            "closed_at":    closed_at_iso,
-            "is_active":    false,
-            "bars_held":    trade.bars_held as i64,
+            "status":            trade.exit_reason.as_str(),
+            "exit_price":        trade.exit_price,
+            "result_r":          trade.result_r,
+            "exit_reason":       trade.exit_reason.as_str(),
+            "closed_at":         closed_at_iso,
+            "is_active":         false,
+            "bars_held":         trade.bars_held as i64,
+            "sizing_multiplier": trade.sizing_multiplier,
         });
         let url    = format!("{}/rest/v1/rbf_signals?id=eq.{}", self.url, id);
         let writer = self.clone();

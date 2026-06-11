@@ -53,16 +53,18 @@ impl RbfExitReason {
 
 #[derive(Debug, Clone)]
 pub struct RbfClosedTrade {
-    pub direction:   RbfDirection,
-    pub entry_price: f64,
-    pub exit_price:  f64,
-    pub result_r:    f64,       // R-múltiplo: positivo = ganancia
-    pub exit_reason: RbfExitReason,
-    pub entry_ms:    i64,
-    pub exit_ms:     i64,
-    pub bars_held:   u32,
+    pub direction:        RbfDirection,
+    pub entry_price:      f64,
+    pub exit_price:       f64,
+    pub result_r:         f64,  // R-múltiplo puro: positivo = ganancia
+    pub exit_reason:      RbfExitReason,
+    pub entry_ms:         i64,
+    pub exit_ms:          i64,
+    pub bars_held:        u32,
+    /// Multiplicador de tamaño basado en signal_score_v2 (0.5× / 1.0× / 1.5× / 2.0×).
+    pub sizing_multiplier: f64,
     /// UUID de la fila en rbf_signals para hacer el PATCH
-    pub supabase_id: Option<String>,
+    pub supabase_id:      Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +85,8 @@ struct ActivePosition {
     trailing_active: bool,
     /// True si la posición fue abierta en modo pre-breakout (time stop más corto).
     is_pre_breakout: bool,
+    /// Multiplicador de tamaño derivado de signal_score_v2 al abrir la posición.
+    sizing_multiplier: f64,
 }
 
 pub struct RbfPaperTrader {
@@ -137,17 +141,18 @@ impl RbfPaperTrader {
     pub fn open(&mut self, sig: &RbfSignal, atr: f64) {
         let best_extreme = sig.entry_price;
         self.active = Some(ActivePosition {
-            direction:       sig.direction,
-            entry_price:     sig.entry_price,
-            stop_price:      sig.stop_price,
-            target_price:    sig.target_price,
-            entry_ms:        sig.timestamp_ms,
-            supabase_id:     None,
-            bars_held:       0,
-            atr_at_entry:    atr,
+            direction:         sig.direction,
+            entry_price:       sig.entry_price,
+            stop_price:        sig.stop_price,
+            target_price:      sig.target_price,
+            entry_ms:          sig.timestamp_ms,
+            supabase_id:       None,
+            bars_held:         0,
+            atr_at_entry:      atr,
             best_extreme,
-            trailing_active: false,
-            is_pre_breakout: sig.is_pre_breakout,
+            trailing_active:   false,
+            is_pre_breakout:   sig.is_pre_breakout,
+            sizing_multiplier: sig.sizing_multiplier,
         });
     }
 
@@ -175,12 +180,13 @@ impl RbfPaperTrader {
             stop_price,
             target_price,
             entry_ms,
-            supabase_id:     Some(signal_id),
-            bars_held:       0,
-            atr_at_entry:    0.0,
+            supabase_id:       Some(signal_id),
+            bars_held:         0,
+            atr_at_entry:      0.0,
             best_extreme,
-            trailing_active: false,
-            is_pre_breakout: false,
+            trailing_active:   false,
+            is_pre_breakout:   false,
+            sizing_multiplier: 1.0, // desconocido al restaurar — asumir tamaño normal
         });
     }
 
@@ -295,15 +301,16 @@ impl RbfPaperTrader {
         let result_r = if risk > 1e-10 { pnl / risk } else { 0.0 };
 
         let trade = RbfClosedTrade {
-            direction:   pos.direction,
-            entry_price: pos.entry_price,
+            direction:         pos.direction,
+            entry_price:       pos.entry_price,
             exit_price,
             result_r,
-            exit_reason: reason,
-            entry_ms:    pos.entry_ms,
-            exit_ms:     bar_ms,
-            bars_held:   pos.bars_held,
-            supabase_id: pos.supabase_id.clone(),
+            exit_reason:       reason,
+            entry_ms:          pos.entry_ms,
+            exit_ms:           bar_ms,
+            bars_held:         pos.bars_held,
+            sizing_multiplier: pos.sizing_multiplier,
+            supabase_id:       pos.supabase_id.clone(),
         };
 
         self.active  = None;
