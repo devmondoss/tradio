@@ -2154,25 +2154,38 @@ impl BarState {
                     "ETHUSDT" => Some(2),
                     _         => None,
                 };
+                // ETH calibraciones (análisis n=11 live trades 2026-06-10):
+                // London WR=14% -4R, CVD en rango wins -418 vs losses -982, OBI ratio 1.78×.
+                if symbol == "ETHUSDT" {
+                    rbf_cfg.cvd_in_range_min_short = Some(-700.0);
+                    rbf_cfg.obi_gate      = true;
+                    rbf_cfg.obi_threshold = 0.10;
+                }
                 // Pre-breakout VR: en Overlap el volumen es mayor y hay más fakeouts → exigir 2.0×.
                 // En London/NY mantener 1.5× (volumen moderado, precio en borde es más informativo).
                 if matches!(session.session, data::session::session_tracker::TradingSession::LondonNyOverlap) {
                     rbf_cfg.pre_breakout_vr_min = rbf_cfg.pre_breakout_vr_min.max(2.0);
                 }
-                if let Some(sig) = self.rbf_state.on_bar_close(
-                    o, h, l, c,
-                    vol,
-                    bar_delta,
-                    session.session,
-                    bar_ms,
-                    &rbf_cfg,
-                    self.vwap_session,
-                    self.funding_rate,
-                    liq_ratio_rbf,
-                    obi_rbf,
-                    cvd_slope,
-                    Some(&rbf_gate),
-                ) {
+                // ETH: London desactivado (WR=14%, -4R en 7/11 trades — London es el principal loser)
+                let skip_eth_london = symbol == "ETHUSDT"
+                    && matches!(session.session, data::session::session_tracker::TradingSession::London);
+
+                if let Some(sig) = if skip_eth_london { None } else {
+                    self.rbf_state.on_bar_close(
+                        o, h, l, c,
+                        vol,
+                        bar_delta,
+                        session.session,
+                        bar_ms,
+                        &rbf_cfg,
+                        self.vwap_session,
+                        self.funding_rate,
+                        liq_ratio_rbf,
+                        obi_rbf,
+                        cvd_slope,
+                        Some(&rbf_gate),
+                    )
+                } {
                     let tradeable = sig.veto_reason.is_none()
                         && sig.confluence_score >= rbf_cfg.min_confluence_score;
                     println!(

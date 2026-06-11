@@ -720,6 +720,14 @@ impl RangeBreakoutState {
             };
             if !cvd_aligned { continue; }
 
+            // cvd_in_range gate por símbolo (Short): ETH wins avg -418 vs losses -982.
+            // Rechazar setups donde el selling durante el rango fue excesivo (move ya consumido).
+            if direction == RbfDirection::Short {
+                if let Some(min_cvd) = cfg.cvd_in_range_min_short {
+                    if cvd_in_range < min_cvd { continue; }
+                }
+            }
+
             // ── Gate de microestructura ────────────────────────────────────────
             let cvd_slope_dir = cvd_slope.map(|s| sign * (-s));
             // cvd_slope_gate desactivado: backtest 30d muestra que slope>=0
@@ -1014,6 +1022,10 @@ pub struct RangeBreakoutConfig {
     /// BTC candidato: Some(200.0) — losses cum_delta = +377.
     /// None = sin filtro (default).
     pub cum_delta_max_short: Option<f64>,
+    /// Filtro Short: rechaza si cvd_in_range < umbral (selling demasiado consumido).
+    /// ETH calibrado: Some(-700.0) — wins avg -418, losses avg -982.
+    /// None = sin filtro (default).
+    pub cvd_in_range_min_short: Option<f64>,
     /// Score mínimo de confluencia específico por símbolo (sobrescribe min_confluence_score).
     /// ETH: Some(2) — OBI invertido, exigir más evidencia. None = usar min_confluence_score.
     pub min_confluence_score_override: Option<u8>,
@@ -1052,8 +1064,9 @@ impl Default for RangeBreakoutConfig {
             pre_breakout_rr:       3.0,    // target 3× vs 2× en post-breakout
             pre_breakout_vr_min:   1.5,    // requiere VR≥1.5× en borde del rango
             pre_breakout_oi_max:   Some(3), // oi_mom_n≤3 → WR=58%
-            cum_delta_min_short:        None,  // por símbolo en el caller
-            cum_delta_max_short:        None,  // por símbolo en el caller
+            cum_delta_min_short:        None,
+            cum_delta_max_short:        None,
+            cvd_in_range_min_short:     None,
             min_confluence_score_override: None,
         }
     }
