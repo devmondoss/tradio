@@ -2369,23 +2369,41 @@ impl BarState {
                     sig.quality_score,
                 );
 
-                // Escribir a Supabase y abrir paper trade
-                if !self.amd_paper.has_position() {
+                // Filtro de sesión: Asia y OffHours excluidos (live data: 0 wins, -2.62R en Asia).
+                // Score mínimo: 4/10 — score=1-3 no tiene edge con los datos actuales.
+                let amd_session_ok = matches!(
+                    session.session,
+                    data::session::session_tracker::TradingSession::London
+                    | data::session::session_tracker::TradingSession::LondonNyOverlap
+                    | data::session::session_tracker::TradingSession::NewYork
+                );
+                let amd_tradeable = amd_session_ok
+                    && sig.quality_score >= 4
+                    && !self.amd_paper.has_position();
+
+                if amd_tradeable {
+                    // Señal operada: is_active=true en Supabase
                     if let Some(sb) = self.supabase.clone() {
                         let sig_c = sig.clone();
                         let sym_c = symbol.to_string();
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         self.amd_pending_id_rx = Some(rx);
                         tokio::spawn(async move {
-                            // is_paper_trade=true → is_active=true en el INSERT
-                            // elimina race condition con redeployments
                             let id = sb.write_amd_signal_async(&sig_c, &sym_c, true).await;
                             let _ = tx.send(id);
                         });
                     }
+                    println!(
+                        "[amd_paper] open {:?} score={} ses={:?} entry={:.4}",
+                        sig.direction, sig.quality_score, session.session, sig.entry_price,
+                    );
                     self.amd_paper.open(&sig);
                 } else {
-                    // Ya hay posición abierta — solo guardar la señal, no abrir otra
+                    // Solo registrar: sesión excluida, score bajo, o posición ya abierta
+                    let skip_reason = if !amd_session_ok { "session_skip" }
+                        else if sig.quality_score < 4   { "low_score" }
+                        else                             { "has_position" };
+                    println!("[amd] recorded (not traded) reason={} score={}", skip_reason, sig.quality_score);
                     if let Some(sb) = self.supabase.clone() {
                         let sig_c = sig.clone();
                         let sym_c = symbol.to_string();
