@@ -221,7 +221,9 @@ Una vez disparada una señal, el detector espera **60 barras M1 (60 minutos)** a
 | `funding_at_entry` | Funding rate en la entrada |
 | `liq_ratio_pre` | Ratio de liquidaciones previo al breakout |
 | `result_r` | R múltiple al cerrar (se rellena después) |
-| `exit_reason` | TARGET / STOP / OPEN |
+| `exit_reason` | TARGET / STOP / TRAILING_STOP / TIME_STOP / SESSION_END |
+| `is_pre_breakout` | true si la señal fue modo entrada anticipada |
+| `bars_held` | barras M1 que duró el trade (para calibrar time stop pre-breakout) |
 
 ### En `scalping_bars` (contexto por barra M1)
 
@@ -254,6 +256,9 @@ Esto permite reconstruir el contexto completo de cualquier señal juntando `rbf_
 **Insight clave (entry lag):** el detector dispara cuando el movimiento ya consumió 32–54% del
 desplazamiento total. Las señales bearish de microestructura aparecen ~24 barras antes. Si se
 entrara al inicio del move, el target potencial sería 4.30R vs 2.00R actual.
+
+**Modo pre-breakout (activo desde 2026-06-10):** entra en `range_low` antes del VR≥3×.
+Entry en `pct_done≈0%`, target=3R, gate=`oi_mom_bars_recent≤3`. Ver [RBF_REGLAS_ACTIVAS.md](RBF_REGLAS_ACTIVAS.md).
 
 **Primer día (2026-06-02):**
 
@@ -292,6 +297,7 @@ entrara al inicio del move, el target potencial sería 4.30R vs 2.00R actual.
 | `supabase/migration_rbf.sql` | Tabla rbf_signals + índices + vista v_rbf_summary |
 | `supabase/migration_rbf_v2.sql` | ALTER TABLE: 5 campos de contexto adicionales |
 | `docs/rbf/RBF_CALIBRACION_POR_ACTIVO.md` | Análisis per-símbolo: 72 trades, microestructura, filtros aplicados |
+| `docs/rbf/RBF_REGLAS_ACTIVAS.md` | Referencia única: todas las reglas vigentes por símbolo (post + pre breakout) |
 | `scripts/_analysis_calibration.py` | Script de re-análisis cuando n≥25 por símbolo |
 
 ---
