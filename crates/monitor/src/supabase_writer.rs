@@ -747,6 +747,7 @@ impl SupabaseWriter {
             "vp_open_bias":              sig.vp_open_bias.as_deref(),
             "signal_score_v2":           sig.signal_score_v2,
             "sizing_multiplier":         sig.sizing_multiplier,
+            "is_pre_breakout":           sig.is_pre_breakout,
         })
     }
 
