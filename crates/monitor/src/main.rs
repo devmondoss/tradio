@@ -622,6 +622,9 @@ struct BarState {
     // EMA suavizadas de OBI L5 — escritas a btc/eth/bnb/sol_bars cada barra
     obi_ema_fast: f64,  // alpha = 2/(5+1)  ≈ 0.333
     obi_ema_slow: f64,  // alpha = 2/(20+1) ≈ 0.095
+    // Muestras intrabar OBI — sampleo cada 10s para calcular promedio/mín real
+    obi_intrabar: Vec<(i64, f32, f32, f32, f32)>, // (ts_ms, l5, l10, l20, spread_bps)
+    last_obi_sample_ms: i64,
     // ICT AMD structural levels — acumulados barra a barra para backtest de estrategia
     asian_high: Option<f64>,        // High de la sesión Asia del día actual (00:00–07:00 UTC)
     asian_low:  Option<f64>,        // Low  de la sesión Asia del día actual
@@ -741,6 +744,8 @@ impl BarState {
             prev_obi_l5:  0.0,
             obi_ema_fast: 0.0,
             obi_ema_slow: 0.0,
+            obi_intrabar:       Vec::new(),
+            last_obi_sample_ms: 0,
             asian_high:   None,
             asian_low:     None,
             asian_day:     -1,
@@ -1226,6 +1231,27 @@ impl BarState {
             .map(|(p, q)| (p.to_f32() as f64, q.to_f32_lossy() as f64))
             .collect();
         self.spoof_detector.update(&bids, &asks, self.current_price, now_ms);
+
+        // ── Sampleo intrabar OBI cada 10 segundos ─────────────────────────────
+        // Permite calcular OBI promedio real de la barra vs snapshot al cierre.
+        // Las muestras se escriben a obi_10s en Supabase al cerrar cada barra.
+        if now_ms - self.last_obi_sample_ms >= 10_000 {
+            let obi_fn = |n: usize| -> f32 {
+                let bid: f64 = depth.bids.iter().rev().take(n).map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
+                let ask: f64 = depth.asks.iter().take(n).map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
+                let tot = bid + ask;
+                if tot > 0.0 { ((bid - ask) / tot) as f32 } else { 0.0 }
+            };
+            let spread_bps = if let (Some((best_ask, _)), Some((best_bid, _))) =
+                (depth.asks.iter().next(), depth.bids.iter().rev().next())
+            {
+                let mid = (best_ask.to_f32() as f64 + best_bid.to_f32() as f64) / 2.0;
+                if mid > 0.0 { ((best_ask.to_f32() as f64 - best_bid.to_f32() as f64) / mid * 10_000.0) as f32 } else { 0.0 }
+            } else { 0.0 };
+            self.obi_intrabar.push((now_ms, obi_fn(5), obi_fn(10), obi_fn(20), spread_bps));
+            self.last_obi_sample_ms = now_ms;
+        }
+
         // Scalping: OBI L10 → EMA normalizada [0,1] (consistente con local UI)
         {
             let bid10: f64 = depth.bids.iter().rev().take(10).map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
@@ -1820,9 +1846,28 @@ impl BarState {
         };
         let bar_spread_ticks = self.spread_ticks_now();
         let bar_obi_l5 = ctx.orderbook.obi_l5.unwrap_or(0.0);
+        let bar_obi_l10 = ctx.orderbook.obi_l10.unwrap_or(0.0);
+        let bar_obi_l20 = ctx.orderbook.obi_l20.unwrap_or(0.0);
         // EMA 5-bar y 20-bar de OBI L5
         self.obi_ema_fast = self.obi_ema_fast * (1.0 - 0.333) + bar_obi_l5 * 0.333;
         self.obi_ema_slow = self.obi_ema_slow * (1.0 - 0.095) + bar_obi_l5 * 0.095;
+
+        // ── Flush buffer OBI intrabar → Supabase obi_10s ──────────────────────
+        let obi_mean_intrabar: Option<f64> = if self.obi_intrabar.is_empty() {
+            None
+        } else {
+            let mean_l5 = self.obi_intrabar.iter().map(|s| s.1 as f64).sum::<f64>()
+                / self.obi_intrabar.len() as f64;
+            Some(mean_l5)
+        };
+        let bar_spread_bps = ctx.orderbook.spread_bps.unwrap_or(0.0);
+        if let Some(sb) = self.supabase.clone() {
+            let samples = std::mem::take(&mut self.obi_intrabar);
+            let sym_c = symbol.to_string();
+            tokio::spawn(async move { sb.write_obi_batch(&sym_c, &samples); });
+        } else {
+            self.obi_intrabar.clear();
+        }
         // EMA-240M1 ≈ 4H para contexto estructural HTF (FASE 2.6)
         {
             const H1_ALPHA: f64 = 2.0 / (60.0 + 1.0); // ≈ 0.03279 — EMA-60M1 = 1H
@@ -2133,6 +2178,10 @@ impl BarState {
                     expansion_bars_recent,
                     oi_mom_bars_recent,
                     cum_delta_25b,
+                    obi_l10: bar_obi_l10,
+                    obi_l20: bar_obi_l20,
+                    spread_bps: bar_spread_bps,
+                    obi_mean_intrabar,
                 };
                 // Config por símbolo — todas las calibraciones con datos live.
                 let mut rbf_cfg = cfg.range_breakout.clone();
@@ -2504,7 +2553,7 @@ impl BarState {
                 symbol,
                 bar_ms, &format!("{:?}", session.session),
                 o, h, l, c, vol, bar_delta,
-                cvd_slope, ctx.orderbook.obi_l5.unwrap_or(0.0),
+                cvd_slope, ctx.orderbook.obi_l5.unwrap_or(0.0), bar_obi_l10, bar_obi_l20,
                 self.obi_ema_fast, self.obi_ema_slow,
                 rbf_dz, rbf_vr, bar_liq_ratio, bar_spread_ticks,
                 stacked_str, absorption_str,

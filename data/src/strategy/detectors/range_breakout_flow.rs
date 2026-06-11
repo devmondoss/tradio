@@ -29,6 +29,8 @@ pub enum ConfluenceFlag {
     OiMomentum,
     SessionCvdAligned,
     BigCvdAligned,
+    ObiMultiDepth,
+    ObiIntrabarMean,
 }
 
 impl ConfluenceFlag {
@@ -43,6 +45,8 @@ impl ConfluenceFlag {
             Self::OiMomentum         => "oi_momentum",
             Self::SessionCvdAligned  => "session_cvd",
             Self::BigCvdAligned      => "big_cvd",
+            Self::ObiMultiDepth      => "obi_multi_depth",
+            Self::ObiIntrabarMean    => "obi_intrabar_mean",
         }
     }
 }
@@ -112,6 +116,20 @@ pub struct RbfGateContext {
     /// Calibración BNB: wins avg −78, losses avg −1,357 → gate: cum_delta > −500.
     /// BTC: losses cum_delta = +377 → gate: cum_delta < +200 (compradores agresivos = fakeout).
     pub cum_delta_25b: f64,
+
+    // ── Microestructura adicional (OBI multi-profundidad + spread) ─────────────
+    /// OBI L10 snapshot al cierre de barra (10 niveles).
+    /// Más robusto que L5 ante spoofing. Negativo = ask pressure dominante.
+    pub obi_l10: f64,
+    /// OBI L20 snapshot al cierre de barra (20 niveles).
+    /// Refleja intención institucional real — difícil de manipular.
+    pub obi_l20: f64,
+    /// Spread en bps al cierre de barra.
+    /// Spread > umbral = mercado ilíquido → fakeout probable.
+    pub spread_bps: f64,
+    /// OBI L5 promedio intrabar (sampleo cada 10s durante la barra).
+    /// None = sin datos acumulados aún (primeras barras del sistema).
+    pub obi_mean_intrabar: Option<f64>,
 }
 
 fn score_confluence(
@@ -128,6 +146,22 @@ fn score_confluence(
     // ── VETOS: cancelan la señal independientemente del score ─────────────────
     // wall_target desactivado — 1×ATR es demasiado amplio, vetaba el 100% de señales.
     // Pendiente calibración con datos reales cuando haya 50+ señales con outcome.
+
+    // Spread gate: mercado ilíquido = fakeout probable.
+    // Threshold 5 bps — calibrado para perps líquidos (BTC/ETH/BNB/SOL/XRP).
+    if gate.spread_bps > 5.0 {
+        return (0, vec![], Some("spread_wide".into()));
+    }
+
+    // OI delta gate: si OI decrece mientras precio rompe abajo → longs cubriendo (stop hunt),
+    // no shorts abriendo. Breakdown carece de convicción real.
+    if direction == RbfDirection::Short {
+        if let Some(oi_d) = gate.oi_delta_pct {
+            if oi_d < -10.0 {
+                return (0, vec![], Some("oi_covering".into()));
+            }
+        }
+    }
 
     // HVN en el camino al target — solo veta si el HVN está ENTRE entry y target
     // (dirección correcta) y en la primera mitad del recorrido desde entry.
@@ -226,6 +260,35 @@ fn score_confluence(
     if big_cvd_aligned {
         score += 1;
         flags.push(ConfluenceFlag::BigCvdAligned);
+    }
+
+    // [+1] OBI multi-profundidad alineado: L10 + L20 ambos en la dirección del breakout.
+    // L5 puede ser spoofed; L10+L20 alineados = presión real en todo el libro.
+    // Autopsia 39 trades: MAE<0.5R (entradas limpias) WR=92% — este punto identifica esas entradas.
+    let obi_l10_aligned = match direction {
+        RbfDirection::Short => gate.obi_l10 < -0.05,
+        RbfDirection::Long  => gate.obi_l10 >  0.05,
+    };
+    let obi_l20_aligned = match direction {
+        RbfDirection::Short => gate.obi_l20 < -0.03,
+        RbfDirection::Long  => gate.obi_l20 >  0.03,
+    };
+    if obi_l10_aligned && obi_l20_aligned {
+        score += 1;
+        flags.push(ConfluenceFlag::ObiMultiDepth);
+    }
+
+    // [+1] OBI intrabar promedio alineado: OBI promedio durante la barra (sampleo 10s).
+    // Más robusto que snapshot al cierre — detecta presión sostenida vs spike de fin de barra.
+    if let Some(mean_obi) = gate.obi_mean_intrabar {
+        let obi_mean_aligned = match direction {
+            RbfDirection::Short => mean_obi < -0.05,
+            RbfDirection::Long  => mean_obi >  0.05,
+        };
+        if obi_mean_aligned {
+            score += 1;
+            flags.push(ConfluenceFlag::ObiIntrabarMean);
+        }
     }
 
     // Veto especial: Long contra tendencia bajista sin máxima confluencia

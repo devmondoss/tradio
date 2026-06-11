@@ -769,7 +769,7 @@ impl SupabaseWriter {
         symbol: &str,
         ts_ms: i64, session: &str,
         open: f64, high: f64, low: f64, close: f64, volume: f64, bar_delta: f64,
-        cvd_slope: Option<f64>, obi_l5: f64, obi_fast: f64, obi_slow: f64,
+        cvd_slope: Option<f64>, obi_l5: f64, obi_l10: f64, obi_l20: f64, obi_fast: f64, obi_slow: f64,
         dz: f64, vr: f64, liq_ratio: f64, spread_ticks: i32,
         stacked_imb: &str, absorption: &str,
         thin_above: bool, thin_below: bool, bid_wall: bool, ask_wall: bool,
@@ -796,6 +796,8 @@ impl SupabaseWriter {
             "bar_delta":       bar_delta,
             "cvd_slope":       cvd_slope,
             "obi_l5":          obi_l5,
+            "obi_l10":         obi_l10,
+            "obi_l20":         obi_l20,
             "obi_fast":        obi_fast,
             "obi_slow":        obi_slow,
             "dz":              dz,
@@ -835,6 +837,41 @@ impl SupabaseWriter {
         let writer = self.clone();
         tokio::spawn(async move {
             writer.post(&table, &body).await;
+        });
+    }
+
+    /// Escribe un lote de muestras OBI intrabar (sampleo 10s) a la tabla obi_10s.
+    /// Usa upsert para evitar duplicados si el monitor reinicia dentro de la misma barra.
+    pub fn write_obi_batch(&self, symbol: &str, samples: &[(i64, f32, f32, f32, f32)]) {
+        if samples.is_empty() { return; }
+        let rows: Vec<serde_json::Value> = samples.iter().map(|&(ts, l5, l10, l20, sp)| {
+            json!({
+                "ts_ms":      ts,
+                "symbol":     symbol,
+                "obi_l5":     l5,
+                "obi_l10":    l10,
+                "obi_l20":    l20,
+                "spread_bps": sp,
+            })
+        }).collect();
+        let body = serde_json::Value::Array(rows);
+        let url = format!("{}/rest/v1/obi_10s", self.url);
+        let writer = self.clone();
+        tokio::spawn(async move {
+            let result = writer.client
+                .post(&url)
+                .header("apikey", &writer.key)
+                .header("Authorization", format!("Bearer {}", writer.key))
+                .header("Content-Type", "application/json")
+                .header("Prefer", "resolution=ignore-duplicates")
+                .json(&body)
+                .send()
+                .await;
+            if let Ok(r) = result {
+                if !r.status().is_success() {
+                    eprintln!("[supabase] write_obi_batch {} HTTP {}", writer.url.len(), r.status());
+                }
+            }
         });
     }
 
