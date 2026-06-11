@@ -107,6 +107,11 @@ pub struct RbfGateContext {
     /// Calibración n=30 Shorts: oi_mom_n≤3 → WR=58%; oi_mom_n≤4 → WR=57%.
     /// Pasar 0 para desactivar el gate o si el símbolo no tiene datos de OI.
     pub oi_mom_bars_recent: u8,
+    /// Suma del bar_delta de las últimas 25 barras M1.
+    /// Gate por símbolo para Shorts: cum_delta muy negativo = move ya consumido.
+    /// Calibración BNB: wins avg −78, losses avg −1,357 → gate: cum_delta > −500.
+    /// BTC: losses cum_delta = +377 → gate: cum_delta < +200 (compradores agresivos = fakeout).
+    pub cum_delta_25b: f64,
 }
 
 fn score_confluence(
@@ -573,6 +578,17 @@ impl RangeBreakoutState {
                 if let Some(max_exp) = cfg.expansion_max_bars {
                     if ctx.expansion_bars_recent > max_exp { continue; }
                 }
+                // Gate cum_delta_25b por símbolo (Short).
+                // Muy negativo = selling masivo ya consumido → edge desaparece.
+                // Muy positivo = compradores agresivos activos → fakeout probable.
+                if let Some(g) = gate {
+                    if let Some(min_d) = cfg.cum_delta_min_short {
+                        if g.cum_delta_25b < min_d { continue; }
+                    }
+                    if let Some(max_d) = cfg.cum_delta_max_short {
+                        if g.cum_delta_25b > max_d { continue; }
+                    }
+                }
             }
 
             let cvd_in_range: f64 = window.iter().map(|b| b.delta).sum();
@@ -613,8 +629,10 @@ impl RangeBreakoutState {
                                     (0, vec![], None)
                                 };
                                 // Solo emitir si no hay veto y score mínimo
+                                let eff_min_score = cfg.min_confluence_score_override
+                                    .unwrap_or(cfg.min_confluence_score);
                                 if veto_reason.is_none()
-                                    && confluence_score >= cfg.min_confluence_score
+                                    && confluence_score >= eff_min_score
                                 {
                                     confluence_flags.push("pre_breakout".to_string());
                                     let vr_tier: u8 = if vr >= 4.0 { 3 } else if vr >= 2.0 { 2 } else { 1 };
@@ -865,6 +883,13 @@ impl RangeBreakoutState {
                 else if signal_score_v2 >= 0.30 { 1.0 }
                 else { 0.5 };
 
+            // Gate de confluence score (por símbolo via override, o global).
+            let eff_min_score_post = cfg.min_confluence_score_override
+                .unwrap_or(cfg.min_confluence_score);
+            if veto_reason.is_some() || confluence_score < eff_min_score_post {
+                continue;
+            }
+
             return Some(RbfSignal {
                 direction,
                 entry_price: close,
@@ -979,6 +1004,19 @@ pub struct RangeBreakoutConfig {
     /// Barras máximas con OI momentum en las 25 pre-entry para el gate de pre-breakout.
     /// Calibración: oi_mom_n≤3 → WR=58%; oi_mom_n≤4 → WR=57%. None = gate desactivado.
     pub pre_breakout_oi_max:   Option<u8>,
+
+    // ── Gates cum_delta por símbolo ───────────────────────────────────────────
+    /// Filtro Short: rechaza si cum_delta_25b < umbral (move demasiado consumido).
+    /// BNB calibrado: Some(-500.0) — wins avg -78, losses avg -1357.
+    /// None = sin filtro (default).
+    pub cum_delta_min_short: Option<f64>,
+    /// Filtro Short: rechaza si cum_delta_25b > umbral (compradores agresivos = fakeout).
+    /// BTC candidato: Some(200.0) — losses cum_delta = +377.
+    /// None = sin filtro (default).
+    pub cum_delta_max_short: Option<f64>,
+    /// Score mínimo de confluencia específico por símbolo (sobrescribe min_confluence_score).
+    /// ETH: Some(2) — OBI invertido, exigir más evidencia. None = usar min_confluence_score.
+    pub min_confluence_score_override: Option<u8>,
 }
 
 impl Default for RangeBreakoutConfig {
@@ -1014,6 +1052,9 @@ impl Default for RangeBreakoutConfig {
             pre_breakout_rr:       3.0,    // target 3× vs 2× en post-breakout
             pre_breakout_vr_min:   1.5,    // requiere VR≥1.5× en borde del rango
             pre_breakout_oi_max:   Some(3), // oi_mom_n≤3 → WR=58%
+            cum_delta_min_short:        None,  // por símbolo en el caller
+            cum_delta_max_short:        None,  // por símbolo en el caller
+            min_confluence_score_override: None,
         }
     }
 }

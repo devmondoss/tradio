@@ -14,8 +14,11 @@ use super::range_breakout_flow::{RbfDirection, RbfSignal};
 
 /// Distancia del trailing en múltiplos de ATR.
 const TRAIL_ATR_K: f64 = 1.2;
-/// Barras máximas en una posición perdedora antes de cerrar.
+/// Barras máximas en posición post-breakout perdedora antes de cerrar.
 const TIME_STOP_BARS: u32 = 30;
+/// Pre-breakout: si en 15 barras el precio no rompió, la tesis falló — salir antes.
+/// Backtest exits: TIME_STOP pre avg -0.24R → con 15b sería ~-0.12R, libera capital antes.
+const PRE_BREAKOUT_TIME_STOP_BARS: u32 = 15;
 
 // Calibración trailing (datos live 72 trades, 2026-06-10):
 // 4 Shorts salieron por trailing avg +0.90–1.32R vs target 2R → cedieron ~0.97R/trade.
@@ -78,6 +81,8 @@ struct ActivePosition {
     best_extreme: f64,
     /// True cuando el trailing stop ya fue activado (precio alcanzó TRAIL_ACTIVATE_R).
     trailing_active: bool,
+    /// True si la posición fue abierta en modo pre-breakout (time stop más corto).
+    is_pre_breakout: bool,
 }
 
 pub struct RbfPaperTrader {
@@ -142,6 +147,7 @@ impl RbfPaperTrader {
             atr_at_entry:    atr,
             best_extreme,
             trailing_active: false,
+            is_pre_breakout: sig.is_pre_breakout,
         });
     }
 
@@ -174,6 +180,7 @@ impl RbfPaperTrader {
             atr_at_entry:    0.0,
             best_extreme,
             trailing_active: false,
+            is_pre_breakout: false,
         });
     }
 
@@ -251,8 +258,10 @@ impl RbfPaperTrader {
         } else if target_hit {
             RbfExitReason::Target
         } else {
-            // ── Time stop: bar 15+ y posición en pérdida → cierra al close ───
-            if pos.bars_held >= TIME_STOP_BARS {
+            // ── Time stop: posición en pérdida → cierra al close ────────────
+            // Pre-breakout usa umbral más corto: si en 15 barras no rompió, tesis fallida.
+            let time_stop_threshold = if pos.is_pre_breakout { PRE_BREAKOUT_TIME_STOP_BARS } else { TIME_STOP_BARS };
+            if pos.bars_held >= time_stop_threshold {
                 let current_pnl = match pos.direction {
                     RbfDirection::Short => pos.entry_price - close,
                     RbfDirection::Long  => close - pos.entry_price,

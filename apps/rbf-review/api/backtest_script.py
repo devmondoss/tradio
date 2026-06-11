@@ -53,7 +53,26 @@ TABLES = {
     'BTCUSDT': 'btc_bars', 'ETHUSDT': 'eth_bars', 'BNBUSDT': 'bnb_bars',
     'SOLUSDT': 'sol_bars', 'XRPUSDT': 'xrp_bars',
 }
-BAR_COLS = 'ts_ms,open,high,low,close,volume,bar_delta,vr,atr,session,cvd_slope,obi_l5,vwap'
+BAR_COLS = 'ts_ms,open,high,low,close,volume,bar_delta,vr,atr,session,cvd_slope,obi_l5,vwap,regime'
+
+def sb_first_micro_ms():
+    """Devuelve el ts_ms del primer bar con microestructura real (cvd_slope NOT NULL)."""
+    earliest = None
+    for table in TABLES.values():
+        qs = urllib.parse.urlencode({
+            'select': 'ts_ms', 'cvd_slope': 'not.is.null',
+            'order': 'ts_ms.asc', 'limit': '1',
+        })
+        req = urllib.request.Request(
+            f'{SUPABASE_URL}/rest/v1/{table}?{qs}',
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
+        )
+        rows = json.loads(urllib.request.urlopen(req, timeout=15).read())
+        if rows:
+            ms = rows[0]['ts_ms']
+            if earliest is None or ms < earliest:
+                earliest = ms
+    return earliest
 
 def sb_fetch(table, start_ms):
     rows, limit, offset = [], 1000, 0
@@ -72,8 +91,11 @@ def sb_fetch(table, start_ms):
         offset += limit
     return rows
 
-def simulate(bars, entry, stop, target, atr, trail_activate_r):
+PRE_BREAKOUT_TIME_STOP_BARS = 15  # si en 15 min no rompió, tesis fallida
+
+def simulate(bars, entry, stop, target, atr, trail_activate_r, is_pre=False):
     """Simula un trade Short desde entry hasta stop/target/time_stop."""
+    time_stop = PRE_BREAKOUT_TIME_STOP_BARS if is_pre else TIME_STOP_BARS
     best, trailing, trail_stop = entry, False, stop
     for k, b in enumerate(bars):
         eff = trail_stop if trailing else stop
@@ -90,7 +112,7 @@ def simulate(bars, entry, stop, target, atr, trail_activate_r):
         if trailing and atr > 0:
             cand = best + TRAIL_ATR_K * atr
             if cand < trail_stop: trail_stop = cand
-        if k+1 >= TIME_STOP_BARS and (entry - c) < 0:
+        if k+1 >= time_stop and (entry - c) < 0:
             return (entry - c) / abs(stop - entry), 'TIME_STOP', k+1, b['ts_ms']
     return 0.0, 'DATA_END', len(bars), (bars[-1]['ts_ms'] if bars else 0)
 
@@ -151,9 +173,27 @@ def detect(sym, bars, idx_off, equity_start):
         atr = b.get('atr') or 0
         if ses not in SESSIONS_OK: continue
         if atr <= 0: continue
+        # Solo barras con microestructura real (monitor live)
+        if b.get('cvd_slope') is None or b.get('vwap') is None: continue
+
+        # expansion_bars_recent: cuenta barras Expansion en las 25 anteriores.
+        # SOL/XRP: bypass (correlación invertida / muestra insuficiente).
+        # BTC/ETH/BNB: filtro ≤3 calibrado (WR 40%→60%).
+        if sym not in ('SOLUSDT', 'XRPUSDT'):
+            exp_window = bars[max(0, i-25):i]
+            exp_count  = sum(1 for x in exp_window if x.get('regime') == 'Expansion')
+            if exp_count > 3: continue
         if i - last_sig < COOLDOWN_BARS: continue
         vwap = b.get('vwap')
         if vwap and vwap > 0 and (b['close'] - vwap) / vwap < -VSWAP_MAX_DEV: continue
+
+        # cum_delta_25b gate por símbolo (calibración 2026-06-10):
+        # BNB: wins avg -78, losses -1357 → rechazar si < -500
+        # BTC: losses cum_delta = +377 → rechazar si > +200 (compradores agresivos = fakeout)
+        delta_win = bars[max(0, i-25):i]
+        cum_d25   = sum(x.get('bar_delta') or 0 for x in delta_win)
+        if sym == 'BNBUSDT' and cum_d25 < -500: continue
+        if sym == 'BTCUSDT' and cum_d25 > 200:  continue
 
         fired = False
 
@@ -180,7 +220,7 @@ def detect(sym, bars, idx_off, equity_start):
                 stop_p = hi
                 target = entry - RR_SHORT * (stop_p - entry)
                 sim    = bars[i+1:i+1+TIME_STOP_BARS+30]
-                r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr, TRAIL_ACTIVATE_R_SHORT)
+                r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr, TRAIL_ACTIVATE_R_SHORT, is_pre=False)
                 equity = round(equity + r * RISK_USD, 2)
                 trades.append(build_trade(sym, b, entry, stop_p, target, RR_SHORT, rw, rp,
                                           deltas, sim, reason, r, dur, exit_ms, equity - r*RISK_USD,
@@ -204,7 +244,7 @@ def detect(sym, bars, idx_off, equity_start):
                 target = entry - PRE_RR * risk
                 if (entry - target) / risk < 1.5: continue
                 sim    = bars[i+1:i+1+TIME_STOP_BARS+30]
-                r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr, TRAIL_ACTIVATE_R_SHORT)
+                r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr, TRAIL_ACTIVATE_R_SHORT, is_pre=True)
                 equity = round(equity + r * RISK_USD, 2)
                 trades.append(build_trade(sym, b, entry, stop_p, target, PRE_RR, rw, rp,
                                           deltas, sim, reason, r, dur, exit_ms, equity - r*RISK_USD,
@@ -226,7 +266,12 @@ def main():
         print(json.dumps({'error': 'SUPABASE_URL / SUPABASE_KEY no configurados'}))
         sys.exit(1)
 
-    start_ms = int((time.time() - args.days * 86400) * 1000)
+    # Auto-detectar inicio de microestructura real (primer bar con cvd_slope NOT NULL)
+    micro_start_ms = sb_first_micro_ms()
+    manual_start   = int((time.time() - args.days * 86400) * 1000)
+    # Usar el más reciente: no retroceder antes de que tengamos datos reales
+    start_ms = max(manual_start, micro_start_ms) if micro_start_ms else manual_start
+    micro_start_iso = datetime.fromtimestamp(micro_start_ms/1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M') if micro_start_ms else 'unknown'
     all_trades = []
     first_bar_ms = [None]
 
@@ -257,16 +302,17 @@ def main():
         actual_days = max(1, round(elapsed_ms / 86_400_000, 1))
 
     print(json.dumps({
-        'trades':       all_trades,
-        'capital':      CAPITAL,
-        'risk_usd':     RISK_USD,
-        'days':         args.days,
-        'actual_days':  actual_days,
-        'n':            n,
-        'wins':         wins,
-        'equity':       eq,
-        'n_pre':        len(pre_trades),
-        'wins_pre':     pre_wins,
+        'trades':           all_trades,
+        'capital':          CAPITAL,
+        'risk_usd':         RISK_USD,
+        'days':             args.days,
+        'actual_days':      actual_days,
+        'micro_start':      micro_start_iso,
+        'n':                n,
+        'wins':             wins,
+        'equity':           eq,
+        'n_pre':            len(pre_trades),
+        'wins_pre':         pre_wins,
         'calibration_note': (
             'expansion_bars_recent filter NOT simulated (no regime col in historical bars). '
             'Pre-breakout oi_mom gate NOT simulated (no OI in historical bars). '

@@ -601,6 +601,8 @@ struct BarState {
     regime_hist_25: VecDeque<data::strategy::types::Regime>,
     // Rolling window de los últimos 25 valores de oi_momentum_aligned para el gate pre-breakout.
     oi_mom_hist_25: VecDeque<bool>,
+    // Rolling window de los últimos 25 bar_delta para el gate cum_delta por símbolo.
+    delta_hist_25: VecDeque<f64>,
     // Health monitoring
     freshness: DataFreshness,
     streams: StreamStates,
@@ -724,6 +726,7 @@ impl BarState {
             regime_started_at_ms: None,
             regime_hist_25:   VecDeque::with_capacity(26),
             oi_mom_hist_25:   VecDeque::with_capacity(26),
+            delta_hist_25:    VecDeque::with_capacity(26),
             freshness: DataFreshness::default(),
             streams: StreamStates::default(),
             pending_outcomes: Vec::new(),
@@ -1427,6 +1430,8 @@ impl BarState {
         // Mantener ventana de 25 valores de OI momentum para el gate pre-breakout de RBF.
         self.oi_mom_hist_25.push_back(oi_momentum_aligned.unwrap_or(false));
         if self.oi_mom_hist_25.len() > 25 { self.oi_mom_hist_25.pop_front(); }
+        self.delta_hist_25.push_back(bar_delta);
+        if self.delta_hist_25.len() > 25 { self.delta_hist_25.pop_front(); }
 
         // --- Market structure: MSS, sweep, AVWAP-BOS ---
         // Use a lookback of 10 bars for swing detection.
@@ -2101,6 +2106,7 @@ impl BarState {
                     .filter(|&&v| v)
                     .count()
                     .min(25) as u8;
+                let cum_delta_25b: f64 = self.delta_hist_25.iter().sum();
                 let rbf_gate = data::strategy::detectors::range_breakout_flow::RbfGateContext {
                     stacked_imbalance_bearish: stacked_imbalance == ImbalanceSide::Bearish,
                     stacked_imbalance_bullish: stacked_imbalance == ImbalanceSide::Bullish,
@@ -2126,15 +2132,33 @@ impl BarState {
                     atr,
                     expansion_bars_recent,
                     oi_mom_bars_recent,
+                    cum_delta_25b,
                 };
-                // Config por símbolo: expansion_max_bars calibrado con datos live (n=30 Shorts).
-                // BTC/ETH/BNB: Some(3) → WR=60% vs WR=40% sin filtro.
-                // SOL/XRP: None → expansion_bars_recent se pasa como 0, filtro nunca activa.
+                // Config por símbolo — todas las calibraciones con datos live.
                 let mut rbf_cfg = cfg.range_breakout.clone();
+                // expansion_max_bars: BTC/ETH/BNB → Some(3) WR 40%→60%. SOL/XRP bypass.
                 rbf_cfg.expansion_max_bars = match symbol {
                     "SOLUSDT" | "XRPUSDT" => None,
                     _                      => Some(3),
                 };
+                // cum_delta gates por símbolo (calibración n=30 Shorts 2026-06-10):
+                // BNB: wins avg -78 vs losses -1357 → rechazar si cum_delta < -500
+                // BTC: losses cum_delta = +377 → rechazar si cum_delta > +200 (compradores agresivos)
+                (rbf_cfg.cum_delta_min_short, rbf_cfg.cum_delta_max_short) = match symbol {
+                    "BNBUSDT" => (Some(-500.0), None),
+                    "BTCUSDT" => (None,         Some(200.0)),
+                    _         => (None,         None),
+                };
+                // ETH: OBI invertido, señal débil → exigir score ≥ 2 mientras n<20 con OBI gate.
+                rbf_cfg.min_confluence_score_override = match symbol {
+                    "ETHUSDT" => Some(2),
+                    _         => None,
+                };
+                // Pre-breakout VR: en Overlap el volumen es mayor y hay más fakeouts → exigir 2.0×.
+                // En London/NY mantener 1.5× (volumen moderado, precio en borde es más informativo).
+                if matches!(session.session, data::session::session_tracker::TradingSession::LondonNyOverlap) {
+                    rbf_cfg.pre_breakout_vr_min = rbf_cfg.pre_breakout_vr_min.max(2.0);
+                }
                 if let Some(sig) = self.rbf_state.on_bar_close(
                     o, h, l, c,
                     vol,
