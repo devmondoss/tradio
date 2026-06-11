@@ -413,6 +413,7 @@ impl SupabaseWriter {
             "exit_reason":  trade.exit_reason.as_str(),
             "closed_at":    closed_at_iso,
             "is_active":    false,
+            "bars_held":    trade.bars_held as i64,
         });
         let url    = format!("{}/rest/v1/rbf_signals?id=eq.{}", self.url, id);
         let writer = self.clone();

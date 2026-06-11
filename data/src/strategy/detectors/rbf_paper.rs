@@ -57,6 +57,7 @@ pub struct RbfClosedTrade {
     pub exit_reason: RbfExitReason,
     pub entry_ms:    i64,
     pub exit_ms:     i64,
+    pub bars_held:   u32,
     /// UUID de la fila en rbf_signals para hacer el PATCH
     pub supabase_id: Option<String>,
 }
@@ -292,6 +293,7 @@ impl RbfPaperTrader {
             exit_reason: reason,
             entry_ms:    pos.entry_ms,
             exit_ms:     bar_ms,
+            bars_held:   pos.bars_held,
             supabase_id: pos.supabase_id.clone(),
         };
 
