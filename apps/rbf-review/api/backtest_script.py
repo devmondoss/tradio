@@ -29,7 +29,6 @@ RANGE_MAX_PCT    = 0.55
 VR_MIN           = 3.0
 MIN_RANGE_ATR    = 1.5
 TRAIL_ATR_K      = 1.2
-TIME_STOP_BARS   = 45
 COOLDOWN_BARS    = 60
 RR_SHORT         = 1.6
 SESSIONS_OK      = {'London', 'LondonNyOverlap', 'NewYork'}
@@ -91,43 +90,32 @@ def sb_fetch(table, start_ms):
         offset += limit
     return rows
 
-PRE_BREAKOUT_TIME_STOP_BARS = 15  # si en 15 min no rompió, tesis fallida
-
 def simulate(bars, entry, stop, target, atr, trail_activate_r, is_pre=False):
     """
     Simula un trade Short.
     Exit logic:
       1. STOP_LOSS  — precio sube al stop original
-      2. TAKE_PROFIT — precio baja al target (2R)
+      2. TAKE_PROFIT — precio baja al target
       3. BREAKEVEN  — SL movido a entry se activa (precio rebota tras llegar a +1R)
-      4. TIME_STOP  — 45 barras sin resolución, cierra al mercado sin importar P&L
+      Sin TIME_STOP: el SL ya limita el riesgo, no hay cierre arbitrario por tiempo.
     """
-    time_stop = PRE_BREAKOUT_TIME_STOP_BARS if is_pre else TIME_STOP_BARS
     risk      = abs(stop - entry)
-    be_active = False   # breakeven aún no activado
+    be_active = False
 
     for k, b in enumerate(bars):
         h, l, c = b['high'], b['low'], b['close']
-        eff_stop = entry if be_active else stop  # SL fijo o BE
+        eff_stop = entry if be_active else stop
 
-        # 1. Stop hit
         if h >= eff_stop:
             r = (entry - eff_stop) / risk
             return round(r, 4), ('BREAKEVEN' if be_active else 'STOP_LOSS'), k+1, b['ts_ms']
 
-        # 2. Target hit
         if l <= target:
             r = (entry - target) / risk
             return round(r, 4), 'TAKE_PROFIT', k+1, b['ts_ms']
 
-        # 3. Activar BE: precio bajó 1R → mover SL a entry
         if not be_active and (entry - l) / risk >= 1.0:
             be_active = True
-
-        # 4. Time stop: 45 barras, cierra al mercado pase lo que pase
-        if k + 1 >= time_stop:
-            r = (entry - c) / risk
-            return round(r, 4), 'TIME_STOP', k+1, b['ts_ms']
 
     last_c = bars[-1]['close'] if bars else entry
     return round((entry - last_c) / risk, 4), 'DATA_END', len(bars), (bars[-1]['ts_ms'] if bars else 0)
@@ -309,7 +297,7 @@ def detect(sym, bars, idx_off, equity_start):
                 entry  = close
                 stop_p = hi
                 target = entry - RR_SHORT * (stop_p - entry)
-                sim    = bars[i+1:i+1+TIME_STOP_BARS+30]
+                sim    = bars[i+1:i+1+300]
                 r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr, TRAIL_ACTIVATE_R_SHORT, is_pre=False)
                 equity = round(equity + r * RISK_USD, 2)
                 trades.append(build_trade(sym, b, entry, stop_p, target, RR_SHORT, rw, rp,
@@ -338,7 +326,7 @@ def detect(sym, bars, idx_off, equity_start):
                 if risk < 1e-6: continue
                 target = entry - PRE_RR * risk
                 if (entry - target) / risk < 1.5: continue
-                sim    = bars[i+1:i+1+TIME_STOP_BARS+30]
+                sim    = bars[i+1:i+1+300]
                 r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr, TRAIL_ACTIVATE_R_SHORT, is_pre=True)
                 equity = round(equity + r * RISK_USD, 2)
                 trades.append(build_trade(sym, b, entry, stop_p, target, PRE_RR, rw, rp,
