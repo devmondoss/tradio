@@ -3,10 +3,10 @@
 Backtest RBF — corre como subprocess desde Vite, imprime JSON a stdout.
 Uso: python api/backtest_script.py --days 14
 
-Calibraciones activas (2026-06-10):
-  - TRAIL_ACTIVATE_R_SHORT = 1.75  (antes 1.5 — calibrado con 72 trades live)
-  - Modo pre-breakout: entry en range_low antes del VR>=3x, target=3R
-  - expansion_bars_recent: NO simulable en backtest (tablas históricas no tienen columna regime)
+Exit logic (idéntica al sistema live rbf_paper.rs):
+  - Target 2R, trailing ATR×1.2 activado en 1.75R favorable
+  - Sin time stop — el SL limita el riesgo máximo
+  - Config centralizada arriba del archivo (sin hardcoding disperso)
 """
 import json, os, sys, time, urllib.request, urllib.parse, argparse
 from datetime import datetime, timezone
@@ -23,27 +23,28 @@ for line in (ROOT / '.env').read_text(encoding='utf-8').splitlines():
 SUPABASE_URL = _env.get('SUPABASE_URL', os.environ.get('SUPABASE_URL', ''))
 SUPABASE_KEY = _env.get('SUPABASE_KEY', os.environ.get('SUPABASE_KEY', ''))
 
-RANGE_WINDOWS    = [15, 20, 30, 45, 60]
-RANGE_MIN_PCT    = 0.08
-RANGE_MAX_PCT    = 0.55
-VR_MIN           = 3.0
-MIN_RANGE_ATR    = 1.5
-TRAIL_ATR_K      = 1.2
-COOLDOWN_BARS    = 60
-RR_SHORT         = 1.6
-SESSIONS_OK      = {'London', 'LondonNyOverlap', 'NewYork'}
-BREAKOUT_EXT_MIN = 0.001
-VSWAP_MAX_DEV    = 0.003
+# ── CONFIG (todos los params en un solo lugar) ──────────────────────────────
 CAPITAL          = 500.0
-RISK_USD         = CAPITAL * 0.02  # $10 fijo por trade
+RISK_PCT         = 0.02          # 2% por trade
+RISK_USD         = CAPITAL * RISK_PCT
 
-# Calibración 2026-06-10: dirección-aware (antes ambos en 1.5)
-TRAIL_ACTIVATE_R_SHORT = 1.75
-TRAIL_ACTIVATE_R_LONG  = 1.5
+# Detección de rango
+RANGE_WINDOWS    = [15, 20, 30, 45, 60]
+RANGE_MIN_PCT    = 0.08          # % mínimo del rango
+RANGE_MAX_PCT    = 0.55          # % máximo del rango
+VR_MIN           = 3.0           # volumen ratio mínimo para breakout
+MIN_RANGE_ATR    = 1.5           # rango mínimo en ATRs
+COOLDOWN_BARS    = 60            # barras entre señales del mismo símbolo
+SESSIONS_OK      = {'London', 'LondonNyOverlap', 'NewYork'}
 
-# Pre-breakout: entra antes del VR>=3x, en el borde del rango
+# Exits: igual que el sistema live (rbf_paper.rs)
+RR_SHORT         = 2.0           # target en R (live usa 2R)
+TRAIL_ACTIVATE_R = 1.75          # activa trailing cuando el precio bajó 1.75R
+TRAIL_ATR_K      = 1.2           # trailing_stop = best_low + 1.2 * ATR
+
+# Pre-breakout
 PRE_VR_MIN       = 1.5
-PRE_ZONE_PCT     = 0.001   # close <= range_low * 1.001
+PRE_ZONE_PCT     = 0.001
 PRE_RR           = 3.0
 # Nota: oi_mom_bars_recent gate NO se puede simular en backtest (no hay OI en tablas históricas)
 # En live el gate filtra a WR=58% — el backtest es sin ese filtro, por tanto más ruidoso.
@@ -90,32 +91,48 @@ def sb_fetch(table, start_ms):
         offset += limit
     return rows
 
-def simulate(bars, entry, stop, target, atr, trail_activate_r, is_pre=False):
+def simulate(bars, entry, stop, target, atr):
     """
-    Simula un trade Short.
+    Simula un trade Short — lógica idéntica a rbf_paper.rs.
     Exit logic:
-      1. STOP_LOSS  — precio sube al stop original
-      2. TAKE_PROFIT — precio baja al target
-      3. BREAKEVEN  — SL movido a entry se activa (precio rebota tras llegar a +1R)
-      Sin TIME_STOP: el SL ya limita el riesgo, no hay cierre arbitrario por tiempo.
+      1. STOP_LOSS     — HIGH >= stop original (sin trailing)
+      2. TRAILING_STOP — HIGH >= trailing_stop (una vez activo a TRAIL_ACTIVATE_R)
+      3. TAKE_PROFIT   — LOW  <= target
+      Trailing: best_low + TRAIL_ATR_K * ATR_barra, activa en TRAIL_ACTIVATE_R
     """
-    risk      = abs(stop - entry)
-    be_active = False
+    risk         = abs(stop - entry)
+    trail_stop   = stop        # stop dinámico, empieza en stop original
+    best_low     = entry       # mejor precio (Short: más bajo alcanzado)
+    trailing_on  = False
 
     for k, b in enumerate(bars):
-        h, l, c = b['high'], b['low'], b['close']
-        eff_stop = entry if be_active else stop
+        h, l = b['high'], b['low']
+        atr_b = b.get('atr') or atr    # ATR de esta barra, fallback al de entry
 
-        if h >= eff_stop:
-            r = (entry - eff_stop) / risk
-            return round(r, 4), ('BREAKEVEN' if be_active else 'STOP_LOSS'), k+1, b['ts_ms']
+        # Actualizar mejor low favorable
+        if l < best_low:
+            best_low = l
 
+        # Activar trailing cuando el precio bajó TRAIL_ACTIVATE_R
+        if not trailing_on and (entry - best_low) / risk >= TRAIL_ACTIVATE_R:
+            trailing_on = True
+
+        # Mover trailing stop hacia abajo siguiendo al precio
+        if trailing_on and atr_b > 0.0:
+            candidate = best_low + TRAIL_ATR_K * atr_b
+            if candidate < trail_stop:
+                trail_stop = candidate
+
+        # 1. Stop hit (original o trailing)
+        if h >= trail_stop:
+            reason = 'TRAILING_STOP' if trailing_on else 'STOP_LOSS'
+            r = (entry - trail_stop) / risk
+            return round(r, 4), reason, k+1, b['ts_ms']
+
+        # 2. Target hit
         if l <= target:
             r = (entry - target) / risk
             return round(r, 4), 'TAKE_PROFIT', k+1, b['ts_ms']
-
-        if not be_active and (entry - l) / risk >= 1.0:
-            be_active = True
 
     last_c = bars[-1]['close'] if bars else entry
     return round((entry - last_c) / risk, 4), 'DATA_END', len(bars), (bars[-1]['ts_ms'] if bars else 0)
@@ -178,12 +195,9 @@ def score_confluence(b, entry, is_short=True):
 def build_trade(sym, b, entry, stop_p, target, rr, rw, rp, deltas, sim_bars, reason, r, dur, exit_ms, equity, idx_off, count, is_pre):
     closed = datetime.fromtimestamp(exit_ms/1000, tz=timezone.utc).isoformat() if exit_ms else None
     vwap   = b.get('vwap')
-    if reason == 'TIME_STOP' and dur <= len(sim_bars):
-        exit_p = round(sim_bars[dur-1]['close'], 6)
-    elif reason == 'TAKE_PROFIT':
-        exit_p = round(target, 6)
-    else:
-        exit_p = round(stop_p, 6)
+    # exit_p calculado desde r para ser exacto sin importar el tipo de salida
+    risk   = abs(stop_p - entry)
+    exit_p = round(entry - r * risk, 6)
     pnl = round(r * RISK_USD, 2)
     sc, cf = score_confluence(b, entry, is_short=True)
     return {
@@ -226,7 +240,7 @@ def detect(sym, bars, idx_off, equity_start):
     trades, equity, last_sig = [], equity_start, -COOLDOWN_BARS
     last_pre_sig = -COOLDOWN_BARS
     n = len(bars)
-    for i in range(COOLDOWN_BARS, n - TIME_STOP_BARS):
+    for i in range(COOLDOWN_BARS, n):
         b   = bars[i]
         ses = b.get('session') or ''
         vr  = b.get('vr') or 0
@@ -298,7 +312,7 @@ def detect(sym, bars, idx_off, equity_start):
                 stop_p = hi
                 target = entry - RR_SHORT * (stop_p - entry)
                 sim    = bars[i+1:i+1+300]
-                r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr, TRAIL_ACTIVATE_R_SHORT, is_pre=False)
+                r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr)
                 equity = round(equity + r * RISK_USD, 2)
                 trades.append(build_trade(sym, b, entry, stop_p, target, RR_SHORT, rw, rp,
                                           deltas, sim, reason, r, dur, exit_ms, equity - r*RISK_USD,
@@ -327,7 +341,7 @@ def detect(sym, bars, idx_off, equity_start):
                 target = entry - PRE_RR * risk
                 if (entry - target) / risk < 1.5: continue
                 sim    = bars[i+1:i+1+300]
-                r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr, TRAIL_ACTIVATE_R_SHORT, is_pre=True)
+                r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr)
                 equity = round(equity + r * RISK_USD, 2)
                 trades.append(build_trade(sym, b, entry, stop_p, target, PRE_RR, rw, rp,
                                           deltas, sim, reason, r, dur, exit_ms, equity - r*RISK_USD,
