@@ -20,12 +20,11 @@ const TIME_STOP_BARS: u32 = 30;
 /// Backtest exits: TIME_STOP pre avg -0.24R → con 15b sería ~-0.12R, libera capital antes.
 const PRE_BREAKOUT_TIME_STOP_BARS: u32 = 15;
 
-// Calibración trailing (datos live 72 trades, 2026-06-10):
-// 4 Shorts salieron por trailing avg +0.90–1.32R vs target 2R → cedieron ~0.97R/trade.
-// Raising TRAIL_ACTIVATE_R 1.5 → 1.75: activa más cerca del target (0.25R antes),
-// reduce exits prematuros sin eliminar la protección ante reversales bruscos.
-// Por dirección: Shorts target=2R → activar en 1.75. Longs target=1.8R → 1.5 (sin cambio).
-const TRAIL_ACTIVATE_R_SHORT: f64 = 1.75;
+// Calibración trailing (backtest sweep 33 trades, 2026-06-12):
+// Sweep 1.50–2.00R: 1.90R es óptimo (+15.48R vs +13.53R en 1.75R, misma WR 48.5%).
+// Lock floor en activación garantiza mínimo TRAIL_ACTIVATE_R en cualquier trailing exit.
+// 2.00R ya pierde 1 win (trade que no llega a 2.0R). Óptimo: 1.90.
+const TRAIL_ACTIVATE_R_SHORT: f64 = 1.90;
 const TRAIL_ACTIVATE_R_LONG:  f64 = 1.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,8 +214,6 @@ impl RbfPaperTrader {
         let effective_atr = if atr > 0.0 { atr } else { pos.atr_at_entry };
 
         // ── Actualizar extremo favorable y trailing stop ─────────────────────
-        // Threshold por dirección: Shorts activan más tarde (1.75R) para no cortar
-        // moves que van a target 2R. Longs mantienen 1.5R (target 1.8R, menos margen).
         let trail_activate_r = match pos.direction {
             RbfDirection::Short => TRAIL_ACTIVATE_R_SHORT,
             RbfDirection::Long  => TRAIL_ACTIVATE_R_LONG,
@@ -227,6 +224,9 @@ impl RbfPaperTrader {
                 let fav_r = (pos.best_extreme - pos.entry_price) / risk;
                 if fav_r >= trail_activate_r && !pos.trailing_active {
                     pos.trailing_active = true;
+                    // Lock floor: garantiza mínimo trail_activate_r en cualquier exit
+                    let floor = pos.entry_price + trail_activate_r * risk;
+                    if floor > pos.stop_price { pos.stop_price = floor; }
                     println!("[rbf_paper] trailing activado en {:.2}R (threshold={:.2}R)", fav_r, trail_activate_r);
                 }
                 if pos.trailing_active && effective_atr > 0.0 {
@@ -241,6 +241,9 @@ impl RbfPaperTrader {
                 let fav_r = (pos.entry_price - pos.best_extreme) / risk;
                 if fav_r >= trail_activate_r && !pos.trailing_active {
                     pos.trailing_active = true;
+                    // Lock floor: garantiza mínimo trail_activate_r en cualquier exit
+                    let floor = pos.entry_price - trail_activate_r * risk;
+                    if floor < pos.stop_price { pos.stop_price = floor; }
                     println!("[rbf_paper] trailing activado en {:.2}R (threshold={:.2}R)", fav_r, trail_activate_r);
                 }
                 if pos.trailing_active && effective_atr > 0.0 {

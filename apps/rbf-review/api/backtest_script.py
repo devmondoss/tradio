@@ -39,15 +39,14 @@ SESSIONS_OK      = {'London', 'LondonNyOverlap', 'NewYork'}
 
 # Exits: igual que el sistema live (rbf_paper.rs)
 RR_SHORT         = 2.0           # target en R (live usa 2R)
-TRAIL_ACTIVATE_R = 1.75          # activa trailing cuando el precio bajó 1.75R
+TRAIL_ACTIVATE_R = 1.90          # activa trailing cuando el precio bajó 1.90R (sweep: 1.90 es óptimo)
 TRAIL_ATR_K      = 1.2           # trailing_stop = best_low + 1.2 * ATR
 
 # Pre-breakout
 PRE_VR_MIN       = 1.5
 PRE_ZONE_PCT     = 0.001
 PRE_RR           = 3.0
-# Nota: oi_mom_bars_recent gate NO se puede simular en backtest (no hay OI en tablas históricas)
-# En live el gate filtra a WR=58% — el backtest es sin ese filtro, por tanto más ruidoso.
+PRE_OI_MAX       = 3    # oi_mom_bars_recent <= 3 → WR=58% (idéntico a live pre_breakout_oi_max)
 
 TABLES = {
     'BTCUSDT': 'btc_bars', 'ETHUSDT': 'eth_bars', 'BNBUSDT': 'bnb_bars',
@@ -116,6 +115,10 @@ def simulate(bars, entry, stop, target, atr):
         # Activar trailing cuando el precio bajó TRAIL_ACTIVATE_R
         if not trailing_on and (entry - best_low) / risk >= TRAIL_ACTIVATE_R:
             trailing_on = True
+            # Lock floor: trail_stop salta a exactamente 1.75R garantizados
+            floor = entry - TRAIL_ACTIVATE_R * risk
+            if floor < trail_stop:
+                trail_stop = floor
 
         # Mover trailing stop hacia abajo siguiendo al precio
         if trailing_on and atr_b > 0.0:
@@ -322,13 +325,15 @@ def detect(sym, bars, idx_off, equity_start):
                 break
 
             # ── MODO PRE-BREAKOUT (entrada anticipada) ────────────────────────
-            # Nota: sin gate oi_mom_bars_recent (no hay OI en barras históricas)
-            # → resultados más ruidosos que live donde el gate filtra a WR=58%
+            # Gate OI: idéntico al live (main.rs:2168) — contar barras true en últimas 25.
+            # Calibración n=30 Shorts: oi_mom_bars_recent<=3 → WR=58%.
             if (not fired
                     and vr >= PRE_VR_MIN
                     and close <= lo * (1.0 + PRE_ZONE_PCT)
                     and cvd_ok
                     and i - last_pre_sig >= COOLDOWN_BARS):
+                oi_mom_recent = sum(1 for x in bars[max(0, i-25):i] if x.get('oi_momentum') is True)
+                if oi_mom_recent > PRE_OI_MAX: continue
                 # Pre-CVD gate: si compradores activos en últimas 5 barras → no entrar.
                 # Autopsia 39 trades: pre_cvd_5b > 0 → WR=0% (n=7). Entrada diferida:
                 # no seteamos fired/last_sig → barra siguiente re-escanea el mismo rango.

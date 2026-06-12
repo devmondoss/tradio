@@ -10,8 +10,8 @@ const STRATEGY_META = {
   rbf: {
     apiPath:    '/api/backtest',
     label:      'Backtest RBF — Python backend · $500 capital · $10/trade',
-    detail:     'VR≥3× · CVD rango < 0 · Ext>0.1% · VWAP gate · Stop = Range HIGH\nTrail ATR 1.2× (activa 1.75R Short / 1.5R Long) · Time stop 30 bars · Cooldown 60 bars\nSessions: London · Overlap · NY',
-    detail2:    'ETH: London skip · CVD≥−700 · OBI≤0.10 | BNB: cum_delta≥−500 | BTC: cum_delta≤+200\nExpansion gate: BTC/ETH/BNB ≤1 barra exp. últimas 25 · Pre-CVD 5b ≤ 0',
+    detail:     'VR≥3× · CVD rango < 0 · Stop = Range HIGH · Target 2R\nTrail ATR×1.2 activa 1.75R · Sin time stop · Cooldown 60 bars\nSessions: London · Overlap · NY',
+    detail2:    'Pre-breakout: VR≥1.5 · OI mom ≤3 barras · Pre-CVD 5b ≤ 0\nETH: CVD≥−700 · OBI≤0.10 | BNB: cum_delta≥−500 | BTC: cum_delta≤+200',
     presets:    [1, 3, 7, 14, 30] as number[],
     maxDays:    null as number | null,   // limitado por Supabase (necesita cvd_slope/vwap)
     defaultDays: null as number | null,  // null = usar todos los disponibles en Supabase

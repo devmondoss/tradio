@@ -47,7 +47,7 @@ export default function RBFModuleView({ trades, loading, error, onReload }: Prop
           <span className="mod-name" style={{ color }}>RBF</span>
           <span className="mod-desc">
             Range Breakout Flow · Short · {sub === 'backtest' ? 'Backtest' : 'Live'}
-            {sub === 'backtest' && btStats ? ` · score≥1 · BE +1R · timeout 45b` : ''}
+            {sub === 'backtest' && btStats ? ` · 2R target · Trailing ATR 1.75R · OI gate ≤3` : ''}
           </span>
         </div>
 
