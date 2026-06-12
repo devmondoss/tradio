@@ -74,6 +74,8 @@ ttl_min                = 20         # TTL de la señal (minutos)
 # ============================================================================
 [range_breakout]
 enabled          = true
+allow_long       = false  # live: Long WR=27% avgR=-0.15 (n=33) → desactivado
+allow_short      = true
 stop_pct         = 0.25   # fallback si range_high no disponible; stop real = range_high
 target_short_pct = 0.50   # RR ratio: 0.50/0.25 = 2.0 → target = entry - 2×(range_high - entry)
 target_long_pct  = 0.45   # RR ratio: 0.45/0.25 = 1.8 → target = entry + 1.8×(entry - range_low)
@@ -89,9 +91,9 @@ obi_gate             = false  # OBI gate desactivado (inversamente correlacionad
 obi_threshold        = 0.15   # umbral confluencia: |obi_l5| > threshold → flag activo
 
 # Filtros validados backtest 30d (feature mining sobre 98 trades, 30 días)
-vswap_gate           = true   # rechaza entries extendidos del VWAP
+vswap_gate           = false  # DESACTIVADO 2026-06-11 — recolectando datos live para calibrar
 vswap_max_dev        = 0.003  # max 0.3% bajo VWAP; >0.5% bajo → WR=6.5%
-breakout_ext_gate    = true   # close debe romper con convicción
+breakout_ext_gate    = false  # DESACTIVADO 2026-06-11 — recolectando datos live para calibrar
 breakout_ext_min     = 0.001  # >0.1% más allá del nivel → WR=44.4%; <0.1% → WR=18.8%
 
 # Sistema de confluencia v2 — shadow mode
@@ -156,3 +158,10 @@ manip_dz_spike_min   = 1.0   # spike debe romper zona significativa del VWAP (|d
 # London: +2.54R, -1.00R | LondonNyOverlap: -1.00R | NewYork: -0.12R, +1.33R, -1.00R, -1.00R
 # Asia: 0 wins, 3 stops (-2.62R) → EXCLUIDA
 # Filtro y score mínimo se aplican en main.rs (no aquí — es lógica de sesión, no config del detector)
+
+# ============================================================================
+# BUYER EXHAUSTION — compradores atrapados + giro CVD + ruptura a la baja
+# Sessions: London + LondonNyOverlap
+# ============================================================================
+[buyer_exhaustion]
+target_rr  = 2.0   # RR 1:2 explícito: target = entry - 2×risk (mismo diseño que RBF)
