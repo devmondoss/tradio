@@ -29,7 +29,7 @@ RANGE_MAX_PCT    = 0.55
 VR_MIN           = 3.0
 MIN_RANGE_ATR    = 1.5
 TRAIL_ATR_K      = 1.2
-TIME_STOP_BARS   = 30
+TIME_STOP_BARS   = 45
 COOLDOWN_BARS    = 60
 RR_SHORT         = 2.0
 SESSIONS_OK      = {'London', 'LondonNyOverlap', 'NewYork'}
@@ -53,7 +53,7 @@ TABLES = {
     'BTCUSDT': 'btc_bars', 'ETHUSDT': 'eth_bars', 'BNBUSDT': 'bnb_bars',
     'SOLUSDT': 'sol_bars', 'XRPUSDT': 'xrp_bars',
 }
-BAR_COLS = 'ts_ms,open,high,low,close,volume,bar_delta,vr,atr,session,cvd_slope,obi_l5,vwap,regime'
+BAR_COLS = 'ts_ms,open,high,low,close,volume,bar_delta,vr,atr,session,cvd_slope,obi_l5,vwap,regime,stacked_imb,absorption,thin_below,oi_momentum'
 
 def sb_first_micro_ms():
     """Devuelve el ts_ms del primer bar con microestructura real (cvd_slope NOT NULL)."""
@@ -94,27 +94,98 @@ def sb_fetch(table, start_ms):
 PRE_BREAKOUT_TIME_STOP_BARS = 15  # si en 15 min no rompió, tesis fallida
 
 def simulate(bars, entry, stop, target, atr, trail_activate_r, is_pre=False):
-    """Simula un trade Short desde entry hasta stop/target/time_stop."""
+    """
+    Simula un trade Short.
+    Exit logic:
+      1. STOP_LOSS  — precio sube al stop original
+      2. TAKE_PROFIT — precio baja al target (2R)
+      3. BREAKEVEN  — SL movido a entry se activa (precio rebota tras llegar a +1R)
+      4. TIME_STOP  — 45 barras sin resolución, cierra al mercado sin importar P&L
+    """
     time_stop = PRE_BREAKOUT_TIME_STOP_BARS if is_pre else TIME_STOP_BARS
-    best, trailing, trail_stop = entry, False, stop
+    risk      = abs(stop - entry)
+    be_active = False   # breakeven aún no activado
+
     for k, b in enumerate(bars):
-        eff = trail_stop if trailing else stop
         h, l, c = b['high'], b['low'], b['close']
-        if h >= eff:
-            r = (entry - eff) / abs(stop - entry)
-            return r, ('TRAILING_STOP' if trailing else 'STOP_LOSS'), k+1, b['ts_ms']
+        eff_stop = entry if be_active else stop  # SL fijo o BE
+
+        # 1. Stop hit
+        if h >= eff_stop:
+            r = (entry - eff_stop) / risk
+            return round(r, 4), ('BREAKEVEN' if be_active else 'STOP_LOSS'), k+1, b['ts_ms']
+
+        # 2. Target hit
         if l <= target:
-            r = (entry - target) / abs(stop - entry)
-            return r, 'TAKE_PROFIT', k+1, b['ts_ms']
-        if l < best: best = l
-        if (entry - best) / abs(stop - entry) >= trail_activate_r and not trailing:
-            trailing = True
-        if trailing and atr > 0:
-            cand = best + TRAIL_ATR_K * atr
-            if cand < trail_stop: trail_stop = cand
-        if k+1 >= time_stop and (entry - c) < 0:
-            return (entry - c) / abs(stop - entry), 'TIME_STOP', k+1, b['ts_ms']
-    return 0.0, 'DATA_END', len(bars), (bars[-1]['ts_ms'] if bars else 0)
+            r = (entry - target) / risk
+            return round(r, 4), 'TAKE_PROFIT', k+1, b['ts_ms']
+
+        # 3. Activar BE: precio bajó 1R → mover SL a entry
+        if not be_active and (entry - l) / risk >= 1.0:
+            be_active = True
+
+        # 4. Time stop: 45 barras, cierra al mercado pase lo que pase
+        if k + 1 >= time_stop:
+            r = (entry - c) / risk
+            return round(r, 4), 'TIME_STOP', k+1, b['ts_ms']
+
+    last_c = bars[-1]['close'] if bars else entry
+    return round((entry - last_c) / risk, 4), 'DATA_END', len(bars), (bars[-1]['ts_ms'] if bars else 0)
+
+OBI_THRESHOLD = 0.15  # debe coincidir con obi_threshold en strategy.toml
+
+def score_confluence(b, entry, is_short=True):
+    """
+    Scoring v2 — 6 flags, principio "participantes atrapados + estructura limpia".
+    Coincide con ConfluenceFlag enum en range_breakout_flow.rs (refactor Jun 2026).
+    Max: 6 puntos.
+    """
+    score = 0
+    flags = []
+
+    # [+1] Stacked imbalance en dirección del breakout
+    stk = b.get('stacked_imb') or ''
+    if is_short and stk in ('Bearish', 'FBG-Bearish'):
+        score += 1; flags.append('stacked_imbalance')
+    elif not is_short and stk in ('Bullish', 'FBG-Bullish'):
+        score += 1; flags.append('stacked_imbalance')
+
+    # [+1] Absorción de footprint
+    abso = b.get('absorption') or ''
+    if is_short and ('Ask' in abso or 'Bearish' in abso):
+        score += 1; flags.append('absorption')
+    elif not is_short and ('Bid' in abso or 'Bullish' in abso):
+        score += 1; flags.append('absorption')
+
+    # [+1] LVN / thin zone en dirección del target
+    if is_short and b.get('thin_below'):
+        score += 1; flags.append('lvn_thin')
+    elif not is_short and b.get('thin_above'):
+        score += 1; flags.append('lvn_thin')
+
+    # [+1] VWAP bias — precio en lado correcto del VWAP
+    vwap = b.get('vwap')
+    if vwap and vwap > 0:
+        if is_short and entry < vwap:
+            score += 1; flags.append('vwap_bias')
+        elif not is_short and entry > vwap:
+            score += 1; flags.append('vwap_bias')
+
+    # [+1] OI momentum — OI expandiendo = nuevas posiciones = convicción
+    oi_mom = b.get('oi_momentum')
+    if oi_mom is True:
+        score += 1; flags.append('oi_momentum')
+
+    # [+1] OBI trap — OBI en dirección CONTRARIA = participantes atrapados
+    # Short: obi_l5 > threshold (compradores en libro) → van a ser squeezed abajo
+    # Long:  obi_l5 < -threshold (vendedores en libro) → van a ser squeezed arriba
+    obi = b.get('obi_l5') or 0.0
+    if is_short and obi > OBI_THRESHOLD:
+        score += 1; flags.append('obi_trap')
+    elif not is_short and obi < -OBI_THRESHOLD:
+        score += 1; flags.append('obi_trap')
+
+    return score, flags
 
 def build_trade(sym, b, entry, stop_p, target, rr, rw, rp, deltas, sim_bars, reason, r, dur, exit_ms, equity, idx_off, count, is_pre):
     closed = datetime.fromtimestamp(exit_ms/1000, tz=timezone.utc).isoformat() if exit_ms else None
@@ -126,13 +197,14 @@ def build_trade(sym, b, entry, stop_p, target, rr, rw, rp, deltas, sim_bars, rea
     else:
         exit_p = round(stop_p, 6)
     pnl = round(r * RISK_USD, 2)
+    sc, cf = score_confluence(b, entry, is_short=True)
     return {
         'idx':            idx_off + count,
         'id':             f'bt-{sym}-{b["ts_ms"]}',
         'sym':            sym,
         'dir':            'Short',
         'session':        b.get('session') or '',
-        'score':          None,
+        'score':          sc,
         'entry':          round(entry, 6),
         'stop':           round(stop_p, 6),
         'target':         round(target, 6),
@@ -158,7 +230,7 @@ def build_trade(sym, b, entry, stop_p, target, rr, rw, rp, deltas, sim_bars, rea
         'isOpen':         reason == 'DATA_END',
         'isPreBreakout':  is_pre,
         # campos requeridos por Trade type en React
-        'regime': '', 'sessionPhase': '', 'evidence': [], 'confluenceFlags': [],
+        'regime': '', 'sessionPhase': '', 'evidence': [], 'confluenceFlags': cf,
         'vetoReason': '', 'funding': None, 'rangeTouch': None, 'htf': None,
     }
 
@@ -187,7 +259,7 @@ def detect(sym, bars, idx_off, equity_start):
             if exp_count > 1: continue
         if i - last_sig < COOLDOWN_BARS: continue
         vwap = b.get('vwap')
-        if vwap and vwap > 0 and (b['close'] - vwap) / vwap < -VSWAP_MAX_DEV: continue
+        # vswap_gate DESACTIVADO (strategy.toml 2026-06-11): recolectando datos live
 
         # cum_delta_25b gate por símbolo (calibración 2026-06-10):
         # BNB: wins avg -78, losses -1357 → rechazar si < -500
@@ -215,8 +287,7 @@ def detect(sym, bars, idx_off, equity_start):
 
             # ── MODO POST-BREAKOUT (normal) ──────────────────────────────────
             if vr >= VR_MIN and close < lo:
-                ext = (lo - close) / lo
-                if ext < BREAKOUT_EXT_MIN: continue
+                # breakout_ext_gate DESACTIVADO (strategy.toml 2026-06-11): recolectando datos live
                 if not cvd_ok: continue
                 # CVD London gate (análisis 72 trades): ganadores CVD=-597 vs perdedores=+1979.
                 # En London, si la presión compradora fue fuerte durante el rango → fakeout.
