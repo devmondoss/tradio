@@ -174,6 +174,102 @@ function CapitalSummary({ trades }: { trades: Trade[] }) {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
+const REASON_ORDER = ['TAKE_PROFIT', 'TRAILING_STOP', 'STOP_LOSS', 'TARGET', 'STOP', 'SESSION_END', 'TIME_STOP', 'DATA_END']
+const REASON_LABEL: Record<string, string> = {
+  TAKE_PROFIT:    'Take Profit',
+  TRAILING_STOP:  'Trailing Stop',
+  STOP_LOSS:      'Stop Loss',
+  TARGET:         'Target TP',
+  STOP:           'Stop Loss',
+  SESSION_END:    'Sesión fin',
+  TIME_STOP:      'Time Stop',
+  DATA_END:       'Data End',
+}
+const REASON_COLOR: Record<string, string> = {
+  TAKE_PROFIT:   '#3fb950',
+  TRAILING_STOP: '#58a6ff',
+  STOP_LOSS:     '#f85149',
+  TARGET:        '#3fb950',
+  STOP:          '#f85149',
+}
+
+// ─── R Distribution chart ─────────────────────────────────────────────────────
+
+function RDistribution({ trades }: { trades: Trade[] }) {
+  const closed = trades.filter(t => !t.isOpen && t.resultR != null)
+  if (closed.length === 0) return null
+
+  const rs     = closed.map(t => t.resultR ?? 0)
+  const minR   = Math.min(...rs, -1.1)
+  const maxR   = Math.max(...rs,  2.1)
+  const W = 1000, H = 80
+  const pad = 40
+  const xOf = (r: number) => pad + ((r - minR) / (maxR - minR)) * (W - pad * 2)
+
+  const colorOf = (t: Trade) => REASON_COLOR[t.reason ?? ''] ?? (( t.resultR ?? 0) > 0 ? '#3fb950' : '#f85149')
+
+  // Group by reason for legend
+  const byReason = REASON_ORDER
+    .map(r => ({ r, trades: closed.filter(t => t.reason === r) }))
+    .filter(g => g.trades.length > 0)
+
+  return (
+    <div style={{ padding: '0 8px 6px' }}>
+      <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text3)', padding: '6px 0 4px' }}>
+        Distribución R — {closed.length} trades
+      </div>
+      <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 5, padding: '8px 4px 4px' }}>
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H * 0.6} style={{ display: 'block', overflow: 'visible' }}>
+          {/* zero line */}
+          <line x1={xOf(0)} y1={0} x2={xOf(0)} y2={H - 20} stroke="var(--text3)" strokeWidth={1} strokeDasharray="4,3" strokeOpacity={0.5} />
+          <text x={xOf(0)} y={H - 6} textAnchor="middle" fontSize={18} fill="var(--text3)">0</text>
+
+          {/* axis ticks */}
+          {[-1, 1, 1.5, 1.9, 2, 2.5, 3].filter(v => v >= minR && v <= maxR).map(v => (
+            <g key={v}>
+              <line x1={xOf(v)} y1={H - 22} x2={xOf(v)} y2={H - 18} stroke="var(--border2)" strokeWidth={1} />
+              <text x={xOf(v)} y={H - 6} textAnchor="middle" fontSize={16} fill="var(--text3)">{v > 0 ? `+${v}R` : `${v}R`}</text>
+            </g>
+          ))}
+
+          {/* dots — jitter by index within same reason */}
+          {closed.map((t, i) => {
+            const r = t.resultR ?? 0
+            const sameR = closed.filter(u => Math.abs((u.resultR ?? 0) - r) < 0.05)
+            const pos   = sameR.indexOf(t)
+            const yPos  = 12 + (pos % 4) * 12
+            return (
+              <circle key={i} cx={xOf(r)} cy={yPos} r={7}
+                fill={colorOf(t)} fillOpacity={0.85}
+                stroke="#0d1117" strokeWidth={1}
+              />
+            )
+          })}
+        </svg>
+
+        {/* Legend */}
+        <div style={{ display: 'flex', gap: 16, paddingLeft: 8, paddingTop: 2 }}>
+          {byReason.map(({ r, trades: gt }) => {
+            const col  = REASON_COLOR[r] ?? 'var(--text3)'
+            const pct  = (gt.length / closed.length * 100).toFixed(0)
+            const totR = gt.reduce((s, t) => s + (t.resultR ?? 0), 0)
+            const avg  = totR / gt.length
+            return (
+              <div key={r} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9 }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: col, flexShrink: 0 }} />
+                <span style={{ color: 'var(--text2)' }}>{REASON_LABEL[r] ?? r}</span>
+                <span style={{ color: 'var(--text3)' }}>n={gt.length} ({pct}%)</span>
+                <span style={{ color: col, fontFamily: 'var(--mono)' }}>avg {avg > 0 ? '+' : ''}{avg.toFixed(2)}R</span>
+                <span style={{ color: 'var(--text3)', fontFamily: 'var(--mono)' }}>tot {totR > 0 ? '+' : ''}{totR.toFixed(2)}R</span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function StatsView({ trades }: Props) {
   const sessions = ['London', 'LondonNyOverlap', 'NewYork', 'Asia', 'SessionEnd']
   const symbols  = [...new Set(trades.map(t => t.sym))].sort()
@@ -183,8 +279,11 @@ export default function StatsView({ trades }: Props) {
     .map(s => ({ label: sesLabel(s), trades: trades.filter(t => t.session === s) }))
     .filter(g => g.trades.length)
 
-  const bySym = symbols.map(s => ({ label: s.replace('USDT', ''), trades: trades.filter(t => t.sym === s) }))
-  const byDir = dirs.map(d => ({ label: d, trades: trades.filter(t => t.dir === d) })).filter(g => g.trades.length)
+  const bySym    = symbols.map(s => ({ label: s.replace('USDT', ''), trades: trades.filter(t => t.sym === s) }))
+  const byDir    = dirs.map(d => ({ label: d, trades: trades.filter(t => t.dir === d) })).filter(g => g.trades.length)
+  const byReason = REASON_ORDER
+    .map(r => ({ label: REASON_LABEL[r] ?? r, trades: trades.filter(t => t.reason === r) }))
+    .filter(g => g.trades.length)
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
@@ -192,28 +291,38 @@ export default function StatsView({ trades }: Props) {
     <div style={{
       flex: 1,
       display: 'grid',
-      gridTemplateRows: '45% 55%',
-      gridTemplateColumns: '1fr 1fr 1fr',
+      gridTemplateRows: '38% 20% 42%',
+      gridTemplateColumns: '1fr 1fr 1fr 1fr',
       overflow: 'hidden',
       minHeight: 0,
     }}>
-      {/* Equity chart — spans all 3 columns */}
-      <div style={{ gridColumn: '1 / 4', gridRow: '1', display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border)', minHeight: 0 }}>
+      {/* Equity chart — spans all 4 columns */}
+      <div style={{ gridColumn: '1 / 5', gridRow: '1', display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border)', minHeight: 0 }}>
         <EquityChart trades={trades} />
       </div>
 
+      {/* R Distribution — spans all 4 columns */}
+      <div style={{ gridColumn: '1 / 5', gridRow: '2', borderBottom: '1px solid var(--border)', overflow: 'hidden' }}>
+        <RDistribution trades={trades} />
+      </div>
+
       {/* Session table */}
-      <div style={{ gridColumn: '1', gridRow: '2', display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', minHeight: 0, overflow: 'hidden' }}>
+      <div style={{ gridColumn: '1', gridRow: '3', display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', minHeight: 0, overflow: 'hidden' }}>
         <StatTable title="Por Sesion" groups={bySes} showTotal />
       </div>
 
       {/* Symbol table */}
-      <div style={{ gridColumn: '2', gridRow: '2', display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', minHeight: 0, overflow: 'hidden' }}>
+      <div style={{ gridColumn: '2', gridRow: '3', display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', minHeight: 0, overflow: 'hidden' }}>
         <StatTable title="Por Simbolo" groups={bySym} />
       </div>
 
+      {/* Exit reason table */}
+      <div style={{ gridColumn: '3', gridRow: '3', display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', minHeight: 0, overflow: 'hidden' }}>
+        <StatTable title="Por Salida" groups={byReason} showTotal />
+      </div>
+
       {/* Direction table */}
-      <div style={{ gridColumn: '3', gridRow: '2', display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+      <div style={{ gridColumn: '4', gridRow: '3', display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
         <StatTable title="Long vs Short" groups={byDir} />
       </div>
     </div>
