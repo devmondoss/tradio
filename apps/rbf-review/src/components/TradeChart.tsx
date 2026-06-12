@@ -365,7 +365,15 @@ export default function TradeChart({ trade }: Props) {
     ctx.beginPath();ctx.moveTo(x0,0);ctx.lineTo(x0,canvas.height);ctx.stroke();ctx.setLineDash([])
     if (t.exit&&t.exit>0) {
       const xpY=cv(series.priceToCoordinate(t.exit))
-      if (xpY!=null) { ctx.strokeStyle=(t.resultR??0)>0?'rgba(63,185,80,0.7)':'rgba(248,81,73,0.7)';ctx.lineWidth=1.5;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(x0,xpY);ctx.lineTo(x1,xpY);ctx.stroke();ctx.setLineDash([]) }
+      if (xpY!=null) {
+        const exitCol=(t.resultR??0)>0?'rgba(63,185,80,0.8)':'rgba(248,81,73,0.8)'
+        ctx.strokeStyle=exitCol;ctx.lineWidth=1.5;ctx.setLineDash([3,3])
+        ctx.beginPath();ctx.moveTo(x0,xpY);ctx.lineTo(x1,xpY);ctx.stroke();ctx.setLineDash([])
+        // Label con la razón de exit para que no quede como línea misteriosa
+        const exitLbl = (t.reason ?? 'EXIT').replace('_',' ')
+        ctx.font='bold 10px monospace';ctx.textAlign='left';ctx.fillStyle=exitCol
+        ctx.fillText(`${exitLbl}  ${t.exit.toFixed(prec)}`, x1+6, xpY+4)
+      }
     }
     ctx.font='bold 11px monospace';ctx.textAlign='left'
     ctx.fillStyle='rgba(230,237,243,0.9)';ctx.fillText('ENTRY  '+t.entry.toFixed(prec),x1+6,eY-3)
