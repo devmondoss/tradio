@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 data.workspace = true
 exchange.workspace = true
+buyer-exhaustion.workspace = true
 tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
