@@ -106,7 +106,7 @@ Una vez abierta la posición, el stop se gestiona de forma dinámica:
 TRAIL_ACTIVATE_R_SHORT = 1.75R  → Shorts activan trailing al llegar a 1.75R (target 2R)
 TRAIL_ACTIVATE_R_LONG  = 1.5R   → Longs activan trailing al llegar a 1.5R (target 1.8R)
 TRAIL_ATR_K            = 1.2    → distancia del stop al extremo favorable = 1.2 × ATR
-TIME_STOP_BARS         = 30     → si a los 30 min la posición está en pérdida, cierra al mercado
+TIME_STOP              = off    → la posición cierra por stop, target, trailing o fin de sesión
 ```
 
 **Calibración 2026-06-10:** 4 trades Short salieron por trailing a +0.90–1.32R cuando el target
@@ -253,9 +253,9 @@ Valor vigente: **60 barras M1**. El valor de 15 barras queda histórico para evi
 | `funding_at_entry` | Funding rate en la entrada |
 | `liq_ratio_pre` | Ratio de liquidaciones previo al breakout |
 | `result_r` | R múltiple al cerrar (se rellena después) |
-| `exit_reason` | TARGET / STOP / TRAILING_STOP / TIME_STOP / SESSION_END |
+| `exit_reason` | TARGET / STOP / TRAILING_STOP / SESSION_END |
 | `is_pre_breakout` | true si la señal fue modo entrada anticipada |
-| `bars_held` | barras M1 que duró el trade (para calibrar time stop pre-breakout) |
+| `bars_held` | barras M1 que duró el trade |
 
 ### En `scalping_bars` (contexto por barra M1)
 
@@ -334,7 +334,7 @@ El uso operativo actual no es "OBI alineado", sino `obi_trap`: participantes del
 | Archivo | Descripción |
 |---------|-------------|
 | `data/src/strategy/detectors/range_breakout_flow.rs` | Detector: RbfGateContext, ConfluenceFlag activo de 6 puntos, score_confluence, gates |
-| `data/src/strategy/detectors/rbf_paper.rs` | Paper trader: trailing direction-aware (1.75/1.5), time stop 30 barras |
+| `data/src/strategy/detectors/rbf_paper.rs` | Paper trader: stop, target, trailing direction-aware y cierre de sesión; sin time stop |
 | `config/strategy.toml` → `[range_breakout]` | Parámetros: stop_pct, target_short_pct, target_long_pct, min_rr |
 | `data/src/strategy/config_file.rs` | Parser del toml — RangeBreakoutSection |
 | `crates/monitor/src/main.rs` | Wiring: regime_hist_25, obi_intrabar Vec (10s), expansion_bars_recent, per-symbol config |

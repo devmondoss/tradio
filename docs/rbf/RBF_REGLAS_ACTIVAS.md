@@ -214,7 +214,7 @@ Los gates `cum_delta_min_short`, `cum_delta_max_short`, `cvd_in_range_min_short`
 | Split backfill/live | No mezclar OHLCV histórico con microestructura real sin flags |
 | Null audit | Ningún script DS debe aceptar silenciosamente features con >50% NULL |
 | Score calibration | Evaluar `confluence_score`, `signal_score_v2`, `score==4` y vetos con n suficiente |
-| Pre-breakout audit | Calibrar `bars_held`, MAE/MFE y time stop específico |
+| Pre-breakout audit | Calibrar `bars_held`, MAE/MFE y reactivación específica |
 
 ---
 

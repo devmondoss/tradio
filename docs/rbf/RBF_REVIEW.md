@@ -65,7 +65,7 @@ VR mínimo:        3.0×    Sesiones OK:   London, LondonNyOverlap, NewYork
 Breakout ext min: 0.1%    VWAP gate:     max 0.3% bajo VWAP
 Trail ATR:        1.2×    Activa trail Short: 1.75R  (calibrado 2026-06-10)
                           Activa trail Long:  1.5R
-Time stop:        30 bars Cooldown:      60 barras
+Time stop:        off     Cooldown:      60 barras
 RR Short:         2.0     Solo Shorts    (Longs desactivados — WR=14%)
 ```
 
