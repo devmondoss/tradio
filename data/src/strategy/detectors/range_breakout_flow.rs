@@ -20,33 +20,27 @@ use crate::session::{TradingSession, SessionPhase};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfluenceFlag {
-    CvdSlopeSostenido,
-    ObiAlineado,
-    StackedImbalance,
-    AbsorcionFootprint,
-    LvnOThinZone,
-    VwapBias,
-    OiMomentum,
-    SessionCvdAligned,
-    BigCvdAligned,
-    ObiMultiDepth,
-    ObiIntrabarMean,
+    // ── Estructura de mercado (independiente de régimen) ──────────────────────
+    StackedImbalance,    // desequilibrio de libro en dirección del breakout
+    AbsorcionFootprint,  // sellers absorbiendo bids (Short) / compradores bids (Long)
+    LvnOThinZone,        // zona de bajo volumen = aceleración probable al target
+    VwapBias,            // precio bajo VWAP para Short / sobre para Long = contexto macro
+    OiMomentum,          // OI expandiendo = nuevas posiciones = convicción real
+    // ── Participantes atrapados (hallazgo Jun 6-11: OBI inverso discrimina mejor) ──
+    // Análisis 75 Shorts: OBI bullish en Short → WR=88% AvgR=+0.932 vs baseline 84%/+0.811
+    // Lógica: compradores en el libro cuando precio rompe abajo = van a ser squeezed
+    ObiTrap,             // OBI contra la dirección = participantes atrapados
 }
 
 impl ConfluenceFlag {
     fn as_str(&self) -> &'static str {
         match self {
-            Self::CvdSlopeSostenido  => "cvd_slope",
-            Self::ObiAlineado        => "obi",
             Self::StackedImbalance   => "stacked_imbalance",
             Self::AbsorcionFootprint => "absorption",
             Self::LvnOThinZone       => "lvn_thin",
             Self::VwapBias           => "vwap_bias",
             Self::OiMomentum         => "oi_momentum",
-            Self::SessionCvdAligned  => "session_cvd",
-            Self::BigCvdAligned      => "big_cvd",
-            Self::ObiMultiDepth      => "obi_multi_depth",
-            Self::ObiIntrabarMean    => "obi_intrabar_mean",
+            Self::ObiTrap            => "obi_trap",
         }
     }
 }
@@ -54,6 +48,7 @@ impl ConfluenceFlag {
 /// Datos de microestructura externos que no residen en RangeBreakoutState.
 /// Los valores son crudos (no por-dirección) porque en main.rs aún no se
 /// conoce la dirección del breakout cuando se construye este contexto.
+#[derive(Debug, Clone)]
 pub struct RbfGateContext {
     /// Stacked imbalance bearish activo (Bearish/FBG-Bearish).
     pub stacked_imbalance_bearish: bool,
@@ -135,7 +130,7 @@ pub struct RbfGateContext {
 fn score_confluence(
     direction: RbfDirection,
     macro_regime: MacroRegime,
-    cvd_slope: Option<f64>,
+    _cvd_slope: Option<f64>,
     obi: f64,
     vwap: Option<f64>,
     entry_price: f64,
@@ -182,37 +177,31 @@ fn score_confluence(
         return (0, vec![], Some("vpin_toxic".into()));
     }
 
-    // ── PUNTOS ────────────────────────────────────────────────────────────────
+    // ── PUNTOS — Principio: "Participantes atrapados + Estructura limpia" ────────
+    // Hallazgo Jun 6-11 (75 Shorts): señales de "presión en mi dirección" (CVD slope,
+    // OBI alineado, session CVD) NO discriminan outcome y pueden indicar move consumido.
+    // Las señales de "participantes en el lado equivocado" (OBI trap) sí discriminan.
+    // Max score: 6 puntos.
     let mut score: u8 = 0;
     let mut flags: Vec<ConfluenceFlag> = vec![];
 
-    if let Some(slope) = cvd_slope {
-        let t = cfg.cvd_slope_threshold;
-        let aligned = match direction {
-            RbfDirection::Short => slope < -t,
-            RbfDirection::Long  => slope >  t,
-        };
-        if aligned { score += 1; flags.push(ConfluenceFlag::CvdSlopeSostenido); }
-    }
-
-    let obi_aligned = match direction {
-        RbfDirection::Short => obi < -cfg.obi_threshold,
-        RbfDirection::Long  => obi >  cfg.obi_threshold,
-    };
-    if obi_aligned { score += 1; flags.push(ConfluenceFlag::ObiAlineado); }
-
+    // [+1] Stacked imbalance en dirección del breakout — estructura de oferta/demanda real.
+    // Desequilibrios apilados = suministro institucional pendiente de ser ejecutado.
     let stacked = match direction {
         RbfDirection::Short => gate.stacked_imbalance_bearish,
         RbfDirection::Long  => gate.stacked_imbalance_bullish,
     };
     if stacked { score += 1; flags.push(ConfluenceFlag::StackedImbalance); }
 
+    // [+1] Absorción de footprint — sellers absorbiendo bids (Short) o viceversa.
+    // Indica distribución institucional activa durante la consolidación.
     let absorbed = match direction {
         RbfDirection::Short => gate.absorption_ask,
         RbfDirection::Long  => gate.absorption_bid,
     };
     if absorbed { score += 1; flags.push(ConfluenceFlag::AbsorcionFootprint); }
 
+    // [+1] LVN o thin zone en dirección del target — vacío de volumen = aceleración probable.
     let thin = match direction {
         RbfDirection::Short => gate.thin_zone_below,
         RbfDirection::Long  => gate.thin_zone_above,
@@ -222,6 +211,8 @@ fn score_confluence(
         flags.push(ConfluenceFlag::LvnOThinZone);
     }
 
+    // [+1] VWAP bias — precio en lado correcto del VWAP para la dirección del trade.
+    // Short bajo VWAP = sell-side pressure; Long sobre VWAP = buy-side pressure.
     if let Some(v) = vwap.filter(|&v| v > 0.0) {
         let above = entry_price > v;
         let aligned = match direction {
@@ -231,65 +222,31 @@ fn score_confluence(
         if aligned { score += 1; flags.push(ConfluenceFlag::VwapBias); }
     }
 
+    // [+1] OI momentum — open interest expandiendo en la barra de breakout.
+    // OI creciente = nuevas posiciones (convicción); OI decreciente = cierre de existentes.
     if gate.oi_momentum_aligned == Some(true) {
         score += 1;
         flags.push(ConfluenceFlag::OiMomentum);
     }
 
-    // [+1] Session CVD alineado con dirección del breakout (Fabio: expansión de sesión).
-    // session_cvd está en unidades de moneda; multiplicar por entry_price da USD.
-    // Threshold ±$500k: sesión con >$500k net alineado con breakout = expansión real.
-    let session_cvd_usd = gate.session_cvd * entry_price;
-    let session_cvd_aligned = match direction {
-        RbfDirection::Long  => session_cvd_usd >  500_000.0,
-        RbfDirection::Short => session_cvd_usd < -500_000.0,
+    // [+1] OBI trap — OBI en dirección CONTRARIA al breakout = participantes atrapados.
+    // Short: obi > threshold (compradores en el libro) → van a ser squeezed hacia abajo.
+    // Long:  obi < -threshold (vendedores en el libro) → van a ser squeezed hacia arriba.
+    // Hallazgo Jun 6-11: OBI bullish en Short → WR=88% AvgR=+0.932 vs OBI bearish WR=79%.
+    // Contraintuitivo: compradores atrapados = combustible para el move bajista.
+    let obi_trap = match direction {
+        RbfDirection::Short => obi > cfg.obi_threshold,
+        RbfDirection::Long  => obi < -cfg.obi_threshold,
     };
-    if session_cvd_aligned {
-        score += 1;
-        flags.push(ConfluenceFlag::SessionCvdAligned);
-    }
+    if obi_trap { score += 1; flags.push(ConfluenceFlag::ObiTrap); }
 
-    // [+1] Big trade CVD alineado: breakout respaldado por órdenes grandes (Fabio: "big trades filter").
-    // big_trade_cvd_session en unidades de moneda → USD. Threshold $2M: acumulación significativa
-    // de órdenes grandes (≥$100k c/u) en la dirección del breakout durante la sesión.
-    let big_cvd_usd = gate.big_trade_cvd_session * entry_price;
-    let big_cvd_aligned = match direction {
-        RbfDirection::Long  => big_cvd_usd >  2_000_000.0,
-        RbfDirection::Short => big_cvd_usd < -2_000_000.0,
-    };
-    if big_cvd_aligned {
-        score += 1;
-        flags.push(ConfluenceFlag::BigCvdAligned);
-    }
-
-    // [+1] OBI multi-profundidad alineado: L10 + L20 ambos en la dirección del breakout.
-    // L5 puede ser spoofed; L10+L20 alineados = presión real en todo el libro.
-    // Autopsia 39 trades: MAE<0.5R (entradas limpias) WR=92% — este punto identifica esas entradas.
-    let obi_l10_aligned = match direction {
-        RbfDirection::Short => gate.obi_l10 < -0.05,
-        RbfDirection::Long  => gate.obi_l10 >  0.05,
-    };
-    let obi_l20_aligned = match direction {
-        RbfDirection::Short => gate.obi_l20 < -0.03,
-        RbfDirection::Long  => gate.obi_l20 >  0.03,
-    };
-    if obi_l10_aligned && obi_l20_aligned {
-        score += 1;
-        flags.push(ConfluenceFlag::ObiMultiDepth);
-    }
-
-    // [+1] OBI intrabar promedio alineado: OBI promedio durante la barra (sampleo 10s).
-    // Más robusto que snapshot al cierre — detecta presión sostenida vs spike de fin de barra.
-    if let Some(mean_obi) = gate.obi_mean_intrabar {
-        let obi_mean_aligned = match direction {
-            RbfDirection::Short => mean_obi < -0.05,
-            RbfDirection::Long  => mean_obi >  0.05,
-        };
-        if obi_mean_aligned {
-            score += 1;
-            flags.push(ConfluenceFlag::ObiIntrabarMean);
-        }
-    }
+    // REMOVIDOS (análisis Jun 6-11 mostró que no discriminan o están invertidos):
+    // ✗ CvdSlopeSostenido  — CVD slope acumulado puede indicar move ya consumido
+    // ✗ ObiAlineado        — OBI en dirección del trade = peor outcome (invertido)
+    // ✗ SessionCvdAligned  — CVD sesión acumulado = misma lógica que slope
+    // ✗ BigCvdAligned      — big trade CVD acumulado = misma lógica
+    // ✗ ObiMultiDepth      — L10+L20 alineados = mismo problema que ObiAlineado
+    // ✗ ObiIntrabarMean    — OBI intrabar alineado = mismo problema
 
     // Veto especial: Long contra tendencia bajista sin máxima confluencia
     if direction == RbfDirection::Long
@@ -773,7 +730,8 @@ impl RangeBreakoutState {
             if vr < BREAKOUT_VR_MIN { continue; }
 
             let direction = if breaks_down { RbfDirection::Short } else { RbfDirection::Long };
-            if direction == RbfDirection::Long && !LONGS_ENABLED { continue; }
+            if direction == RbfDirection::Long  && !cfg.allow_long  { continue; }
+            if direction == RbfDirection::Short && !cfg.allow_short { continue; }
             let sign: f64 = if breaks_down { 1.0 } else { -1.0 }; // sign para "move in direction"
 
             // CVD acumulado en rango alineado con dirección
@@ -1042,6 +1000,10 @@ impl RangeBreakoutState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RangeBreakoutConfig {
     pub enabled:           bool,
+    /// Permitir señales Long. false = solo Shorts.
+    pub allow_long:        bool,
+    /// Permitir señales Short. false = solo Longs.
+    pub allow_short:       bool,
     pub stop_pct:          f64,
     pub target_short_pct:  f64,
     pub target_long_pct:   f64,
@@ -1126,6 +1088,8 @@ impl Default for RangeBreakoutConfig {
     fn default() -> Self {
         Self {
             enabled:          true,
+            allow_long:       true,
+            allow_short:      true,
             stop_pct:         0.25,
             target_short_pct: 0.50,
             target_long_pct:  0.45,
