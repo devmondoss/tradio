@@ -85,6 +85,8 @@ struct SmartMoneyDivergenceSection {
 #[derive(Deserialize, Default)]
 struct RangeBreakoutSection {
     enabled:          Option<bool>,
+    allow_long:       Option<bool>,
+    allow_short:      Option<bool>,
     stop_pct:         Option<f64>,
     target_short_pct: Option<f64>,
     target_long_pct:  Option<f64>,
@@ -102,6 +104,7 @@ struct RangeBreakoutSection {
     pre_breakout_rr:       Option<f64>,
     pre_breakout_vr_min:   Option<f64>,
     pre_breakout_oi_max:   Option<u8>,
+    cooldown_bars:         Option<usize>,
 }
 
 #[derive(Deserialize, Default)]
@@ -198,6 +201,8 @@ impl StrategyConfigFile {
 
         let rb = self.range_breakout;
         if let Some(v) = rb.enabled          { cfg.range_breakout.enabled          = v; }
+        if let Some(v) = rb.allow_long       { cfg.range_breakout.allow_long       = v; }
+        if let Some(v) = rb.allow_short      { cfg.range_breakout.allow_short      = v; }
         if let Some(v) = rb.stop_pct         { cfg.range_breakout.stop_pct         = v; }
         if let Some(v) = rb.target_short_pct { cfg.range_breakout.target_short_pct = v; }
         if let Some(v) = rb.target_long_pct  { cfg.range_breakout.target_long_pct  = v; }
@@ -215,6 +220,7 @@ impl StrategyConfigFile {
         if let Some(v) = rb.pre_breakout_rr       { cfg.range_breakout.pre_breakout_rr       = v; }
         if let Some(v) = rb.pre_breakout_vr_min   { cfg.range_breakout.pre_breakout_vr_min   = v; }
         if rb.pre_breakout_oi_max.is_some() { cfg.range_breakout.pre_breakout_oi_max = rb.pre_breakout_oi_max; }
+        if let Some(v) = rb.cooldown_bars { cfg.range_breakout.cooldown_bars = v; }
 
         let amd = self.amd_detector;
         if let Some(v) = amd.enabled                   { cfg.amd.enabled                   = v; }

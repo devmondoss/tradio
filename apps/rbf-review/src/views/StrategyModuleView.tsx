@@ -227,9 +227,10 @@ export default function StrategyModuleView({ strategy }: { strategy: 'amd' | 'be
 
   useEffect(() => {
     setLoading(true)
+    const since = Date.now() - 90 * 86400000
     const sigFetch = (strategy === 'amd'
-      ? supabase.from('amd_signals').select('*').order('timestamp_ms', { ascending: true })
-      : supabase.from('be_signals').select('*').order('timestamp_ms', { ascending: true })
+      ? supabase.from('amd_signals').select('id,timestamp_ms,symbol,direction,session,entry_price,stop_price,target_price,rr,result_r,exit_reason,closed_at_ms,is_active').gte('timestamp_ms', since).order('timestamp_ms', { ascending: true })
+      : supabase.from('be_signals').select('id,timestamp_ms,symbol,session,entry_price,stop_price,target_price,rr,range_pct,range_bars,range_cvd,cvd_flip_ratio,vr_at_breakout,result_r,exit_reason,closed_at,active').gte('timestamp_ms', since).order('timestamp_ms', { ascending: true })
     ) as unknown as Promise<{ data: any[] | null }>
 
     sigFetch.then((res: { data: any[] | null }) => {

@@ -2,47 +2,26 @@ import { useEffect, useRef, useState } from 'react'
 import { supabase, type RbfSignal } from './lib/supabase'
 import { buildTrades } from './lib/utils'
 import type { Trade } from './lib/types'
-import LiveView from './views/LiveView'
-import StatsView from './views/StatsView'
-import BacktestView from './views/BacktestView'
-import FilterBar, { emptyFilters, applyFilters, type Filters } from './components/FilterBar'
+import DashboardView from './views/DashboardView'
+import RBFModuleView from './views/RBFModuleView'
+import StrategyModuleView from './views/StrategyModuleView'
 
-type Tab = 'live' | 'stats' | 'backtest'
+type Tab = 'dashboard' | 'rbf' | 'amd' | 'be'
 
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT']
 
-function TabBtn({ label, active, onClick, badge }: {
-  label: string; active: boolean; onClick: () => void; badge?: number
-}) {
-  return (
-    <button onClick={onClick} style={{
-      padding: '0 14px', height: '100%',
-      background: 'none', border: 'none',
-      borderBottom: `2px solid ${active ? 'var(--blue)' : 'transparent'}`,
-      color: active ? 'var(--text)' : 'var(--text2)',
-      cursor: 'pointer', fontSize: 11,
-      fontWeight: active ? 700 : 400,
-      fontFamily: 'inherit',
-    }}>
-      {label}
-      {badge != null && badge > 0 && (
-        <span style={{
-          marginLeft: 5, background: 'var(--red)', color: '#fff',
-          borderRadius: 8, padding: '1px 5px', fontSize: 8, fontWeight: 700,
-          verticalAlign: 'middle',
-        }}>{badge}</span>
-      )}
-    </button>
-  )
-}
+const TABS: { id: Tab; label: string; color: string }[] = [
+  { id: 'dashboard', label: 'Overview', color: 'var(--text)' },
+  { id: 'rbf',       label: 'RBF',      color: 'var(--blue)'   },
+  { id: 'amd',       label: 'AMD',      color: 'var(--green)'  },
+  { id: 'be',        label: 'BE',       color: 'var(--yellow)' },
+]
 
 export default function App() {
-  const [tab,      setTab]      = useState<Tab>('live')
-  const [signals,  setSignals]  = useState<RbfSignal[]>([])
-  const [loading,  setLoading]  = useState(true)
-  const [error,    setError]    = useState<string | null>(null)
-  const [newCount, setNewCount] = useState(0)
-  const [filters,  setFilters]  = useState<Filters>(emptyFilters())
+  const [tab,     setTab]     = useState<Tab>('dashboard')
+  const [signals, setSignals] = useState<RbfSignal[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error,   setError]   = useState<string | null>(null)
   const signalsRef = useRef<RbfSignal[]>([])
 
   useEffect(() => {
@@ -54,10 +33,8 @@ export default function App() {
           const sig = payload.new as RbfSignal
           signalsRef.current = [...signalsRef.current, sig]
           setSignals([...signalsRef.current])
-          setNewCount(n => n + 1)
         } else if (payload.eventType === 'UPDATE') {
-          const sig     = payload.new as RbfSignal
-          const updated = signalsRef.current.map(s => s.id === sig.id ? sig : s)
+          const updated = signalsRef.current.map(s => s.id === (payload.new as RbfSignal).id ? payload.new as RbfSignal : s)
           signalsRef.current = updated
           setSignals([...updated])
         }
@@ -71,8 +48,9 @@ export default function App() {
     try {
       const { data, error: err } = await supabase
         .from('rbf_signals')
-        .select('*')
+        .select('id,timestamp_ms,symbol,direction,session,session_phase,macro_regime,entry_price,stop_price,target_price,exit_price,result_r,exit_reason,closed_at,vr_at_breakout,cvd_in_range,range_pct,range_bars,confluence_score,confluence_flags,evidence,cvd_slope_at_entry,obi_at_entry,dz_at_entry,price_vs_vwap_pct,funding_at_entry,range_touch_count,veto_reason')
         .in('symbol', SYMBOLS)
+        .gte('timestamp_ms', Date.now() - 90 * 86400000)
         .order('timestamp_ms', { ascending: true })
       if (err) throw err
       signalsRef.current = data as RbfSignal[]
@@ -81,85 +59,36 @@ export default function App() {
     finally     { setLoading(false) }
   }
 
-  const trades:   Trade[] = buildTrades(signals)
-  const filtered: Trade[] = applyFilters(trades, filters)
-  const openCount = trades.filter(t => t.isOpen).length
-  const showFilters = tab !== 'backtest' && !loading && trades.length > 0
+  const trades: Trade[] = buildTrades(signals)
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      {/* ── header ─────────────────────────────────────────────────────── */}
+
+      {/* ── Header ──────────────────────────────────────────────────── */}
       <div style={{
-        display: 'flex', alignItems: 'stretch',
-        borderBottom: '1px solid var(--border)',
-        background: 'var(--bg2)',
-        padding: '0 8px',
-        height: 36, flexShrink: 0,
-        position: 'relative',
+        display: 'flex', alignItems: 'stretch', height: 36, flexShrink: 0,
+        background: 'var(--bg2)', borderBottom: '1px solid var(--border)', padding: '0 12px',
       }}>
-        <span style={{ fontWeight: 700, fontSize: 11, color: 'var(--text)', marginRight: 8, alignSelf: 'center', letterSpacing: 1 }}>
-          RBF
-        </span>
+        <span style={{ fontWeight: 800, fontSize: 12, color: 'var(--text)', alignSelf: 'center', letterSpacing: 1.5, marginRight: 16 }}>FS</span>
 
-        <TabBtn label="Live"     active={tab === 'live'}     onClick={() => { setTab('live'); setNewCount(0) }}
-          badge={newCount > 0 && tab !== 'live' ? newCount : undefined} />
-        <TabBtn label="Stats"    active={tab === 'stats'}    onClick={() => setTab('stats')} />
-        <TabBtn label="Backtest" active={tab === 'backtest'} onClick={() => setTab('backtest')} />
-
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          {loading && <span style={{ fontSize: 9, color: 'var(--text3)' }}>cargando…</span>}
-          {error   && <span style={{ fontSize: 9, color: 'var(--red)' }}>error</span>}
-          {openCount > 0 && <span style={{ fontSize: 10, color: 'var(--blue)', fontWeight: 700 }}>{openCount} OPEN</span>}
-          {!loading && <span style={{ fontSize: 9, color: 'var(--text3)' }}>{trades.length} trades</span>}
-
-          {showFilters && (
-            <FilterBar
-              trades={trades}
-              filters={filters}
-              filtered={filtered}
-              onChange={setFilters}
-            />
-          )}
-
-          <button onClick={loadAll} style={{
-            background: 'transparent', border: 'none',
-            color: 'var(--text3)', fontSize: 13,
-            padding: '2px 4px', cursor: 'pointer', fontFamily: 'inherit',
-            lineHeight: 1,
-          }}>↺</button>
-        </div>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            padding: '0 14px', height: '100%', background: 'none', border: 'none',
+            borderBottom: `2px solid ${tab === t.id ? t.color : 'transparent'}`,
+            color: tab === t.id ? 'var(--text)' : 'var(--text2)',
+            fontWeight: tab === t.id ? 700 : 400, fontSize: 11,
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}>{t.label}</button>
+        ))}
       </div>
 
-      {/* ── content ────────────────────────────────────────────────────── */}
+      {/* ── Content ─────────────────────────────────────────────────── */}
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', minHeight: 0 }}>
-        {tab === 'live' && (
-          loading
-            ? <Center>Cargando…</Center>
-            : error
-              ? <Center color="var(--red)">Error: {error}</Center>
-              : trades.length === 0
-                ? <Center>Sin trades aun</Center>
-                : filtered.length === 0
-                  ? <Center>Sin trades con esos filtros</Center>
-                  : <LiveView trades={filtered} />
-        )}
-        {tab === 'stats' && (
-          loading
-            ? <Center>Cargando…</Center>
-            : filtered.length === 0
-              ? <Center>Sin trades con esos filtros</Center>
-              : <StatsView trades={filtered} />
-        )}
-        {tab === 'backtest' && <BacktestView />}
+        {tab === 'dashboard' && <DashboardView rbfTrades={trades} />}
+        {tab === 'rbf'       && <RBFModuleView trades={trades} loading={loading} error={error} onReload={loadAll} />}
+        {tab === 'amd'       && <StrategyModuleView strategy="amd" />}
+        {tab === 'be'        && <StrategyModuleView strategy="be"  />}
       </div>
-    </div>
-  )
-}
-
-function Center({ children, color }: { children: React.ReactNode; color?: string }) {
-  return (
-    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: color ?? 'var(--text2)', fontSize: 11 }}>
-      {children}
     </div>
   )
 }

@@ -111,6 +111,7 @@ pre_breakout_zone_pct = 0.001   # close debe estar ≤0.1% por encima de range_l
 pre_breakout_rr       = 3.0     # target más profundo vs post-breakout 2.0 (entry desde 0% del move)
 pre_breakout_vr_min   = 1.5     # VR mínimo para modo pre (más bajo que el 3.0× post-breakout)
 pre_breakout_oi_max   = 3       # oi_mom_n≤3 → WR=58% PnL=+4.5R; quitar con pre_breakout_oi_max = 255
+cooldown_bars         = 15      # 15 min entre señales por símbolo (era hardcoded 60)
 
 # ============================================================================
 # AMD — Accumulation · Manipulation · Distribution

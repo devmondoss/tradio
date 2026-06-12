@@ -671,6 +671,18 @@ struct BarState {
     rbf_pending_outcome: Option<data::strategy::detectors::rbf_paper::RbfClosedTrade>,
     // Última sesión vista — detecta cambio de sesión para forzar cierre de posición RBF abierta
     rbf_last_session: data::session::session_tracker::TradingSession,
+    // Último RbfGateContext ensamblado — compartido con el detector BE en el mismo bar
+    last_rbf_gate: Option<data::strategy::detectors::range_breakout_flow::RbfGateContext>,
+    // Buyer Exhaustion detector state
+    be_state: buyer_exhaustion::detector::BuyerExhaustionState,
+    // BE paper trader
+    be_paper: buyer_exhaustion::paper::BePaperTrader,
+    // UUID pendiente de asignar al paper trader BE
+    be_pending_id_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
+    // Outcome BE pendiente si el trade cerró antes de que llegara el supabase_id
+    be_pending_outcome: Option<buyer_exhaustion::signal::BeClosedTrade>,
+    // Última sesión vista para BE — detecta cambio y fuerza cierre SESSION_END
+    be_last_session: data::session::session_tracker::TradingSession,
     // H4 EMA (FASE 2.6) — EMA-240M1 ≈ 4H para contexto estructural de RBF y AMD
     ema_h1: f64,          // EMA-60M1 (≈1H) alpha = 2/(60+1) ≈ 0.0328
     ema_h1_bars: usize,   // barras acumuladas hasta warmup (warmup = 60)
@@ -773,6 +785,12 @@ impl BarState {
             rbf_pending_id_rx: None,
             rbf_pending_outcome: None,
             rbf_last_session: data::session::session_tracker::TradingSession::OffHours,
+            last_rbf_gate:      None,
+            be_state:           buyer_exhaustion::detector::BuyerExhaustionState::new(),
+            be_paper:           buyer_exhaustion::paper::BePaperTrader::new(),
+            be_pending_id_rx:   None,
+            be_pending_outcome: None,
+            be_last_session:    data::session::session_tracker::TradingSession::OffHours,
             ema_h1:      0.0,
             ema_h1_bars: 0,
             ws_tx,
@@ -2183,58 +2201,36 @@ impl BarState {
                     spread_bps: bar_spread_bps,
                     obi_mean_intrabar,
                 };
+                self.last_rbf_gate = Some(rbf_gate.clone());
                 // Config por símbolo — todas las calibraciones con datos live.
                 let mut rbf_cfg = cfg.range_breakout.clone();
-                // expansion_max_bars: BTC/ETH/BNB → Some(1) (análisis 72 trades: ≤1→WR=54.5% vs ≤3→48.8%).
+                // expansion_max_bars: BTC/ETH/BNB → Some(3) (calibración n=30 Shorts: ≤3→WR=60% +8.1R vs sin filtro WR=40%).
+                // Some(1) era demasiado restrictivo — bloqueaba la mayoría de setups válidos (WR diff solo 5.7pp con n=72).
                 rbf_cfg.expansion_max_bars = match symbol {
                     "SOLUSDT" | "XRPUSDT" => None,
-                    _                      => Some(1),
+                    _                      => Some(3),
                 };
-                // cum_delta gates por símbolo (calibración n=30 Shorts 2026-06-10):
-                // BNB: wins avg -78 vs losses -1357 → rechazar si cum_delta < -500
-                // BTC: losses cum_delta = +377 → rechazar si cum_delta > +200 (compradores agresivos)
-                (rbf_cfg.cum_delta_min_short, rbf_cfg.cum_delta_max_short) = match symbol {
-                    "BNBUSDT" => (Some(-500.0), None),
-                    "BTCUSDT" => (None,         Some(200.0)),
-                    _         => (None,         None),
-                };
-                // ETH: OBI invertido, señal débil → exigir score ≥ 2 mientras n<20 con OBI gate.
-                rbf_cfg.min_confluence_score_override = match symbol {
-                    "ETHUSDT" => Some(2),
-                    _         => None,
-                };
-                // ETH calibraciones (análisis n=11 live trades 2026-06-10):
-                // London WR=14% -4R, CVD en rango wins -418 vs losses -982, OBI ratio 1.78×.
-                if symbol == "ETHUSDT" {
-                    rbf_cfg.cvd_in_range_min_short = Some(-700.0);
-                    rbf_cfg.obi_gate      = true;
-                    rbf_cfg.obi_threshold = 0.10;
-                }
+                // Gates per-símbolo desactivados 2026-06-12 — acumulando datos con n bajo.
+                // Reactivar cuando n≥30 por símbolo.
                 // Pre-breakout VR: en Overlap el volumen es mayor y hay más fakeouts → exigir 2.0×.
                 // En London/NY mantener 1.5× (volumen moderado, precio en borde es más informativo).
                 if matches!(session.session, data::session::session_tracker::TradingSession::LondonNyOverlap) {
                     rbf_cfg.pre_breakout_vr_min = rbf_cfg.pre_breakout_vr_min.max(2.0);
                 }
-                // ETH: London desactivado (WR=14%, -4R en 7/11 trades — London es el principal loser)
-                let skip_eth_london = symbol == "ETHUSDT"
-                    && matches!(session.session, data::session::session_tracker::TradingSession::London);
-
-                if let Some(sig) = if skip_eth_london { None } else {
-                    self.rbf_state.on_bar_close(
-                        o, h, l, c,
-                        vol,
-                        bar_delta,
-                        session.session,
-                        bar_ms,
-                        &rbf_cfg,
-                        self.vwap_session,
-                        self.funding_rate,
-                        liq_ratio_rbf,
-                        obi_rbf,
-                        cvd_slope,
-                        Some(&rbf_gate),
-                    )
-                } {
+                if let Some(sig) = self.rbf_state.on_bar_close(
+                    o, h, l, c,
+                    vol,
+                    bar_delta,
+                    session.session,
+                    bar_ms,
+                    &rbf_cfg,
+                    self.vwap_session,
+                    self.funding_rate,
+                    liq_ratio_rbf,
+                    obi_rbf,
+                    cvd_slope,
+                    Some(&rbf_gate),
+                ) {
                     // score=4: WR=16.7% avg=-0.62R n=18 → no operar (sigue registrando en Supabase)
                     let tradeable = sig.veto_reason.is_none()
                         && sig.confluence_score >= rbf_cfg.min_confluence_score
@@ -2461,6 +2457,97 @@ impl BarState {
                         tokio::spawn(async move {
                             sb.write_amd_signal_async(&sig_c, &sym_c, false).await;
                         });
+                    }
+                }
+            }
+        }
+
+        // ── Buyer Exhaustion detector ─────────────────────────────────────────────
+        {
+            // Helper para escribir outcome BE
+            macro_rules! write_be_outcome {
+                ($trade:expr) => {{
+                    let trade = $trade;
+                    println!(
+                        "[be_paper] {} entry={:.2} exit={:.2} R={:.2} day_R={:.2}",
+                        trade.exit_reason.as_str(),
+                        trade.entry_price, trade.exit_price, trade.result_r,
+                        self.be_paper.day_r,
+                    );
+                    if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
+                        sb.update_be_outcome(id, &trade);
+                    } else if trade.supabase_id.is_none() && self.be_pending_id_rx.is_some() {
+                        self.be_pending_outcome = Some(trade);
+                    }
+                }};
+            }
+
+            // Resolver UUID pendiente del task async de escritura
+            if let Some(mut rx) = self.be_pending_id_rx.take() {
+                match rx.try_recv() {
+                    Ok(maybe_id) => {
+                        if let Some(id) = maybe_id {
+                            if let Some(pending) = self.be_pending_outcome.take() {
+                                if let Some(sb) = &self.supabase {
+                                    sb.update_be_outcome(&id, &pending);
+                                }
+                            } else {
+                                self.be_paper.set_supabase_id(id);
+                            }
+                        }
+                    }
+                    Err(_) => { self.be_pending_id_rx = Some(rx); }
+                }
+            }
+
+            // Cambio de sesión — stop/target tienen prioridad sobre SESSION_END
+            if session.session != self.be_last_session {
+                let closed_by_price = if self.be_paper.has_position() {
+                    if let Some(trade) = self.be_paper.on_bar_close(h, l, c, bar_ms, 30) {
+                        write_be_outcome!(trade);
+                        true
+                    } else { false }
+                } else { false };
+                if !closed_by_price {
+                    if let Some(trade) = self.be_paper.close_session(c, bar_ms) {
+                        write_be_outcome!(trade);
+                    }
+                }
+                self.be_last_session = session.session;
+            }
+
+            // Chequeo stop/target en barra normal
+            if self.be_paper.has_position() {
+                if let Some(trade) = self.be_paper.on_bar_close(h, l, c, bar_ms, 30) {
+                    write_be_outcome!(trade);
+                }
+            }
+
+            // Detección de señal (solo si no hay posición abierta y límite diario no alcanzado)
+            if !self.be_paper.has_position() {
+                let be_cfg = buyer_exhaustion::config::BuyerExhaustionConfig::default();
+                if let Some(sig) = self.be_state.on_bar_close(
+                    h, l, o, c, vol, bar_delta, bar_ms, symbol, &be_cfg,
+                    self.last_rbf_gate.as_ref(),
+                ) {
+                    if let Some(sb) = self.supabase.clone() {
+                        let sig_c = sig.clone();
+                        let sym_c = symbol.to_string();
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        self.be_pending_id_rx = Some(rx);
+                        tokio::spawn(async move {
+                            let id = sb.write_be_signal_async(&sig_c, &sym_c).await;
+                            let _ = tx.send(id);
+                        });
+                    }
+                    if !self.be_paper.is_daily_limit_hit() {
+                        println!(
+                            "[be_paper] open entry={:.2} stop={:.2} target={:.2} rr={:.2}",
+                            sig.entry_price, sig.stop_price, sig.target_price, sig.rr,
+                        );
+                        self.be_paper.open(&sig);
+                    } else {
+                        println!("[be_paper] daily limit hit (day_r={:.2}R) — señal bloqueada", self.be_paper.day_r);
                     }
                 }
             }
@@ -3487,6 +3574,31 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                 }
             }
         }
+
+        // Feed be_state so vol_hist y history buffers están warm al arrancar.
+        {
+            let be_warm_cfg = buyer_exhaustion::config::BuyerExhaustionConfig::default();
+            let _ = state.be_state.on_bar_close(
+                high, low, open, close, volume, bar_delta, open_ms, symbol, &be_warm_cfg, None,
+            );
+        }
+
+        // Feed be_paper si hay posición restaurada.
+        if state.be_paper.has_position() {
+            if let Some(entry_ms) = state.be_paper.entry_ms() {
+                if open_ms > entry_ms {
+                    if let Some(trade) = state.be_paper.on_bar_close(high, low, close, open_ms, 30) {
+                        println!(
+                            "[be_paper] warm-up close {} entry={:.4} exit={:.4} R={:.3}",
+                            trade.exit_reason.as_str(), trade.entry_price, trade.exit_price, trade.result_r
+                        );
+                        if let (Some(sb), Some(id)) = (&state.supabase, &trade.supabase_id) {
+                            sb.update_be_outcome(id, &trade);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Prime last_regime_enum so hysteresis starts with the correct state
@@ -3666,6 +3778,16 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
                 pos.entry_price, pos.stop_price, pos.target_price, pos.entry_ms,
             );
         }
+        if let Some(pos) = sb.load_be_active(&symbol_str).await {
+            println!(
+                "[be_paper] RESTORED entry={:.4} stop={:.4} target={:.4} id={}",
+                pos.entry_price, pos.stop_price, pos.target_price, pos.signal_id
+            );
+            state.be_paper.restore(
+                pos.signal_id,
+                pos.entry_price, pos.stop_price, pos.target_price, pos.entry_ms,
+            );
+        }
     }
 
     // Seed bar history from REST — si hay posición restaurada, warm_up_history también
@@ -3673,6 +3795,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     warm_up_history(&mut state, &symbol_str, tf_min, 150).await;
     state.rbf_state.reset_signal_cooldown();
     state.amd_state.reset_signal_cooldown();
+    state.be_state.reset_signal_cooldown();
 
     let tf_ms = timeframe.to_milliseconds();
     let mut pending: Option<(u64, Kline)> = None;

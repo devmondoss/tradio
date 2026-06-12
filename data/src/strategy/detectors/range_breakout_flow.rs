@@ -528,7 +528,7 @@ impl RangeBreakoutState {
         if self.history.len() > max_history + 2 { self.history.pop_front(); }
 
         if self.bars_seen < VR_WINDOW + max_history { return None; }
-        if self.bars_seen - self.last_signal_bar < 60 { return None; }
+        if self.bars_seen - self.last_signal_bar < cfg.cooldown_bars { return None; }
         if !is_operative(session) { return None; }
         if !cfg.enabled { return None; }
 
@@ -541,7 +541,7 @@ impl RangeBreakoutState {
         // Se evalúa antes del cooldown para que el check sea barato.
         let pre_eligible = cfg.pre_breakout_enabled
             && vr >= cfg.pre_breakout_vr_min
-            && self.bars_seen.saturating_sub(self.last_pre_signal_bar) >= 60;
+            && self.bars_seen.saturating_sub(self.last_pre_signal_bar) >= cfg.cooldown_bars;
 
         // Salida rápida: VR insuficiente incluso para pre-breakout
         let effective_vr_min = if pre_eligible { cfg.pre_breakout_vr_min } else { BREAKOUT_VR_MIN };
@@ -660,14 +660,32 @@ impl RangeBreakoutState {
                                     let dz_dir_pb = -dz; // Short: selling pressure = dz negativo
                                     let absorption_score_pb = (dz_dir_pb.max(0.0) / 3.0).min(1.0);
                                     let bar_disp_pb = if high > low { (close - open).abs() / (high - low) } else { 0.5 };
+                                    let cvd_neg_pb = window.iter().filter(|b| b.delta < 0.0).count();
+                                    let cvd_div_range_pb = cvd_neg_pb as f64 / window.len().max(1) as f64;
+                                    let h4_aligned_pb = gate.and_then(|g| g.htf_h1_trend.as_ref()
+                                        .map(|t| t.as_str() == "Bear"));
+                                    let signal_score_v2_pb = {
+                                        let mut s = 0.0_f64;
+                                        s += absorption_score_pb * 0.25;
+                                        s += (vr_tier as f64 - 1.0) / 2.0 * 0.20;
+                                        s += if h4_aligned_pb.unwrap_or(false) { 0.15 } else { 0.0 };
+                                        s += (confluence_score as f64 / 9.0) * 0.25;
+                                        s += cvd_div_range_pb * 0.10;
+                                        s.min(1.0)
+                                    };
+                                    let sizing_multiplier_pb: f64 = if signal_score_v2_pb >= 0.70 { 2.0 }
+                                        else if signal_score_v2_pb >= 0.50 { 1.5 }
+                                        else if signal_score_v2_pb >= 0.30 { 1.0 }
+                                        else { 0.5 };
                                     self.last_pre_signal_bar = self.bars_seen;
                                     self.last_signal_bar     = self.bars_seen;
                                     let price_vs_vwap_pct_pb = vwap.filter(|&v| v > 0.0).map(|v| (close - v) / v * 100.0);
                                     println!(
-                                        "[rbf_pre] Short entry={:.2} stop={:.2} target={:.2} rr={:.1} exp={} oi_mom={}",
+                                        "[rbf_pre] Short entry={:.2} stop={:.2} target={:.2} rr={:.1} exp={} oi_mom={} score_v2={:.2}",
                                         close, stop_price, target_price, rr,
                                         gate.map(|g| g.expansion_bars_recent).unwrap_or(0),
                                         gate.map(|g| g.oi_mom_bars_recent).unwrap_or(0),
+                                        signal_score_v2_pb,
                                     );
                                     return Some(RbfSignal {
                                         direction:           RbfDirection::Short,
@@ -706,10 +724,10 @@ impl RangeBreakoutState {
                                         range_touch_symmetry: 0.5,
                                         cvd_per_bar,
                                         breakout_extension_pct: 0.0,
-                                        signal_score_v2:     0.0,
-                                        sizing_multiplier:   1.0,
+                                        signal_score_v2:     signal_score_v2_pb,
+                                        sizing_multiplier:   sizing_multiplier_pb,
                                         htf_h1_trend:        gate.and_then(|g| g.htf_h1_trend.clone()),
-                                        htf_h1_aligned:      None,
+                                        htf_h1_aligned:      h4_aligned_pb,
                                         vp_open_bias:        gate.and_then(|g| g.vp_open_bias.clone()),
                                         confluence_score,
                                         confluence_flags,
@@ -747,20 +765,6 @@ impl RangeBreakoutState {
                 if let Some(min_cvd) = cfg.cvd_in_range_min_short {
                     if cvd_in_range < min_cvd { continue; }
                 }
-            }
-
-            // London CVD gate: compradores activos en rango durante London = fakeout probable.
-            // Análisis 72 trades: winners cvd=-597 vs losers cvd=+1979. Para Shorts ya cubierto
-            // por cvd_aligned; gate explícito para documentación y futuros Longs.
-            if session == TradingSession::London && cvd_in_range > 200.0 { continue; }
-
-            // Pre-CVD gate (últimas 5 barras del rango): autopsia 39 trades.
-            // Si compradores activos justo antes del breakout → breakdown falso (WR=0%, n=7).
-            // NO activamos cooldown → la barra siguiente re-escanea el mismo rango;
-            // si para entonces el pre_cvd giró negativo (sellers absorbieron), entra 1-2 barras después.
-            if direction == RbfDirection::Short {
-                let pre5: f64 = window.iter().rev().take(5).map(|b| b.delta).sum();
-                if pre5 > 0.0 { continue; }
             }
 
             // ── Gate de microestructura ────────────────────────────────────────
@@ -1082,6 +1086,9 @@ pub struct RangeBreakoutConfig {
     /// Score mínimo de confluencia específico por símbolo (sobrescribe min_confluence_score).
     /// ETH: Some(2) — OBI invertido, exigir más evidencia. None = usar min_confluence_score.
     pub min_confluence_score_override: Option<u8>,
+    /// Barras mínimas entre señales del mismo detector (cooldown).
+    /// Configurable desde strategy.toml [range_breakout] cooldown_bars.
+    pub cooldown_bars: usize,
 }
 
 impl Default for RangeBreakoutConfig {
@@ -1123,6 +1130,7 @@ impl Default for RangeBreakoutConfig {
             cum_delta_max_short:        None,
             cvd_in_range_min_short:     None,
             min_confluence_score_override: None,
+            cooldown_bars: 30,
         }
     }
 }
