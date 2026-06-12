@@ -27,7 +27,15 @@ const STRATEGY_META = {
   },
 }
 
-export default function BacktestView({ strategy = 'rbf' }: { strategy?: 'rbf' | 'be' }) {
+interface BtStats { n: number; wins: number; totalR: number; avgR: number; equity: number }
+
+export default function BacktestView({
+  strategy = 'rbf',
+  onStats,
+}: {
+  strategy?: 'rbf' | 'be'
+  onStats?: (s: BtStats | null) => void
+}) {
   const meta_cfg = STRATEGY_META[strategy]
   const [panel,    setPanel]   = useState<Panel>('trades')
   const [trades,   setTrades]  = useState<Trade[]>([])
@@ -52,6 +60,7 @@ export default function BacktestView({ strategy = 'rbf' }: { strategy?: 'rbf' | 
     supabase
       .from('btc_bars')
       .select('ts_ms')
+      .not('cvd_slope', 'is', null)
       .order('ts_ms', { ascending: true })
       .limit(1)
       .then(({ data }) => {
@@ -80,8 +89,12 @@ export default function BacktestView({ strategy = 'rbf' }: { strategy?: 'rbf' | 
         throw new Error(text.slice(0, 200))
       }
       if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`)
-      setTrades(data.trades as Trade[])
+      const ts = data.trades as Trade[]
+      const totalR = ts.reduce((s: number, t: Trade) => s + (t.resultR ?? 0), 0)
+      const avgR   = data.n > 0 ? totalR / data.n : 0
+      setTrades(ts)
       setMeta({ n: data.n, wins: data.wins, equity: data.equity, actualDays: data.actual_days ?? d, microStart: data.micro_start ?? null })
+      onStats?.({ n: data.n, wins: data.wins, totalR, avgR, equity: data.equity })
       setRan(true)
     } catch (e) {
       setError(String(e))
@@ -226,8 +239,8 @@ export default function BacktestView({ strategy = 'rbf' }: { strategy?: 'rbf' | 
               )}
             </span>
             {' · '}
-            <span style={{ color: meta.wins / meta.n >= 0.4 ? 'var(--green)' : 'var(--red)' }}>
-              WR {(meta.wins / meta.n * 100).toFixed(0)}%
+            <span style={{ color: meta.n > 0 && meta.wins / meta.n >= 0.4 ? 'var(--green)' : 'var(--red)' }}>
+              WR {meta.n > 0 ? (meta.wins / meta.n * 100).toFixed(0) + '%' : '—'}
             </span>
             {' · '}
             <span style={{ color: meta.equity >= 500 ? 'var(--green)' : 'var(--red)' }}>
