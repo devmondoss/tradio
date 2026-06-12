@@ -8,11 +8,12 @@ export interface Candle {
 
 const cache = new Map<string, Candle[]>()
 
-export async function fetchKlines(symbol: string, startMs: number, limit = 300): Promise<Candle[]> {
-  const key = `${symbol}-${startMs}`
+export async function fetchKlines(symbol: string, startMs: number, limit = 300, extraBackBars = 100): Promise<Candle[]> {
+  const backMs = extraBackBars * 60 * 1000
+  const from   = startMs - backMs
+  const key    = `${symbol}-${from}-${limit}`
   if (cache.has(key)) return cache.get(key)!
 
-  const from = startMs - 100 * 60 * 1000
   const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1m&startTime=${from}&limit=${limit}`
   try {
     const res = await fetch(url)

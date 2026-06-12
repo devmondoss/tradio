@@ -154,13 +154,24 @@ export default function TradeChart({ trade }: Props) {
 
     const series = serRef.current, chart = chartRef.current
     if (!series || !chart) return
-    fetchKlines(trade.sym, trade.tsMs).then(cs => {
+    // Retroceder suficiente para mostrar la formación del rango + contexto previo
+    const rangeBars  = trade.rangeBars ?? 15
+    const extraBars  = rangeBars + 60   // rango completo + 60 barras de contexto
+    fetchKlines(trade.sym, trade.tsMs, 300, extraBars).then(cs => {
       if (tradeRef.current?.id !== trade.id) return
       candlesRef.current = cs
       series.setData(cs.map(c => ({ ...c, time: c.time as Time })))
-      const ei = cs.findIndex(c => c.time >= trade.ts)
-      const idx = ei >= 0 ? ei : Math.floor(cs.length / 3)
-      chart.timeScale().setVisibleLogicalRange({ from: idx - 35, to: idx + 80 })
+
+      // Buscar la barra de entry por timestamp exacto y con tolerancia ±1 min
+      let ei = cs.findIndex(c => c.time === trade.ts)
+      if (ei < 0) ei = cs.findIndex(c => Math.abs(c.time - trade.ts) <= 60)
+      if (ei < 0) ei = cs.findIndex(c => c.time >= trade.ts)
+
+      // Si no encontramos la entrada, mostrar el final del dataset (lo más reciente)
+      const idx = ei >= 0 ? ei : cs.length - 30
+
+      // Vista: mostrar desde el inicio del rango hasta 60 barras después del entry
+      chart.timeScale().setVisibleLogicalRange({ from: idx - rangeBars - 15, to: idx + 60 })
       draw()
     })
   }, [trade?.id])
