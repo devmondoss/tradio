@@ -162,17 +162,17 @@ export default function TradeChart({ trade }: Props) {
       candlesRef.current = cs
       series.setData(cs.map(c => ({ ...c, time: c.time as Time })))
 
-      // Buscar la barra de entry por timestamp exacto y con tolerancia ±1 min
-      let ei = cs.findIndex(c => c.time === trade.ts)
-      if (ei < 0) ei = cs.findIndex(c => Math.abs(c.time - trade.ts) <= 60)
-      if (ei < 0) ei = cs.findIndex(c => c.time >= trade.ts)
-
-      // Si no encontramos la entrada, mostrar el final del dataset (lo más reciente)
-      const idx = ei >= 0 ? ei : cs.length - 30
-
-      // Vista: mostrar desde el inicio del rango hasta 60 barras después del entry
-      chart.timeScale().setVisibleLogicalRange({ from: idx - rangeBars - 15, to: idx + 60 })
-      draw()
+      // setData() puede triggear un fitContent interno en lightweight-charts;
+      // diferimos la vista al siguiente frame para que nuestro range gane.
+      requestAnimationFrame(() => {
+        if (tradeRef.current?.id !== trade.id) return
+        // Usamos tiempo real (segundos) en vez de índice lógico — más robusto ante resizes
+        chart.timeScale().setVisibleRange({
+          from: (trade.ts - (rangeBars + 15) * 60) as Time,
+          to:   (trade.ts + 60 * 60) as Time,
+        })
+        draw()
+      })
     })
   }, [trade?.id])
 
