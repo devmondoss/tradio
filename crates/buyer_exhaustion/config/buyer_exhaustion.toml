@@ -1,0 +1,54 @@
+# Buyer Exhaustion — configuración por símbolo
+# Fuente única de verdad para parámetros del detector BE.
+#
+# Patrón: rango con CVD > 0 (compradores atrapados) + giro CVD en últimas N barras
+# + ruptura a la baja con VR >= 2.5x + delta negativo + micro confirmación.
+#
+# Calibrado con backtest 163d (ene–jun 2026), 5 símbolos, M1 Binance FAPI real delta.
+# Config ganador BASE+MICRO: WR=62%, avg=+0.098R, $500→$703 (+40.6%), MaxDD=-13.7%
+
+# ── Defaults globales ─────────────────────────────────────────────────────────
+[default]
+enabled                          = true
+range_windows                    = [8]
+range_min_pct                    = 0.05
+range_max_pct                    = 0.50
+require_positive_range_cvd       = true
+pre_cvd_bars                     = 5
+cvd_flip_min_ratio               = 0.40
+breakout_vr_min                  = 2.5
+vr_window                        = 50
+require_negative_breakout_delta  = true
+stop_at_range_high               = true
+time_stop_bars                   = 30
+min_rr                           = 0.40
+day_loss_limit                   = -3.0
+day_profit_cap                   = 6.0
+signal_cooldown_bars             = 60
+# NY excluido: WR=47% avg=-0.083R. NY_STRICT (VR>=3.5) tampoco funciona (-0.026R 163d).
+sessions_enabled                 = ["London", "LondonNyOverlap"]
+
+# ── BTC ───────────────────────────────────────────────────────────────────────
+# 163d MICRO: n=29, WR=55%, avg=+0.004R — marginal, revisar con n>=50 live
+[BTCUSDT]
+enabled = true
+
+# ── ETH ───────────────────────────────────────────────────────────────────────
+# 163d MICRO: n=32, WR=72%, avg=+0.218R — excelente
+[ETHUSDT]
+enabled = true
+
+# ── BNB ───────────────────────────────────────────────────────────────────────
+# 163d MICRO: n=33, WR=73%, avg=+0.247R — mejor símbolo
+[BNBUSDT]
+enabled = true
+
+# ── SOL ───────────────────────────────────────────────────────────────────────
+# 163d MICRO: n=37, WR=62%, avg=+0.115R — bueno
+[SOLUSDT]
+enabled = true
+
+# ── XRP ───────────────────────────────────────────────────────────────────────
+# 163d MICRO: n=54, WR=54%, avg=-0.025R — pierde con filtros micro. DESACTIVADO.
+[XRPUSDT]
+enabled = false

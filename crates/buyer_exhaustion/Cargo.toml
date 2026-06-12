@@ -1,0 +1,12 @@
+[package]
+name = "buyer-exhaustion"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "buyer_exhaustion"
+path = "src/lib.rs"
+
+[dependencies]
+data.workspace = true
+serde.workspace = true
