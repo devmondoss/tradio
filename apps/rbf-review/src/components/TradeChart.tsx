@@ -156,8 +156,8 @@ export default function TradeChart({ trade }: Props) {
     if (!series || !chart) return
     // Retroceder suficiente para mostrar la formación del rango + contexto previo
     const rangeBars  = trade.rangeBars ?? 15
-    const extraBars  = rangeBars + 60   // rango completo + 60 barras de contexto
-    fetchKlines(trade.sym, trade.tsMs, 300, extraBars).then(cs => {
+    const extraBars  = rangeBars + 120  // rango + 120 barras de contexto previo
+    fetchKlines(trade.sym, trade.tsMs, 400, extraBars).then(cs => {
       if (tradeRef.current?.id !== trade.id) return
       candlesRef.current = cs
       series.setData(cs.map(c => ({ ...c, time: c.time as Time })))
