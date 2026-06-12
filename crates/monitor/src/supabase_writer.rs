@@ -13,6 +13,7 @@ use data::strategy::{
     types::{StrategyAction, StrategyMarketContext, StrategySignal},
 };
 use serde_json::{json, Value};
+use buyer_exhaustion;
 
 /// Posición RBF persistida en Supabase, restaurada al reiniciar el proceso.
 pub struct RestoredRbfPosition {
@@ -28,6 +29,15 @@ pub struct RestoredRbfPosition {
 pub struct RestoredAmdPosition {
     pub signal_id:    String,
     pub direction:    data::strategy::detectors::amd_detector::AmdDirection,
+    pub entry_price:  f64,
+    pub stop_price:   f64,
+    pub target_price: f64,
+    pub entry_ms:     i64,
+}
+
+/// Posición BE persistida en Supabase, restaurada al reiniciar el proceso.
+pub struct RestoredBePosition {
+    pub signal_id:    String,
     pub entry_price:  f64,
     pub stop_price:   f64,
     pub target_price: f64,
@@ -1020,6 +1030,129 @@ impl SupabaseWriter {
             }
             Ok(_) => {}
         }
+    }
+
+    // ── Buyer Exhaustion ─────────────────────────────────────────────────────
+
+    /// Inserta una señal BE y retorna el UUID asignado por Supabase.
+    pub async fn write_be_signal_async(
+        &self,
+        sig: &buyer_exhaustion::signal::BuyerExhaustionSignal,
+        symbol: &str,
+    ) -> Option<String> {
+        let body = self.be_signal_body(sig, symbol);
+        let url = format!("{}/rest/v1/be_signals", self.url);
+        let result = self.client
+            .post(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&body)
+            .send()
+            .await;
+        match result {
+            Ok(r) if r.status().is_success() => {
+                let rows: serde_json::Value = r.json().await.unwrap_or_default();
+                rows.as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|o| o.get("id"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            }
+            Ok(r) => { eprintln!("[supabase] write_be_signal_async HTTP {}", r.status()); None }
+            Err(e) => { eprintln!("[supabase] write_be_signal_async error: {e}"); None }
+        }
+    }
+
+    /// Actualiza el outcome de una señal BE (PATCH por UUID).
+    pub fn update_be_outcome(
+        &self,
+        id: &str,
+        trade: &buyer_exhaustion::signal::BeClosedTrade,
+    ) {
+        let closed_at_iso = chrono::DateTime::from_timestamp_millis(trade.exit_ms)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        let body = serde_json::json!({
+            "active":       false,
+            "closed_at":    closed_at_iso,
+            "exit_price":   trade.exit_price,
+            "exit_reason":  trade.exit_reason.as_str(),
+            "result_r":     trade.result_r,
+            "bars_held":    trade.bars_held as i64,
+        });
+        let url    = format!("{}/rest/v1/be_signals?id=eq.{}", self.url, id);
+        let writer = self.clone();
+        tokio::spawn(async move {
+            let result = writer.client
+                .patch(&url)
+                .header("apikey", &writer.key)
+                .header("Authorization", format!("Bearer {}", writer.key))
+                .header("Content-Type", "application/json")
+                .header("Prefer", "return=minimal")
+                .json(&body)
+                .send()
+                .await;
+            if let Ok(r) = result {
+                if !r.status().is_success() {
+                    eprintln!("[supabase] update_be_outcome HTTP {}", r.status());
+                }
+            }
+        });
+    }
+
+    /// Carga la posición BE activa desde Supabase al arrancar.
+    pub async fn load_be_active(&self, symbol: &str) -> Option<RestoredBePosition> {
+        let url = format!(
+            "{}/rest/v1/be_signals?active=eq.true&symbol=eq.{}&order=timestamp_ms.desc&limit=1",
+            self.url, symbol
+        );
+        let result = self.client
+            .get(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Accept", "application/json")
+            .send()
+            .await;
+        let rows: serde_json::Value = match result {
+            Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
+            Ok(r) => { eprintln!("[supabase] load_be_active HTTP {}", r.status()); return None; }
+            Err(e) => { eprintln!("[supabase] load_be_active error: {e}"); return None; }
+        };
+        let row          = rows.as_array()?.first()?;
+        let signal_id    = row.get("id")?.as_str()?.to_string();
+        let entry_price  = row.get("entry_price")?.as_f64()?;
+        let stop_price   = row.get("stop_price")?.as_f64()?;
+        let target_price = row.get("target_price")?.as_f64()?;
+        let entry_ms     = row.get("timestamp_ms")?.as_i64()?;
+        Some(RestoredBePosition { signal_id, entry_price, stop_price, target_price, entry_ms })
+    }
+
+    fn be_signal_body(
+        &self,
+        sig: &buyer_exhaustion::signal::BuyerExhaustionSignal,
+        symbol: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "symbol":          symbol,
+            "session":         format!("{:?}", sig.session),
+            "timestamp_ms":    sig.timestamp_ms,
+            "entry_price":     sig.entry_price,
+            "stop_price":      sig.stop_price,
+            "target_price":    sig.target_price,
+            "rr":              sig.rr,
+            "range_high":      sig.range_high,
+            "range_low":       sig.range_low,
+            "range_pct":       sig.range_pct,
+            "range_bars":      sig.range_bars as i64,
+            "range_cvd":       sig.range_cvd,
+            "pre_cvd_flip":    sig.pre_cvd_flip,
+            "cvd_flip_ratio":  sig.cvd_flip_ratio,
+            "vr_at_breakout":  sig.vr_at_breakout,
+            "breakout_delta":  sig.breakout_delta,
+            "active":          true,
+        })
     }
 }
 
