@@ -1,46 +1,43 @@
 //! Range Breakout Flow — detector de continuación con gate de microestructura
 //!
-//! Hipótesis validada en backtest (30 días M1, n=318 señales London+Overlap):
+//! Hipótesis validada en backtest y paper trading M1:
 //!   Rango de consolidación (0.08–0.55%, 15–60 barras M1) + CVD acumulado alineado
 //!   + VR ≥ 3× en breakout → edge positivo en horizonte 30–60 min.
 //!
-//! Gate de microestructura (backtest offline 30d):
-//!   cvd_slope confirma dirección  (+11pp WR en Q4 vs Q1)
-//!   dz entre 0.5 y 3.0            (extremos >3 revierten; pico en dz ~2)
-//!   obi confirma dirección        (pendiente validación con datos reales)
+//! La versión live actual prioriza participantes atrapados y estructura limpia:
+//! OBI contra el breakout, absorción, stacked imbalance, LVN/thin zone, VWAP y OI.
 //!
-//! Sessions operativas — London (08-13 UTC) y Overlap (13-17 UTC).
-//! NewYork excluido: backtest 30d/43200 barras → WR 24.7% avgR -0.065.
+//! Sessions operativas — London, London/NY Overlap y NewYork.
 
-use std::collections::VecDeque;
+use crate::session::{SessionPhase, TradingSession};
 use serde::{Deserialize, Serialize};
-use crate::session::{TradingSession, SessionPhase};
+use std::collections::VecDeque;
 
 // ── Tipos de confluencia ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfluenceFlag {
     // ── Estructura de mercado (independiente de régimen) ──────────────────────
-    StackedImbalance,    // desequilibrio de libro en dirección del breakout
-    AbsorcionFootprint,  // sellers absorbiendo bids (Short) / compradores bids (Long)
-    LvnOThinZone,        // zona de bajo volumen = aceleración probable al target
-    VwapBias,            // precio bajo VWAP para Short / sobre para Long = contexto macro
-    OiMomentum,          // OI expandiendo = nuevas posiciones = convicción real
+    StackedImbalance,   // desequilibrio de libro en dirección del breakout
+    AbsorcionFootprint, // sellers absorbiendo bids (Short) / compradores bids (Long)
+    LvnOThinZone,       // zona de bajo volumen = aceleración probable al target
+    VwapBias,           // precio bajo VWAP para Short / sobre para Long = contexto macro
+    OiMomentum,         // OI expandiendo = nuevas posiciones = convicción real
     // ── Participantes atrapados (hallazgo Jun 6-11: OBI inverso discrimina mejor) ──
     // Análisis 75 Shorts: OBI bullish en Short → WR=88% AvgR=+0.932 vs baseline 84%/+0.811
     // Lógica: compradores en el libro cuando precio rompe abajo = van a ser squeezed
-    ObiTrap,             // OBI contra la dirección = participantes atrapados
+    ObiTrap, // OBI contra la dirección = participantes atrapados
 }
 
 impl ConfluenceFlag {
     fn as_str(&self) -> &'static str {
         match self {
-            Self::StackedImbalance   => "stacked_imbalance",
+            Self::StackedImbalance => "stacked_imbalance",
             Self::AbsorcionFootprint => "absorption",
-            Self::LvnOThinZone       => "lvn_thin",
-            Self::VwapBias           => "vwap_bias",
-            Self::OiMomentum         => "oi_momentum",
-            Self::ObiTrap            => "obi_trap",
+            Self::LvnOThinZone => "lvn_thin",
+            Self::VwapBias => "vwap_bias",
+            Self::OiMomentum => "oi_momentum",
+            Self::ObiTrap => "obi_trap",
         }
     }
 }
@@ -127,6 +124,10 @@ pub struct RbfGateContext {
     pub obi_mean_intrabar: Option<f64>,
 }
 
+fn pre_cvd_5b(window: &[&BarSnapshot]) -> f64 {
+    window.iter().rev().take(5).map(|b| b.delta).sum()
+}
+
 fn score_confluence(
     direction: RbfDirection,
     macro_regime: MacroRegime,
@@ -164,7 +165,7 @@ fn score_confluence(
     let has_hvn_obstacle = gate.hvn_levels.iter().any(|&lvl| {
         let in_path = match direction {
             RbfDirection::Short => lvl < entry_price && lvl > target_price,
-            RbfDirection::Long  => lvl > entry_price && lvl < target_price,
+            RbfDirection::Long => lvl > entry_price && lvl < target_price,
         };
         let dist_from_entry = (lvl - entry_price).abs();
         in_path && dist_from_entry < full_path * 0.5
@@ -189,22 +190,28 @@ fn score_confluence(
     // Desequilibrios apilados = suministro institucional pendiente de ser ejecutado.
     let stacked = match direction {
         RbfDirection::Short => gate.stacked_imbalance_bearish,
-        RbfDirection::Long  => gate.stacked_imbalance_bullish,
+        RbfDirection::Long => gate.stacked_imbalance_bullish,
     };
-    if stacked { score += 1; flags.push(ConfluenceFlag::StackedImbalance); }
+    if stacked {
+        score += 1;
+        flags.push(ConfluenceFlag::StackedImbalance);
+    }
 
     // [+1] Absorción de footprint — sellers absorbiendo bids (Short) o viceversa.
     // Indica distribución institucional activa durante la consolidación.
     let absorbed = match direction {
         RbfDirection::Short => gate.absorption_ask,
-        RbfDirection::Long  => gate.absorption_bid,
+        RbfDirection::Long => gate.absorption_bid,
     };
-    if absorbed { score += 1; flags.push(ConfluenceFlag::AbsorcionFootprint); }
+    if absorbed {
+        score += 1;
+        flags.push(ConfluenceFlag::AbsorcionFootprint);
+    }
 
     // [+1] LVN o thin zone en dirección del target — vacío de volumen = aceleración probable.
     let thin = match direction {
         RbfDirection::Short => gate.thin_zone_below,
-        RbfDirection::Long  => gate.thin_zone_above,
+        RbfDirection::Long => gate.thin_zone_above,
     };
     if gate.lvn_nearby || thin {
         score += 1;
@@ -217,9 +224,12 @@ fn score_confluence(
         let above = entry_price > v;
         let aligned = match direction {
             RbfDirection::Short => !above,
-            RbfDirection::Long  =>  above,
+            RbfDirection::Long => above,
         };
-        if aligned { score += 1; flags.push(ConfluenceFlag::VwapBias); }
+        if aligned {
+            score += 1;
+            flags.push(ConfluenceFlag::VwapBias);
+        }
     }
 
     // [+1] OI momentum — open interest expandiendo en la barra de breakout.
@@ -236,9 +246,12 @@ fn score_confluence(
     // Contraintuitivo: compradores atrapados = combustible para el move bajista.
     let obi_trap = match direction {
         RbfDirection::Short => obi > cfg.obi_threshold,
-        RbfDirection::Long  => obi < -cfg.obi_threshold,
+        RbfDirection::Long => obi < -cfg.obi_threshold,
     };
-    if obi_trap { score += 1; flags.push(ConfluenceFlag::ObiTrap); }
+    if obi_trap {
+        score += 1;
+        flags.push(ConfluenceFlag::ObiTrap);
+    }
 
     // REMOVIDOS (análisis Jun 6-11 mostró que no discriminan o están invertidos):
     // ✗ CvdSlopeSostenido  — CVD slope acumulado puede indicar move ya consumido
@@ -263,27 +276,31 @@ fn score_confluence(
 
 // ── Parámetros del detector ───────────────────────────────────────────────────
 
-const RANGE_WINDOWS:    &[usize] = &[15, 20, 30, 45, 60];
-const RANGE_MIN_PCT:    f64 = 0.08;
-const RANGE_MAX_PCT:    f64 = 0.55;
-const BREAKOUT_VR_MIN:  f64 = 3.0;
-const VR_WINDOW:        usize = 50;
-const DZ_WINDOW:        usize = 50;
+const RANGE_WINDOWS: &[usize] = &[15, 20, 30, 45, 60];
+const RANGE_MIN_PCT: f64 = 0.08;
+const RANGE_MAX_PCT: f64 = 0.55;
+const BREAKOUT_VR_MIN: f64 = 3.0;
+const VR_WINDOW: usize = 50;
+const DZ_WINDOW: usize = 50;
 // Stop dinámico: stop = ATR_STOP_K × ATR. Reemplaza stop_pct fijo cuando ATR disponible.
 // Grid search M1: 1.0×ATR óptimo. 0.7 era demasiado ajustado (67% stops en barra 1).
-const ATR_STOP_K:       f64 = 1.0;
+const ATR_STOP_K: f64 = 1.0;
 // Filtro de potencial: rango debe ser al menos MIN_RANGE_ATR_RATIO veces el ATR.
 // Trades con rango < 1.5×ATR no tienen espacio real para desarrollarse (MFE < 1R).
 const MIN_RANGE_ATR_RATIO: f64 = 1.5;
-const CVD_SLOPE_WIN:  usize = 20;
-const EMA_MACRO:      usize = 480;
+const CONFLUENCE_SCORE_MAX: f64 = 6.0;
+const CVD_SLOPE_WIN: usize = 20;
+const EMA_MACRO: usize = 480;
 // Backtest 3.5d (n=83): Longs WR=14% AvgR=-0.695 → desactivados hasta reunir edge positivo.
-const LONGS_ENABLED:  bool  = false;
+const LONGS_ENABLED: bool = false;
 
 /// Sessions operativas — London, Overlap y NewYork.
 /// Asia y OffHours excluidos (volumen insuficiente para RBF).
 const fn is_operative(s: TradingSession) -> bool {
-    matches!(s, TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork)
+    matches!(
+        s,
+        TradingSession::London | TradingSession::LondonNyOverlap | TradingSession::NewYork
+    )
 }
 
 // ── Tipos públicos ─────────────────────────────────────────────────────────────
@@ -305,49 +322,49 @@ pub enum MacroRegime {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RbfSignal {
-    pub direction:        RbfDirection,
-    pub entry_price:      f64,
-    pub stop_price:       f64,
-    pub target_price:     f64,
-    pub rr:               f64,
-    pub range_high:       f64,
-    pub range_low:        f64,
-    pub range_pct:        f64,
-    pub range_bars:       usize,
-    pub cvd_in_range:     f64,
-    pub vr_at_breakout:   f64,
-    pub macro_regime:     MacroRegime,
-    pub session:          TradingSession,
-    pub timestamp_ms:     i64,
-    pub evidence:         Vec<String>,
+    pub direction: RbfDirection,
+    pub entry_price: f64,
+    pub stop_price: f64,
+    pub target_price: f64,
+    pub rr: f64,
+    pub range_high: f64,
+    pub range_low: f64,
+    pub range_pct: f64,
+    pub range_bars: usize,
+    pub cvd_in_range: f64,
+    pub vr_at_breakout: f64,
+    pub macro_regime: MacroRegime,
+    pub session: TradingSession,
+    pub timestamp_ms: i64,
+    pub evidence: Vec<String>,
 
     // Contexto adicional
-    pub range_touch_count:  usize,
-    pub session_phase:      SessionPhase,
-    pub price_vs_vwap_pct:  Option<f64>,
-    pub funding_at_entry:   Option<f64>,
-    pub liq_ratio_pre:      f64,
+    pub range_touch_count: usize,
+    pub session_phase: SessionPhase,
+    pub price_vs_vwap_pct: Option<f64>,
+    pub funding_at_entry: Option<f64>,
+    pub liq_ratio_pre: f64,
 
     // Microestructura en la barra de breakout
     /// CVD slope (USD/bar) en la barra de ruptura; positivo = compradores acumulando.
     pub cvd_slope_at_entry: Option<f64>,
     /// Delta z-score de la barra de ruptura (normalizado 50 barras).
-    pub dz_at_entry:        f64,
+    pub dz_at_entry: f64,
     /// Order Book Imbalance en la barra de ruptura (bid-ask / total).
-    pub obi_at_entry:       f64,
+    pub obi_at_entry: f64,
 
     // Microestructura de absorción (FASE 1.1)
     /// Intensidad de delta direccional normalizada (0–1). max(dz_dir,0)/3.
     /// 0 = sin presión alineada, 1 = dz≥3 en la dirección del breakout.
-    pub absorption_score:   f64,
+    pub absorption_score: f64,
     /// Ratio cuerpo/rango de la vela de ruptura (0–1). 0 = pin bar, 1 = marubozu.
     /// Bajo valor = precio apenas se desplazó pese al delta → absorción.
-    pub bar_displacement:   f64,
+    pub bar_displacement: f64,
 
     // OI delta % en evento (FASE 1.2)
     /// Cambio porcentual de Open Interest en la ventana reciente al momento del breakout.
     /// Positivo = expansión (nueva convicción); negativo = cierre de posiciones.
-    pub oi_delta_pct:       Option<f64>,
+    pub oi_delta_pct: Option<f64>,
 
     // CVD divergencia explícita (FASE 1.3)
     /// Barras consecutivas de divergencia CVD-precio al momento del breakout.
@@ -406,43 +423,43 @@ pub struct RbfSignal {
 #[derive(Debug)]
 #[allow(dead_code)]
 struct BarSnapshot {
-    high:   f64,
-    low:    f64,
-    close:  f64,
+    high: f64,
+    low: f64,
+    close: f64,
     volume: f64,
-    delta:  f64,
+    delta: f64,
 }
 
 pub struct RangeBreakoutState {
-    history:              VecDeque<BarSnapshot>,
-    vol_hist:             VecDeque<f64>,
+    history: VecDeque<BarSnapshot>,
+    vol_hist: VecDeque<f64>,
     /// Historial de bar_delta para calcular dz internamente.
-    delta_hist:           VecDeque<f64>,
+    delta_hist: VecDeque<f64>,
     /// Historial de CVD acumulado para calcular cvd_slope internamente (fallback).
-    cvd_acc_hist:         VecDeque<f64>,
-    cvd_running:          f64,
-    ema480:               f64,
-    ema480_prev:          f64,
-    ema480_initialized:   bool,
-    bars_seen:            usize,
-    last_signal_bar:      usize,
-    last_pre_signal_bar:  usize,
+    cvd_acc_hist: VecDeque<f64>,
+    cvd_running: f64,
+    ema480: f64,
+    ema480_prev: f64,
+    ema480_initialized: bool,
+    bars_seen: usize,
+    last_signal_bar: usize,
+    last_pre_signal_bar: usize,
 }
 
 impl RangeBreakoutState {
     pub fn new() -> Self {
         Self {
-            history:            VecDeque::with_capacity(65),
-            vol_hist:           VecDeque::with_capacity(VR_WINDOW + 5),
-            delta_hist:         VecDeque::with_capacity(DZ_WINDOW + 5),
-            cvd_acc_hist:       VecDeque::with_capacity(CVD_SLOPE_WIN + 5),
-            cvd_running:        0.0,
-            ema480:             0.0,
-            ema480_prev:        0.0,
+            history: VecDeque::with_capacity(65),
+            vol_hist: VecDeque::with_capacity(VR_WINDOW + 5),
+            delta_hist: VecDeque::with_capacity(DZ_WINDOW + 5),
+            cvd_acc_hist: VecDeque::with_capacity(CVD_SLOPE_WIN + 5),
+            cvd_running: 0.0,
+            ema480: 0.0,
+            ema480_prev: 0.0,
             ema480_initialized: false,
-            bars_seen:             0,
-            last_signal_bar:       0,
-            last_pre_signal_bar:   0,
+            bars_seen: 0,
+            last_signal_bar: 0,
+            last_pre_signal_bar: 0,
         }
     }
 
@@ -454,7 +471,9 @@ impl RangeBreakoutState {
     /// OLS slope del CVD acumulado sobre las últimas `window` barras.
     fn compute_cvd_slope(&self) -> Option<f64> {
         let n = self.cvd_acc_hist.len();
-        if n < 5 { return None; }
+        if n < 5 {
+            return None;
+        }
         let slice: Vec<f64> = self.cvd_acc_hist.iter().copied().collect();
         let nf = n as f64;
         let sum_x: f64 = (0..n).map(|i| i as f64).sum();
@@ -462,34 +481,49 @@ impl RangeBreakoutState {
         let sum_xy: f64 = slice.iter().enumerate().map(|(i, &y)| i as f64 * y).sum();
         let sum_x2: f64 = (0..n).map(|i| (i * i) as f64).sum();
         let denom = nf * sum_x2 - sum_x * sum_x;
-        if denom.abs() < 1e-10 { return None; }
+        if denom.abs() < 1e-10 {
+            return None;
+        }
         Some((nf * sum_xy - sum_x * sum_y) / denom)
     }
 
     /// Delta z-score de la barra actual.
     fn compute_dz(&self, bar_delta: f64) -> f64 {
         let n = self.delta_hist.len();
-        if n < 5 { return 0.0; }
+        if n < 5 {
+            return 0.0;
+        }
         let mean = self.delta_hist.iter().sum::<f64>() / n as f64;
-        let var  = self.delta_hist.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / n as f64;
-        let std  = var.sqrt();
-        if std < 1e-8 { return 0.0; }
+        let var = self
+            .delta_hist
+            .iter()
+            .map(|&d| (d - mean).powi(2))
+            .sum::<f64>()
+            / n as f64;
+        let std = var.sqrt();
+        if std < 1e-8 {
+            return 0.0;
+        }
         (bar_delta - mean) / std
     }
 
     /// Llamar en cada cierre de barra M1.
     pub fn on_bar_close(
         &mut self,
-        open: f64, high: f64, low: f64, close: f64,
-        volume: f64, bar_delta: f64,
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
+        volume: f64,
+        bar_delta: f64,
         session: TradingSession,
         timestamp_ms: i64,
         cfg: &RangeBreakoutConfig,
         // Microestructura externa
-        vwap:         Option<f64>,
+        vwap: Option<f64>,
         funding_rate: Option<f64>,
-        liq_ratio:    f64,
-        obi:          f64,
+        liq_ratio: f64,
+        obi: f64,
         cvd_slope_ext: Option<f64>, // slope computado externamente (preferido)
         // Contexto de confluencia v2 (opcional — si es None no se puntúa)
         gate: Option<&RbfGateContext>,
@@ -501,7 +535,7 @@ impl RangeBreakoutState {
         // EMA480
         let k = 2.0 / (EMA_MACRO as f64 + 1.0);
         if !self.ema480_initialized {
-            self.ema480      = close;
+            self.ema480 = close;
             self.ema480_prev = close;
             self.ema480_initialized = true;
         } else {
@@ -511,31 +545,60 @@ impl RangeBreakoutState {
 
         // Historial de volumen (VR)
         self.vol_hist.push_back(volume);
-        if self.vol_hist.len() > VR_WINDOW { self.vol_hist.pop_front(); }
+        if self.vol_hist.len() > VR_WINDOW {
+            self.vol_hist.pop_front();
+        }
 
         // Historial de delta (dz)
         self.delta_hist.push_back(bar_delta);
-        if self.delta_hist.len() > DZ_WINDOW { self.delta_hist.pop_front(); }
+        if self.delta_hist.len() > DZ_WINDOW {
+            self.delta_hist.pop_front();
+        }
 
         // Historial de CVD acumulado (slope fallback)
         self.cvd_running += bar_delta;
         self.cvd_acc_hist.push_back(self.cvd_running);
-        if self.cvd_acc_hist.len() > CVD_SLOPE_WIN { self.cvd_acc_hist.pop_front(); }
+        if self.cvd_acc_hist.len() > CVD_SLOPE_WIN {
+            self.cvd_acc_hist.pop_front();
+        }
 
         // Snapshot de la barra
         let max_history = *RANGE_WINDOWS.iter().max().unwrap_or(&60);
-        self.history.push_back(BarSnapshot { high, low, close, volume, delta: bar_delta });
-        if self.history.len() > max_history + 2 { self.history.pop_front(); }
+        self.history.push_back(BarSnapshot {
+            high,
+            low,
+            close,
+            volume,
+            delta: bar_delta,
+        });
+        if self.history.len() > max_history + 2 {
+            self.history.pop_front();
+        }
 
-        if self.bars_seen < VR_WINDOW + max_history { return None; }
-        if self.bars_seen - self.last_signal_bar < cfg.cooldown_bars { return None; }
-        if !is_operative(session) { return None; }
-        if !cfg.enabled { return None; }
+        if self.bars_seen < VR_WINDOW + max_history {
+            return None;
+        }
+        if self.bars_seen - self.last_signal_bar < cfg.cooldown_bars {
+            return None;
+        }
+        if !is_operative(session) {
+            return None;
+        }
+        if !cfg.enabled {
+            return None;
+        }
 
         // VR
-        let mean_vol = if self.vol_hist.is_empty() { 1.0 }
-            else { self.vol_hist.iter().sum::<f64>() / self.vol_hist.len() as f64 };
-        let vr = if mean_vol > 0.0 { volume / mean_vol } else { 0.0 };
+        let mean_vol = if self.vol_hist.is_empty() {
+            1.0
+        } else {
+            self.vol_hist.iter().sum::<f64>() / self.vol_hist.len() as f64
+        };
+        let vr = if mean_vol > 0.0 {
+            volume / mean_vol
+        } else {
+            0.0
+        };
 
         // pre_eligible: condiciones para el path de entrada anticipada.
         // Se evalúa antes del cooldown para que el check sea barato.
@@ -544,80 +607,107 @@ impl RangeBreakoutState {
             && self.bars_seen.saturating_sub(self.last_pre_signal_bar) >= cfg.cooldown_bars;
 
         // Salida rápida: VR insuficiente incluso para pre-breakout
-        let effective_vr_min = if pre_eligible { cfg.pre_breakout_vr_min } else { BREAKOUT_VR_MIN };
-        if vr < effective_vr_min { return None; }
+        let effective_vr_min = if pre_eligible {
+            cfg.pre_breakout_vr_min
+        } else {
+            BREAKOUT_VR_MIN
+        };
+        if vr < effective_vr_min {
+            return None;
+        }
 
         // Microestructura en esta barra
-        let dz         = self.compute_dz(bar_delta);
-        let cvd_slope  = cvd_slope_ext.or_else(|| self.compute_cvd_slope());
+        let dz = self.compute_dz(bar_delta);
+        let cvd_slope = cvd_slope_ext.or_else(|| self.compute_cvd_slope());
 
         // Fase / régimen macro
-        let session_ctx  = crate::session::classify_session(timestamp_ms);
+        let session_ctx = crate::session::classify_session(timestamp_ms);
         let session_phase = session_ctx.phase;
-        let slope_pos    = self.ema480 > self.ema480_prev;
-        let above_ema    = close > self.ema480;
+        let slope_pos = self.ema480 > self.ema480_prev;
+        let above_ema = close > self.ema480;
         let macro_regime = match (above_ema, slope_pos) {
-            (true,  true)  => MacroRegime::Bull,
+            (true, true) => MacroRegime::Bull,
             (false, false) => MacroRegime::Bear,
-            (true,  false) => MacroRegime::BullPullback,
-            (false, true)  => MacroRegime::BearPullback,
+            (true, false) => MacroRegime::BullPullback,
+            (false, true) => MacroRegime::BearPullback,
         };
 
-        let price_vs_vwap_pct = vwap
-            .filter(|v| *v > 0.0)
-            .map(|v| (close - v) / v * 100.0);
+        let price_vs_vwap_pct = vwap.filter(|v| *v > 0.0).map(|v| (close - v) / v * 100.0);
 
         let hist_len = self.history.len();
         for &range_bars in RANGE_WINDOWS {
-            if hist_len < range_bars + 1 { continue; }
+            if hist_len < range_bars + 1 {
+                continue;
+            }
 
             let window_start = hist_len - range_bars - 1;
-            let window: Vec<&BarSnapshot> = self.history
+            let window: Vec<&BarSnapshot> = self
+                .history
                 .iter()
                 .skip(window_start)
                 .take(range_bars)
                 .collect();
 
-            let range_high = window.iter().map(|b| b.high).fold(f64::NEG_INFINITY, f64::max);
-            let range_low  = window.iter().map(|b| b.low).fold(f64::INFINITY,  f64::min);
-            let range_pct  = (range_high - range_low) / close * 100.0;
+            let range_high = window
+                .iter()
+                .map(|b| b.high)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let range_low = window.iter().map(|b| b.low).fold(f64::INFINITY, f64::min);
+            let range_pct = (range_high - range_low) / close * 100.0;
 
-            if range_pct < RANGE_MIN_PCT || range_pct > RANGE_MAX_PCT { continue; }
+            if range_pct < RANGE_MIN_PCT || range_pct > RANGE_MAX_PCT {
+                continue;
+            }
 
             // Filtro de potencial: rango debe ser ≥ MIN_RANGE_ATR_RATIO × ATR.
             // Rangos menores al ATR típico no tienen espacio real para desarrollarse.
             if let Some(ctx) = gate {
                 if ctx.atr > 0.0 {
                     let range_abs = range_high - range_low;
-                    if range_abs < MIN_RANGE_ATR_RATIO * ctx.atr { continue; }
+                    if range_abs < MIN_RANGE_ATR_RATIO * ctx.atr {
+                        continue;
+                    }
                 }
                 // Filtro de régimen expansión: si el mercado ya entró en expansión hace
                 // varias barras, el move está maduro y el edge desaparece.
                 // Calibración n=30 Shorts: expansion_n≤3 → WR=60%; sin filtro → WR=40%.
                 // Pasar expansion_bars_recent=0 para símbolos donde no aplica (ej: SOL).
                 if let Some(max_exp) = cfg.expansion_max_bars {
-                    if ctx.expansion_bars_recent > max_exp { continue; }
+                    if ctx.expansion_bars_recent > max_exp {
+                        continue;
+                    }
                 }
                 // Gate cum_delta_25b por símbolo (Short).
                 // Muy negativo = selling masivo ya consumido → edge desaparece.
                 // Muy positivo = compradores agresivos activos → fakeout probable.
                 if let Some(g) = gate {
                     if let Some(min_d) = cfg.cum_delta_min_short {
-                        if g.cum_delta_25b < min_d { continue; }
+                        if g.cum_delta_25b < min_d {
+                            continue;
+                        }
                     }
                     if let Some(max_d) = cfg.cum_delta_max_short {
-                        if g.cum_delta_25b > max_d { continue; }
+                        if g.cum_delta_25b > max_d {
+                            continue;
+                        }
                     }
                 }
             }
 
             let cvd_in_range: f64 = window.iter().map(|b| b.delta).sum();
+            let pre_cvd_5b = pre_cvd_5b(&window);
 
-            let touches_high = window.iter().filter(|b| b.high >= range_high * 0.999 && b.close < range_high).count();
-            let touches_low  = window.iter().filter(|b| b.low  <= range_low  * 1.001 && b.close > range_low).count();
+            let touches_high = window
+                .iter()
+                .filter(|b| b.high >= range_high * 0.999 && b.close < range_high)
+                .count();
+            let touches_low = window
+                .iter()
+                .filter(|b| b.low <= range_low * 1.001 && b.close > range_low)
+                .count();
 
             let breaks_down = close < range_low;
-            let breaks_up   = close > range_high;
+            let breaks_up = close > range_high;
 
             // ── PRE-BREAKOUT PATH ──────────────────────────────────────────────────
             // Precio dentro del rango, cerca del borde inferior (Short).
@@ -627,7 +717,7 @@ impl RangeBreakoutState {
             if pre_eligible && !breaks_down && !breaks_up {
                 let near_low = close <= range_low * (1.0 + cfg.pre_breakout_zone_pct);
                 // LONGS desactivados → solo verificar near_low (Short pre-breakout)
-                if near_low && cvd_in_range < 0.0 {
+                if near_low && cvd_in_range < 0.0 && pre_cvd_5b <= 0.0 {
                     // OI momentum gate: oi_mom_n alto = move ya maduro, evitar entrar
                     let oi_gate_ok = cfg.pre_breakout_oi_max.map_or(true, |max| {
                         gate.map_or(true, |g| g.oi_mom_bars_recent <= max)
@@ -639,57 +729,94 @@ impl RangeBreakoutState {
                             let rr = cfg.pre_breakout_rr;
                             let target_price = close - rr * risk;
                             if rr >= cfg.min_rr {
-                                let (confluence_score, mut confluence_flags, veto_reason) = if let Some(g) = gate {
-                                    score_confluence(
-                                        RbfDirection::Short, macro_regime,
-                                        cvd_slope, obi, vwap,
-                                        close, target_price, g, cfg,
-                                    )
-                                } else {
-                                    (0, vec![], None)
-                                };
+                                let (confluence_score, mut confluence_flags, veto_reason) =
+                                    if let Some(g) = gate {
+                                        score_confluence(
+                                            RbfDirection::Short,
+                                            macro_regime,
+                                            cvd_slope,
+                                            obi,
+                                            vwap,
+                                            close,
+                                            target_price,
+                                            g,
+                                            cfg,
+                                        )
+                                    } else {
+                                        (0, vec![], None)
+                                    };
                                 // Solo emitir si no hay veto y score mínimo
-                                let eff_min_score = cfg.min_confluence_score_override
+                                let eff_min_score = cfg
+                                    .min_confluence_score_override
                                     .unwrap_or(cfg.min_confluence_score);
-                                if veto_reason.is_none()
-                                    && confluence_score >= eff_min_score
-                                {
+                                if veto_reason.is_none() && confluence_score >= eff_min_score {
                                     confluence_flags.push("pre_breakout".to_string());
-                                    let vr_tier: u8 = if vr >= 4.0 { 3 } else if vr >= 2.0 { 2 } else { 1 };
-                                    let cvd_per_bar = if range_bars > 0 { cvd_in_range / range_bars as f64 } else { 0.0 };
+                                    let vr_tier: u8 = if vr >= 4.0 {
+                                        3
+                                    } else if vr >= 2.0 {
+                                        2
+                                    } else {
+                                        1
+                                    };
+                                    let cvd_per_bar = if range_bars > 0 {
+                                        cvd_in_range / range_bars as f64
+                                    } else {
+                                        0.0
+                                    };
                                     let dz_dir_pb = -dz; // Short: selling pressure = dz negativo
                                     let absorption_score_pb = (dz_dir_pb.max(0.0) / 3.0).min(1.0);
-                                    let bar_disp_pb = if high > low { (close - open).abs() / (high - low) } else { 0.5 };
-                                    let cvd_neg_pb = window.iter().filter(|b| b.delta < 0.0).count();
-                                    let cvd_div_range_pb = cvd_neg_pb as f64 / window.len().max(1) as f64;
-                                    let h4_aligned_pb = gate.and_then(|g| g.htf_h1_trend.as_ref()
-                                        .map(|t| t.as_str() == "Bear"));
+                                    let bar_disp_pb = if high > low {
+                                        (close - open).abs() / (high - low)
+                                    } else {
+                                        0.5
+                                    };
+                                    let cvd_neg_pb =
+                                        window.iter().filter(|b| b.delta < 0.0).count();
+                                    let cvd_div_range_pb =
+                                        cvd_neg_pb as f64 / window.len().max(1) as f64;
+                                    let h4_aligned_pb = gate.and_then(|g| {
+                                        g.htf_h1_trend.as_ref().map(|t| t.as_str() == "Bear")
+                                    });
                                     let signal_score_v2_pb = {
                                         let mut s = 0.0_f64;
                                         s += absorption_score_pb * 0.25;
                                         s += (vr_tier as f64 - 1.0) / 2.0 * 0.20;
-                                        s += if h4_aligned_pb.unwrap_or(false) { 0.15 } else { 0.0 };
-                                        s += (confluence_score as f64 / 9.0) * 0.25;
+                                        s += if h4_aligned_pb.unwrap_or(false) {
+                                            0.15
+                                        } else {
+                                            0.0
+                                        };
+                                        s +=
+                                            (confluence_score as f64 / CONFLUENCE_SCORE_MAX) * 0.25;
                                         s += cvd_div_range_pb * 0.10;
                                         s.min(1.0)
                                     };
-                                    let sizing_multiplier_pb: f64 = if signal_score_v2_pb >= 0.70 { 2.0 }
-                                        else if signal_score_v2_pb >= 0.50 { 1.5 }
-                                        else if signal_score_v2_pb >= 0.30 { 1.0 }
-                                        else { 0.5 };
+                                    let sizing_multiplier_pb: f64 = if signal_score_v2_pb >= 0.70 {
+                                        2.0
+                                    } else if signal_score_v2_pb >= 0.50 {
+                                        1.5
+                                    } else if signal_score_v2_pb >= 0.30 {
+                                        1.0
+                                    } else {
+                                        0.5
+                                    };
                                     self.last_pre_signal_bar = self.bars_seen;
-                                    self.last_signal_bar     = self.bars_seen;
-                                    let price_vs_vwap_pct_pb = vwap.filter(|&v| v > 0.0).map(|v| (close - v) / v * 100.0);
+                                    self.last_signal_bar = self.bars_seen;
+                                    let price_vs_vwap_pct_pb =
+                                        vwap.filter(|&v| v > 0.0).map(|v| (close - v) / v * 100.0);
                                     println!(
                                         "[rbf_pre] Short entry={:.2} stop={:.2} target={:.2} rr={:.1} exp={} oi_mom={} score_v2={:.2}",
-                                        close, stop_price, target_price, rr,
+                                        close,
+                                        stop_price,
+                                        target_price,
+                                        rr,
                                         gate.map(|g| g.expansion_bars_recent).unwrap_or(0),
                                         gate.map(|g| g.oi_mom_bars_recent).unwrap_or(0),
                                         signal_score_v2_pb,
                                     );
                                     return Some(RbfSignal {
-                                        direction:           RbfDirection::Short,
-                                        entry_price:         close,
+                                        direction: RbfDirection::Short,
+                                        entry_price: close,
                                         stop_price,
                                         target_price,
                                         rr,
@@ -698,7 +825,7 @@ impl RangeBreakoutState {
                                         range_pct,
                                         range_bars,
                                         cvd_in_range,
-                                        vr_at_breakout:      vr,
+                                        vr_at_breakout: vr,
                                         macro_regime,
                                         session,
                                         timestamp_ms,
@@ -708,31 +835,32 @@ impl RangeBreakoutState {
                                             format!("vr={:.2}x", vr),
                                             format!("rr={:.1}", rr),
                                         ],
-                                        range_touch_count:   touches_low,
+                                        range_touch_count: touches_low,
                                         session_phase,
-                                        price_vs_vwap_pct:   price_vs_vwap_pct_pb,
-                                        funding_at_entry:    funding_rate,
-                                        liq_ratio_pre:       liq_ratio,
-                                        cvd_slope_at_entry:  cvd_slope,
-                                        dz_at_entry:         dz,
-                                        obi_at_entry:        obi,
-                                        absorption_score:    absorption_score_pb,
-                                        bar_displacement:    bar_disp_pb,
-                                        oi_delta_pct:        gate.and_then(|g| g.oi_delta_pct),
-                                        cvd_divergence_bars: gate.and_then(|g| g.cvd_divergence_bars),
+                                        price_vs_vwap_pct: price_vs_vwap_pct_pb,
+                                        funding_at_entry: funding_rate,
+                                        liq_ratio_pre: liq_ratio,
+                                        cvd_slope_at_entry: cvd_slope,
+                                        dz_at_entry: dz,
+                                        obi_at_entry: obi,
+                                        absorption_score: absorption_score_pb,
+                                        bar_displacement: bar_disp_pb,
+                                        oi_delta_pct: gate.and_then(|g| g.oi_delta_pct),
+                                        cvd_divergence_bars: gate
+                                            .and_then(|g| g.cvd_divergence_bars),
                                         vr_tier,
                                         range_touch_symmetry: 0.5,
                                         cvd_per_bar,
                                         breakout_extension_pct: 0.0,
-                                        signal_score_v2:     signal_score_v2_pb,
-                                        sizing_multiplier:   sizing_multiplier_pb,
-                                        htf_h1_trend:        gate.and_then(|g| g.htf_h1_trend.clone()),
-                                        htf_h1_aligned:      h4_aligned_pb,
-                                        vp_open_bias:        gate.and_then(|g| g.vp_open_bias.clone()),
+                                        signal_score_v2: signal_score_v2_pb,
+                                        sizing_multiplier: sizing_multiplier_pb,
+                                        htf_h1_trend: gate.and_then(|g| g.htf_h1_trend.clone()),
+                                        htf_h1_aligned: h4_aligned_pb,
+                                        vp_open_bias: gate.and_then(|g| g.vp_open_bias.clone()),
                                         confluence_score,
                                         confluence_flags,
-                                        veto_reason:         None,
-                                        is_pre_breakout:     true,
+                                        veto_reason: None,
+                                        is_pre_breakout: true,
                                     });
                                 }
                             }
@@ -743,27 +871,55 @@ impl RangeBreakoutState {
             }
 
             // ── POST-BREAKOUT PATH (precio fuera del rango, VR≥3×) ───────────────
-            if !breaks_down && !breaks_up { continue; }
+            if !breaks_down && !breaks_up {
+                continue;
+            }
             // Requiere VR completo para confirmar el breakout
-            if vr < BREAKOUT_VR_MIN { continue; }
+            if vr < BREAKOUT_VR_MIN {
+                continue;
+            }
 
-            let direction = if breaks_down { RbfDirection::Short } else { RbfDirection::Long };
-            if direction == RbfDirection::Long  && !cfg.allow_long  { continue; }
-            if direction == RbfDirection::Short && !cfg.allow_short { continue; }
+            let direction = if breaks_down {
+                RbfDirection::Short
+            } else {
+                RbfDirection::Long
+            };
+            if direction == RbfDirection::Long && !cfg.allow_long {
+                continue;
+            }
+            if direction == RbfDirection::Short && !cfg.allow_short {
+                continue;
+            }
             let sign: f64 = if breaks_down { 1.0 } else { -1.0 }; // sign para "move in direction"
 
             // CVD acumulado en rango alineado con dirección
             let cvd_aligned = match direction {
                 RbfDirection::Short => cvd_in_range < 0.0,
-                RbfDirection::Long  => cvd_in_range > 0.0,
+                RbfDirection::Long => cvd_in_range > 0.0,
             };
-            if !cvd_aligned { continue; }
+            if !cvd_aligned {
+                continue;
+            }
+
+            // Entrada diferida: si las últimas 5 barras del rango siguen con delta
+            // comprador, no shortear todavía. La siguiente barra puede re-escanear
+            // el mismo rango cuando el CVD final ya haya capitulado.
+            if direction == RbfDirection::Short && pre_cvd_5b > 0.0 {
+                continue;
+            }
 
             // cvd_in_range gate por símbolo (Short): ETH wins avg -418 vs losses -982.
             // Rechazar setups donde el selling durante el rango fue excesivo (move ya consumido).
             if direction == RbfDirection::Short {
                 if let Some(min_cvd) = cfg.cvd_in_range_min_short {
-                    if cvd_in_range < min_cvd { continue; }
+                    if cvd_in_range < min_cvd {
+                        continue;
+                    }
+                }
+                if let Some(max_obi) = cfg.obi_max_short {
+                    if obi > max_obi {
+                        continue;
+                    }
                 }
             }
 
@@ -773,21 +929,27 @@ impl RangeBreakoutState {
             // (absorción de compradores) tiene mejor WR que slope<0 (continuación pura).
             if cfg.cvd_slope_gate {
                 if let Some(sd) = cvd_slope_dir {
-                    if sd <= 0.0 { continue; }
+                    if sd <= 0.0 {
+                        continue;
+                    }
                 }
             }
 
             // dz alineado con la dirección
             let dz_dir = sign * (-dz);
-            if dz_dir < cfg.dz_min || dz_dir > cfg.dz_max { continue; }
+            if dz_dir < cfg.dz_min || dz_dir > cfg.dz_max {
+                continue;
+            }
 
             // OBI gate
             if cfg.obi_gate {
                 let obi_ok = match direction {
                     RbfDirection::Short => obi < -cfg.obi_threshold,
-                    RbfDirection::Long  => obi >  cfg.obi_threshold,
+                    RbfDirection::Long => obi > cfg.obi_threshold,
                 };
-                if !obi_ok { continue; }
+                if !obi_ok {
+                    continue;
+                }
             }
 
             // ── VSWAP proximity gate ───────────────────────────────────────────
@@ -798,9 +960,11 @@ impl RangeBreakoutState {
                     let pct = (close - v) / v;
                     let ok = match direction {
                         RbfDirection::Short => pct > -cfg.vswap_max_dev,
-                        RbfDirection::Long  => pct <  cfg.vswap_max_dev,
+                        RbfDirection::Long => pct < cfg.vswap_max_dev,
                     };
-                    if !ok { continue; }
+                    if !ok {
+                        continue;
+                    }
                 }
             }
 
@@ -810,16 +974,18 @@ impl RangeBreakoutState {
             if cfg.breakout_ext_gate {
                 let ext = match direction {
                     RbfDirection::Short => (range_low - close) / range_low,
-                    RbfDirection::Long  => (close - range_high) / range_high,
+                    RbfDirection::Long => (close - range_high) / range_high,
                 };
-                if ext < cfg.breakout_ext_min { continue; }
+                if ext < cfg.breakout_ext_min {
+                    continue;
+                }
             }
 
             // Stop = techo/piso del rango de consolidación (estructura de mercado real).
             // ATR M1 (~0.1%) era ruido puro — el stop quedaba DENTRO de la consolidación,
             // no encima de ella. Si el precio regresa al rango, el breakout falló.
             let rr_short = cfg.target_short_pct / cfg.stop_pct; // e.g. 0.50/0.25 = 2.0
-            let rr_long  = cfg.target_long_pct  / cfg.stop_pct;
+            let rr_long = cfg.target_long_pct / cfg.stop_pct;
             let (stop_price, target_price) = match direction {
                 RbfDirection::Short => {
                     let s = range_high;
@@ -830,10 +996,12 @@ impl RangeBreakoutState {
                     (s, close + rr_long * (close - s))
                 }
             };
-            let risk   = (close - stop_price).abs();
+            let risk = (close - stop_price).abs();
             let reward = (target_price - close).abs();
-            let rr     = if risk > 1e-10 { reward / risk } else { 0.0 };
-            if rr < cfg.min_rr { continue; }
+            let rr = if risk > 1e-10 { reward / risk } else { 0.0 };
+            if rr < cfg.min_rr {
+                continue;
+            }
 
             // Evidencia
             let mut evidence = vec![
@@ -854,15 +1022,31 @@ impl RangeBreakoutState {
             }
 
             let counter_trend = match direction {
-                RbfDirection::Short => matches!(macro_regime, MacroRegime::Bull | MacroRegime::BullPullback),
-                RbfDirection::Long  => matches!(macro_regime, MacroRegime::Bear | MacroRegime::BearPullback),
+                RbfDirection::Short => {
+                    matches!(macro_regime, MacroRegime::Bull | MacroRegime::BullPullback)
+                }
+                RbfDirection::Long => {
+                    matches!(macro_regime, MacroRegime::Bear | MacroRegime::BearPullback)
+                }
             };
-            if counter_trend { evidence.push("contra_tendencia".to_string()); }
+            if counter_trend {
+                evidence.push("contra_tendencia".to_string());
+            }
 
-            let range_touch_count = if breaks_down { touches_low } else { touches_high };
+            let range_touch_count = if breaks_down {
+                touches_low
+            } else {
+                touches_high
+            };
 
             // ── VR tier (FASE 2.2) ───────────────────────────────────────────
-            let vr_tier: u8 = if vr >= 4.0 { 3 } else if vr >= 3.0 { 2 } else { 1 };
+            let vr_tier: u8 = if vr >= 4.0 {
+                3
+            } else if vr >= 3.0 {
+                2
+            } else {
+                1
+            };
 
             // ── Calidad del rango (FASE 2.3) ─────────────────────────────────
             // Simetría de toques: cuánto balance había entre ambos lados del rango
@@ -875,12 +1059,17 @@ impl RangeBreakoutState {
                 0.5
             };
             // CVD acumulado por barra del rango
-            let cvd_per_bar = if range_bars > 0 { cvd_in_range / range_bars as f64 } else { 0.0 };
+            let cvd_per_bar = if range_bars > 0 {
+                cvd_in_range / range_bars as f64
+            } else {
+                0.0
+            };
             // Extensión del cierre más allá del rango roto (%)
             let breakout_extension_pct = match direction {
                 RbfDirection::Short => (range_low - close) / close * 100.0,
-                RbfDirection::Long  => (close - range_high) / close * 100.0,
-            }.max(0.0);
+                RbfDirection::Long => (close - range_high) / close * 100.0,
+            }
+            .max(0.0);
 
             // ── Absorción (FASE 1.1) ──────────────────────────────────────────
             // Intensidad del delta direccional normalizada: max(dz_dir,0)/3 ∈ [0,1]
@@ -894,7 +1083,7 @@ impl RangeBreakoutState {
             let cvd_neg_ratio = cvd_neg_bars as f64 / window.len().max(1) as f64;
             let cvd_divergence_range = match direction {
                 RbfDirection::Short => cvd_neg_ratio,
-                RbfDirection::Long  => 1.0 - cvd_neg_ratio,
+                RbfDirection::Long => 1.0 - cvd_neg_ratio,
             };
             // Ratio cuerpo/rango: low = pin bar / absorbed; high = engulfing candle
             let bar_displacement = if high > low {
@@ -906,10 +1095,15 @@ impl RangeBreakoutState {
             // ── Confluencia v2 ────────────────────────────────────────────────
             let (confluence_score, confluence_flags, veto_reason) = if let Some(g) = gate {
                 score_confluence(
-                    direction, macro_regime,
-                    cvd_slope, obi, vwap,
-                    close, target_price,
-                    g, cfg,
+                    direction,
+                    macro_regime,
+                    cvd_slope,
+                    obi,
+                    vwap,
+                    close,
+                    target_price,
+                    g,
+                    cfg,
                 )
             } else {
                 (0, vec![], None)
@@ -918,34 +1112,52 @@ impl RangeBreakoutState {
             if let Some(ref reason) = veto_reason {
                 evidence.push(format!("veto={}", reason));
             } else {
-                evidence.push(format!("confluence={}/{}", confluence_score, 8));
+                evidence.push(format!(
+                    "confluence={}/{}",
+                    confluence_score, CONFLUENCE_SCORE_MAX as u8
+                ));
             }
 
             self.last_signal_bar = self.bars_seen;
 
             // ── Score continuo (FASE 4) ───────────────────────────────────────
-            let h4_aligned = gate.and_then(|g| g.htf_h1_trend.as_ref().map(|t| {
-                matches!((direction, t.as_str()), (RbfDirection::Long,"Bull")|(RbfDirection::Short,"Bear"))
-            }));
+            let h4_aligned = gate.and_then(|g| {
+                g.htf_h1_trend.as_ref().map(|t| {
+                    matches!(
+                        (direction, t.as_str()),
+                        (RbfDirection::Long, "Bull") | (RbfDirection::Short, "Bear")
+                    )
+                })
+            });
             let signal_score_v2 = {
                 let mut s = 0.0_f64;
                 s += absorption_score * 0.25;
                 s += (vr_tier as f64 - 1.0) / 2.0 * 0.20;
                 s += breakout_extension_pct.min(0.10) / 0.10 * 0.15;
-                s += if h4_aligned.unwrap_or(false) { 0.15 } else { 0.0 };
-                s += (confluence_score as f64 / 9.0) * 0.25;
+                s += if h4_aligned.unwrap_or(false) {
+                    0.15
+                } else {
+                    0.0
+                };
+                s += (confluence_score as f64 / CONFLUENCE_SCORE_MAX) * 0.25;
                 // Divergencia CVD durante el rango: presión sostenida = mayor convicción en el breakout.
                 // Fuente: múltiples traders orderflow (Yush, Brando, Umar) — "CVD declining during range = distribution".
                 s += cvd_divergence_range * 0.10;
                 s.min(1.0_f64)
             };
-            let sizing_multiplier: f64 = if signal_score_v2 >= 0.70 { 2.0 }
-                else if signal_score_v2 >= 0.50 { 1.5 }
-                else if signal_score_v2 >= 0.30 { 1.0 }
-                else { 0.5 };
+            let sizing_multiplier: f64 = if signal_score_v2 >= 0.70 {
+                2.0
+            } else if signal_score_v2 >= 0.50 {
+                1.5
+            } else if signal_score_v2 >= 0.30 {
+                1.0
+            } else {
+                0.5
+            };
 
             // Gate de confluence score (por símbolo via override, o global).
-            let eff_min_score_post = cfg.min_confluence_score_override
+            let eff_min_score_post = cfg
+                .min_confluence_score_override
                 .unwrap_or(cfg.min_confluence_score);
             if veto_reason.is_some() || confluence_score < eff_min_score_post {
                 continue;
@@ -970,14 +1182,14 @@ impl RangeBreakoutState {
                 range_touch_count,
                 session_phase,
                 price_vs_vwap_pct,
-                funding_at_entry:    funding_rate,
-                liq_ratio_pre:       liq_ratio,
-                cvd_slope_at_entry:  cvd_slope,
-                dz_at_entry:         dz,
-                obi_at_entry:        obi,
+                funding_at_entry: funding_rate,
+                liq_ratio_pre: liq_ratio,
+                cvd_slope_at_entry: cvd_slope,
+                dz_at_entry: dz,
+                obi_at_entry: obi,
                 absorption_score,
                 bar_displacement,
-                oi_delta_pct:        gate.map(|g| g.oi_delta_pct).flatten(),
+                oi_delta_pct: gate.map(|g| g.oi_delta_pct).flatten(),
                 cvd_divergence_bars: gate.map(|g| g.cvd_divergence_bars).flatten(),
                 vr_tier,
                 range_touch_symmetry,
@@ -1003,27 +1215,27 @@ impl RangeBreakoutState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RangeBreakoutConfig {
-    pub enabled:           bool,
+    pub enabled: bool,
     /// Permitir señales Long. false = solo Shorts.
-    pub allow_long:        bool,
+    pub allow_long: bool,
     /// Permitir señales Short. false = solo Longs.
-    pub allow_short:       bool,
-    pub stop_pct:          f64,
-    pub target_short_pct:  f64,
-    pub target_long_pct:   f64,
-    pub min_rr:            f64,
+    pub allow_short: bool,
+    pub stop_pct: f64,
+    pub target_short_pct: f64,
+    pub target_long_pct: f64,
+    pub min_rr: f64,
 
     // Gates de microestructura (validados backtest 30d)
     /// Activar gate de CVD slope: slope debe confirmar dirección del breakout.
-    pub cvd_slope_gate:    bool,
+    pub cvd_slope_gate: bool,
     /// dz mínimo alineado con dirección (0.5 = backtest óptimo, elimina breakouts planos).
-    pub dz_min:            f64,
+    pub dz_min: f64,
     /// dz máximo alineado con dirección (3.0 = cortar extremos que revierten).
-    pub dz_max:            f64,
+    pub dz_max: f64,
     /// Activar gate de OBI (requiere validación con datos reales; desactivado por defecto).
-    pub obi_gate:          bool,
+    pub obi_gate: bool,
     /// Umbral OBI para el gate: SHORT quiere obi < threshold, LONG quiere obi > (1-threshold).
-    pub obi_threshold:     f64,
+    pub obi_threshold: f64,
 
     // Sistema de confluencia v2
     /// Score mínimo para abrir posición. 1 = shadow mode (grabar todo). 3+ = producción.
@@ -1035,18 +1247,18 @@ pub struct RangeBreakoutConfig {
 
     // ── Filtros validados backtest 30d ─────────────────────────────────────────
     /// Activar filtro VWAP proximity: rechaza entries muy extendidos del VWAP.
-    pub vswap_gate:          bool,
+    pub vswap_gate: bool,
     /// Desviación máxima del VWAP permitida (0.003 = 0.3%).
     /// Short rechazado si close < vwap*(1-vswap_max_dev).
-    pub vswap_max_dev:       f64,
+    pub vswap_max_dev: f64,
     /// Activar filtro de extensión de breakout.
-    pub breakout_ext_gate:   bool,
+    pub breakout_ext_gate: bool,
     /// Extensión mínima del close más allá del nivel roto (0.001 = 0.1%).
-    pub breakout_ext_min:    f64,
+    pub breakout_ext_min: f64,
 
     // ── Filtro de régimen expansión (calibrado con datos live 72 trades) ──────
     /// Máximo de barras en régimen Expansion permitidas en las 25 barras pre-entry.
-    /// None = no filtrar. Calibración: BTC/ETH/BNB → Some(3). SOL → None (inv. correlación).
+    /// None = no filtrar. Calibración app: BTC/ETH/BNB → Some(1). SOL/XRP → None.
     /// Shorts n=30: expansion_n≤3 WR=60% +8.1R vs sin filtro WR=40% +2.3R.
     pub expansion_max_bars: Option<u8>,
 
@@ -1055,20 +1267,20 @@ pub struct RangeBreakoutConfig {
     /// con condiciones de microestructura, ANTES de esperar VR≥3× de confirmación.
     /// Gate compensador: expansion_max_bars + oi_mom_bars_recent reemplazan el VR≥3×.
     /// Calibración: pct_done=54% en modo actual → potencial 4.6R desde range_low vs 2R.
-    pub pre_breakout_enabled:  bool,
+    pub pre_breakout_enabled: bool,
     /// Zona alrededor del borde inferior del rango que activa el pre-breakout (fracción).
     /// Si close ≤ range_low × (1 + zone_pct): trigger para Short pre-breakout.
     /// 0.001 = 0.1% — precio a menos de 0.1% por encima de range_low.
     pub pre_breakout_zone_pct: f64,
     /// RR objetivo del pre-breakout. Más profundo que post-breakout (3.0 vs 2.0) porque
     /// se entra antes del move: potencial avg 4.6R desde range_low.
-    pub pre_breakout_rr:       f64,
+    pub pre_breakout_rr: f64,
     /// VR mínimo para activar pre-breakout. Más bajo que BREAKOUT_VR_MIN=3×.
     /// Requiere actividad de volumen en el borde del rango sin exigir breakout confirmado.
-    pub pre_breakout_vr_min:   f64,
+    pub pre_breakout_vr_min: f64,
     /// Barras máximas con OI momentum en las 25 pre-entry para el gate de pre-breakout.
     /// Calibración: oi_mom_n≤3 → WR=58%; oi_mom_n≤4 → WR=57%. None = gate desactivado.
-    pub pre_breakout_oi_max:   Option<u8>,
+    pub pre_breakout_oi_max: Option<u8>,
 
     // ── Gates cum_delta por símbolo ───────────────────────────────────────────
     /// Filtro Short: rechaza si cum_delta_25b < umbral (move demasiado consumido).
@@ -1086,6 +1298,9 @@ pub struct RangeBreakoutConfig {
     /// Score mínimo de confluencia específico por símbolo (sobrescribe min_confluence_score).
     /// ETH: Some(2) — OBI invertido, exigir más evidencia. None = usar min_confluence_score.
     pub min_confluence_score_override: Option<u8>,
+    /// Filtro Short: rechaza si OBI L5 supera el máximo permitido.
+    /// ETH candidato: Some(0.10), porque OBI comprador alto resistió breakdowns.
+    pub obi_max_short: Option<f64>,
     /// Barras mínimas entre señales del mismo detector (cooldown).
     /// Configurable desde strategy.toml [range_breakout] cooldown_bars.
     pub cooldown_bars: usize,
@@ -1094,42 +1309,43 @@ pub struct RangeBreakoutConfig {
 impl Default for RangeBreakoutConfig {
     fn default() -> Self {
         Self {
-            enabled:          true,
-            allow_long:       true,
-            allow_short:      true,
-            stop_pct:         0.25,
+            enabled: true,
+            allow_long: true,
+            allow_short: true,
+            stop_pct: 0.25,
             target_short_pct: 0.50,
-            target_long_pct:  0.45,
-            min_rr:           1.5,
+            target_long_pct: 0.45,
+            min_rr: 1.5,
             // Microestructura — valores del backtest 30d
-            cvd_slope_gate:   true,
-            dz_min:           0.5,
-            dz_max:           3.0,
-            obi_gate:         false, // pendiente validación con datos reales
-            obi_threshold:    0.45,
+            cvd_slope_gate: true,
+            dz_min: 0.5,
+            dz_max: 3.0,
+            obi_gate: false, // pendiente validación con datos reales
+            obi_threshold: 0.45,
             // v2: shadow mode por defecto (grabar todo, sin filtro de score)
             min_confluence_score: 1,
-            cvd_slope_threshold:  15.0,
-            bear_long_min_score:  5,
+            cvd_slope_threshold: 15.0,
+            bear_long_min_score: 5,
             // Filtros validados backtest 30d (activados)
-            vswap_gate:        true,
-            vswap_max_dev:     0.003,  // rechaza si precio > 0.3% bajo VWAP
+            vswap_gate: true,
+            vswap_max_dev: 0.003, // rechaza si precio > 0.3% bajo VWAP
             breakout_ext_gate: true,
-            breakout_ext_min:  0.001,  // close debe romper >0.1% más allá del nivel
+            breakout_ext_min: 0.001, // close debe romper >0.1% más allá del nivel
             // Filtro expansion: None por defecto. El caller lo sobrescribe por símbolo.
-            // BTC/ETH/BNB → Some(3). SOL/XRP → None.
+            // BTC/ETH/BNB → Some(1). SOL/XRP → None.
             expansion_max_bars: None,
             // Pre-breakout: desactivado por defecto hasta calibración con datos.
             // Activar cuando haya n≥30 trades pre-breakout para medir WR real.
-            pre_breakout_enabled:  false,
-            pre_breakout_zone_pct: 0.001,  // 0.1% por encima de range_low
-            pre_breakout_rr:       3.0,    // target 3× vs 2× en post-breakout
-            pre_breakout_vr_min:   1.5,    // requiere VR≥1.5× en borde del rango
-            pre_breakout_oi_max:   Some(3), // oi_mom_n≤3 → WR=58%
-            cum_delta_min_short:        None,
-            cum_delta_max_short:        None,
-            cvd_in_range_min_short:     None,
+            pre_breakout_enabled: false,
+            pre_breakout_zone_pct: 0.001, // 0.1% por encima de range_low
+            pre_breakout_rr: 3.0,         // target 3× vs 2× en post-breakout
+            pre_breakout_vr_min: 1.5,     // requiere VR≥1.5× en borde del rango
+            pre_breakout_oi_max: Some(3), // oi_mom_n≤3 → WR=58%
+            cum_delta_min_short: None,
+            cum_delta_max_short: None,
+            cvd_in_range_min_short: None,
             min_confluence_score_override: None,
+            obi_max_short: None,
             cooldown_bars: 30,
         }
     }

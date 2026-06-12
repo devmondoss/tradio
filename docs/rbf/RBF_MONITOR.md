@@ -177,8 +177,17 @@ Se clona el config antes de llamar al detector, modificando `expansion_max_bars`
 let mut rbf_cfg = cfg.range_breakout.clone();
 rbf_cfg.expansion_max_bars = match symbol {
     "SOLUSDT" | "XRPUSDT" => None,
-    _                      => Some(3),
+    _                      => Some(1),
 };
+match symbol {
+    "BTCUSDT" => rbf_cfg.cum_delta_max_short = Some(200.0),
+    "BNBUSDT" => rbf_cfg.cum_delta_min_short = Some(-500.0),
+    "ETHUSDT" => {
+        rbf_cfg.cvd_in_range_min_short = Some(-700.0);
+        rbf_cfg.obi_max_short = Some(0.10);
+    }
+    _ => {}
+}
 ```
 
 ---
@@ -188,4 +197,4 @@ rbf_cfg.expansion_max_bars = match symbol {
 - Señales en tiempo real desde el monitor (actualmente solo historial de Supabase)
 - Marcadores de señales sobre las velas del chart
 - Panel de confluencia flags breakdown
-- cum_delta threshold filter por símbolo (pendiente n≥25 Shorts por símbolo)
+- Backtest Rust 1:1 para eliminar divergencia con el backend Python de la app

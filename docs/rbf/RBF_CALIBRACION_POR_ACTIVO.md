@@ -1,5 +1,8 @@
 # RBF — Calibración por Activo (2026-06-11)
 
+> Snapshot histórico de calibración. No es fuente de verdad operativa. Para reglas live usar [RBF_REGLAS_ACTIVAS.md](RBF_REGLAS_ACTIVAS.md).
+> Nota 2026-06-12: el monitor live volvió a `expansion_max_bars = Some(1)` para BTC/ETH/BNB al promover la configuración calibrada de la app; el score live actual tiene 6 flags y usa `obi_trap`, no `obi_multi_depth`/`obi_intrabar_mean` como puntos.
+
 Análisis basado en **72 trades live** (2026-06-02 → 2026-06-10).
 Dataset: `scripts/rbf_microstructure.csv`, `scripts/rbf_pnl_450.csv`, `scripts/rbf_entry_lag.csv`.
 
@@ -229,7 +232,7 @@ let expansion_bars_recent: u8 = if symbol == "SOLUSDT" || symbol == "XRPUSDT" {
 let mut rbf_cfg = cfg.range_breakout.clone();
 rbf_cfg.expansion_max_bars = match symbol {
     "SOLUSDT" | "XRPUSDT" => None,
-    _                      => Some(3),
+    _                      => Some(1),
 };
 ```
 
@@ -239,10 +242,10 @@ rbf_cfg.expansion_max_bars = match symbol {
 
 | Filtro candidato | Símbolo | Dato | Estado |
 |-----------------|---------|------|--------|
-| cum_delta threshold Short | BNB | wins −78 vs losses −1357 | Pendiente n≥25 |
+| cum_delta threshold Short | BNB | wins −78 vs losses −1357 | Activo: `cum_delta_25b >= -500` |
 | cum_delta threshold Short | SOL | wins −9,702 vs losses −43,138 | Pendiente n≥25 |
-| cum_delta positivo veto Short | BTC | losses cum_delta +377 | Pendiente |
-| obi_gate direction-aware | ETH | wins OBI −0.094 vs losses −0.024 | Pendiente n≥20 |
+| cum_delta positivo veto Short | BTC | losses cum_delta +377 | Activo: `cum_delta_25b <= 200` |
+| obi_gate direction-aware | ETH | wins OBI −0.094 vs losses −0.024 | Activo como `obi_l5 <= 0.10` |
 | oi_mom_count veto | BNB | losses 9.1 barras vs wins 4.3 | Pendiente n≥25 |
 | expansion invertida | SOL | revisar si ATR de régimen está bien calibrado | Investigación |
 | trailing por símbolo | BNB | mayor gap trailing vs target | Posible ajuste 1.85 |

@@ -102,16 +102,15 @@ cvd_slope_threshold  = 15.0   # |cvd_slope| mínimo para el flag CvdSlopeSosteni
 bear_long_min_score  = 5      # Long en Bear/BearPullback requiere este score mínimo
 
 # Modo pre-breakout (entrada anticipada en el borde del rango)
-# DESACTIVADO por defecto — activar cuando n≥30 trades pre-breakout acumulados.
-# Datos: pct_done promedio en entradas actuales = 54%, move pre-entrada = 2.63R.
-# Entrando en range_low antes del VR≥3× se captura el move completo (~4.63R total).
-# Discriminadores: expansion_n≤3 (WR=60%), oi_mom_n≤3 (WR=58%).
-pre_breakout_enabled  = true    # activado 2026-06-10 — recolectando datos live
+# DESACTIVADO 2026-06-12: backtest app 7.1d mostró pre casi plano
+# (16 tradeables, -0.19R) vs post-breakout fuerte (+10.2R).
+# Reabrir solo con calibración específica de pre-breakout y sin consumir cooldown post.
+pre_breakout_enabled  = false
 pre_breakout_zone_pct = 0.001   # close debe estar ≤0.1% por encima de range_low
 pre_breakout_rr       = 3.0     # target más profundo vs post-breakout 2.0 (entry desde 0% del move)
 pre_breakout_vr_min   = 1.5     # VR mínimo para modo pre (más bajo que el 3.0× post-breakout)
 pre_breakout_oi_max   = 3       # oi_mom_n≤3 → WR=58% PnL=+4.5R; quitar con pre_breakout_oi_max = 255
-cooldown_bars         = 15      # 15 min entre señales por símbolo (era hardcoded 60)
+cooldown_bars         = 60      # alineado con backtest app calibrado; evita overtrading M1
 
 # ============================================================================
 # AMD — Accumulation · Manipulation · Distribution

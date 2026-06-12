@@ -38,8 +38,11 @@ use tokio_rustls::{
     rustls::{ClientConfig, RootCertStore, crypto::aws_lc_rs, pki_types::ServerName},
 };
 
-use data::detectors::{FvgContext, FvgDetector, OrderBlockContext, OrderBlockDetector, RangeContext, RangeDetector, SpoofDetector};
 use data::chart::kline::KlineTrades;
+use data::detectors::{
+    FvgContext, FvgDetector, OrderBlockContext, OrderBlockDetector, RangeContext, RangeDetector,
+    SpoofDetector,
+};
 use data::institutional::{
     FundingRateSample, FundingTracker, InstitutionalContext, LiqMapSnapshot, LiqMapTracker,
     LiqSide, LiquidationEvent, LiquidationTracker, LongShortSnapshot, LsRatioTracker, LsSource,
@@ -50,27 +53,25 @@ use data::strategy::mongo_config_loader::MongoConfigLoader;
 use data::strategy::mongo_writer::{MongoWriter, SignalOid};
 use data::strategy::{
     adapter::{
-        build_flow_context, build_orderbook_context, build_volume_profile_context,
-        build_vwap_context, count_price_reversals, derive_confirmed_swings,
-        derive_cvd_divergence, derive_failed_acceptance_and_absorption,
-        derive_big_trade, derive_delta_velocity, derive_fbg_imbalance,
+        SWING_CONFIRM_BARS, build_flow_context, build_orderbook_context,
+        build_volume_profile_context, build_vwap_context, count_price_reversals, derive_big_trade,
+        derive_confirmed_swings, derive_cvd_divergence, derive_delta_velocity,
+        derive_failed_acceptance_and_absorption, derive_fbg_imbalance,
         derive_finish_unfinish_action, derive_footprint_absorption_at_value_edge, derive_regime,
-        derive_regime_with_hysteresis, derive_stacked_imbalance, derive_stacked_imbalance_from_levels,
-        wall_nearby, SWING_CONFIRM_BARS,
+        derive_regime_with_hysteresis, derive_stacked_imbalance,
+        derive_stacked_imbalance_from_levels, wall_nearby,
     },
-
     micro_window::{CandleMicroBuffer, MicroCtx, MicroTrade, MicroWindowConfig},
     paper::PaperAccount,
-    scalping::{
-        ScalpingRegime, ScalpingState,
-        absorption, cvd_divergence as cvd_div_scalping, obi_maker,
-    },
-    subdimi_parallel::run_subdimi_parallel,
     playbook_reasoning::classify_playbook_reasoning,
     router::route_strategy,
+    scalping::{
+        ScalpingRegime, ScalpingState, absorption, cvd_divergence as cvd_div_scalping, obi_maker,
+    },
+    subdimi_parallel::run_subdimi_parallel,
     types::{
-        AbsorptionSide, CvdDivergence, DataQuality, ImbalanceSide, OrderBookContext, Regime, Side,
-        FootprintLevel, StrategyAction, StrategyConfig, StrategyMarketContext,
+        AbsorptionSide, CvdDivergence, DataQuality, FootprintLevel, ImbalanceSide,
+        OrderBookContext, Regime, Side, StrategyAction, StrategyConfig, StrategyMarketContext,
     },
 };
 use data::structure::{MarketStructureContext, MarketStructureTracker};
@@ -115,7 +116,7 @@ struct PipelineMetrics {
     bars_since_signal: u64,
     signals_today: u64,
     liq_events_today: u64,
-    liq_raw_messages: u64,        // text frames from btcusdt@forceOrder (BTC-specific)
+    liq_raw_messages: u64, // text frames from btcusdt@forceOrder (BTC-specific)
     liq_global_raw_messages: u64, // text frames from !forceOrder@arr (all-market diagnostic)
     ws_reconnects: u64,
     // Throttle: timestamp of last liq-silence warning emitted (avoid repeating every minute)
@@ -130,7 +131,7 @@ struct PipelineMetrics {
 struct DataFreshness {
     liq_last_event_at: Option<Instant>,
     liq_ws_connected_at: Option<Instant>, // when the forceOrder WS last connected
-    liq_stream_ok: bool, // true while forceOrder WS is connected
+    liq_stream_ok: bool,                  // true while forceOrder WS is connected
     ls_fetched_at: Option<Instant>,
     taker_fetched_at: Option<Instant>,
     oi_fetched_at: Option<Instant>,
@@ -492,7 +493,8 @@ impl PipelineMetrics {
         // Liq silence warnings — throttled to once per 30 min to avoid flooding.
         // Re-arms automatically when a new liquidation event arrives (liq_last_event_at resets).
         let warn_cooldown = Duration::from_secs(30 * 60);
-        let warn_due = self.liq_warn_emitted_at
+        let warn_due = self
+            .liq_warn_emitted_at
             .map(|t| t.elapsed() >= warn_cooldown)
             .unwrap_or(true);
         if streams.liq == StreamHealth::Disc {
@@ -507,7 +509,8 @@ impl PipelineMetrics {
             }
         } else if self.liq_raw_messages == 0 && warn_due {
             // Never received a single message — warn after 30 min connected
-            let connected_secs = freshness.liq_ws_connected_at
+            let connected_secs = freshness
+                .liq_ws_connected_at
                 .map(|t| t.elapsed().as_secs())
                 .unwrap_or(0);
             if connected_secs > 1800 {
@@ -556,7 +559,7 @@ struct BarState {
     depth: Option<Depth>,
     paper: PaperAccount,
     metrics: PipelineMetrics,
-    liq_raw_counter: Arc<AtomicU64>,        // shared with btcusdt@forceOrder task
+    liq_raw_counter: Arc<AtomicU64>, // shared with btcusdt@forceOrder task
     liq_global_raw_counter: Arc<AtomicU64>, // shared with !forceOrder@arr diagnostic task
     // Crypto-native context
     funding_rate: Option<f64>,
@@ -620,20 +623,20 @@ struct BarState {
     // OBI L5 from the previous bar — injected into StrategyMarketContext for DIB persistence gate
     prev_obi_l5: f64,
     // EMA suavizadas de OBI L5 — escritas a btc/eth/bnb/sol_bars cada barra
-    obi_ema_fast: f64,  // alpha = 2/(5+1)  ≈ 0.333
-    obi_ema_slow: f64,  // alpha = 2/(20+1) ≈ 0.095
+    obi_ema_fast: f64, // alpha = 2/(5+1)  ≈ 0.333
+    obi_ema_slow: f64, // alpha = 2/(20+1) ≈ 0.095
     // Muestras intrabar OBI — sampleo cada 10s para calcular promedio/mín real
     obi_intrabar: Vec<(i64, f32, f32, f32, f32)>, // (ts_ms, l5, l10, l20, spread_bps)
     last_obi_sample_ms: i64,
     // ICT AMD structural levels — acumulados barra a barra para backtest de estrategia
-    asian_high: Option<f64>,        // High de la sesión Asia del día actual (00:00–07:00 UTC)
-    asian_low:  Option<f64>,        // Low  de la sesión Asia del día actual
-    asian_day:  i64,                // día UTC de la sesión Asia activa (para reset diario)
-    prev_day_high: Option<f64>,     // PDH: High del día anterior completo
-    prev_day_low:  Option<f64>,     // PDL: Low  del día anterior completo
-    daily_high: f64,                // Acumulador del high del día en curso (UTC)
-    daily_low:  f64,                // Acumulador del low  del día en curso (UTC)
-    daily_day:  i64,                // día UTC del acumulador diario
+    asian_high: Option<f64>, // High de la sesión Asia del día actual (00:00–07:00 UTC)
+    asian_low: Option<f64>,  // Low  de la sesión Asia del día actual
+    asian_day: i64,          // día UTC de la sesión Asia activa (para reset diario)
+    prev_day_high: Option<f64>, // PDH: High del día anterior completo
+    prev_day_low: Option<f64>, // PDL: Low  del día anterior completo
+    daily_high: f64,         // Acumulador del high del día en curso (UTC)
+    daily_low: f64,          // Acumulador del low  del día en curso (UTC)
+    daily_day: i64,          // día UTC del acumulador diario
     // VPIN rolling history for CDF (percentile rank) computation
     vpin_history: VecDeque<f64>,
     // Consecutive bars of CVD-vs-price divergence (positive=bearish, negative=bullish, 0=aligned)
@@ -684,14 +687,22 @@ struct BarState {
     // Última sesión vista para BE — detecta cambio y fuerza cierre SESSION_END
     be_last_session: data::session::session_tracker::TradingSession,
     // H4 EMA (FASE 2.6) — EMA-240M1 ≈ 4H para contexto estructural de RBF y AMD
-    ema_h1: f64,          // EMA-60M1 (≈1H) alpha = 2/(60+1) ≈ 0.0328
-    ema_h1_bars: usize,   // barras acumuladas hasta warmup (warmup = 60)
+    ema_h1: f64,        // EMA-60M1 (≈1H) alpha = 2/(60+1) ≈ 0.0328
+    ema_h1_bars: usize, // barras acumuladas hasta warmup (warmup = 60)
     // WebSocket broadcast — envía barras y señales al dashboard web
     ws_tx: ws_server::Sender,
 }
 
 impl BarState {
-    fn new(mongo: MongoWriter, supabase: Option<SupabaseWriter>, config_loader: MongoConfigLoader, footprint_step: PriceStep, liq_raw_counter: Arc<AtomicU64>, liq_global_raw_counter: Arc<AtomicU64>, ws_tx: ws_server::Sender) -> Self {
+    fn new(
+        mongo: MongoWriter,
+        supabase: Option<SupabaseWriter>,
+        config_loader: MongoConfigLoader,
+        footprint_step: PriceStep,
+        liq_raw_counter: Arc<AtomicU64>,
+        liq_global_raw_counter: Arc<AtomicU64>,
+        ws_tx: ws_server::Sender,
+    ) -> Self {
         Self {
             bars: VecDeque::with_capacity(VP_WINDOW + 1),
             cvd: 0.0,
@@ -715,7 +726,11 @@ impl BarState {
             funding_rate: None,
             spot_price: None,
             oi_history: VecDeque::with_capacity(7),
-            liq_tracker: { let mut t = LiquidationTracker::new(); t.seed_bar_history(); t },
+            liq_tracker: {
+                let mut t = LiquidationTracker::new();
+                t.seed_bar_history();
+                t
+            },
             ls_tracker: LsRatioTracker::new(),
             oi_tracker: OiTracker::new(),
             funding_tracker: FundingTracker::new(),
@@ -739,9 +754,9 @@ impl BarState {
             last_regime: None,
             last_regime_enum: data::strategy::types::Regime::Unknown,
             regime_started_at_ms: None,
-            regime_hist_25:   VecDeque::with_capacity(26),
-            oi_mom_hist_25:   VecDeque::with_capacity(26),
-            delta_hist_25:    VecDeque::with_capacity(26),
+            regime_hist_25: VecDeque::with_capacity(26),
+            oi_mom_hist_25: VecDeque::with_capacity(26),
+            delta_hist_25: VecDeque::with_capacity(26),
             freshness: DataFreshness::default(),
             streams: StreamStates::default(),
             pending_outcomes: Vec::new(),
@@ -753,19 +768,19 @@ impl BarState {
             intrabar_eval_count: 0,
             intrabar_signal_fired: false,
             last_intrabar_signal_ms: 0,
-            prev_obi_l5:  0.0,
+            prev_obi_l5: 0.0,
             obi_ema_fast: 0.0,
             obi_ema_slow: 0.0,
-            obi_intrabar:       Vec::new(),
+            obi_intrabar: Vec::new(),
             last_obi_sample_ms: 0,
-            asian_high:   None,
-            asian_low:     None,
-            asian_day:     -1,
+            asian_high: None,
+            asian_low: None,
+            asian_day: -1,
             prev_day_high: None,
-            prev_day_low:  None,
-            daily_high:    f64::NEG_INFINITY,
-            daily_low:     f64::INFINITY,
-            daily_day:     -1,
+            prev_day_low: None,
+            daily_high: f64::NEG_INFINITY,
+            daily_low: f64::INFINITY,
+            daily_day: -1,
             vpin_history: VecDeque::with_capacity(51),
             cvd_divergence_bars: 0,
             vp_bias_tracker: data::strategy::vp_open_bias::DailyVpTracker::new(),
@@ -785,13 +800,13 @@ impl BarState {
             rbf_pending_id_rx: None,
             rbf_pending_outcome: None,
             rbf_last_session: data::session::session_tracker::TradingSession::OffHours,
-            last_rbf_gate:      None,
-            be_state:           buyer_exhaustion::detector::BuyerExhaustionState::new(),
-            be_paper:           buyer_exhaustion::paper::BePaperTrader::new(),
-            be_pending_id_rx:   None,
+            last_rbf_gate: None,
+            be_state: buyer_exhaustion::detector::BuyerExhaustionState::new(),
+            be_paper: buyer_exhaustion::paper::BePaperTrader::new(),
+            be_pending_id_rx: None,
             be_pending_outcome: None,
-            be_last_session:    data::session::session_tracker::TradingSession::OffHours,
-            ema_h1:      0.0,
+            be_last_session: data::session::session_tracker::TradingSession::OffHours,
+            ema_h1: 0.0,
             ema_h1_bars: 0,
             ws_tx,
         }
@@ -818,11 +833,15 @@ impl BarState {
         if is_sell {
             self.bar_sell_vol += delta;
             self.cvd -= delta;
-            if is_big { self.bar_big_sell_vol += delta; }
+            if is_big {
+                self.bar_big_sell_vol += delta;
+            }
         } else {
             self.bar_buy_vol += delta;
             self.cvd += delta;
-            if is_big { self.bar_big_buy_vol += delta; }
+            if is_big {
+                self.bar_big_buy_vol += delta;
+            }
         }
         self.metrics.trade_count += 1;
         self.metrics.last_trade_at = Some(Instant::now());
@@ -830,12 +849,12 @@ impl BarState {
         // Size is in base units (BTC) — consistent with CVD/footprint.
         if self.current_candle_open_ms > 0 {
             let mw_trade = MicroTrade {
-                ts_ms:   trade.time.as_u64() as i64,
+                ts_ms: trade.time.as_u64() as i64,
                 price,
-                size:    f64::from(qty),
-                is_buy:  !is_sell,
+                size: f64::from(qty),
+                is_buy: !is_sell,
                 is_big,
-                liq_usd: 0.0,    // liquidations come from separate @forceOrder stream
+                liq_usd: 0.0, // liquidations come from separate @forceOrder stream
             };
             self.micro_buffer.on_trade(&mw_trade);
         }
@@ -865,7 +884,9 @@ impl BarState {
     /// Spread actual en ticks ($0.10) del libro L2.
     fn spread_ticks_now(&self) -> i32 {
         if let Some(d) = &self.depth {
-            if let (Some((&ask, _)), Some((&bid, _))) = (d.asks.iter().next(), d.bids.iter().next_back()) {
+            if let (Some((&ask, _)), Some((&bid, _))) =
+                (d.asks.iter().next(), d.bids.iter().next_back())
+            {
                 let spread_usd = (ask.to_f32() as f64 - bid.to_f32() as f64).max(0.0);
                 return (spread_usd / 0.10).round() as i32;
             }
@@ -1016,7 +1037,12 @@ impl BarState {
             frozen.regime
         };
 
-        let vwap_ctx = build_vwap_context(px, frozen.vwap_session, frozen.avwap_bos, frozen.avwap_event);
+        let vwap_ctx = build_vwap_context(
+            px,
+            frozen.vwap_session,
+            frozen.avwap_bos,
+            frozen.avwap_event,
+        );
         let vp_ctx = build_volume_profile_context(
             px,
             frozen.poc,
@@ -1045,7 +1071,10 @@ impl BarState {
 
         let live_delta = self.bar_buy_vol - self.bar_sell_vol;
         let live_vpin = if self.bar_buy_vol + self.bar_sell_vol > 0.0 {
-            Some(((self.bar_buy_vol - self.bar_sell_vol) / (self.bar_buy_vol + self.bar_sell_vol)).abs())
+            Some(
+                ((self.bar_buy_vol - self.bar_sell_vol) / (self.bar_buy_vol + self.bar_sell_vol))
+                    .abs(),
+            )
         } else {
             frozen.bar_vpin
         };
@@ -1210,7 +1239,9 @@ impl BarState {
                     let s = signal.clone();
                     let c = ctx.clone();
                     let r = reasoning.clone();
-                    tokio::spawn(async move { sb.write_signal_with_reasoning(&s, &c, &r).await; });
+                    tokio::spawn(async move {
+                        sb.write_signal_with_reasoning(&s, &c, &r).await;
+                    });
                 }
             }
             IntrabarMode::ShadowSignal => {
@@ -1224,7 +1255,9 @@ impl BarState {
                     let s = signal.clone();
                     let c = ctx.clone();
                     let r = reasoning.clone();
-                    tokio::spawn(async move { sb.write_signal_with_reasoning(&s, &c, &r).await; });
+                    tokio::spawn(async move {
+                        sb.write_signal_with_reasoning(&s, &c, &r).await;
+                    });
                 }
             }
         }
@@ -1248,32 +1281,66 @@ impl BarState {
             .take(20)
             .map(|(p, q)| (p.to_f32() as f64, q.to_f32_lossy() as f64))
             .collect();
-        self.spoof_detector.update(&bids, &asks, self.current_price, now_ms);
+        self.spoof_detector
+            .update(&bids, &asks, self.current_price, now_ms);
 
         // ── Sampleo intrabar OBI cada 10 segundos ─────────────────────────────
         // Permite calcular OBI promedio real de la barra vs snapshot al cierre.
         // Las muestras se escriben a obi_10s en Supabase al cerrar cada barra.
         if now_ms - self.last_obi_sample_ms >= 10_000 {
             let obi_fn = |n: usize| -> f32 {
-                let bid: f64 = depth.bids.iter().rev().take(n).map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
-                let ask: f64 = depth.asks.iter().take(n).map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
+                let bid: f64 = depth
+                    .bids
+                    .iter()
+                    .rev()
+                    .take(n)
+                    .map(|(_, q)| f64::from(q.to_f32_lossy()))
+                    .sum();
+                let ask: f64 = depth
+                    .asks
+                    .iter()
+                    .take(n)
+                    .map(|(_, q)| f64::from(q.to_f32_lossy()))
+                    .sum();
                 let tot = bid + ask;
-                if tot > 0.0 { ((bid - ask) / tot) as f32 } else { 0.0 }
+                if tot > 0.0 {
+                    ((bid - ask) / tot) as f32
+                } else {
+                    0.0
+                }
             };
             let spread_bps = if let (Some((best_ask, _)), Some((best_bid, _))) =
                 (depth.asks.iter().next(), depth.bids.iter().rev().next())
             {
                 let mid = (best_ask.to_f32() as f64 + best_bid.to_f32() as f64) / 2.0;
-                if mid > 0.0 { ((best_ask.to_f32() as f64 - best_bid.to_f32() as f64) / mid * 10_000.0) as f32 } else { 0.0 }
-            } else { 0.0 };
-            self.obi_intrabar.push((now_ms, obi_fn(5), obi_fn(10), obi_fn(20), spread_bps));
+                if mid > 0.0 {
+                    ((best_ask.to_f32() as f64 - best_bid.to_f32() as f64) / mid * 10_000.0) as f32
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+            self.obi_intrabar
+                .push((now_ms, obi_fn(5), obi_fn(10), obi_fn(20), spread_bps));
             self.last_obi_sample_ms = now_ms;
         }
 
         // Scalping: OBI L10 → EMA normalizada [0,1] (consistente con local UI)
         {
-            let bid10: f64 = depth.bids.iter().rev().take(10).map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
-            let ask10: f64 = depth.asks.iter().take(10).map(|(_, q)| f64::from(q.to_f32_lossy())).sum();
+            let bid10: f64 = depth
+                .bids
+                .iter()
+                .rev()
+                .take(10)
+                .map(|(_, q)| f64::from(q.to_f32_lossy()))
+                .sum();
+            let ask10: f64 = depth
+                .asks
+                .iter()
+                .take(10)
+                .map(|(_, q)| f64::from(q.to_f32_lossy()))
+                .sum();
             let total10 = bid10 + ask10;
             if total10 > 0.0 {
                 self.scalping_state.on_depth((bid10 - ask10) / total10); // on_depth normaliza internamente
@@ -1398,7 +1465,9 @@ impl BarState {
         }
         // Mantener ventana de 25 regímenes para el filtro expansion_n del detector RBF.
         self.regime_hist_25.push_back(effective_regime);
-        if self.regime_hist_25.len() > 25 { self.regime_hist_25.pop_front(); }
+        if self.regime_hist_25.len() > 25 {
+            self.regime_hist_25.pop_front();
+        }
 
         let cvd_slope = compute_cvd_slope(&self.cvd_history);
         let cvd_divergence = derive_cvd_divergence(&highs, &lows, cvd_slope);
@@ -1407,7 +1476,8 @@ impl BarState {
             compute_volume_profile(&self.bars, VP_BINS, c);
 
         // VP open bias: update tracker with current bar's data and VP snapshot
-        let vp_open_bias = self.vp_bias_tracker
+        let vp_open_bias = self
+            .vp_bias_tracker
             .update(bar_ms, o, h, l, poc, vah, val)
             .cloned();
 
@@ -1415,25 +1485,33 @@ impl BarState {
         self.naked_poc_tracker.update(bar_ms, poc, c, 0.0005);
 
         // TPO single prints: update 30-min Market Profile tracker
-        self.tpo_tracker.update(bar_ms, h, l, c, if atr > 0.0 { Some(atr) } else { None });
+        self.tpo_tracker
+            .update(bar_ms, h, l, c, if atr > 0.0 { Some(atr) } else { None });
 
         // HTF VP cascade: update weekly and monthly VP trackers
-        let htf_weekly = self.htf_weekly_tracker.update(bar_ms, h, l, c, vol, c).cloned();
-        let htf_monthly = self.htf_monthly_tracker.update(bar_ms, h, l, c, vol, c).cloned();
+        let htf_weekly = self
+            .htf_weekly_tracker
+            .update(bar_ms, h, l, c, vol, c)
+            .cloned();
+        let htf_monthly = self
+            .htf_monthly_tracker
+            .update(bar_ms, h, l, c, vol, c)
+            .cloned();
 
         let footprint_levels = self.current_footprint_levels();
         let recent_deltas_fa: Vec<f64> = self.bar_delta_history.iter().copied().collect();
         let (failed_acceptance, footprint_absorption_estimate) =
             derive_failed_acceptance_and_absorption(
-            &highs, &lows, &closes, vah, val, &recent_deltas_fa, cvd_slope,
-        );
-        let footprint_absorption_real = derive_footprint_absorption_at_value_edge(
-            &footprint_levels,
-            vah,
-            val,
-            atr,
-            cvd_slope,
-        );
+                &highs,
+                &lows,
+                &closes,
+                vah,
+                val,
+                &recent_deltas_fa,
+                cvd_slope,
+            );
+        let footprint_absorption_real =
+            derive_footprint_absorption_at_value_edge(&footprint_levels, vah, val, atr, cvd_slope);
         let footprint_absorption = match footprint_absorption_real {
             AbsorptionSide::Bid | AbsorptionSide::Ask => footprint_absorption_real,
             _ => footprint_absorption_estimate,
@@ -1472,10 +1550,15 @@ impl BarState {
             delta > 0.0 && (price_rising == (delta > 0.0))
         });
         // Mantener ventana de 25 valores de OI momentum para el gate pre-breakout de RBF.
-        self.oi_mom_hist_25.push_back(oi_momentum_aligned.unwrap_or(false));
-        if self.oi_mom_hist_25.len() > 25 { self.oi_mom_hist_25.pop_front(); }
+        self.oi_mom_hist_25
+            .push_back(oi_momentum_aligned.unwrap_or(false));
+        if self.oi_mom_hist_25.len() > 25 {
+            self.oi_mom_hist_25.pop_front();
+        }
         self.delta_hist_25.push_back(bar_delta);
-        if self.delta_hist_25.len() > 25 { self.delta_hist_25.pop_front(); }
+        if self.delta_hist_25.len() > 25 {
+            self.delta_hist_25.pop_front();
+        }
 
         // --- Market structure: MSS, sweep, AVWAP-BOS ---
         // Use a lookback of 10 bars for swing detection.
@@ -1578,24 +1661,29 @@ impl BarState {
             let bars_vec: Vec<_> = self.bars.iter().collect();
             // Approximate bars-back using configured TF_MIN (default 5).
             // Kline ring buffer doesn't store per-bar timestamps; use ratio of elapsed time.
-            let tf_min = std::env::var("TF_MIN").ok()
+            let tf_min = std::env::var("TF_MIN")
+                .ok()
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(5);
             let tf_ms_approx = tf_min * 60_000;
             let bars_back = ((bar_ms as i64 - anchor_ms) / tf_ms_approx).max(0) as usize;
             let start_idx = bars_vec.len().saturating_sub(bars_back + 1);
             if start_idx < bars_vec.len() {
-                let (cum_pv, cum_vol) = bars_vec[start_idx..].iter().fold(
-                    (0.0_f64, 0.0_f64),
-                    |(pv, v), b| {
-                        let bh = b.high.to_f32() as f64;
-                        let bl = b.low.to_f32() as f64;
-                        let bc = b.close.to_f32() as f64;
-                        let bv = b.volume.total().to_f32_lossy() as f64;
-                        (pv + (bh + bl + bc) / 3.0 * bv, v + bv)
-                    },
-                );
-                if cum_vol > 0.0 { Some(cum_pv / cum_vol) } else { None }
+                let (cum_pv, cum_vol) =
+                    bars_vec[start_idx..]
+                        .iter()
+                        .fold((0.0_f64, 0.0_f64), |(pv, v), b| {
+                            let bh = b.high.to_f32() as f64;
+                            let bl = b.low.to_f32() as f64;
+                            let bc = b.close.to_f32() as f64;
+                            let bv = b.volume.total().to_f32_lossy() as f64;
+                            (pv + (bh + bl + bc) / 3.0 * bv, v + bv)
+                        });
+                if cum_vol > 0.0 {
+                    Some(cum_pv / cum_vol)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -1604,7 +1692,8 @@ impl BarState {
         };
 
         let vwap_ctx = build_vwap_context(c, self.vwap_session, avwap_bos, avwap_event);
-        let mut vp_ctx = build_volume_profile_context(c, poc, vah, val, hvn_nearby.clone(), lvn_nearby.clone());
+        let mut vp_ctx =
+            build_volume_profile_context(c, poc, vah, val, hvn_nearby.clone(), lvn_nearby.clone());
         vp_ctx.naked_pocs = self.naked_poc_tracker.naked_poc_prices();
         vp_ctx.single_prints = self.tpo_tracker.single_print_mids();
         // Snapshot VP lists before vp_ctx is moved into StrategyMarketContext
@@ -1658,13 +1747,20 @@ impl BarState {
         }
         let vpin_cdf = bar_vpin.and_then(|v| {
             let n = self.vpin_history.len();
-            if n < 3 { return None; }
+            if n < 3 {
+                return None;
+            }
             let below = self.vpin_history.iter().filter(|&&x| x <= v).count();
             Some(below as f64 / n as f64)
         });
 
         // CVD divergence persistence: count consecutive bars where CVD direction ≠ price direction
-        let prev_close = self.bars.iter().rev().nth(1).map(|b| b.close.to_f32() as f64);
+        let prev_close = self
+            .bars
+            .iter()
+            .rev()
+            .nth(1)
+            .map(|b| b.close.to_f32() as f64);
         let prev_cvd = self.cvd_history.iter().rev().nth(1).copied();
         let cvd_divergence_persistence = if let (Some(pc), Some(pcvd)) = (prev_close, prev_cvd) {
             let price_up = c > pc;
@@ -1727,9 +1823,9 @@ impl BarState {
             flow.delta_velocity = derive_delta_velocity(&recent, 5, atr);
         }
         // Big-trade tape metrics (Fabio: "las órdenes grandes son las que importan")
-        flow.big_trade_cvd_bar     = bar_big_cvd;
+        flow.big_trade_cvd_bar = bar_big_cvd;
         flow.big_trade_cvd_session = self.scalping_state.big_cvd_session;
-        flow.session_vol_usd       = self.scalping_state.session_vol_usd;
+        flow.session_vol_usd = self.scalping_state.session_vol_usd;
 
         self.ms_tracker.push_bar(o, h, l, c, bar_ms);
         let market_structure = self.ms_tracker.snapshot();
@@ -1795,11 +1891,7 @@ impl BarState {
         const SWING_WINDOW: usize = 25;
         let sw_n = n.min(SWING_WINDOW);
         let (swing_high_20, swing_low_20) = if sw_n >= 2 * SWING_CONFIRM_BARS + 1 {
-            derive_confirmed_swings(
-                &highs[n - sw_n..n],
-                &lows[n - sw_n..n],
-                SWING_CONFIRM_BARS,
-            )
+            derive_confirmed_swings(&highs[n - sw_n..n], &lows[n - sw_n..n], SWING_CONFIRM_BARS)
         } else {
             (None, None)
         };
@@ -1836,7 +1928,11 @@ impl BarState {
                     None
                 }
             },
-            range: if range_ctx.valid { Some(range_ctx.clone()) } else { None },
+            range: if range_ctx.valid {
+                Some(range_ctx.clone())
+            } else {
+                None
+            },
         };
         // Auction state requires the full context, so classify after building it
         let auction = data::strategy::auction_state::classify(&ctx);
@@ -1882,19 +1978,30 @@ impl BarState {
         if let Some(sb) = self.supabase.clone() {
             let samples = std::mem::take(&mut self.obi_intrabar);
             let sym_c = symbol.to_string();
-            tokio::spawn(async move { sb.write_obi_batch(&sym_c, &samples); });
+            tokio::spawn(async move {
+                sb.write_obi_batch(&sym_c, &samples);
+            });
         } else {
             self.obi_intrabar.clear();
         }
         // EMA-240M1 ≈ 4H para contexto estructural HTF (FASE 2.6)
         {
             const H1_ALPHA: f64 = 2.0 / (60.0 + 1.0); // ≈ 0.03279 — EMA-60M1 = 1H
-            if self.ema_h1_bars == 0 { self.ema_h1 = c; }
-            else { self.ema_h1 = self.ema_h1 * (1.0 - H1_ALPHA) + c * H1_ALPHA; }
-            if self.ema_h1_bars < 60 { self.ema_h1_bars += 1; }
+            if self.ema_h1_bars == 0 {
+                self.ema_h1 = c;
+            } else {
+                self.ema_h1 = self.ema_h1 * (1.0 - H1_ALPHA) + c * H1_ALPHA;
+            }
+            if self.ema_h1_bars < 60 {
+                self.ema_h1_bars += 1;
+            }
         }
         let htf_h1_trend: Option<String> = if self.ema_h1_bars >= 60 {
-            Some(if c > self.ema_h1 { "Bull".into() } else { "Bear".into() })
+            Some(if c > self.ema_h1 {
+                "Bull".into()
+            } else {
+                "Bear".into()
+            })
         } else {
             None
         };
@@ -1905,9 +2012,9 @@ impl BarState {
                 Regime::TrendUp | Regime::TrendDown => ScalpingRegime::Trend,
                 _ => ScalpingRegime::Range,
             };
-            let liq_ratio    = bar_liq_ratio;
-            let obi_l5       = bar_obi_l5;
-            let micro_price  = ctx.orderbook.microprice.unwrap_or(c);
+            let liq_ratio = bar_liq_ratio;
+            let obi_l5 = bar_obi_l5;
+            let micro_price = ctx.orderbook.microprice.unwrap_or(c);
             let spread_ticks = bar_spread_ticks;
 
             // Actualizar historiales del scalping state
@@ -1929,7 +2036,10 @@ impl BarState {
                 spread_ticks,
                 self.cvd,
                 cvd_slope,
-                o, h, l, c,
+                o,
+                h,
+                l,
+                c,
                 bar_delta,
                 vol,
                 atr,
@@ -1940,7 +2050,11 @@ impl BarState {
                 self.funding_rate,
                 liq_ratio,
                 bar_ms,
-                if range_ctx.valid { Some(range_ctx.clone()) } else { None },
+                if range_ctx.valid {
+                    Some(range_ctx.clone())
+                } else {
+                    None
+                },
                 footprint_levels.clone(),
                 ctx.flow.big_trade_bullish,
                 ctx.flow.big_trade_bearish,
@@ -1950,7 +2064,8 @@ impl BarState {
             if self.scalping_state.paper.has_position() {
                 if !data::strategy::scalping::is_scalping_session(session.session) {
                     self.scalping_state.paper.close(
-                        c, bar_ms,
+                        c,
+                        bar_ms,
                         data::strategy::scalping::paper::ScalpingExitReason::SessionEnd,
                     );
                     self.scalping_state.active_signal = None;
@@ -1974,15 +2089,28 @@ impl BarState {
                     println!(
                         "[scalping] SIGNAL strategy={} side={:?} entry={:.1} sl={:.1} \
                          tp1={:.1} tp2={:.1} rr={:.2} score={:.1} type={}",
-                        sig.strategy, sig.side, sig.entry_price, sig.stop_price,
-                        sig.tp1_price, sig.tp2_price, sig.rr, sig.conviction_score,
+                        sig.strategy,
+                        sig.side,
+                        sig.entry_price,
+                        sig.stop_price,
+                        sig.tp1_price,
+                        sig.tp2_price,
+                        sig.rr,
+                        sig.conviction_score,
                         sig.entry_type,
                     );
 
                     // Persistir señal en Supabase
                     if let Some(sb) = &self.supabase {
                         let session_str = format!("{:?}", session.session);
-                        let regime_str = format!("{}", if scalping_regime == ScalpingRegime::Range { "Range" } else { "Trend" });
+                        let regime_str = format!(
+                            "{}",
+                            if scalping_regime == ScalpingRegime::Range {
+                                "Range"
+                            } else {
+                                "Trend"
+                            }
+                        );
                         let write_ctx = supabase_writer::ScalpingWriteCtx {
                             session: &session_str,
                             obi: obi_l5,
@@ -1998,9 +2126,15 @@ impl BarState {
                             range_low: scalp_ctx.range.as_ref().map(|r| r.range_low),
                             range_mid: scalp_ctx.range.as_ref().map(|r| r.range_mid),
                             range_location: scalp_ctx.range.as_ref().map(|r| match r.location {
-                                data::detectors::range_detector::RangeLocation::NearHigh => "NearHigh",
-                                data::detectors::range_detector::RangeLocation::NearLow  => "NearLow",
-                                data::detectors::range_detector::RangeLocation::NoTrade  => "NoTrade",
+                                data::detectors::range_detector::RangeLocation::NearHigh => {
+                                    "NearHigh"
+                                }
+                                data::detectors::range_detector::RangeLocation::NearLow => {
+                                    "NearLow"
+                                }
+                                data::detectors::range_detector::RangeLocation::NoTrade => {
+                                    "NoTrade"
+                                }
                                 _ => "Inside",
                             }),
                         };
@@ -2025,11 +2159,13 @@ impl BarState {
 
             // Log de diagnóstico scalping por barra (siempre visible, sin señal)
             {
-                let dz  = self.scalping_state.compute_dz();
-                let vr  = self.scalping_state.compute_vr();
+                let dz = self.scalping_state.compute_dz();
+                let vr = self.scalping_state.compute_vr();
                 let obi = self.scalping_state.obi_ema_fast;
                 let cvd = self.scalping_state.cvd_session;
-                let slope = self.scalping_state.compute_cvd_slope(10)
+                let slope = self
+                    .scalping_state
+                    .compute_cvd_slope(10)
                     .map(|s| format!("{:+.1}", s))
                     .unwrap_or_else(|| "n/a".into());
                 let can = self.scalping_state.paper.can_trade(
@@ -2040,8 +2176,7 @@ impl BarState {
                 let ses = data::strategy::scalping::is_scalping_session(session.session);
                 println!(
                     "[scalping] session={ses} can_trade={can} obi={obi:.3} dz={dz:.2} vr={vr:.2} cvd_ses={cvd:.0} slope={slope} trades={}/{}",
-                    self.scalping_state.paper.daily_trades,
-                    cfg.scalping.max_trades_per_session,
+                    self.scalping_state.paper.daily_trades, cfg.scalping.max_trades_per_session,
                 );
             }
 
@@ -2057,15 +2192,20 @@ impl BarState {
                     self.scalping_paper_written_idx = total;
                 }
             }
-
         }
 
         // ── Broadcast barra al dashboard web ─────────────────────────────────
-        ws_server::broadcast(&self.ws_tx, ws_server::WsEvent::Bar {
-            ts_ms:  bar_ms,
-            open:   o, high: h, low: l, close: c,
-            regime: format!("{:?}", effective_regime),
-        });
+        ws_server::broadcast(
+            &self.ws_tx,
+            ws_server::WsEvent::Bar {
+                ts_ms: bar_ms,
+                open: o,
+                high: h,
+                low: l,
+                close: c,
+                regime: format!("{:?}", effective_regime),
+            },
+        );
 
         // ── Range Breakout Flow detector + paper trader ───────────────────────
         {
@@ -2104,8 +2244,11 @@ impl BarState {
                     let trade = $trade;
                     println!(
                         "[rbf_paper] {:?} {} entry={:.1} exit={:.1} R={:.2} day_R={:.2}",
-                        trade.direction, trade.exit_reason.as_str(),
-                        trade.entry_price, trade.exit_price, trade.result_r,
+                        trade.direction,
+                        trade.exit_reason.as_str(),
+                        trade.entry_price,
+                        trade.exit_price,
+                        trade.result_r,
                         self.rbf_paper.day_r,
                     );
                     if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
@@ -2160,15 +2303,14 @@ impl BarState {
                 let expansion_bars_recent: u8 = if symbol == "SOLUSDT" || symbol == "XRPUSDT" {
                     0
                 } else {
-                    self.regime_hist_25.iter()
+                    self.regime_hist_25
+                        .iter()
                         .filter(|&&r| r == data::strategy::types::Regime::Expansion)
                         .count()
                         .min(25) as u8
                 };
-                let oi_mom_bars_recent: u8 = self.oi_mom_hist_25.iter()
-                    .filter(|&&v| v)
-                    .count()
-                    .min(25) as u8;
+                let oi_mom_bars_recent: u8 =
+                    self.oi_mom_hist_25.iter().filter(|&&v| v).count().min(25) as u8;
                 let cum_delta_25b: f64 = self.delta_hist_25.iter().sum();
                 let rbf_gate = data::strategy::detectors::range_breakout_flow::RbfGateContext {
                     stacked_imbalance_bearish: stacked_imbalance == ImbalanceSide::Bearish,
@@ -2183,11 +2325,17 @@ impl BarState {
                     hvn_levels: hvn_nearby.clone(),
                     vpin: bar_vpin,
                     oi_momentum_aligned,
-                    session_cvd:           self.scalping_state.cvd_session,
+                    session_cvd: self.scalping_state.cvd_session,
                     big_trade_cvd_session: self.scalping_state.big_cvd_session,
                     oi_delta_pct: {
                         let front = self.oi_history.front().copied().unwrap_or(0.0);
-                        oi_delta.map(|d| if front.abs() > 1e-9 { d / front * 100.0 } else { 0.0 })
+                        oi_delta.map(|d| {
+                            if front.abs() > 1e-9 {
+                                d / front * 100.0
+                            } else {
+                                0.0
+                            }
+                        })
                     },
                     cvd_divergence_bars: ctx.flow.cvd_divergence_persistence,
                     htf_h1_trend: htf_h1_trend.clone(),
@@ -2202,23 +2350,51 @@ impl BarState {
                     obi_mean_intrabar,
                 };
                 self.last_rbf_gate = Some(rbf_gate.clone());
-                // Config por símbolo — todas las calibraciones con datos live.
+                // Config por símbolo — calibraciones promovidas desde backtest app.
                 let mut rbf_cfg = cfg.range_breakout.clone();
-                // expansion_max_bars: BTC/ETH/BNB → Some(3) (calibración n=30 Shorts: ≤3→WR=60% +8.1R vs sin filtro WR=40%).
-                // Some(1) era demasiado restrictivo — bloqueaba la mayoría de setups válidos (WR diff solo 5.7pp con n=72).
+                // ETH London: backtest/app mostró edge débil. Se llama al detector con
+                // enabled=false para mantener warmup/buffers, pero no emitir señal.
+                if symbol == "ETHUSDT"
+                    && matches!(
+                        session.session,
+                        data::session::session_tracker::TradingSession::London
+                    )
+                {
+                    rbf_cfg.enabled = false;
+                }
+                // expansion_max_bars: BTC/ETH/BNB → Some(1). SOL/XRP quedan en bypass.
+                // La app calibrada usa expansión estricta para evitar moves ya maduros.
                 rbf_cfg.expansion_max_bars = match symbol {
                     "SOLUSDT" | "XRPUSDT" => None,
-                    _                      => Some(3),
+                    _ => Some(1),
                 };
-                // Gates per-símbolo desactivados 2026-06-12 — acumulando datos con n bajo.
-                // Reactivar cuando n≥30 por símbolo.
+                // Gates por símbolo promovidos desde el backend de backtest.
+                match symbol {
+                    "BTCUSDT" => {
+                        rbf_cfg.cum_delta_max_short = Some(200.0);
+                    }
+                    "BNBUSDT" => {
+                        rbf_cfg.cum_delta_min_short = Some(-500.0);
+                    }
+                    "ETHUSDT" => {
+                        rbf_cfg.cvd_in_range_min_short = Some(-700.0);
+                        rbf_cfg.obi_max_short = Some(0.10);
+                    }
+                    _ => {}
+                };
                 // Pre-breakout VR: en Overlap el volumen es mayor y hay más fakeouts → exigir 2.0×.
                 // En London/NY mantener 1.5× (volumen moderado, precio en borde es más informativo).
-                if matches!(session.session, data::session::session_tracker::TradingSession::LondonNyOverlap) {
+                if matches!(
+                    session.session,
+                    data::session::session_tracker::TradingSession::LondonNyOverlap
+                ) {
                     rbf_cfg.pre_breakout_vr_min = rbf_cfg.pre_breakout_vr_min.max(2.0);
                 }
                 if let Some(sig) = self.rbf_state.on_bar_close(
-                    o, h, l, c,
+                    o,
+                    h,
+                    l,
+                    c,
                     vol,
                     bar_delta,
                     session.session,
@@ -2232,26 +2408,36 @@ impl BarState {
                     Some(&rbf_gate),
                 ) {
                     // score=4: WR=16.7% avg=-0.62R n=18 → no operar (sigue registrando en Supabase)
+                    let trade_min_score = rbf_cfg.min_confluence_score.max(2);
                     let tradeable = sig.veto_reason.is_none()
-                        && sig.confluence_score >= rbf_cfg.min_confluence_score
+                        && sig.confluence_score >= trade_min_score
                         && sig.confluence_score != 4;
                     println!(
                         "[rbf] {:?} entry={:.1} rr={:.2} range={:.3}% vr={:.2}x {:?} score={}/{} veto={:?} trade={}",
-                        sig.direction, sig.entry_price, sig.rr, sig.range_pct,
-                        sig.vr_at_breakout, sig.macro_regime,
-                        sig.confluence_score, 9,
-                        sig.veto_reason, tradeable,
+                        sig.direction,
+                        sig.entry_price,
+                        sig.rr,
+                        sig.range_pct,
+                        sig.vr_at_breakout,
+                        sig.macro_regime,
+                        sig.confluence_score,
+                        6,
+                        sig.veto_reason,
+                        tradeable,
                     );
                     // Broadcast señal al dashboard web
-                    ws_server::broadcast(&self.ws_tx, ws_server::WsEvent::Signal {
-                        ts_ms:     sig.timestamp_ms,
-                        direction: format!("{:?}", sig.direction),
-                        score:     Some(sig.confluence_score),
-                        veto:      sig.veto_reason.clone(),
-                        entry:     sig.entry_price,
-                        rr:        sig.rr,
-                        session:   format!("{:?}", sig.session),
-                    });
+                    ws_server::broadcast(
+                        &self.ws_tx,
+                        ws_server::WsEvent::Signal {
+                            ts_ms: sig.timestamp_ms,
+                            direction: format!("{:?}", sig.direction),
+                            score: Some(sig.confluence_score),
+                            veto: sig.veto_reason.clone(),
+                            entry: sig.entry_price,
+                            rr: sig.rr,
+                            session: format!("{:?}", sig.session),
+                        },
+                    );
 
                     // Siempre escribir a Supabase (incluye señales vetadas, para calibración)
                     if let Some(sb) = self.supabase.clone() {
@@ -2274,7 +2460,10 @@ impl BarState {
                         } else {
                             println!(
                                 "[rbf_paper] open {:?} score_v2={:.2} sizing={:.1}x entry={:.2}",
-                                sig.direction, sig.signal_score_v2, sig.sizing_multiplier, sig.entry_price,
+                                sig.direction,
+                                sig.signal_score_v2,
+                                sig.sizing_multiplier,
+                                sig.entry_price,
                             );
                             self.rbf_paper.open(&sig, atr);
                         }
@@ -2288,52 +2477,78 @@ impl BarState {
             use data::strategy::detectors::amd_detector::AmdContext;
 
             // Extraer midpoints de Order Blocks como niveles estructurales
-            let ob_levels: Vec<f64> = ctx.order_blocks.as_ref().map(|ob| {
-                let mut v: Vec<f64> = vec![];
-                if let Some(ref b) = ob.nearest_bullish { v.push((b.high + b.low) / 2.0); }
-                if let Some(ref b) = ob.nearest_bearish { v.push((b.high + b.low) / 2.0); }
-                v
-            }).unwrap_or_default();
+            let ob_levels: Vec<f64> = ctx
+                .order_blocks
+                .as_ref()
+                .map(|ob| {
+                    let mut v: Vec<f64> = vec![];
+                    if let Some(ref b) = ob.nearest_bullish {
+                        v.push((b.high + b.low) / 2.0);
+                    }
+                    if let Some(ref b) = ob.nearest_bearish {
+                        v.push((b.high + b.low) / 2.0);
+                    }
+                    v
+                })
+                .unwrap_or_default();
 
             // Extraer midpoints de FVGs como niveles estructurales
-            let fvg_levels: Vec<f64> = ctx.fvg.as_ref().map(|fvg| {
-                let mut v: Vec<f64> = vec![];
-                if let Some(ref b) = fvg.nearest_bullish { v.push((b.high + b.low) / 2.0); }
-                if let Some(ref b) = fvg.nearest_bearish { v.push((b.high + b.low) / 2.0); }
-                v
-            }).unwrap_or_default();
+            let fvg_levels: Vec<f64> = ctx
+                .fvg
+                .as_ref()
+                .map(|fvg| {
+                    let mut v: Vec<f64> = vec![];
+                    if let Some(ref b) = fvg.nearest_bullish {
+                        v.push((b.high + b.low) / 2.0);
+                    }
+                    if let Some(ref b) = fvg.nearest_bearish {
+                        v.push((b.high + b.low) / 2.0);
+                    }
+                    v
+                })
+                .unwrap_or_default();
 
             // vwap_dz = (close - vwap) / atr — cuántas ATRs está el spike de la VWAP
-            let vwap_dz = self.vwap_session
+            let vwap_dz = self
+                .vwap_session
                 .map(|vwap| if atr > 0.0 { (c - vwap) / atr } else { 0.0 });
 
             let amd_ctx = AmdContext {
-                vpin:               bar_vpin,
+                vpin: bar_vpin,
                 cvd_slope,
-                obi_l5:             ctx.orderbook.obi_l5,
-                vwap:               self.vwap_session,
-                lvn_levels:         ctx.volume_profile.lvn_nearby.clone(),
-                naked_pocs:         ctx.volume_profile.naked_pocs.clone(),
+                obi_l5: ctx.orderbook.obi_l5,
+                vwap: self.vwap_session,
+                lvn_levels: ctx.volume_profile.lvn_nearby.clone(),
+                naked_pocs: ctx.volume_profile.naked_pocs.clone(),
                 ob_levels,
                 fvg_levels,
-                funding_rate:       self.funding_rate,
-                session_name:       format!("{:?}", session.session),
+                funding_rate: self.funding_rate,
+                session_name: format!("{:?}", session.session),
                 vwap_dz,
-                liq_ratio:          bar_liq_ratio,
-                absorption_bid:     footprint_absorption == AbsorptionSide::Bid,
-                absorption_ask:     footprint_absorption == AbsorptionSide::Ask,
-                regime_is_trending: matches!(regime, data::strategy::types::Regime::TrendUp
-                    | data::strategy::types::Regime::TrendDown
-                    | data::strategy::types::Regime::Expansion),
-                session_cvd:        self.scalping_state.cvd_session,
-                val:                ctx.volume_profile.val,
-                vah:                ctx.volume_profile.vah,
-                bid_wall_nearby:    ctx.flow.bid_wall_nearby,
-                ask_wall_nearby:    ctx.flow.ask_wall_nearby,
-                big_trade_cvd_bar:  ctx.flow.big_trade_cvd_bar,
+                liq_ratio: bar_liq_ratio,
+                absorption_bid: footprint_absorption == AbsorptionSide::Bid,
+                absorption_ask: footprint_absorption == AbsorptionSide::Ask,
+                regime_is_trending: matches!(
+                    regime,
+                    data::strategy::types::Regime::TrendUp
+                        | data::strategy::types::Regime::TrendDown
+                        | data::strategy::types::Regime::Expansion
+                ),
+                session_cvd: self.scalping_state.cvd_session,
+                val: ctx.volume_profile.val,
+                vah: ctx.volume_profile.vah,
+                bid_wall_nearby: ctx.flow.bid_wall_nearby,
+                ask_wall_nearby: ctx.flow.ask_wall_nearby,
+                big_trade_cvd_bar: ctx.flow.big_trade_cvd_bar,
                 oi_delta_pct: {
                     let front = self.oi_history.front().copied().unwrap_or(0.0);
-                    oi_delta.map(|d| if front.abs() > 1e-9 { d / front * 100.0 } else { 0.0 })
+                    oi_delta.map(|d| {
+                        if front.abs() > 1e-9 {
+                            d / front * 100.0
+                        } else {
+                            0.0
+                        }
+                    })
                 },
                 cvd_divergence_bars: ctx.flow.cvd_divergence_persistence,
                 htf_h1_trend: htf_h1_trend.clone(),
@@ -2355,7 +2570,9 @@ impl BarState {
                             }
                         }
                     }
-                    Err(_) => { self.amd_pending_id_rx = Some(rx); }
+                    Err(_) => {
+                        self.amd_pending_id_rx = Some(rx);
+                    }
                 }
             }
 
@@ -2365,8 +2582,11 @@ impl BarState {
                     let trade = $trade;
                     println!(
                         "[amd_paper] {:?} {} entry={:.4} exit={:.4} R={:.2}",
-                        trade.direction, trade.exit_reason.as_str(),
-                        trade.entry_price, trade.exit_price, trade.result_r,
+                        trade.direction,
+                        trade.exit_reason.as_str(),
+                        trade.entry_price,
+                        trade.exit_price,
+                        trade.result_r,
                     );
                     if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
                         sb.update_amd_outcome(id, &trade);
@@ -2381,8 +2601,12 @@ impl BarState {
                     if let Some(trade) = self.amd_paper.on_bar_close(h, l, bar_ms) {
                         write_amd_outcome!(trade);
                         true
-                    } else { false }
-                } else { false };
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
                 if !closed_by_price {
                     if let Some(trade) = self.amd_paper.close_session(c, bar_ms) {
                         write_amd_outcome!(trade);
@@ -2399,20 +2623,29 @@ impl BarState {
             }
 
             // ── AMD detector ──────────────────────────────────────────────────
-            if let Some(sig) = self.amd_state.on_bar_close(
-                h, l, c, vol, bar_delta, bar_ms,
-                &amd_ctx, &cfg.amd,
-            ) {
+            if let Some(sig) = self
+                .amd_state
+                .on_bar_close(h, l, c, vol, bar_delta, bar_ms, &amd_ctx, &cfg.amd)
+            {
                 println!(
                     "[amd] {:?} entry={:.4} stop={:.4} target={:.4} rr={:.2} \
                      range={:.3}% bars={} spike={:?} vr={:.2}x \
                      liq={:.2} dz={:.2} delta={:.1} src={:?} ses={} \
                      quality={}/10",
-                    sig.direction, sig.entry_price, sig.stop_price, sig.target_price,
-                    sig.rr, sig.range_pct, sig.range_bars, sig.spike_direction,
-                    sig.vr_at_spike, sig.liq_ratio_at_spike,
+                    sig.direction,
+                    sig.entry_price,
+                    sig.stop_price,
+                    sig.target_price,
+                    sig.rr,
+                    sig.range_pct,
+                    sig.range_bars,
+                    sig.spike_direction,
+                    sig.vr_at_spike,
+                    sig.liq_ratio_at_spike,
                     sig.dz_at_spike.unwrap_or(0.0),
-                    sig.bar_delta_at_spike, sig.target_source, sig.session_name,
+                    sig.bar_delta_at_spike,
+                    sig.target_source,
+                    sig.session_name,
                     sig.quality_score,
                 );
 
@@ -2421,12 +2654,11 @@ impl BarState {
                 let amd_session_ok = matches!(
                     session.session,
                     data::session::session_tracker::TradingSession::London
-                    | data::session::session_tracker::TradingSession::LondonNyOverlap
-                    | data::session::session_tracker::TradingSession::NewYork
+                        | data::session::session_tracker::TradingSession::LondonNyOverlap
+                        | data::session::session_tracker::TradingSession::NewYork
                 );
-                let amd_tradeable = amd_session_ok
-                    && sig.quality_score >= 4
-                    && !self.amd_paper.has_position();
+                let amd_tradeable =
+                    amd_session_ok && sig.quality_score >= 4 && !self.amd_paper.has_position();
 
                 if amd_tradeable {
                     // Señal operada: is_active=true en Supabase
@@ -2447,10 +2679,17 @@ impl BarState {
                     self.amd_paper.open(&sig);
                 } else {
                     // Solo registrar: sesión excluida, score bajo, o posición ya abierta
-                    let skip_reason = if !amd_session_ok { "session_skip" }
-                        else if sig.quality_score < 4   { "low_score" }
-                        else                             { "has_position" };
-                    println!("[amd] recorded (not traded) reason={} score={}", skip_reason, sig.quality_score);
+                    let skip_reason = if !amd_session_ok {
+                        "session_skip"
+                    } else if sig.quality_score < 4 {
+                        "low_score"
+                    } else {
+                        "has_position"
+                    };
+                    println!(
+                        "[amd] recorded (not traded) reason={} score={}",
+                        skip_reason, sig.quality_score
+                    );
                     if let Some(sb) = self.supabase.clone() {
                         let sig_c = sig.clone();
                         let sym_c = symbol.to_string();
@@ -2471,7 +2710,9 @@ impl BarState {
                     println!(
                         "[be_paper] {} entry={:.2} exit={:.2} R={:.2} day_R={:.2}",
                         trade.exit_reason.as_str(),
-                        trade.entry_price, trade.exit_price, trade.result_r,
+                        trade.entry_price,
+                        trade.exit_price,
+                        trade.result_r,
                         self.be_paper.day_r,
                     );
                     if let (Some(sb), Some(id)) = (&self.supabase, &trade.supabase_id) {
@@ -2496,7 +2737,9 @@ impl BarState {
                             }
                         }
                     }
-                    Err(_) => { self.be_pending_id_rx = Some(rx); }
+                    Err(_) => {
+                        self.be_pending_id_rx = Some(rx);
+                    }
                 }
             }
 
@@ -2506,8 +2749,12 @@ impl BarState {
                     if let Some(trade) = self.be_paper.on_bar_close(h, l, c, bar_ms, 30) {
                         write_be_outcome!(trade);
                         true
-                    } else { false }
-                } else { false };
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
                 if !closed_by_price {
                     if let Some(trade) = self.be_paper.close_session(c, bar_ms) {
                         write_be_outcome!(trade);
@@ -2527,7 +2774,15 @@ impl BarState {
             if !self.be_paper.has_position() {
                 let be_cfg = buyer_exhaustion::config::BuyerExhaustionConfig::default();
                 if let Some(sig) = self.be_state.on_bar_close(
-                    h, l, o, c, vol, bar_delta, bar_ms, symbol, &be_cfg,
+                    h,
+                    l,
+                    o,
+                    c,
+                    vol,
+                    bar_delta,
+                    bar_ms,
+                    symbol,
+                    &be_cfg,
                     self.last_rbf_gate.as_ref(),
                 ) {
                     if let Some(sb) = self.supabase.clone() {
@@ -2547,7 +2802,10 @@ impl BarState {
                         );
                         self.be_paper.open(&sig);
                     } else {
-                        println!("[be_paper] daily limit hit (day_r={:.2}R) — señal bloqueada", self.be_paper.day_r);
+                        println!(
+                            "[be_paper] daily limit hit (day_r={:.2}R) — señal bloqueada",
+                            self.be_paper.day_r
+                        );
                     }
                 }
             }
@@ -2560,19 +2818,36 @@ impl BarState {
                 let n = self.bar_delta_history.len();
                 if n >= 5 {
                     let mean = self.bar_delta_history.iter().sum::<f64>() / n as f64;
-                    let std = (self.bar_delta_history.iter()
-                        .map(|d| (d - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
-                    if std > 1e-8 { (bar_delta - mean) / std } else { 0.0 }
-                } else { 0.0 }
+                    let std = (self
+                        .bar_delta_history
+                        .iter()
+                        .map(|d| (d - mean).powi(2))
+                        .sum::<f64>()
+                        / n as f64)
+                        .sqrt();
+                    if std > 1e-8 {
+                        (bar_delta - mean) / std
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                }
             };
             // vr: volume ratio vs media de últimas 50 barras
             let rbf_vr = {
-                let vols: Vec<f64> = self.bars.iter().map(|b| b.volume.total().to_f32_lossy() as f64).collect();
+                let vols: Vec<f64> = self
+                    .bars
+                    .iter()
+                    .map(|b| b.volume.total().to_f32_lossy() as f64)
+                    .collect();
                 let n = vols.len().min(50);
                 if n > 0 {
-                    let mean = vols[vols.len()-n..].iter().sum::<f64>() / n as f64;
+                    let mean = vols[vols.len() - n..].iter().sum::<f64>() / n as f64;
                     if mean > 0.0 { vol / mean } else { 0.0 }
-                } else { 0.0 }
+                } else {
+                    0.0
+                }
             };
             let stacked_str = match stacked_imbalance {
                 ImbalanceSide::Bullish => "Bullish",
@@ -2584,9 +2859,10 @@ impl BarState {
                 AbsorptionSide::Ask => "Ask",
                 _ => "None",
             };
-            let operative = matches!(session.session,
-                data::session::TradingSession::London |
-                data::session::TradingSession::LondonNyOverlap
+            let operative = matches!(
+                session.session,
+                data::session::TradingSession::London
+                    | data::session::TradingSession::LondonNyOverlap
             );
 
             // ── ICT AMD structural levels ─────────────────────────────────────
@@ -2599,11 +2875,11 @@ impl BarState {
                 if self.asian_day != bar_day {
                     // nuevo día asiático — reset
                     self.asian_high = Some(h);
-                    self.asian_low  = Some(l);
-                    self.asian_day  = bar_day;
+                    self.asian_low = Some(l);
+                    self.asian_day = bar_day;
                 } else {
                     self.asian_high = Some(self.asian_high.map_or(h, |v| v.max(h)));
-                    self.asian_low  = Some(self.asian_low.map_or(l,  |v| v.min(l)));
+                    self.asian_low = Some(self.asian_low.map_or(l, |v| v.min(l)));
                 }
             }
 
@@ -2611,48 +2887,95 @@ impl BarState {
             if self.daily_day != bar_day {
                 if self.daily_day >= 0 {
                     self.prev_day_high = Some(self.daily_high);
-                    self.prev_day_low  = Some(self.daily_low);
+                    self.prev_day_low = Some(self.daily_low);
                 }
                 self.daily_high = h;
-                self.daily_low  = l;
-                self.daily_day  = bar_day;
+                self.daily_low = l;
+                self.daily_day = bar_day;
             } else {
                 self.daily_high = self.daily_high.max(h);
-                self.daily_low  = self.daily_low.min(l);
+                self.daily_low = self.daily_low.min(l);
             }
 
             // swing_high/low_50 — rolling max/min sobre las últimas 50 barras (excluyendo la actual)
-            let highs50: Vec<f64> = self.bars.iter().rev().take(50).map(|b| b.high.to_f32() as f64).collect();
-            let lows50:  Vec<f64> = self.bars.iter().rev().take(50).map(|b| b.low.to_f32()  as f64).collect();
-            let swing_high_50: Option<f64> = if highs50.is_empty() { None } else { Some(highs50.iter().cloned().fold(f64::NEG_INFINITY, f64::max)) };
-            let swing_low_50:  Option<f64> = if lows50.is_empty()  { None } else { Some(lows50.iter().cloned().fold(f64::INFINITY,     f64::min)) };
+            let highs50: Vec<f64> = self
+                .bars
+                .iter()
+                .rev()
+                .take(50)
+                .map(|b| b.high.to_f32() as f64)
+                .collect();
+            let lows50: Vec<f64> = self
+                .bars
+                .iter()
+                .rev()
+                .take(50)
+                .map(|b| b.low.to_f32() as f64)
+                .collect();
+            let swing_high_50: Option<f64> = if highs50.is_empty() {
+                None
+            } else {
+                Some(highs50.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+            };
+            let swing_low_50: Option<f64> = if lows50.is_empty() {
+                None
+            } else {
+                Some(lows50.iter().cloned().fold(f64::INFINITY, f64::min))
+            };
 
             // equal_high/low — ¿el high/low de esta barra está a ≤0.03% de un swing previo en la ventana de 50?
             let eq_tol = 0.0003; // 0.03%
-            let equal_high = swing_high_50.map_or(false, |sh| (h - sh).abs() / sh <= eq_tol && h >= sh * (1.0 - eq_tol));
-            let equal_low  = swing_low_50 .map_or(false, |sl| (l - sl).abs() / sl <= eq_tol && l <= sl * (1.0 + eq_tol));
+            let equal_high = swing_high_50.map_or(false, |sh| {
+                (h - sh).abs() / sh <= eq_tol && h >= sh * (1.0 - eq_tol)
+            });
+            let equal_low = swing_low_50.map_or(false, |sl| {
+                (l - sl).abs() / sl <= eq_tol && l <= sl * (1.0 + eq_tol)
+            });
 
             let cvd_div_str = cvd_divergence.as_ref().map(|d| match d {
                 data::strategy::types::CvdDivergence::BearishAbsorption => "BearishAbsorption",
-                data::strategy::types::CvdDivergence::BullishAbsorption  => "BullishAbsorption",
+                data::strategy::types::CvdDivergence::BullishAbsorption => "BullishAbsorption",
             });
             sb.write_rbf_bar(
                 symbol,
-                bar_ms, &format!("{:?}", session.session),
-                o, h, l, c, vol, bar_delta,
-                cvd_slope, ctx.orderbook.obi_l5.unwrap_or(0.0), bar_obi_l10, bar_obi_l20,
-                self.obi_ema_fast, self.obi_ema_slow,
-                rbf_dz, rbf_vr, bar_liq_ratio, bar_spread_ticks,
-                stacked_str, absorption_str,
-                ctx.orderbook.thin_zone_above, ctx.orderbook.thin_zone_below,
-                bid_wall_nearby, ask_wall_nearby,
-                bar_vpin, oi_momentum_aligned,
-                self.vwap_session, &format!("{:?}", effective_regime), atr,
+                bar_ms,
+                &format!("{:?}", session.session),
+                o,
+                h,
+                l,
+                c,
+                vol,
+                bar_delta,
+                cvd_slope,
+                ctx.orderbook.obi_l5.unwrap_or(0.0),
+                bar_obi_l10,
+                bar_obi_l20,
+                self.obi_ema_fast,
+                self.obi_ema_slow,
+                rbf_dz,
+                rbf_vr,
+                bar_liq_ratio,
+                bar_spread_ticks,
+                stacked_str,
+                absorption_str,
+                ctx.orderbook.thin_zone_above,
+                ctx.orderbook.thin_zone_below,
+                bid_wall_nearby,
+                ask_wall_nearby,
+                bar_vpin,
+                oi_momentum_aligned,
+                self.vwap_session,
+                &format!("{:?}", effective_regime),
+                atr,
                 operative,
-                self.asian_high, self.asian_low,
-                self.prev_day_high, self.prev_day_low,
-                swing_high_50, swing_low_50,
-                equal_high, equal_low,
+                self.asian_high,
+                self.asian_low,
+                self.prev_day_high,
+                self.prev_day_low,
+                swing_high_50,
+                swing_low_50,
+                equal_high,
+                equal_low,
                 cvd_div_str,
                 sweep_confirmed,
             );
@@ -2662,7 +2985,6 @@ impl BarState {
         let next_open_ms = bar_ms + 300_000;
         self.micro_buffer.reset(next_open_ms);
         self.current_candle_open_ms = next_open_ms;
-
 
         // Take the OID of the currently open position BEFORE processing the new signal —
         // a new signal clears pending_signal_oid, which would cause write_trade to skip
@@ -2682,7 +3004,9 @@ impl BarState {
             if let Some(sb) = self.supabase.clone() {
                 let supabase_uuid = self.pending_supabase_uuid.clone();
                 let t = trade.clone();
-                tokio::spawn(async move { sb.write_trade(&t, supabase_uuid); });
+                tokio::spawn(async move {
+                    sb.write_trade(&t, supabase_uuid);
+                });
             }
         }
 
@@ -2729,7 +3053,11 @@ impl BarState {
             self.streams.klines, self.streams.depth, self.streams.liq
         );
         let liq_age = self.freshness.liq_age_str();
-        let rbf_pos = if self.rbf_paper.has_position() { "open" } else { "-" };
+        let rbf_pos = if self.rbf_paper.has_position() {
+            "open"
+        } else {
+            "-"
+        };
         println!(
             "[bar] ts={bar_ms} close={c:.2} regime={effective_regime:?} \
              slow={slow_slope:.3} fast={fast_slope:.3} \
@@ -2793,7 +3121,11 @@ impl BarState {
             bar_close_ms: bar_ms,
             bar_close_price: c,
             vp_open_bias: vp_open_bias.clone(),
-            range: if range_ctx.valid { Some(range_ctx) } else { None },
+            range: if range_ctx.valid {
+                Some(range_ctx)
+            } else {
+                None
+            },
         });
         self.bar_footprint.clear();
         self.intrabar_signal_fired = false;
@@ -2804,7 +3136,8 @@ impl BarState {
         self.metrics.processing_ms.push(processing_ms);
         if self.metrics.bars_processed % 10 == 0 {
             self.metrics.liq_raw_messages = self.liq_raw_counter.load(Ordering::Relaxed);
-            self.metrics.liq_global_raw_messages = self.liq_global_raw_counter.load(Ordering::Relaxed);
+            self.metrics.liq_global_raw_messages =
+                self.liq_global_raw_counter.load(Ordering::Relaxed);
             let freshness = &self.freshness;
             let streams = &self.streams;
             self.metrics.report(freshness, streams);
@@ -3217,7 +3550,9 @@ fn spawn_force_order_stream(
                                     let _ = tx.send(vec![ev]).await;
                                 } else {
                                     let preview = &text[..text.len().min(160)];
-                                    eprintln!("[liq] parse_failure (not a liquidation?): {preview}");
+                                    eprintln!(
+                                        "[liq] parse_failure (not a liquidation?): {preview}"
+                                    );
                                 }
                             }
                         }
@@ -3243,7 +3578,9 @@ fn spawn_global_liq_counter(raw_counter: Arc<AtomicU64>) {
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 continue;
             };
-            let Ok(sn) = ServerName::try_from(domain.to_string()) else { break };
+            let Ok(sn) = ServerName::try_from(domain.to_string()) else {
+                break;
+            };
             let Ok(tls) = LIQ_TLS.connect(sn, tcp).await else {
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 continue;
@@ -3254,11 +3591,17 @@ fn spawn_global_liq_counter(raw_counter: Arc<AtomicU64>) {
                 .header("Host", domain)
                 .header(UPGRADE, "websocket")
                 .header(CONNECTION, "upgrade")
-                .header("Sec-WebSocket-Key", fastwebsockets::handshake::generate_key())
+                .header(
+                    "Sec-WebSocket-Key",
+                    fastwebsockets::handshake::generate_key(),
+                )
                 .header("Sec-WebSocket-Version", "13")
                 .body(Empty::<Bytes>::new())
-            else { break };
-            let Ok((ws, _)) = fastwebsockets::handshake::client(&TokioExecutor::new(), req, tls).await
+            else {
+                break;
+            };
+            let Ok((ws, _)) =
+                fastwebsockets::handshake::client(&TokioExecutor::new(), req, tls).await
             else {
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 continue;
@@ -3267,7 +3610,11 @@ fn spawn_global_liq_counter(raw_counter: Arc<AtomicU64>) {
             let mut ws = FragmentCollector::new(ws);
             loop {
                 match ws.read_frame().await {
-                    Err(_) | Ok(fastwebsockets::Frame { opcode: OpCode::Close, .. }) => break,
+                    Err(_)
+                    | Ok(fastwebsockets::Frame {
+                        opcode: OpCode::Close,
+                        ..
+                    }) => break,
                     Ok(frame) if frame.opcode == OpCode::Text => {
                         raw_counter.fetch_add(1, Ordering::Relaxed);
                     }
@@ -3343,7 +3690,10 @@ async fn fetch_oi_history(symbol: &str) -> Vec<OiHistSnapshot> {
                 .filter_map(|entry| {
                     let oi: f64 = entry.get("sumOpenInterest")?.as_str()?.parse().ok()?;
                     let ts: i64 = entry.get("timestamp")?.as_i64()?;
-                    Some(OiHistSnapshot { timestamp_ms: ts, open_interest_usd: oi })
+                    Some(OiHistSnapshot {
+                        timestamp_ms: ts,
+                        open_interest_usd: oi,
+                    })
                 })
                 .collect()
         })
@@ -3376,14 +3726,28 @@ async fn fetch_ls_history(symbol: &str) -> Vec<LongShortSnapshot> {
         };
         if let Some(arr) = json.as_array() {
             for entry in arr {
-                let long_ratio: f64 = match entry.get("longAccount").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()) {
+                let long_ratio: f64 = match entry
+                    .get("longAccount")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok())
+                {
                     Some(v) => v,
                     None => continue,
                 };
                 let short_ratio = 1.0 - long_ratio;
-                let ls_ratio = if short_ratio > 0.0 { long_ratio / short_ratio } else { 0.0 };
+                let ls_ratio = if short_ratio > 0.0 {
+                    long_ratio / short_ratio
+                } else {
+                    0.0
+                };
                 let ts: i64 = entry.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-                result.push(LongShortSnapshot { timestamp_ms: ts, long_ratio, short_ratio, ls_ratio, source: *source });
+                result.push(LongShortSnapshot {
+                    timestamp_ms: ts,
+                    long_ratio,
+                    short_ratio,
+                    ls_ratio,
+                    source: *source,
+                });
             }
         }
     }
@@ -3439,7 +3803,8 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         interval_str
     );
 
-    let rbf_warm_cfg = data::strategy::detectors::range_breakout_flow::RangeBreakoutConfig::default();
+    let rbf_warm_cfg =
+        data::strategy::detectors::range_breakout_flow::RangeBreakoutConfig::default();
     for entry in closed {
         let arr = match entry.as_array() {
             Some(a) if a.len() >= 10 => a,
@@ -3526,21 +3891,40 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         // Feed amd_state so VR/history buffers warm al arrancar.
         {
             let amd_ctx = data::strategy::detectors::amd_detector::AmdContext {
-                vpin: None, cvd_slope: None, obi_l5: None, vwap: None,
-                lvn_levels: vec![], naked_pocs: vec![], ob_levels: vec![], fvg_levels: vec![],
-                funding_rate: None, session_name: "warmup".into(),
-                vwap_dz: None, liq_ratio: 0.0,
-                absorption_bid: false, absorption_ask: false, regime_is_trending: false,
+                vpin: None,
+                cvd_slope: None,
+                obi_l5: None,
+                vwap: None,
+                lvn_levels: vec![],
+                naked_pocs: vec![],
+                ob_levels: vec![],
+                fvg_levels: vec![],
+                funding_rate: None,
+                session_name: "warmup".into(),
+                vwap_dz: None,
+                liq_ratio: 0.0,
+                absorption_bid: false,
+                absorption_ask: false,
+                regime_is_trending: false,
                 session_cvd: 0.0,
-                val: None, vah: None, bid_wall_nearby: false, ask_wall_nearby: false,
+                val: None,
+                vah: None,
+                bid_wall_nearby: false,
+                ask_wall_nearby: false,
                 big_trade_cvd_bar: 0.0,
                 oi_delta_pct: None,
                 cvd_divergence_bars: None,
                 htf_h1_trend: None,
             };
             let _ = state.amd_state.on_bar_close(
-                high, low, close, volume, bar_delta, open_ms,
-                &amd_ctx, &data::strategy::detectors::amd_detector::AmdDetectorConfig {
+                high,
+                low,
+                close,
+                volume,
+                bar_delta,
+                open_ms,
+                &amd_ctx,
+                &data::strategy::detectors::amd_detector::AmdDetectorConfig {
                     enabled: true,
                     ..data::strategy::detectors::amd_detector::AmdDetectorConfig::default()
                 },
@@ -3552,9 +3936,21 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         let vwap = state.vwap_session;
         let warm_session = classify_session(open_ms).session;
         let _ = state.rbf_state.on_bar_close(
-            open, high, low, close, volume, bar_delta,
-            warm_session, open_ms, &rbf_warm_cfg,
-            vwap, None, 0.0, 0.0, None, None,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            bar_delta,
+            warm_session,
+            open_ms,
+            &rbf_warm_cfg,
+            vwap,
+            None,
+            0.0,
+            0.0,
+            None,
+            None,
         );
 
         // Feed rbf_paper si hay posición restaurada — detecta SL/TP que ocurrieron
@@ -3562,7 +3958,9 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         if state.rbf_paper.has_position() {
             if let Some(entry_ms) = state.rbf_paper.entry_ms() {
                 if open_ms > entry_ms {
-                    if let Some(trade) = state.rbf_paper.on_bar_close(high, low, close, open_ms, 0.0) {
+                    if let Some(trade) =
+                        state.rbf_paper.on_bar_close(high, low, close, open_ms, 0.0)
+                    {
                         println!(
                             "[rbf_paper] warm-up close {:?} entry={:.4} exit={:.4} R={:.3}",
                             trade.exit_reason, trade.entry_price, trade.exit_price, trade.result_r
@@ -3579,7 +3977,16 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         {
             let be_warm_cfg = buyer_exhaustion::config::BuyerExhaustionConfig::default();
             let _ = state.be_state.on_bar_close(
-                high, low, open, close, volume, bar_delta, open_ms, symbol, &be_warm_cfg, None,
+                high,
+                low,
+                open,
+                close,
+                volume,
+                bar_delta,
+                open_ms,
+                symbol,
+                &be_warm_cfg,
+                None,
             );
         }
 
@@ -3587,10 +3994,14 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         if state.be_paper.has_position() {
             if let Some(entry_ms) = state.be_paper.entry_ms() {
                 if open_ms > entry_ms {
-                    if let Some(trade) = state.be_paper.on_bar_close(high, low, close, open_ms, 30) {
+                    if let Some(trade) = state.be_paper.on_bar_close(high, low, close, open_ms, 30)
+                    {
                         println!(
                             "[be_paper] warm-up close {} entry={:.4} exit={:.4} R={:.3}",
-                            trade.exit_reason.as_str(), trade.entry_price, trade.exit_price, trade.result_r
+                            trade.exit_reason.as_str(),
+                            trade.entry_price,
+                            trade.exit_price,
+                            trade.result_r
                         );
                         if let (Some(sb), Some(id)) = (&state.supabase, &trade.supabase_id) {
                             sb.update_be_outcome(id, &trade);
@@ -3649,9 +4060,9 @@ async fn main() {
 
     let mut tasks = vec![];
     for (i, symbol_str) in symbols.into_iter().enumerate() {
-        let sym      = symbol_str.clone();
-        let tf       = tf_min;
-        let primary  = i == 0; // solo el primer símbolo arranca el ws_server
+        let sym = symbol_str.clone();
+        let tf = tf_min;
+        let primary = i == 0; // solo el primer símbolo arranca el ws_server
         tasks.push(tokio::spawn(async move {
             run_symbol(sym, tf, primary).await;
         }));
@@ -3732,7 +4143,9 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
 
     // ── WebSocket server — solo el task primario bindea el puerto ─────────────
     let ws_port: u16 = std::env::var("WS_PORT")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(9001);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(9001);
     let ws_tx = if primary {
         ws_server::start(ws_port)
     } else {
@@ -3752,7 +4165,15 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     let footprint_step: PriceStep = ticker_info.min_ticksize.into();
     let liq_raw_counter = Arc::new(AtomicU64::new(0));
     let liq_global_raw_counter = Arc::new(AtomicU64::new(0));
-    let mut state = BarState::new(mongo, supabase, config_loader, footprint_step, Arc::clone(&liq_raw_counter), Arc::clone(&liq_global_raw_counter), ws_tx);
+    let mut state = BarState::new(
+        mongo,
+        supabase,
+        config_loader,
+        footprint_step,
+        Arc::clone(&liq_raw_counter),
+        Arc::clone(&liq_global_raw_counter),
+        ws_tx,
+    );
     state.intrabar_cfg.log_boot();
 
     // Restaurar posiciones activas ANTES del warm-up para que las barras históricas
@@ -3764,8 +4185,12 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
                 pos.direction, pos.entry_price, pos.stop_price, pos.target_price, pos.signal_id
             );
             state.rbf_paper.restore(
-                pos.signal_id, pos.direction,
-                pos.entry_price, pos.stop_price, pos.target_price, pos.entry_ms,
+                pos.signal_id,
+                pos.direction,
+                pos.entry_price,
+                pos.stop_price,
+                pos.target_price,
+                pos.entry_ms,
             );
         }
         if let Some(pos) = sb.load_amd_active(&symbol_str).await {
@@ -3774,8 +4199,12 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
                 pos.direction, pos.entry_price, pos.stop_price, pos.target_price, pos.signal_id
             );
             state.amd_paper.restore(
-                pos.signal_id, pos.direction,
-                pos.entry_price, pos.stop_price, pos.target_price, pos.entry_ms,
+                pos.signal_id,
+                pos.direction,
+                pos.entry_price,
+                pos.stop_price,
+                pos.target_price,
+                pos.entry_ms,
             );
         }
         if let Some(pos) = sb.load_be_active(&symbol_str).await {
@@ -3785,7 +4214,10 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
             );
             state.be_paper.restore(
                 pos.signal_id,
-                pos.entry_price, pos.stop_price, pos.target_price, pos.entry_ms,
+                pos.entry_price,
+                pos.stop_price,
+                pos.target_price,
+                pos.entry_ms,
             );
         }
     }
@@ -3846,7 +4278,12 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     // Liquidations: real-time via @forceOrder WebSocket (public stream, no auth needed)
     let (liq_tx, mut liq_rx) = tokio::sync::mpsc::channel::<Vec<LiquidationEvent>>(16);
     let (liq_health_tx, mut liq_health_rx) = tokio::sync::mpsc::channel::<bool>(4);
-    spawn_force_order_stream(symbol_str.clone(), liq_tx, liq_health_tx, Arc::clone(&liq_raw_counter));
+    spawn_force_order_stream(
+        symbol_str.clone(),
+        liq_tx,
+        liq_health_tx,
+        Arc::clone(&liq_raw_counter),
+    );
     // Diagnostic: all-market liquidations — proves the /market/ws/ endpoint works even when BTC is quiet
     spawn_global_liq_counter(Arc::clone(&liq_global_raw_counter));
 
@@ -3886,8 +4323,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     });
 
     // OI history: once at startup to pre-seed OiTracker (eliminates 15-min cold-start for z-score)
-    let (oi_hist_tx, mut oi_hist_rx) =
-        tokio::sync::mpsc::channel::<Vec<OiHistSnapshot>>(2);
+    let (oi_hist_tx, mut oi_hist_rx) = tokio::sync::mpsc::channel::<Vec<OiHistSnapshot>>(2);
     let oi_hist_symbol = symbol_str.clone();
     tokio::spawn(async move {
         let snaps = fetch_oi_history(&oi_hist_symbol).await;
@@ -3895,8 +4331,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     });
 
     // L/S history: once at startup to pre-seed LsRatioTracker (eliminates 5-min fallback window)
-    let (ls_hist_tx, mut ls_hist_rx) =
-        tokio::sync::mpsc::channel::<Vec<LongShortSnapshot>>(2);
+    let (ls_hist_tx, mut ls_hist_rx) = tokio::sync::mpsc::channel::<Vec<LongShortSnapshot>>(2);
     let ls_hist_symbol = symbol_str.clone();
     tokio::spawn(async move {
         let snaps = fetch_ls_history(&ls_hist_symbol).await;
