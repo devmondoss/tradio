@@ -60,6 +60,38 @@ def sb_fetch(table, start_ms):
         offset+=limit
     return rows
 
+def build_h4(m1):
+    buckets = defaultdict(list)
+    for b in m1:
+        h4_ts = (b['ts_ms'] // (4*3_600_000)) * (4*3_600_000)
+        buckets[h4_ts].append(b)
+    h4 = []
+    for ts in sorted(buckets):
+        bs = buckets[ts]
+        h4.append({'ts_ms': ts, 'open': bs[0]['open'],
+                   'high': max(b['high'] for b in bs),
+                   'low':  min(b['low']  for b in bs),
+                   'close': bs[-1]['close']})
+    return h4
+
+def h4_trend_series(m1):
+    h4 = build_h4(m1)
+    if len(h4) < 20:
+        return {}
+    closes = [b['close'] for b in h4]
+    h4_ema = ema(closes, 20)
+    h4_map = {}
+    for i, b in enumerate(h4):
+        c, e = b['close'], h4_ema[i]
+        if c > e*1.005:    h4_map[b['ts_ms']] = 'bull'
+        elif c < e*0.995:  h4_map[b['ts_ms']] = 'bear'
+        else:              h4_map[b['ts_ms']] = 'neutral'
+    result = {}
+    for b in m1:
+        h4_ts = (b['ts_ms'] // (4*3_600_000)) * (4*3_600_000)
+        result[b['ts_ms']] = h4_map.get(h4_ts, 'unknown')
+    return result
+
 def binance_klines(symbol, interval, limit=500):
     url = (f'https://fapi.binance.com/fapi/v1/klines'
            f'?symbol={symbol}&interval={interval}&limit={limit}')
@@ -427,6 +459,8 @@ def main():
     parser.add_argument('--swing-target', action='store_true')
     parser.add_argument('--vp-target', action='store_true',
                         help='Usa POC/VAL/LVN del Volume Profile de sesion como target')
+    parser.add_argument('--h4-filter', action='store_true',
+                        help='Usa H4 EMA20 como filtro de tendencia en vez de D1')
     args = parser.parse_args()
 
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -445,8 +479,13 @@ def main():
         if not first_bar_ms or m1[0]['ts_ms'] < first_bar_ms:
             first_bar_ms = m1[0]['ts_ms']
 
-        d1      = binance_klines(sym, '1d', 120)
-        d1_ema  = ema([b['close'] for b in d1], 20) if d1 else []
+        if args.h4_filter:
+            d1, d1_ema = [], []
+            h4_map = h4_trend_series(m1)
+        else:
+            d1      = binance_klines(sym, '1d', 120)
+            d1_ema  = ema([b['close'] for b in d1], 20) if d1 else []
+            h4_map  = {}
         h1      = build_h1(m1)
         h1_atrs = atr_series(h1)
         tick    = TICK_SZ.get(sym, 0.01)
@@ -462,8 +501,12 @@ def main():
             if not b.get('atr'):
                 continue
 
-            # Filtro D1 — no entrar en trend alcista
-            if d1 and d1_ema:
+            # Filtro de tendencia — no entrar en trend alcista
+            if args.h4_filter:
+                d1t = h4_map.get(b['ts_ms'], 'unknown')
+                if d1t == 'bull':
+                    continue
+            elif d1 and d1_ema:
                 d1t = d1_trend(b['ts_ms'], d1, d1_ema)
                 if d1t == 'bull':
                     continue

@@ -691,6 +691,8 @@ struct BarState {
     ema_h1_bars: usize, // barras acumuladas hasta warmup (warmup = 60)
     // HTF Shorts detector — D1 EMA20 real + H1 buckets UTC reales + fees descontados
     htf_state: data::strategy::detectors::htf_shorts_detector::HtfShortsState,
+    // HTF Longs detector — H4 EMA20 + H1 low-stop + patrones London/NY alcistas
+    htf_longs_state: data::strategy::detectors::htf_longs_detector::HtfLongsState,
     // WebSocket broadcast — envía barras y señales al dashboard web
     ws_tx: ws_server::Sender,
 }
@@ -812,6 +814,7 @@ impl BarState {
             ema_h1: 0.0,
             ema_h1_bars: 0,
             htf_state: data::strategy::detectors::htf_shorts_detector::HtfShortsState::new(symbol),
+            htf_longs_state: data::strategy::detectors::htf_longs_detector::HtfLongsState::new(symbol),
             ws_tx,
         }
     }
@@ -2852,6 +2855,13 @@ impl BarState {
                 highs50 > f64::NEG_INFINITY && (h - highs50).abs() / highs50 <= eq_tol
             };
 
+            let htf_eq_low = {
+                let eq_tol = 0.0003;
+                let lows50 = self.bars.iter().rev().take(50)
+                    .map(|b| b.low.to_f32() as f64)
+                    .fold(f64::INFINITY, f64::min);
+                lows50 < f64::INFINITY && (l - lows50).abs() / lows50 <= eq_tol
+            };
             let htf_ctx = HtfBarContext {
                 ts_ms:       bar_ms,
                 open:        o,
@@ -2864,10 +2874,16 @@ impl BarState {
                 vr:          htf_vr,
                 oi_momentum: oi_momentum_aligned,
                 equal_high:  htf_eq_high,
+                equal_low:   htf_eq_low,
                 dz:          htf_dz,
                 absorption:  match footprint_absorption {
                     AbsorptionSide::Ask => "Ask".into(),
                     AbsorptionSide::Bid => "Bid".into(),
+                    _ => "None".into(),
+                },
+                stacked_imb: match stacked_imbalance {
+                    ImbalanceSide::Bullish => "Bullish".into(),
+                    ImbalanceSide::Bearish => "Bearish".into(),
                     _ => "None".into(),
                 },
                 vpin:    bar_vpin.unwrap_or(0.0),
@@ -2898,6 +2914,34 @@ impl BarState {
                         event.reason.as_deref().unwrap_or("?"),
                         event.duration_bars.unwrap_or(0)
                     );
+                }
+            }
+
+            // ── HTF Longs (ETH/SOL únicamente) ──────────────────────────────
+            if matches!(symbol, "ETHUSDT" | "SOLUSDT") {
+                if let Some(event) = self.htf_longs_state.on_bar_close(&htf_ctx) {
+                    if let Some(sb) = self.supabase.clone() {
+                        let ev = event.clone();
+                        let sym = symbol.to_string();
+                        tokio::spawn(async move { sb.write_htf_long_trade(&ev, &sym).await; });
+                    }
+                    if event.is_open {
+                        println!(
+                            "[htf_long] SIGNAL {} sig={} entry={:.2} stop={:.3}% h4={} session={}",
+                            symbol, event.signal.sig, event.signal.entry,
+                            event.signal.stop_pct, event.signal.h4_trend, event.signal.session
+                        );
+                    } else {
+                        println!(
+                            "[htf_long] CLOSED {} sig={} net={:+.4}R gross={:+.4}R fee={:.4}R reason={} dur={}bars",
+                            symbol, event.signal.sig,
+                            event.result_r.unwrap_or(0.0),
+                            event.gross_r.unwrap_or(0.0),
+                            event.fee_r.unwrap_or(0.0),
+                            event.reason.as_deref().unwrap_or("?"),
+                            event.duration_bars.unwrap_or(0)
+                        );
+                    }
                 }
             }
         }
@@ -4165,6 +4209,32 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                         })
                         .collect();
                     state.htf_state.seed_h1(&candles);
+                    state.htf_longs_state.seed_h1(&candles);
+                }
+            }
+        }
+    }
+    // Seed H4 EMA20 para el detector de longs (solo ETH/SOL)
+    if matches!(symbol, "ETHUSDT" | "SOLUSDT") {
+        let h4_url = format!(
+            "https://fapi.binance.com/fapi/v1/klines?symbol={}&interval=4h&limit=25",
+            symbol
+        );
+        if let Ok(resp) = reqwest::get(&h4_url).await {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                if let Some(arr) = json.as_array() {
+                    let candles: Vec<(i64, f64, f64, f64)> = arr[..arr.len().saturating_sub(1)]
+                        .iter()
+                        .filter_map(|e| e.as_array())
+                        .filter_map(|a| {
+                            let ts   = a.get(0)?.as_i64()?;
+                            let high = a.get(2)?.as_str()?.parse::<f64>().ok()?;
+                            let low  = a.get(3)?.as_str()?.parse::<f64>().ok()?;
+                            let cls  = a.get(4)?.as_str()?.parse::<f64>().ok()?;
+                            Some((ts, high, low, cls))
+                        })
+                        .collect();
+                    state.htf_longs_state.seed_h4(&candles);
                 }
             }
         }

@@ -1782,4 +1782,53 @@ impl SupabaseWriter {
             eprintln!("[supabase] write_htf_trade error: {e}");
         }
     }
+
+    /// Escribe un evento HTF Long en la tabla `htf_long_trades`.
+    pub async fn write_htf_long_trade(
+        &self,
+        event: &data::strategy::detectors::htf_longs_detector::HtfLongTrade,
+        symbol: &str,
+    ) {
+        use chrono::DateTime;
+        let sig = &event.signal;
+        let entry_at = DateTime::from_timestamp_millis(sig.ts_ms)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        let closed_at = event.exit_ts_ms
+            .and_then(|ms| DateTime::from_timestamp_millis(ms))
+            .map(|dt| dt.to_rfc3339());
+
+        let body = serde_json::json!({
+            "symbol":        symbol,
+            "sig":           sig.sig,
+            "session":       sig.session,
+            "h4_trend":      sig.h4_trend,
+            "entry":         sig.entry,
+            "stop":          sig.stop,
+            "target":        sig.target,
+            "stop_pct":      sig.stop_pct,
+            "is_open":       event.is_open,
+            "result_r":      event.result_r,
+            "gross_r":       event.gross_r,
+            "fee_r":         event.fee_r,
+            "reason":        event.reason,
+            "exit_price":    event.exit_price,
+            "duration_bars": event.duration_bars,
+            "entry_at":      entry_at,
+            "closed_at":     closed_at,
+        });
+
+        let url = format!("{}/rest/v1/htf_long_trades", self.url);
+        let result = self.client
+            .post(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await;
+        if let Err(e) = result {
+            eprintln!("[supabase] write_htf_long_trade error: {e}");
+        }
+    }
 }

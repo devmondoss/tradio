@@ -89,6 +89,8 @@ pub struct HtfBarContext {
     pub regime: String,
     pub session: String,
     pub atr: f64,
+    pub stacked_imb: String,
+    pub equal_low: bool,
 }
 
 // ── Estado del detector ───────────────────────────────────────────────────────
