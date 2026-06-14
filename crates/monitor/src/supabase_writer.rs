@@ -1882,4 +1882,66 @@ impl SupabaseWriter {
             }
         }
     }
+
+    /// Carga el trade HTF abierto más reciente para un símbolo y dirección.
+    /// Devuelve los campos necesarios para restaurar el ActiveTrade en memoria.
+    pub async fn load_htf_active(&self, symbol: &str, direction: &str) -> Option<RestoredHtfTrade> {
+        let url = format!(
+            "{}/rest/v1/htf_trades?is_open=eq.true&symbol=eq.{}&direction=eq.{}&order=entry_at.desc&limit=1",
+            self.url, symbol, direction
+        );
+        let result = self.client
+            .get(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Accept", "application/json")
+            .send()
+            .await;
+
+        let rows: serde_json::Value = match result {
+            Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
+            Ok(r) => { eprintln!("[supabase] load_htf_active HTTP {}", r.status()); return None; }
+            Err(e) => { eprintln!("[supabase] load_htf_active error: {e}"); return None; }
+        };
+
+        let row = rows.as_array()?.first()?;
+        let entry_at_str = row.get("entry_at")?.as_str()?;
+        let ts_ms = chrono::DateTime::parse_from_rfc3339(entry_at_str)
+            .ok()
+            .map(|dt| dt.timestamp_millis())?;
+
+        Some(RestoredHtfTrade {
+            entry_at:  entry_at_str.to_string(),
+            ts_ms,
+            sig:       row.get("sig")?.as_str()?.to_string(),
+            session:   row.get("session").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            trend:     row.get("d1_trend").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            entry:     row.get("entry")?.as_f64()?,
+            stop:      row.get("stop")?.as_f64()?,
+            target:    row.get("target")?.as_f64()?,
+            stop_pct:  row.get("stop_pct").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            obi_entry:       row.get("obi_entry").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            cvd_slope_entry: row.get("cvd_slope_entry").and_then(|v| v.as_f64()),
+            dz_score:        row.get("dz_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            stacked_imb:     row.get("stacked_imb").and_then(|v| v.as_str()).unwrap_or("None").to_string(),
+            equal_low:       row.get("equal_low").and_then(|v| v.as_bool()).unwrap_or(false),
+        })
+    }
+}
+
+pub struct RestoredHtfTrade {
+    pub entry_at:        String,
+    pub ts_ms:           i64,
+    pub sig:             String,
+    pub session:         String,
+    pub trend:           String,
+    pub entry:           f64,
+    pub stop:            f64,
+    pub target:          f64,
+    pub stop_pct:        f64,
+    pub obi_entry:       f64,
+    pub cvd_slope_entry: Option<f64>,
+    pub dz_score:        f64,
+    pub stacked_imb:     String,
+    pub equal_low:       bool,
 }

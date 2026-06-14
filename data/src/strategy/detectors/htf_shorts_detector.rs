@@ -44,6 +44,12 @@ pub struct HtfSignal {
     pub stop_pct: f64,
     pub session: String,
     pub d1_trend: String,
+    // microestructura snapshot en entrada
+    pub obi_entry: f64,
+    pub cvd_slope_entry: Option<f64>,
+    pub dz_score: f64,
+    pub stacked_imb: String,
+    pub equal_low: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +146,30 @@ impl HtfShortsState {
             h1_prev: None,
             h1_history: VecDeque::with_capacity(15),
         }
+    }
+
+    /// Restaura un trade abierto desde Supabase después de un redeploy.
+    /// Debe llamarse ANTES de warm_up_history para que las barras históricas
+    /// puedan cerrar el trade si golpeó SL/TP durante el downtime.
+    pub fn restore_active_trade(
+        &mut self,
+        entry: f64, stop: f64, target: f64,
+        ts_ms: i64, sig: String, session: String, d1_trend: String,
+        stop_pct: f64, obi_entry: f64, cvd_slope_entry: Option<f64>,
+        dz_score: f64, stacked_imb: String, equal_low: bool,
+    ) {
+        let risk   = stop - entry;
+        let fee_r  = 0.0007 * entry / risk;
+        let signal = HtfSignal {
+            symbol: self.symbol.clone(), ts_ms, sig, entry, stop, target,
+            stop_pct, session, d1_trend, obi_entry, cvd_slope_entry,
+            dz_score, stacked_imb, equal_low,
+        };
+        self.active_trade = Some(ActiveTrade {
+            entry, stop, risk, target, fee_r, signal,
+            bars_in_trade: 0,
+        });
+        self.last_sig_bar = self.bar_count;
     }
 
     /// Seed con velas D1 históricas de Binance — llamar en warm_up antes de on_bar_close.
@@ -310,6 +340,11 @@ impl HtfShortsState {
             stop_pct: (stop_pct * 1000.0).round() / 1000.0,
             session: ctx.session.clone(),
             d1_trend,
+            obi_entry: ctx.obi_fast,
+            cvd_slope_entry: ctx.cvd_slope,
+            dz_score: ctx.dz,
+            stacked_imb: ctx.stacked_imb.clone(),
+            equal_low: ctx.equal_low,
         };
 
         let htf_trade = HtfTrade {

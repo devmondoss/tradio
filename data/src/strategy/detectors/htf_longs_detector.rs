@@ -114,6 +114,28 @@ impl HtfLongsState {
         }
     }
 
+    /// Restaura un trade Long abierto desde Supabase después de un redeploy.
+    pub fn restore_active_trade(
+        &mut self,
+        entry: f64, stop: f64, target: f64,
+        ts_ms: i64, sig: String, session: String, h4_trend: String,
+        stop_pct: f64, obi_entry: f64, cvd_slope_entry: Option<f64>,
+        dz_score: f64, stacked_imb: String, equal_low: bool,
+    ) {
+        let risk  = entry - stop;
+        let fee_r = 0.0007 * entry / risk;
+        let signal = HtfLongSignal {
+            symbol: self.symbol.clone(), ts_ms, sig, entry, stop, target,
+            stop_pct, session, h4_trend, obi_entry, cvd_slope_entry,
+            dz_score, stacked_imb, equal_low,
+        };
+        self.active_trade = Some(ActiveTrade {
+            entry, stop, risk, target, fee_r, signal,
+            bars_in_trade: 0,
+        });
+        self.last_sig_bar = self.bar_count;
+    }
+
     /// Seed con velas H4 históricas — llamar en warm_up.
     /// Cada entrada es (ts_ms_open, high, low, close).
     pub fn seed_h4(&mut self, candles: &[(i64, f64, f64, f64)]) {

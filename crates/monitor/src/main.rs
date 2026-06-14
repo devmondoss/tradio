@@ -4433,6 +4433,36 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
                 pos.entry_ms,
             );
         }
+
+        // ── Restaurar trade HTF Short abierto ────────────────────────────────
+        if let Some(pos) = sb.load_htf_active(&symbol_str, "Short").await {
+            println!(
+                "[htf] RESTORED Short {} sig={} entry={:.4} stop={:.4} target={:.4}",
+                symbol_str, pos.sig, pos.entry, pos.stop, pos.target
+            );
+            state.htf_state.restore_active_trade(
+                pos.entry, pos.stop, pos.target,
+                pos.ts_ms, pos.sig, pos.session, pos.trend,
+                pos.stop_pct, pos.obi_entry, pos.cvd_slope_entry,
+                pos.dz_score, pos.stacked_imb, pos.equal_low,
+            );
+        }
+
+        // ── Restaurar trade HTF Long abierto (solo ETH/SOL) ──────────────────
+        if matches!(symbol_str.as_str(), "ETHUSDT" | "SOLUSDT") {
+            if let Some(pos) = sb.load_htf_active(&symbol_str, "Long").await {
+                println!(
+                    "[htf_long] RESTORED Long {} sig={} entry={:.4} stop={:.4} target={:.4}",
+                    symbol_str, pos.sig, pos.entry, pos.stop, pos.target
+                );
+                state.htf_longs_state.restore_active_trade(
+                    pos.entry, pos.stop, pos.target,
+                    pos.ts_ms, pos.sig, pos.session, pos.trend,
+                    pos.stop_pct, pos.obi_entry, pos.cvd_slope_entry,
+                    pos.dz_score, pos.stacked_imb, pos.equal_low,
+                );
+            }
+        }
     }
 
     // Seed bar history from REST — si hay posición restaurada, warm_up_history también
