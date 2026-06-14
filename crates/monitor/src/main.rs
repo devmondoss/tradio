@@ -3069,6 +3069,10 @@ impl BarState {
                 equal_low,
                 cvd_div_str,
                 sweep_confirmed,
+                poc,
+                vah,
+                val,
+                lvn_nearby.iter().copied().filter(|&p| p < c).reduce(f64::max),
             );
         }
 

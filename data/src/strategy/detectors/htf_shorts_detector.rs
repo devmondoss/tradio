@@ -28,8 +28,8 @@ const COOLDOWN_BARS: usize = 30;
 const FORWARD_MAX: usize = 1200;
 const FEE_RT: f64 = 0.0007; // 0.07% round-trip (taker × 2)
 
-/// Horas UTC bloqueadas — WR < 35% histórico
-const BLOCKED_HOURS: [u8; 5] = [10, 11, 12, 13, 17];
+/// Sin bloqueo de horas — sobreajuste con n<100 trades (revertido 2026-06-14)
+const BLOCKED_HOURS: [u8; 0] = [];
 
 // ── Tipos públicos ────────────────────────────────────────────────────────────
 
@@ -436,6 +436,19 @@ fn detect_signal(symbol: &str, ctx: &HtfBarContext) -> Option<String> {
             if is_ny && vr > 4.0 && oi            { return Some("sol:ny+vr4+oi".into()); }
             if is_ny && vr > 4.0 && eq_true       { return Some("sol:ny+vr4+eq".into()); }
             if eq_true && is_london && is_exp     { return Some("sol:eq+london+exp".into()); }
+        }
+        // BNB: solo NY — London WR=30-42% en todos los patrones (calibrado 2026-06-14)
+        "BNBUSDT" => {
+            if !is_ny { return None; }
+            if eq_true && oi                       { return Some("bnb:eq+ny+oi".into()); }
+            if oi                                  { return Some("bnb:oi+ny".into()); }
+        }
+        // XRP: solo NY — London WR=26-39% en todos los patrones (calibrado 2026-06-14)
+        "XRPUSDT" => {
+            if !is_ny { return None; }
+            if eq_true && oi                       { return Some("xrp:eq+ny+oi".into()); }
+            if abs_ask                             { return Some("xrp:ask+ny".into()); }
+            if oi                                  { return Some("xrp:oi+ny".into()); }
         }
         _ => {}
     }

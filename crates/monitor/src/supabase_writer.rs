@@ -848,6 +848,11 @@ impl SupabaseWriter {
         // microestructura adicional
         cvd_divergence: Option<&str>,
         sweep_confirmed: bool,
+        // Volume Profile levels
+        vp_poc: Option<f64>,
+        vp_vah: Option<f64>,
+        vp_val: Option<f64>,
+        vp_lvn_below: Option<f64>,
     ) {
         let body = json!({
             "symbol":          symbol,
@@ -891,6 +896,10 @@ impl SupabaseWriter {
             "equal_low":       equal_low,
             "cvd_divergence":  cvd_divergence,
             "sweep_confirmed": sweep_confirmed,
+            "vp_poc":          vp_poc,
+            "vp_vah":          vp_vah,
+            "vp_val":          vp_val,
+            "vp_lvn_below":    vp_lvn_below,
         });
         let table = match symbol {
             "ETHUSDT" => "eth_bars",

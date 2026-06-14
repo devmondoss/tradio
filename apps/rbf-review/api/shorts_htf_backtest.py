@@ -33,16 +33,16 @@ FORWARD_M1     = 1200   # 20h * 60 = 1200 barras M1 max por trade
 MIN_STOP_PCT   = 0.30
 MAX_STOP_PCT   = 0.75   # reducido de 2.50 → solo el bucket con edge positivo
 
-# Horas UTC excluidas: transición London→NY (10–13) y cierre NY (17) son WR<35%
-BLOCKED_HOURS_UTC = {10, 11, 12, 13, 17}
+BLOCKED_HOURS_UTC: set = set()  # sin bloqueo de horas
 
-SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
-TABLES  = {'BTCUSDT':'btc_bars','ETHUSDT':'eth_bars','SOLUSDT':'sol_bars','BNBUSDT':'bnb_bars'}
+SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT']
+TABLES  = {'BTCUSDT':'btc_bars','ETHUSDT':'eth_bars','SOLUSDT':'sol_bars',
+           'BNBUSDT':'bnb_bars','XRPUSDT':'xrp_bars'}
 STARTS  = {'BTCUSDT':1780676700000,'ETHUSDT':1780756260000,
-           'SOLUSDT':1780756260000,'BNBUSDT':1780756260000}
-TICK_SZ = {'BTCUSDT':0.1,'ETHUSDT':0.01,'SOLUSDT':0.001,'BNBUSDT':0.01}
+           'SOLUSDT':1780756260000,'BNBUSDT':1780756260000,'XRPUSDT':1780756260000}
+TICK_SZ = {'BTCUSDT':0.1,'ETHUSDT':0.01,'SOLUSDT':0.001,'BNBUSDT':0.01,'XRPUSDT':0.0001}
 
-BAR_COLS = ('ts_ms,open,high,low,close,atr,session,cvd_slope,obi_l5,'
+BAR_COLS = ('ts_ms,open,high,low,close,volume,atr,session,cvd_slope,obi_l5,'
             'vwap,vr,oi_momentum,bar_delta,regime,dz,absorption,'
             'swing_low_50,swing_high_50,prev_day_high,prev_day_low,'
             'stacked_imb,thin_above,ask_wall,equal_high,cvd_divergence,obi_fast')
@@ -126,12 +126,7 @@ def d1_trend(ts_ms, d1_bars, d1_ema20):
             return 'neutral'
     return 'unknown'
 
-def detect_m1_signal(sym, m1, i, horizon_back=5):
-    """
-    Deteccion directa en barras M1 usando los patrones mineados.
-    Verifica flags en la barra actual + contexto de las N barras anteriores.
-    WR >= 67%, n >= 7 en mineria real (MFE/MAE 60min).
-    """
+def detect_m1_signal(sym, m1, i, experiment='none', horizon_back=5):  # noqa: C901
     b   = m1[i]
     ses = b.get('session','')
     oi  = b.get('oi_momentum')
@@ -144,6 +139,7 @@ def detect_m1_signal(sym, m1, i, horizon_back=5):
     cvd = b.get('cvd_slope') or 0
     abso= b.get('absorption','')
     vpin= b.get('vpin') or 0
+    cvd_div = b.get('cvd_divergence') or ''
     rng     = (b['high']-b['low']) or 1
     body    = abs(b['close']-b['open'])
     wick_hi = b['high'] - max(b['close'],b['open'])
@@ -157,17 +153,26 @@ def detect_m1_signal(sym, m1, i, horizon_back=5):
     if ses in ('OffHours', 'Asia'):
         return False, ''
 
-    # Filtro horario: excluir horas UTC con WR<35% (transición London→NY y cierre NY)
     import datetime as _dt
     bar_hour = _dt.datetime.utcfromtimestamp(b['ts_ms'] / 1000).hour
     if bar_hour in BLOCKED_HOURS_UTC:
+        return False, ''
+
+    # Gates de experimento aplicados antes de evaluar patrones
+    if experiment == 'obi_strict' and obif >= -0.15:
+        return False, ''
+    if experiment == 'cvd_session':
+        if is_london and cvd >= -0.20:
+            return False, ''
+        if is_ny and cvd >= -0.15:
+            return False, ''
+    if experiment == 'delta_div' and cvd_div != 'BearishAbsorption':
         return False, ''
 
     if sym == 'BTCUSDT':
         if not (is_london or is_ny): return False, ''
         if is_shoot and abs_ask and obif < 0:               return True, 'btc:shoot+ask+obi'
         if is_shoot and is_london:                          return True, 'btc:shoot+london'
-        # btc:vr4+obi+ny QUITADO — WR=37.5% AvgR=+0.045R, ruido estadístico
 
     elif sym == 'ETHUSDT':
         if is_ny and (oi is True) and eq_true:              return True, 'eth:ny+oi+eq'
@@ -178,7 +183,19 @@ def detect_m1_signal(sym, m1, i, horizon_back=5):
         if is_ny and vr > 4.0 and (oi is True):            return True, 'sol:ny+vr4+oi'
         if is_ny and vr > 4.0 and eq_true:                 return True, 'sol:ny+vr4+eq'
         if eq_true and is_london and is_exp:               return True, 'sol:eq+london+exp'
-        # sol:ny+vr2+oi QUITADO — WR=40% AvgR=+0.048R, ruido estadístico
+
+    elif sym == 'BNBUSDT':
+        # Solo NY — London no tiene edge en BNB (WR 30-42% en todos los patrones)
+        if not is_ny: return False, ''
+        if eq_true and (oi is True):                        return True, 'bnb:eq+ny+oi'
+        if oi is True:                                      return True, 'bnb:oi+ny'
+
+    elif sym == 'XRPUSDT':
+        # Solo NY — London no tiene edge en XRP
+        if not is_ny: return False, ''
+        if eq_true and (oi is True):                        return True, 'xrp:eq+ny+oi'
+        if abs_ask:                                         return True, 'xrp:ask+ny'
+        if oi is True:                                      return True, 'xrp:oi+ny'
 
     return False, ''
 
@@ -208,59 +225,208 @@ def find_entry_m1(m1, start_i, end_i, h1_high):
         return start_i, m1[start_i]['open'], 'H1_open'
     return None, None, None
 
-CVD_FLIP_BARS  = 5   # barras M1 consecutivas con CVD_slope > 0 para confirmar exhaustion real
-OBI_FLIP_THR   = 0.15 # obi_fast debe superar este umbral (flujo comprador significativo)
-MIN_PROFIT_CVD = 1.0  # solo cerrar por CVD si estamos al menos 1R en profit
+CVD_FLIP_BARS  = 5
+OBI_FLIP_THR   = 0.15
+MIN_PROFIT_CVD = 1.0
 
-def simulate_short(m1, entry_i, entry, stop, risk, target_r):
-    target_price    = entry - target_r*risk
+# ── Volume Profile de sesión ─────────────────────────────────────────────────
+VP_BINS        = 150   # resolución del histograma de precio
+VP_VALUE_AREA  = 0.70  # 70% del volumen = value area
+VP_LVN_THR     = 0.30  # bin con < 30% del volumen promedio = LVN
+
+# Sesiones que se agrupan juntas para el cálculo de VP
+_SESSION_GROUPS = {
+    'London':           ('London', 'LondonNyOverlap'),
+    'LondonNyOverlap':  ('London', 'LondonNyOverlap'),
+    'NewYork':          ('NewYork', 'LondonNyOverlap'),
+}
+
+def calc_session_vp(m1, i):
+    """
+    Calcula Volume Profile acumulado de la sesión actual hasta la barra i.
+    Retorna (poc, vah, val, lvn_below) — todos en precio, o None si insuficiente.
+
+    poc        = Point of Control (mayor volumen)
+    vah / val  = Value Area High / Low (70% del volumen alrededor del POC)
+    lvn_below  = primer Low Volume Node por debajo del precio de entrada
+    """
+    cur_ses  = m1[i].get('session', '')
+    grp      = _SESSION_GROUPS.get(cur_ses)
+    if not grp:
+        return None, None, None, None
+
+    # Recopilar barras de la misma sesión hacia atrás
+    session_bars = []
+    for j in range(i, max(i - 500, -1), -1):
+        if m1[j].get('session', '') not in grp:
+            break
+        session_bars.append(m1[j])
+
+    if len(session_bars) < 10:
+        return None, None, None, None
+
+    p_min = min(b['low']  for b in session_bars)
+    p_max = max(b['high'] for b in session_bars)
+    if p_max <= p_min:
+        return None, None, None, None
+
+    bin_size = (p_max - p_min) / VP_BINS
+    bins     = [0.0] * VP_BINS
+
+    for b in session_bars:
+        vol = float(b.get('volume') or 0)
+        if vol <= 0:
+            continue
+        i_lo = max(0, min(int((b['low']  - p_min) / bin_size), VP_BINS - 1))
+        i_hi = max(0, min(int((b['high'] - p_min) / bin_size), VP_BINS - 1))
+        span = i_hi - i_lo + 1
+        vpb  = vol / span
+        for k in range(i_lo, i_hi + 1):
+            bins[k] += vpb
+
+    # POC
+    poc_bin = max(range(VP_BINS), key=lambda k: bins[k])
+    poc     = p_min + (poc_bin + 0.5) * bin_size
+
+    # VAH / VAL — expandir desde POC hasta cubrir VP_VALUE_AREA del total
+    total_vol  = sum(bins)
+    target_vol = total_vol * VP_VALUE_AREA
+    lo_idx = hi_idx = poc_bin
+    area_vol = bins[poc_bin]
+
+    while area_vol < target_vol:
+        can_lo = lo_idx - 1 >= 0
+        can_hi = hi_idx + 1 < VP_BINS
+        if not can_lo and not can_hi:
+            break
+        v_lo = bins[lo_idx - 1] if can_lo else -1
+        v_hi = bins[hi_idx + 1] if can_hi else -1
+        if v_lo >= v_hi and can_lo:
+            lo_idx -= 1; area_vol += bins[lo_idx]
+        elif can_hi:
+            hi_idx += 1; area_vol += bins[hi_idx]
+        else:
+            lo_idx -= 1; area_vol += bins[lo_idx]
+
+    vah = p_min + (hi_idx + 1) * bin_size
+    val = p_min + lo_idx * bin_size
+
+    # LVN below entry price
+    entry_price = m1[i]['close']
+    cur_bin     = max(0, min(int((entry_price - p_min) / bin_size), VP_BINS - 1))
+    avg_vol     = total_vol / VP_BINS
+    lvn_thr     = avg_vol * VP_LVN_THR
+    lvn_below   = None
+    for k in range(cur_bin - 1, -1, -1):
+        if bins[k] < lvn_thr:
+            lvn_below = p_min + (k + 0.5) * bin_size
+            break
+
+    return poc, vah, val, lvn_below
+
+# Confluence scoring — features no usados en la señal de entrada
+# Cada flag bajista confirmado suma 1 punto (0-5)
+# Score alto → más conviction → target más alto con --dynamic-target
+TARGET_BY_SCORE = {0: 2.0, 1: 2.0, 2: 2.5, 3: 2.5, 4: 3.0, 5: 3.5}
+
+def calc_confluence(b):
+    score = 0
+    flags = []
+    # Imbalance de órdenes apilado bajista
+    if b.get('stacked_imb') == 'Bearish':
+        score += 1; flags.append('stacked_bear')
+    # Sin zona thin arriba (thick = más difícil que el precio suba al stop)
+    if str(b.get('thin_above') or '').lower() == 'false':
+        score += 1; flags.append('no_thin_above')
+    # Delta de barra negativo (más sellers que buyers)
+    try:
+        if float(b.get('bar_delta') or 0) < -50:
+            score += 1; flags.append('delta_neg')
+    except (ValueError, TypeError):
+        pass
+    # OBI L5 negativo (presión vendedora en order book)
+    try:
+        if float(b.get('obi_l5') or 0) < -0.2:
+            score += 1; flags.append('obi_neg')
+    except (ValueError, TypeError):
+        pass
+    # DZ negativo = delta z-score negativo = barra más vendedora que la media histórica
+    try:
+        if float(b.get('dz') or 0) < -0.5:
+            score += 1; flags.append('dz_sell')
+    except (ValueError, TypeError):
+        pass
+    # OI momentum alineado (OI creciendo en dirección del move = convicción institucional)
+    if b.get('oi_momentum') is True or str(b.get('oi_momentum')).lower() == 'true':
+        score += 1; flags.append('oi_aligned')
+    return score, flags
+
+def simulate_short(m1, entry_i, entry, stop, risk, target_r, vp_floor_r=None):
+    """
+    vp_floor_r: cuando el precio llega a este nivel R, activamos CVD rapido
+                (2 barras en vez de 5). Si el precio rompe con momentum,
+                seguimos hasta target_r=2.5R o CVD normal.
+    """
+    target_price    = entry - target_r * risk
     n               = len(m1)
-    cvd_pos_streak  = 0  # barras consecutivas con CVD_slope positivo
-    obi_pos_streak  = 0  # barras consecutivas con OBI positivo
+    cvd_pos_streak  = 0
+    obi_pos_streak  = 0
 
-    for k in range(1, min(FORWARD_M1, n-entry_i)):
-        mb  = m1[entry_i+k]
+    for k in range(1, min(FORWARD_M1, n - entry_i)):
+        mb   = m1[entry_i + k]
         h, l = mb['high'], mb['low']
 
-        # ── Stops estructurales (prioritarios) ───────────────────────
         if l <= target_price:
-            fee_r = FEE_RT*entry/risk
-            return round(target_r-fee_r,4), 'TAKE_PROFIT', k, mb['ts_ms'], target_price
+            fee_r = FEE_RT * entry / risk
+            return round(target_r - fee_r, 4), 'TAKE_PROFIT', k, mb['ts_ms'], target_price
         if h >= stop:
-            fee_r = FEE_RT*entry/risk
-            return round(-(1.0+fee_r),4), 'STOP_LOSS', k, mb['ts_ms'], stop
+            fee_r = FEE_RT * entry / risk
+            return round(-(1.0 + fee_r), 4), 'STOP_LOSS', k, mb['ts_ms'], stop
 
-        # ── CVD exhaustion + OBI flip ─────────────────────────────────
-        curr_r      = (entry - mb['close']) / risk
-        cvd_slope   = mb.get('cvd_slope') or 0
-        obi_fast    = mb.get('obi_fast') or mb.get('obi_l5') or 0
+        curr_r    = (entry - mb['close']) / risk
+        cvd_slope = mb.get('cvd_slope') or 0
+        obi_fast  = mb.get('obi_fast') or mb.get('obi_l5') or 0
 
-        if cvd_slope > 0:
-            cvd_pos_streak += 1
-        else:
-            cvd_pos_streak  = 0
+        if cvd_slope > 0: cvd_pos_streak += 1
+        else:             cvd_pos_streak  = 0
 
-        if obi_fast > OBI_FLIP_THR:
-            obi_pos_streak += 1
-        else:
-            obi_pos_streak  = 0
+        if obi_fast > OBI_FLIP_THR: obi_pos_streak += 1
+        else:                        obi_pos_streak  = 0
 
-        # Cierra si CVD lleva N barras positivo Y OBI también positivo Y estamos en profit mínimo
+        # CVD normal (5 barras, profit >= 1.0R)
         if (cvd_pos_streak >= CVD_FLIP_BARS
                 and obi_pos_streak >= 1
                 and curr_r >= MIN_PROFIT_CVD):
             exit_px = mb['close']
-            gross_r = (entry - exit_px) / risk
-            fee_r   = FEE_RT*entry/risk
-            return round(gross_r-fee_r,4), 'CVD_EXHAUSTION', k, mb['ts_ms'], exit_px
+            fee_r   = FEE_RT * entry / risk
+            return round((entry - exit_px) / risk - fee_r, 4), 'CVD_EXHAUSTION', k, mb['ts_ms'], exit_px
 
-    last  = m1[min(entry_i+FORWARD_M1-1, n-1)]
-    fee_r = FEE_RT*entry/risk
-    return round((entry-last['close'])/risk-fee_r,4), 'EXPIRED', FORWARD_M1, last['ts_ms'], last['close']
+        # CVD rapido en zona VP (2 barras):
+        #   - precio dentro de ±0.25R del VP floor
+        #   - precio dejó de hacer nuevos mínimos (rebote confirmado, no momentum)
+        if (vp_floor_r is not None
+                and vp_floor_r <= curr_r <= vp_floor_r + 0.25
+                and cvd_pos_streak >= 2
+                and obi_fast > 0.10
+                and k >= 2
+                and mb['low'] >= m1[entry_i + k - 1]['low']):
+            exit_px = mb['close']
+            fee_r   = FEE_RT * entry / risk
+            return round((entry - exit_px) / risk - fee_r, 4), 'VP_CVD_EXIT', k, mb['ts_ms'], exit_px
+
+    last  = m1[min(entry_i + FORWARD_M1 - 1, n - 1)]
+    fee_r = FEE_RT * entry / risk
+    return round((entry - last['close']) / risk - fee_r, 4), 'EXPIRED', FORWARD_M1, last['ts_ms'], last['close']
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--days', type=int, default=14)
+    parser.add_argument('--experiment', default='none',
+                        choices=['none', 'obi_strict', 'cvd_session', 'delta_div'])
+    parser.add_argument('--dynamic-target', action='store_true')
+    parser.add_argument('--swing-target', action='store_true')
+    parser.add_argument('--vp-target', action='store_true',
+                        help='Usa POC/VAL/LVN del Volume Profile de sesion como target')
     args = parser.parse_args()
 
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -286,7 +452,6 @@ def main():
         tick    = TICK_SZ.get(sym, 0.01)
 
         COOLDOWN_M1 = 30   # barras M1 entre señales (30 min)
-        TARGET_R    = 2.5
         last_sig_i  = -COOLDOWN_M1
 
         for i in range(10, len(m1) - FORWARD_M1 - 1):
@@ -305,7 +470,7 @@ def main():
             else:
                 d1t = 'unknown'
 
-            sig, sig_name = detect_m1_signal(sym, m1, i)
+            sig, sig_name = detect_m1_signal(sym, m1, i, experiment=args.experiment)
             if not sig:
                 continue
 
@@ -329,10 +494,47 @@ def main():
             if stop_pct < MIN_STOP_PCT or stop_pct > MAX_STOP_PCT:
                 continue
 
+            conf_score, conf_flags = calc_confluence(b)
+            vp_level_used = 'fixed'
+            vp_floor_r    = None
+            if args.vp_target:
+                poc, vah, val, lvn_below = calc_session_vp(m1, i)
+                candidates = []
+                for level, label in [(lvn_below, 'LVN'), (val, 'VAL'), (poc, 'POC')]:
+                    if level and level < entry_price:
+                        r_dist = (entry_price - level) / risk
+                        if 1.0 <= r_dist <= 2.5:
+                            candidates.append((r_dist, label))
+                if candidates:
+                    candidates.sort(key=lambda x: x[0])
+                    vp_floor_r    = round(candidates[0][0], 2)
+                    vp_level_used = candidates[0][1]
+                TARGET_R = 2.5  # TP duro siempre en 2.5R; VP actua como floor de CVD
+            elif args.swing_target:
+                try:
+                    sl50 = float(b.get('swing_low_50') or 0)
+                    sl50_r = (entry_price - sl50) / risk if sl50 > 0 and risk > 0 else 0
+                    # Zona 1.0-1.2R: soporte inmediato, precio casi seguro lo toca
+                    # Zona 2.5-4.5R: soporte lejano estructural, vale la pena esperar
+                    # Zona 1.2-2.5R: demasiado incierto, usar 2.5R fijo
+                    if 1.0 <= sl50_r <= 1.2:
+                        TARGET_R = round(sl50_r, 2)
+                    elif 2.5 < sl50_r <= 4.5:
+                        TARGET_R = round(sl50_r, 2)
+                    else:
+                        TARGET_R = 2.5
+                except (ValueError, TypeError):
+                    TARGET_R = 2.5
+            elif args.dynamic_target:
+                TARGET_R = TARGET_BY_SCORE.get(conf_score, 2.5)
+            else:
+                TARGET_R = 3.5 if conf_score >= 3 else 2.5
+
             target_price = entry_price - TARGET_R * risk
 
             net_r, reason, dur, exit_ms, exit_px = simulate_short(
-                m1, i, entry_price, stop_price, risk, TARGET_R)
+                m1, i, entry_price, stop_price, risk, TARGET_R,
+                vp_floor_r=vp_floor_r)
 
             risk_usd = equity * RISK_PCT
             pnl      = net_r * risk_usd
@@ -370,8 +572,9 @@ def main():
                 'moveTicks':   round((entry_price - exit_px) / tick),
                 'riskTicks':   round(risk / tick),
                 'isOpen':      False,  # EXPIRED tiene resultR calculado — se trata como cerrado
-                'score':       0,
-                'confluenceFlags': [sig_name, d1t],
+                'score':       conf_score,
+                'confluenceFlags': conf_flags,
+                'vpLevel':     vp_level_used,
                 'vetoReason':  '',
                 'evidence':    [sig_name],
                 'isSweepReclaim':  False,
@@ -403,6 +606,8 @@ def main():
 
     result = {
         'shorts_htf_backtest': True,
+        'experiment':     args.experiment,
+        'dynamic_target': args.dynamic_target,
         'trades':      all_trades,
         'capital':     CAPITAL_INIT,
         'risk_pct':    RISK_PCT,
