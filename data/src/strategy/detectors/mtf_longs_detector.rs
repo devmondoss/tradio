@@ -1,6 +1,6 @@
-//! HTF Longs Detector — señales M1 mineadas con stop estructural H1
+//! MTF Longs Detector — señales M1 mineadas con stop estructural H1
 //!
-//! Espejo alcista del sistema HTF Shorts.
+//! Espejo alcista del sistema MTF Shorts.
 //! Patrones mineados 2026-06-14 sobre 8,731+ barras M1 reales.
 //!
 //! Filtro H4 EMA20 en vez de D1 — permite capturar recuperaciones intraday
@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use super::htf_shorts_detector::{HtfBarContext, H1Candle};
+use super::mtf_shorts_detector::{MtfBarContext, H1Candle};
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -30,7 +30,7 @@ const FEE_RT: f64 = 0.0007;
 // ── Tipos públicos ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HtfLongSignal {
+pub struct MtfLongSignal {
     pub symbol: String,
     pub ts_ms: i64,
     pub sig: String,
@@ -49,8 +49,8 @@ pub struct HtfLongSignal {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HtfLongTrade {
-    pub signal: HtfLongSignal,
+pub struct MtfLongTrade {
+    pub signal: MtfLongSignal,
     pub result_r: Option<f64>,
     pub gross_r: Option<f64>,
     pub fee_r: Option<f64>,
@@ -63,7 +63,7 @@ pub struct HtfLongTrade {
 
 // ── Estado del detector ───────────────────────────────────────────────────────
 
-pub struct HtfLongsState {
+pub struct MtfLongsState {
     symbol: String,
     last_sig_bar: usize,
     bar_count: usize,
@@ -90,11 +90,11 @@ struct ActiveTrade {
     risk: f64,
     target: f64,
     fee_r: f64,
-    signal: HtfLongSignal,
+    signal: MtfLongSignal,
     bars_in_trade: usize,
 }
 
-impl HtfLongsState {
+impl MtfLongsState {
     pub fn new(symbol: &str) -> Self {
         Self {
             symbol: symbol.to_string(),
@@ -124,7 +124,7 @@ impl HtfLongsState {
     ) {
         let risk  = entry - stop;
         let fee_r = 0.0007 * entry / risk;
-        let signal = HtfLongSignal {
+        let signal = MtfLongSignal {
             symbol: self.symbol.clone(), ts_ms, sig, entry, stop, target,
             stop_pct, session, h4_trend, obi_entry, cvd_slope_entry,
             dz_score, stacked_imb, equal_low,
@@ -136,6 +136,13 @@ impl HtfLongsState {
         self.last_sig_bar = self.bar_count;
     }
 
+    pub fn has_active_trade(&self) -> bool { self.active_trade.is_some() }
+
+    /// ts_ms de entrada del trade activo — para filtrar barras de warmup anteriores a la entrada.
+    pub fn active_entry_ms(&self) -> Option<i64> {
+        self.active_trade.as_ref().map(|t| t.signal.ts_ms)
+    }
+
     /// Seed con velas H4 históricas — llamar en warm_up.
     /// Cada entrada es (ts_ms_open, high, low, close).
     pub fn seed_h4(&mut self, candles: &[(i64, f64, f64, f64)]) {
@@ -145,7 +152,7 @@ impl HtfLongsState {
             self.push_h4_close(c);
         }
         println!(
-            "[htf_long] H4 seeded {} candles, EMA20={:?}",
+            "[mtf_long] H4 seeded {} candles, EMA20={:?}",
             candles.len(),
             self.h4_ema20.map(|v| format!("{v:.2}"))
         );
@@ -158,7 +165,7 @@ impl HtfLongsState {
             let candle = H1Candle { ts_h, high: h, low: l, close: c, bar_count: 60 };
             self.push_h1_complete(candle);
         }
-        println!("[htf_long] H1 seeded {} candles", candles.len());
+        println!("[mtf_long] H1 seeded {} candles", candles.len());
     }
 
     fn push_h4_close(&mut self, close: f64) {
@@ -200,7 +207,7 @@ impl HtfLongsState {
         self.h1_history.iter().map(|c| c.high - c.low).sum::<f64>() / n as f64
     }
 
-    pub fn on_bar_close(&mut self, ctx: &HtfBarContext) -> Option<HtfLongTrade> {
+    pub fn on_bar_close(&mut self, ctx: &MtfBarContext) -> Option<MtfLongTrade> {
         self.bar_count += 1;
 
         // ── Mantener H4 bucket UTC ────────────────────────────────────────────
@@ -289,7 +296,7 @@ impl HtfLongsState {
         self.obi_streak = 0;
 
         let h4t = self.h4_trend(ctx.close).to_string();
-        let signal = HtfLongSignal {
+        let signal = MtfLongSignal {
             symbol: self.symbol.clone(),
             ts_ms: ctx.ts_ms,
             sig,
@@ -306,7 +313,7 @@ impl HtfLongsState {
             equal_low: ctx.equal_low,
         };
 
-        let htf_trade = HtfLongTrade {
+        let htf_trade = MtfLongTrade {
             signal: signal.clone(),
             result_r: None,
             gross_r: None,
@@ -331,7 +338,7 @@ impl HtfLongsState {
         Some(htf_trade)
     }
 
-    fn update_active_trade(&mut self, mut trade: ActiveTrade, ctx: &HtfBarContext) -> TradeUpdate {
+    fn update_active_trade(&mut self, mut trade: ActiveTrade, ctx: &MtfBarContext) -> TradeUpdate {
         trade.bars_in_trade += 1;
         let h = ctx.high;
         let l = ctx.low;
@@ -369,9 +376,9 @@ impl HtfLongsState {
         TradeUpdate::StillOpen(trade)
     }
 
-    fn close_trade(&self, trade: ActiveTrade, gross_r: f64, reason: &str, exit_px: f64, exit_ts_ms: i64) -> HtfLongTrade {
+    fn close_trade(&self, trade: ActiveTrade, gross_r: f64, reason: &str, exit_px: f64, exit_ts_ms: i64) -> MtfLongTrade {
         let net_r = gross_r - trade.fee_r;
-        HtfLongTrade {
+        MtfLongTrade {
             signal:        trade.signal,
             result_r:      Some((net_r   * 10000.0).round() / 10000.0),
             gross_r:       Some((gross_r * 10000.0).round() / 10000.0),
@@ -387,12 +394,12 @@ impl HtfLongsState {
 
 enum TradeUpdate {
     StillOpen(ActiveTrade),
-    Closed(HtfLongTrade),
+    Closed(MtfLongTrade),
 }
 
 // ── Detector de señales M1 para longs ────────────────────────────────────────
 
-fn detect_signal_long(symbol: &str, ctx: &HtfBarContext) -> Option<String> {
+fn detect_signal_long(symbol: &str, ctx: &MtfBarContext) -> Option<String> {
     if matches!(ctx.session.as_str(), "OffHours" | "Asia") {
         return None;
     }

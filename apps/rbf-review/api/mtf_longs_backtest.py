@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Long HTF+M1 Backtest
+Long MTF+M1 Backtest
 =====================
 Capa 1 H4: precio > EMA20 H4 (bull/neutral). Sin H4 bear.
 Capa 2 H1: señal de bottoming por orderflow (equal_low, oi_momentum, hammer, stacked_bull).
@@ -385,7 +385,7 @@ def main():
         actual_days = max(1, round(elapsed_ms/86_400_000, 1))
 
     result = {
-        'longs_htf_backtest': True,
+        'longs_mtf_backtest': True,
         'trades':      all_trades,
         'capital':     CAPITAL_INIT,
         'risk_pct':    RISK_PCT,

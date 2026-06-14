@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HTF Confluence Score Analysis
+MTF Confluence Score Analysis
 ==============================
 Compara baseline vs dynamic-target y muestra:
 1. Distribucion de scores (0-5) con WR/AvgR por bucket
@@ -8,13 +8,13 @@ Compara baseline vs dynamic-target y muestra:
 3. Comparacion baseline vs dynamic-target en equity/WR/AvgR
 
 Uso:
-  python htf_confluence.py [--days N]
+  python mtf_confluence.py [--days N]
 """
 import json, subprocess, sys
 from pathlib import Path
 from collections import defaultdict, Counter
 
-SCRIPT = Path(__file__).parent / 'shorts_htf_backtest.py'
+SCRIPT = Path(__file__).parent / 'shorts_mtf_backtest.py'
 
 def run(days, dynamic=False):
     cmd = [sys.executable, str(SCRIPT), '--days', str(days)]

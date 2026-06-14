@@ -690,9 +690,9 @@ struct BarState {
     ema_h1: f64,        // EMA-60M1 (≈1H) alpha = 2/(60+1) ≈ 0.0328
     ema_h1_bars: usize, // barras acumuladas hasta warmup (warmup = 60)
     // HTF Shorts detector — D1 EMA20 real + H1 buckets UTC reales + fees descontados
-    htf_state: data::strategy::detectors::htf_shorts_detector::HtfShortsState,
+    mtf_state: data::strategy::detectors::mtf_shorts_detector::MtfShortsState,
     // HTF Longs detector — H4 EMA20 + H1 low-stop + patrones London/NY alcistas
-    htf_longs_state: data::strategy::detectors::htf_longs_detector::HtfLongsState,
+    mtf_longs_state: data::strategy::detectors::mtf_longs_detector::MtfLongsState,
     // WebSocket broadcast — envía barras y señales al dashboard web
     ws_tx: ws_server::Sender,
 }
@@ -813,8 +813,8 @@ impl BarState {
             be_last_session: data::session::session_tracker::TradingSession::OffHours,
             ema_h1: 0.0,
             ema_h1_bars: 0,
-            htf_state: data::strategy::detectors::htf_shorts_detector::HtfShortsState::new(symbol),
-            htf_longs_state: data::strategy::detectors::htf_longs_detector::HtfLongsState::new(symbol),
+            mtf_state: data::strategy::detectors::mtf_shorts_detector::MtfShortsState::new(symbol),
+            mtf_longs_state: data::strategy::detectors::mtf_longs_detector::MtfLongsState::new(symbol),
             ws_tx,
         }
     }
@@ -2829,7 +2829,7 @@ impl BarState {
 
         // ── HTF Shorts detector ───────────────────────────────────────────────────
         {
-            use data::strategy::detectors::htf_shorts_detector::HtfBarContext;
+            use data::strategy::detectors::mtf_shorts_detector::MtfBarContext;
 
             let htf_vr = {
                 let vols: Vec<f64> = self.bars.iter().map(|b| b.volume.total().to_f32_lossy() as f64).collect();
@@ -2862,7 +2862,12 @@ impl BarState {
                     .fold(f64::INFINITY, f64::min);
                 lows50 < f64::INFINITY && (l - lows50).abs() / lows50 <= eq_tol
             };
-            let htf_ctx = HtfBarContext {
+            let htf_funding_regime = ctx.institutional
+                .as_ref()
+                .map(|inst| format!("{:?}", inst.funding.regime))
+                .unwrap_or_else(|| "Neutral".into());
+
+            let htf_ctx = MtfBarContext {
                 ts_ms:       bar_ms,
                 open:        o,
                 high:        h,
@@ -2890,23 +2895,24 @@ impl BarState {
                 regime:  format!("{:?}", effective_regime),
                 session: format!("{:?}", session.session),
                 atr,
+                funding_regime: htf_funding_regime,
             };
 
-            if let Some(event) = self.htf_state.on_bar_close(&htf_ctx) {
+            if let Some(event) = self.mtf_state.on_bar_close(&htf_ctx) {
                 if let Some(sb) = self.supabase.clone() {
                     let ev = event.clone();
                     let sym = symbol.to_string();
-                    tokio::spawn(async move { sb.write_htf_trade(&ev, &sym).await; });
+                    tokio::spawn(async move { sb.write_mtf_trade(&ev, &sym).await; });
                 }
                 if event.is_open {
                     println!(
-                        "[htf] SIGNAL {} sig={} entry={:.2} stop={:.3}% d1={} session={}",
+                        "[mtf] SIGNAL {} sig={} entry={:.2} stop={:.3}% d1={} session={}",
                         symbol, event.signal.sig, event.signal.entry,
                         event.signal.stop_pct, event.signal.d1_trend, event.signal.session
                     );
                 } else {
                     println!(
-                        "[htf] CLOSED {} sig={} net={:+.4}R gross={:+.4}R fee={:.4}R reason={} dur={}bars",
+                        "[mtf] CLOSED {} sig={} net={:+.4}R gross={:+.4}R fee={:.4}R reason={} dur={}bars",
                         symbol, event.signal.sig,
                         event.result_r.unwrap_or(0.0),
                         event.gross_r.unwrap_or(0.0),
@@ -2919,21 +2925,21 @@ impl BarState {
 
             // ── HTF Longs (ETH/SOL únicamente) ──────────────────────────────
             if matches!(symbol, "ETHUSDT" | "SOLUSDT") {
-                if let Some(event) = self.htf_longs_state.on_bar_close(&htf_ctx) {
+                if let Some(event) = self.mtf_longs_state.on_bar_close(&htf_ctx) {
                     if let Some(sb) = self.supabase.clone() {
                         let ev = event.clone();
                         let sym = symbol.to_string();
-                        tokio::spawn(async move { sb.write_htf_long_trade(&ev, &sym).await; });
+                        tokio::spawn(async move { sb.write_mtf_long_trade(&ev, &sym).await; });
                     }
                     if event.is_open {
                         println!(
-                            "[htf_long] SIGNAL {} sig={} entry={:.2} stop={:.3}% h4={} session={}",
+                            "[mtf_long] SIGNAL {} sig={} entry={:.2} stop={:.3}% h4={} session={}",
                             symbol, event.signal.sig, event.signal.entry,
                             event.signal.stop_pct, event.signal.h4_trend, event.signal.session
                         );
                     } else {
                         println!(
-                            "[htf_long] CLOSED {} sig={} net={:+.4}R gross={:+.4}R fee={:.4}R reason={} dur={}bars",
+                            "[mtf_long] CLOSED {} sig={} net={:+.4}R gross={:+.4}R fee={:.4}R reason={} dur={}bars",
                             symbol, event.signal.sig,
                             event.result_r.unwrap_or(0.0),
                             event.gross_r.unwrap_or(0.0),
@@ -4149,6 +4155,75 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                 }
             }
         }
+
+        // Feed mtf_state si hay posición restaurada — detecta SL/TP durante downtime.
+        // cvd_slope=None suprime CVD exhaustion; solo se evalúa TP/SL/EXPIRED.
+        if state.mtf_state.has_active_trade() {
+            if let Some(entry_ms) = state.mtf_state.active_entry_ms() {
+                if open_ms > entry_ms {
+                    use data::strategy::detectors::mtf_shorts_detector::MtfBarContext;
+                    let warmup_ctx = MtfBarContext {
+                        ts_ms: open_ms, open, high, low, close,
+                        cvd_slope: None, obi_l5: 0.0, obi_fast: 0.0, vr: 0.0,
+                        oi_momentum: None, equal_high: false, equal_low: false,
+                        dz: 0.0, absorption: "None".into(), vpin: 0.0,
+                        regime: "Neutral".into(), session: "warmup".into(),
+                        atr: 0.0, stacked_imb: "None".into(),
+                        funding_regime: "Neutral".into(),
+                    };
+                    if let Some(closed) = state.mtf_state.on_bar_close(&warmup_ctx) {
+                        if !closed.is_open {
+                            println!(
+                                "[mtf] warm-up close {} reason={} R={:.3}",
+                                symbol,
+                                closed.reason.as_deref().unwrap_or("?"),
+                                closed.result_r.unwrap_or(0.0)
+                            );
+                            if let Some(sb) = &state.supabase {
+                                let ev = closed;
+                                let sym_s = symbol.to_string();
+                                let sb2 = sb.clone();
+                                tokio::spawn(async move { sb2.write_mtf_trade(&ev, &sym_s).await; });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Feed mtf_longs_state si hay posición restaurada.
+        if state.mtf_longs_state.has_active_trade() {
+            if let Some(entry_ms) = state.mtf_longs_state.active_entry_ms() {
+                if open_ms > entry_ms {
+                    use data::strategy::detectors::mtf_shorts_detector::MtfBarContext;
+                    let warmup_ctx = MtfBarContext {
+                        ts_ms: open_ms, open, high, low, close,
+                        cvd_slope: None, obi_l5: 0.0, obi_fast: 0.0, vr: 0.0,
+                        oi_momentum: None, equal_high: false, equal_low: false,
+                        dz: 0.0, absorption: "None".into(), vpin: 0.0,
+                        regime: "Neutral".into(), session: "warmup".into(),
+                        atr: 0.0, stacked_imb: "None".into(),
+                        funding_regime: "Neutral".into(),
+                    };
+                    if let Some(closed) = state.mtf_longs_state.on_bar_close(&warmup_ctx) {
+                        if !closed.is_open {
+                            println!(
+                                "[mtf_long] warm-up close {} reason={} R={:.3}",
+                                symbol,
+                                closed.reason.as_deref().unwrap_or("?"),
+                                closed.result_r.unwrap_or(0.0)
+                            );
+                            if let Some(sb) = &state.supabase {
+                                let ev = closed;
+                                let sym_s = symbol.to_string();
+                                let sb2 = sb.clone();
+                                tokio::spawn(async move { sb2.write_mtf_long_trade(&ev, &sym_s).await; });
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Prime last_regime_enum so hysteresis starts with the correct state
@@ -4183,7 +4258,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                         .filter_map(|e| e.as_array())
                         .filter_map(|a| a.get(4)?.as_str()?.parse::<f64>().ok())
                         .collect();
-                    state.htf_state.seed_d1(&closes);
+                    state.mtf_state.seed_d1(&closes);
                 }
             }
         }
@@ -4208,8 +4283,8 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                             Some((ts, high, low, cls))
                         })
                         .collect();
-                    state.htf_state.seed_h1(&candles);
-                    state.htf_longs_state.seed_h1(&candles);
+                    state.mtf_state.seed_h1(&candles);
+                    state.mtf_longs_state.seed_h1(&candles);
                 }
             }
         }
@@ -4234,7 +4309,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                             Some((ts, high, low, cls))
                         })
                         .collect();
-                    state.htf_longs_state.seed_h4(&candles);
+                    state.mtf_longs_state.seed_h4(&candles);
                 }
             }
         }
@@ -4435,12 +4510,12 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         }
 
         // ── Restaurar trade HTF Short abierto ────────────────────────────────
-        if let Some(pos) = sb.load_htf_active(&symbol_str, "Short").await {
+        if let Some(pos) = sb.load_mtf_active(&symbol_str, "Short").await {
             println!(
-                "[htf] RESTORED Short {} sig={} entry={:.4} stop={:.4} target={:.4}",
+                "[mtf] RESTORED Short {} sig={} entry={:.4} stop={:.4} target={:.4}",
                 symbol_str, pos.sig, pos.entry, pos.stop, pos.target
             );
-            state.htf_state.restore_active_trade(
+            state.mtf_state.restore_active_trade(
                 pos.entry, pos.stop, pos.target,
                 pos.ts_ms, pos.sig, pos.session, pos.trend,
                 pos.stop_pct, pos.obi_entry, pos.cvd_slope_entry,
@@ -4450,12 +4525,12 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
 
         // ── Restaurar trade HTF Long abierto (solo ETH/SOL) ──────────────────
         if matches!(symbol_str.as_str(), "ETHUSDT" | "SOLUSDT") {
-            if let Some(pos) = sb.load_htf_active(&symbol_str, "Long").await {
+            if let Some(pos) = sb.load_mtf_active(&symbol_str, "Long").await {
                 println!(
-                    "[htf_long] RESTORED Long {} sig={} entry={:.4} stop={:.4} target={:.4}",
+                    "[mtf_long] RESTORED Long {} sig={} entry={:.4} stop={:.4} target={:.4}",
                     symbol_str, pos.sig, pos.entry, pos.stop, pos.target
                 );
-                state.htf_longs_state.restore_active_trade(
+                state.mtf_longs_state.restore_active_trade(
                     pos.entry, pos.stop, pos.target,
                     pos.ts_ms, pos.sig, pos.session, pos.trend,
                     pos.stop_pct, pos.obi_entry, pos.cvd_slope_entry,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Short HTF+M1 Backtest
+Short MTF+M1 Backtest
 ======================
 Capa 1 D1: precio < EMA20 diaria (bear/neutral). Sin D1 bull.
 Capa 2 H1: señal de topping por orderflow (equal_high, oi_momentum, shooting star, stacked_imb).
@@ -648,7 +648,7 @@ def main():
         actual_days = max(1, round(elapsed_ms/86_400_000, 1))
 
     result = {
-        'shorts_htf_backtest': True,
+        'shorts_mtf_backtest': True,
         'experiment':     args.experiment,
         'dynamic_target': args.dynamic_target,
         'trades':      all_trades,

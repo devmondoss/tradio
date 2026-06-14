@@ -5,10 +5,10 @@ import type { Trade } from './lib/types'
 import ChartView      from './views/ChartView'
 import DashboardView  from './views/DashboardView'
 import RBFModuleView  from './views/RBFModuleView'
-import HTFModuleView  from './views/HTFModuleView'
+import MTFModuleView  from './views/MTFModuleView'
 import StrategyModuleView from './views/StrategyModuleView'
 
-type Tab   = 'chart' | 'strategies' | 'rbf' | 'htf' | 'amd' | 'dashboard'
+type Tab   = 'chart' | 'strategies' | 'rbf' | 'mtf' | 'amd' | 'dashboard'
 type Theme = 'light' | 'dark'
 
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT']
@@ -38,7 +38,7 @@ const ICON_RBF = (
     <line x1="11" y1="11" x2="11" y2="15"/>
   </svg>
 )
-const ICON_HTF = (
+const ICON_MTF = (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="1,13 4,8 7,10 10,5 13,7 15,3"/>
     <line x1="8" y1="3" x2="15" y2="3"/>
@@ -135,7 +135,7 @@ function NavIcon({ item, active, onClick }: {
 // ── Strategies hub ───────────────────────────────────────────────────────────
 const STRATEGY_CARDS: { id: Tab; icon: React.ReactNode; name: string; desc: string; color: string }[] = [
   { id: 'rbf',       icon: ICON_RBF, name: 'RBF',        desc: 'Range Breakout Flow · Shorts post-breakout · 5 símbolos',   color: 'var(--red)'   },
-  { id: 'htf',       icon: ICON_HTF, name: 'HTF Shorts', desc: 'D1 bear · H1 patrones · M1 entrada · CVD exhaustion',       color: 'var(--blue)'  },
+  { id: 'mtf',       icon: ICON_MTF, name: 'MTF',        desc: 'D1/H4 EMA20 · H1 stop estructural · M1 patrones mineados · CVD exhaustion', color: 'var(--blue)'  },
   { id: 'amd',       icon: ICON_AMD, name: 'AMD',        desc: 'Accumulation · Manipulation · Distribution · paper trader', color: 'var(--yellow)'},
   { id: 'dashboard', icon: ICON_GRID,name: 'Dashboard',  desc: 'Overview global · equity · estadísticas combinadas',        color: 'var(--accent)'},
 ]
@@ -224,7 +224,7 @@ export default function App() {
             <NavIcon
               key={item.id}
               item={item}
-              active={tab === item.id || (item.id === 'strategies' && ['rbf','htf','amd','dashboard'].includes(tab))}
+              active={tab === item.id || (item.id === 'strategies' && ['rbf','mtf','amd','dashboard'].includes(tab))}
               onClick={() => setTab(item.id)}
             />
           ))}
@@ -242,14 +242,14 @@ export default function App() {
       <main className="app-content">
         {tab === 'chart'      && <ChartView theme={theme} />}
         {tab === 'strategies' && <StrategiesHub onSelect={setTab} />}
-        {(tab === 'rbf' || tab === 'htf' || tab === 'amd' || tab === 'dashboard') && (
+        {(tab === 'rbf' || tab === 'mtf' || tab === 'amd' || tab === 'dashboard') && (
           <div className="module-shell">
             <button className="module-back" onClick={() => setTab('strategies')}>
               ← Estrategias
             </button>
             {tab === 'dashboard' && <DashboardView rbfTrades={trades} />}
             {tab === 'rbf'       && <RBFModuleView trades={trades} loading={loading} error={error} onReload={loadAll} />}
-            {tab === 'htf'       && <HTFModuleView />}
+            {tab === 'mtf'       && <MTFModuleView />}
             {tab === 'amd'       && <StrategyModuleView strategy="amd" />}
           </div>
         )}

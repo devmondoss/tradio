@@ -61,6 +61,33 @@ const STRATEGY_META = {
     maxDays:    null as number | null,
     defaultDays: null as number | null,
   },
+  mtf_shorts: {
+    apiPath:    '/api/backtest/mtf_shorts',
+    label:      'Backtest MTF Shorts · BTC/ETH/SOL/BNB/XRP · D1 bear/neutral · stop H1 <0.75%',
+    detail:     'D1 EMA20 filter (no bull) · H1 high + 0.3×ATR stop · Cooldown 30 bars M1\nPatrones M1 mineados: shooting star · absorption Ask · equal_high + OI\nSesiones: London · NY (BNB/XRP solo NY)',
+    detail2:    'Fee 0.07% RT · Target 2.5R · CVD_EXHAUSTION exit (5 bars + OBI flip + ≥1R)\nBTC: shoot+london/ask+obi · ETH: ask+london+exp / ny+oi+eq · SOL: ny+vr4+oi/eq',
+    presets:    [7, 14, 30] as number[],
+    maxDays:    null as number | null,
+    defaultDays: null as number | null,
+  },
+  mtf_longs: {
+    apiPath:    '/api/backtest/mtf_longs',
+    label:      'Backtest MTF Longs · ETH/SOL · H4 bull/neutral · stop H1 <0.75%',
+    detail:     'H4 EMA20 filter (no bear) · H1 low - 0.3×ATR stop · Cooldown 30 bars M1\nPatrones M1 mineados: hammer · stacked_bull · equal_low + OI\nSesiones: London · NY (ETH y SOL únicamente)',
+    detail2:    'Fee 0.07% RT · Target 2.5R · CVD_EXHAUSTION exit (5 bars CVD neg + OBI neg + ≥1R)\nETH: stacked_bull+london/ny · hammer+dz · SOL: hammer+london · stacked_bull+london',
+    presets:    [7, 14, 30] as number[],
+    maxDays:    null as number | null,
+    defaultDays: null as number | null,
+  },
+  mtf_combined: {
+    apiPath:    '/api/backtest/mtf_combined',
+    label:      'Backtest MTF Combinado · Shorts (5 sym) + Longs (ETH/SOL) · Sistema completo',
+    detail:     'Shorts: D1 bear/neutral filter · H1 stop · M1 patrones mineados (5 símbolos)\nLongs: H4 bull/neutral filter · H1 stop · M1 patrones mineados (ETH/SOL)\nAmbos con Target 2.5R · Fee 0.07% RT · CVD exhaustion exit',
+    detail2:    'Cooldowns independientes por símbolo · Trades ordenados cronológicamente\nEdge estadístico mineado sobre 8,700+ barras M1 reales',
+    presets:    [7, 14, 30] as number[],
+    maxDays:    null as number | null,
+    defaultDays: null as number | null,
+  },
   be: {
     apiPath:    '/api/backtest/be',
     label:      'Backtest BE — Python backend · $500 capital · $10/trade',
@@ -77,9 +104,11 @@ interface BtStats { n: number; wins: number; totalR: number; avgR: number; equit
 export default function BacktestView({
   strategy = 'rbf',
   onStats,
+  onTrades,
 }: {
-  strategy?: 'rbf' | 'sweep' | 'be' | 'combined' | 'absorption' | 'longs' | 'shorts'
+  strategy?: 'rbf' | 'sweep' | 'be' | 'combined' | 'absorption' | 'longs' | 'shorts' | 'mtf_shorts' | 'mtf_longs' | 'mtf_combined'
   onStats?: (s: BtStats | null) => void
+  onTrades?: (trades: Trade[]) => void
 }) {
   const meta_cfg = STRATEGY_META[strategy]
   const [panel,    setPanel]   = useState<Panel>('trades')
@@ -140,6 +169,7 @@ export default function BacktestView({
       setTrades(ts)
       setMeta({ n: data.n, wins: data.wins, equity: data.equity, actualDays: data.actual_days ?? d, microStart: data.micro_start ?? null })
       onStats?.({ n: data.n, wins: data.wins, totalR, avgR, equity: data.equity })
+      onTrades?.(ts)
       setRan(true)
     } catch (e) {
       setError(String(e))

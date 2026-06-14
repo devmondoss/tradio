@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-HTF Shorts — Comparación de experimentos de orderflow
+MTF Shorts — Comparación de experimentos de orderflow
 
 Corre el backtest con 4 variantes y compara WR, AvgR, n, equity vs baseline v2.
 
 Uso:
-  python htf_experiments.py [--days N]
+  python mtf_experiments.py [--days N]
 
 Experimentos:
   none       — baseline v2 (patrones mineados + filtros calibrados)
@@ -17,7 +17,7 @@ import json, subprocess, sys, time
 from pathlib import Path
 from collections import defaultdict
 
-SCRIPT = Path(__file__).parent / 'shorts_htf_backtest.py'
+SCRIPT = Path(__file__).parent / 'shorts_mtf_backtest.py'
 
 EXPERIMENTS = ['none', 'obi_strict', 'cvd_session', 'delta_div']
 LABELS = {
@@ -75,7 +75,7 @@ def sep(title):
 
 def main():
     days = int(sys.argv[1]) if len(sys.argv) > 1 else 14
-    print(f'\nHTF Experiments — {days} días')
+    print(f'\nMTF Experiments — {days} días')
     print('Descripción de cada experimento:')
     for exp in EXPERIMENTS:
         print(f'  [{exp:<12}] {DESCRIPTIONS[exp]}')

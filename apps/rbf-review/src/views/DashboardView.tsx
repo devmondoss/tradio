@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { supabase, type AmdSignal, type HtfTrade } from '../lib/supabase'
+import { supabase, type AmdSignal, type MtfTrade } from '../lib/supabase'
 import type { Trade } from '../lib/types'
 import { ACCOUNT, RISK_USD } from '../lib/types'
 import { fmtR, sesLabel } from '../lib/utils'
@@ -40,7 +40,7 @@ const AMD_META: DatasetMeta = {
 }
 
 const HTF_META: DatasetMeta = {
-  source: 'htf_trades · Supabase live (Rust detector)',
+  source: 'mtf_trades · Supabase live (Rust detector)',
   macro:  ['D1 EMA20 bear/neutral', 'stop H1 < 0.75%', 'London + NY', 'BTC · ETH · SOL'],
   micro:  ['shoot_star M1', 'CVD slope neg', 'OBI fast', 'VPIN > 0.6', 'equal_high', 'VR > 4×'],
 }
@@ -351,26 +351,26 @@ function StrategyCol({ live, bt, btLoading, btError, meta, capital, color, label
 
 export default function DashboardView({ rbfTrades }: { rbfTrades: Trade[] }) {
   const [amdSignals, setAmdSignals] = useState<AmdSignal[]>([])
-  const [htfTrades,  setHtfTrades]  = useState<HtfTrade[]>([])
+  const [mtfTrades,  setMtfTrades]  = useState<MtfTrade[]>([])
   const [loading,    setLoading]    = useState(true)
 
   // BT data — fetched lazily from Python API in the background
   const [rbfBtTrades,  setRbfBtTrades]  = useState<Trade[]>([])
-  const [htfBtTrades,  setHtfBtTrades]  = useState<Trade[]>([])
+  const [mtfBtTrades,  setMtfBtTrades]  = useState<Trade[]>([])
   const [rbfBtLoading, setRbfBtLoading] = useState(true)
-  const [htfBtLoading, setHtfBtLoading] = useState(true)
+  const [mtfBtLoading, setMtfBtLoading] = useState(true)
   const [rbfBtError,   setRbfBtError]   = useState(false)
-  const [htfBtError,   setHtfBtError]   = useState(false)
+  const [mtfBtError,   setMtfBtError]   = useState(false)
 
   useEffect(() => {
     // ── Live signals (Supabase, fast) ────────────────────────────────────────
     const since = Date.now() - 90 * 86400000
     Promise.all([
       supabase.from('amd_signals').select('id,timestamp_ms,symbol,direction,session,entry_price,stop_price,target_price,rr,result_r,exit_reason,closed_at_ms,is_active').gte('timestamp_ms', since).order('timestamp_ms', { ascending: true }),
-      supabase.from('htf_trades').select('id,symbol,sig,session,d1_trend,entry,stop,target,stop_pct,is_open,result_r,reason,exit_price,duration_bars,entry_at,closed_at').gte('entry_at', new Date(since).toISOString()).order('entry_at', { ascending: true }),
+      supabase.from('mtf_trades').select('id,symbol,sig,session,d1_trend,entry,stop,target,stop_pct,is_open,result_r,reason,exit_price,duration_bars,entry_at,closed_at').gte('entry_at', new Date(since).toISOString()).order('entry_at', { ascending: true }),
     ]).then(([amdRes, htfRes]) => {
       if (amdRes.data) setAmdSignals(amdRes.data as AmdSignal[])
-      if (htfRes.data) setHtfTrades(htfRes.data  as HtfTrade[])
+      if (htfRes.data) setMtfTrades(htfRes.data  as MtfTrade[])
       setLoading(false)
     })
 
@@ -382,14 +382,14 @@ export default function DashboardView({ rbfTrades }: { rbfTrades: Trade[] }) {
 
     fetch('/api/backtest/shorts?days=14')
       .then(r => r.json())
-      .then(d => { setHtfBtTrades((d.trades ?? []) as Trade[]); setHtfBtLoading(false) })
-      .catch(() => { setHtfBtLoading(false); setHtfBtError(true) })
+      .then(d => { setMtfBtTrades((d.trades ?? []) as Trade[]); setMtfBtLoading(false) })
+      .catch(() => { setMtfBtLoading(false); setMtfBtError(true) })
 
     // ── Realtime ─────────────────────────────────────────────────────────────
     const htfCh = supabase.channel('htf-live-dash')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'htf_trades' }, p => {
-        if (p.eventType === 'INSERT') setHtfTrades(prev => [...prev, p.new as HtfTrade])
-        else if (p.eventType === 'UPDATE') setHtfTrades(prev => prev.map(s => s.id === (p.new as HtfTrade).id ? p.new as HtfTrade : s))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mtf_trades' }, p => {
+        if (p.eventType === 'INSERT') setMtfTrades(prev => [...prev, p.new as MtfTrade])
+        else if (p.eventType === 'UPDATE') setMtfTrades(prev => prev.map(s => s.id === (p.new as MtfTrade).id ? p.new as MtfTrade : s))
       }).subscribe()
 
     const amdCh = supabase.channel('amd-live-dash')
@@ -407,7 +407,7 @@ export default function DashboardView({ rbfTrades }: { rbfTrades: Trade[] }) {
     ACCOUNT, RISK_USD,
   )
   const htfLive = fromLiveTrades(
-    htfTrades.map(t => ({
+    mtfTrades.map(t => ({
       result_r:     t.result_r,
       session:      t.session,
       symbol:       t.symbol,
@@ -420,7 +420,7 @@ export default function DashboardView({ rbfTrades }: { rbfTrades: Trade[] }) {
 
   const rbfBt  = fromRbfTrades(rbfBtTrades)
   const amdBt  = amdLive.filter(t => !t.isOpen)
-  const htfBt  = fromRbfTrades(htfBtTrades)
+  const htfBt  = fromRbfTrades(mtfBtTrades)
 
   if (loading) return (
     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text2)', fontSize: 11 }}>cargando…</div>
@@ -436,7 +436,7 @@ export default function DashboardView({ rbfTrades }: { rbfTrades: Trade[] }) {
         meta={AMD_META} capital={ACCOUNT} color="var(--green)"
         label="AMD" note="Long + Short · Acum · Manip · Dist"
         sessions={['London', 'LondonNyOverlap', 'NewYork']} symbols={['BTC', 'ETH', 'BNB', 'SOL']} />
-      <StrategyCol live={htfLive} bt={htfBt} btLoading={htfBtLoading} btError={htfBtError}
+      <StrategyCol live={htfLive} bt={htfBt} btLoading={mtfBtLoading} btError={mtfBtError}
         meta={HTF_META} capital={ACCOUNT} color="var(--red)"
         label="HTF" note="Short · BTC / ETH / SOL · stop H1 &lt; 0.75%"
         sessions={['London', 'LondonNyOverlap', 'NewYork']} symbols={['BTC', 'ETH', 'SOL']} />

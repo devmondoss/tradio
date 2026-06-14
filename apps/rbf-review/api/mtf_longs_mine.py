@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HTF Longs — Mining de patrones desde cero.
+MTF Longs — Mining de patrones desde cero.
 Espejo exacto de los shorts: D1 bull/neutral, H1 structural low,
 M1 rejection abajo, stop H1_low - 0.3*ATR.
 """

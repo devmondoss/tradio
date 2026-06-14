@@ -45,11 +45,12 @@ export interface BeSignal {
   active: boolean
 }
 
-export interface HtfTrade {
+export interface MtfTrade {
   id: string
   symbol: string
   sig: string
   session: string
+  direction: 'Short' | 'Long'
   d1_trend: string
   entry: number
   stop: number
@@ -64,6 +65,12 @@ export interface HtfTrade {
   duration_bars: number | null
   entry_at: string
   closed_at: string | null
+  // microestructura snapshot en entrada
+  obi_entry: number | null
+  cvd_slope_entry: number | null
+  dz_score: number | null
+  stacked_imb: string | null
+  equal_low: boolean | null
 }
 
 export interface RbfSignal {

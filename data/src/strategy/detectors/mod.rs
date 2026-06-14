@@ -1,6 +1,6 @@
 pub mod amd_detector;
-pub mod htf_shorts_detector;
-pub mod htf_longs_detector;
+pub mod mtf_shorts_detector;
+pub mod mtf_longs_detector;
 pub mod amd_paper;
 pub mod cvd_divergence_reversal;
 pub mod delta_range_reversal;

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ADN DEL TRADE GANADOR — HTF Shorts v2
+ADN DEL TRADE GANADOR — MTF Shorts v2
 Que tienen en comun los winners grandes (2R+) vs winners chicos vs losers.
 """
 import json, subprocess, sys, urllib.request, urllib.parse, time
@@ -17,7 +17,7 @@ for line in (ROOT / '.env').read_text(encoding='utf-8').splitlines():
 SUPABASE_URL = _env['SUPABASE_URL']
 SUPABASE_KEY = _env['SUPABASE_KEY']
 
-SCRIPT = Path(__file__).parent / 'shorts_htf_backtest.py'
+SCRIPT = Path(__file__).parent / 'shorts_mtf_backtest.py'
 TABLES = {'BTCUSDT':'btc_bars','ETHUSDT':'eth_bars','SOLUSDT':'sol_bars'}
 STARTS = {'BTCUSDT':1780676700000,'ETHUSDT':1780756260000,'SOLUSDT':1780756260000}
 DAYS   = 14

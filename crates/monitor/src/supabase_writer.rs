@@ -1733,11 +1733,11 @@ fn build_trade_row(trade: &ClosedTrade, signal_uuid: &str) -> Value {
 }
 
 impl SupabaseWriter {
-    /// Escribe un evento HTF (apertura o cierre de trade) en la tabla `htf_trades`.
+    /// Escribe un evento HTF (apertura o cierre de trade) en la tabla `mtf_trades`.
     /// Llamada async fire-and-forget desde on_bar_close.
-    pub async fn write_htf_trade(
+    pub async fn write_mtf_trade(
         &self,
-        event: &data::strategy::detectors::htf_shorts_detector::HtfTrade,
+        event: &data::strategy::detectors::mtf_shorts_detector::MtfTrade,
         symbol: &str,
     ) {
         use chrono::DateTime;
@@ -1777,7 +1777,7 @@ impl SupabaseWriter {
 
         if event.is_open {
             // Apertura: INSERT de fila nueva
-            let url = format!("{}/rest/v1/htf_trades", self.url);
+            let url = format!("{}/rest/v1/mtf_trades", self.url);
             let result = self.client
                 .post(&url)
                 .header("apikey", &self.key)
@@ -1787,11 +1787,11 @@ impl SupabaseWriter {
                 .send()
                 .await;
             if let Err(e) = result {
-                eprintln!("[supabase] write_htf_trade INSERT error: {e}");
+                eprintln!("[supabase] write_mtf_trade INSERT error: {e}");
             }
         } else {
             // Cierre: PATCH sobre la fila abierta (match por symbol + entry_at)
-            let url = format!("{}/rest/v1/htf_trades", self.url);
+            let url = format!("{}/rest/v1/mtf_trades", self.url);
             let result = self.client
                 .patch(&url)
                 .query(&[("symbol", format!("eq.{symbol}")),
@@ -1804,15 +1804,15 @@ impl SupabaseWriter {
                 .send()
                 .await;
             if let Err(e) = result {
-                eprintln!("[supabase] write_htf_trade PATCH error: {e}");
+                eprintln!("[supabase] write_mtf_trade PATCH error: {e}");
             }
         }
     }
 
-    /// Escribe un evento HTF Long en `htf_trades` con direction='Long'.
-    pub async fn write_htf_long_trade(
+    /// Escribe un evento HTF Long en `mtf_trades` con direction='Long'.
+    pub async fn write_mtf_long_trade(
         &self,
-        event: &data::strategy::detectors::htf_longs_detector::HtfLongTrade,
+        event: &data::strategy::detectors::mtf_longs_detector::MtfLongTrade,
         symbol: &str,
     ) {
         use chrono::DateTime;
@@ -1851,7 +1851,7 @@ impl SupabaseWriter {
         });
 
         if event.is_open {
-            let url = format!("{}/rest/v1/htf_trades", self.url);
+            let url = format!("{}/rest/v1/mtf_trades", self.url);
             let result = self.client
                 .post(&url)
                 .header("apikey", &self.key)
@@ -1861,10 +1861,10 @@ impl SupabaseWriter {
                 .send()
                 .await;
             if let Err(e) = result {
-                eprintln!("[supabase] write_htf_long_trade INSERT error: {e}");
+                eprintln!("[supabase] write_mtf_long_trade INSERT error: {e}");
             }
         } else {
-            let url = format!("{}/rest/v1/htf_trades", self.url);
+            let url = format!("{}/rest/v1/mtf_trades", self.url);
             let result = self.client
                 .patch(&url)
                 .query(&[("symbol",    format!("eq.{symbol}")),
@@ -1878,16 +1878,16 @@ impl SupabaseWriter {
                 .send()
                 .await;
             if let Err(e) = result {
-                eprintln!("[supabase] write_htf_long_trade PATCH error: {e}");
+                eprintln!("[supabase] write_mtf_long_trade PATCH error: {e}");
             }
         }
     }
 
     /// Carga el trade HTF abierto más reciente para un símbolo y dirección.
     /// Devuelve los campos necesarios para restaurar el ActiveTrade en memoria.
-    pub async fn load_htf_active(&self, symbol: &str, direction: &str) -> Option<RestoredHtfTrade> {
+    pub async fn load_mtf_active(&self, symbol: &str, direction: &str) -> Option<RestoredMtfTrade> {
         let url = format!(
-            "{}/rest/v1/htf_trades?is_open=eq.true&symbol=eq.{}&direction=eq.{}&order=entry_at.desc&limit=1",
+            "{}/rest/v1/mtf_trades?is_open=eq.true&symbol=eq.{}&direction=eq.{}&order=entry_at.desc&limit=1",
             self.url, symbol, direction
         );
         let result = self.client
@@ -1900,8 +1900,8 @@ impl SupabaseWriter {
 
         let rows: serde_json::Value = match result {
             Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
-            Ok(r) => { eprintln!("[supabase] load_htf_active HTTP {}", r.status()); return None; }
-            Err(e) => { eprintln!("[supabase] load_htf_active error: {e}"); return None; }
+            Ok(r) => { eprintln!("[supabase] load_mtf_active HTTP {}", r.status()); return None; }
+            Err(e) => { eprintln!("[supabase] load_mtf_active error: {e}"); return None; }
         };
 
         let row = rows.as_array()?.first()?;
@@ -1910,7 +1910,7 @@ impl SupabaseWriter {
             .ok()
             .map(|dt| dt.timestamp_millis())?;
 
-        Some(RestoredHtfTrade {
+        Some(RestoredMtfTrade {
             entry_at:  entry_at_str.to_string(),
             ts_ms,
             sig:       row.get("sig")?.as_str()?.to_string(),
@@ -1929,7 +1929,7 @@ impl SupabaseWriter {
     }
 }
 
-pub struct RestoredHtfTrade {
+pub struct RestoredMtfTrade {
     pub entry_at:        String,
     pub ts_ms:           i64,
     pub sig:             String,

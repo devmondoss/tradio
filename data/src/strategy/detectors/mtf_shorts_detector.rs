@@ -1,6 +1,6 @@
-//! HTF Shorts Detector — señales M1 mineadas con stop estructural H1
+//! MTF Shorts Detector — señales M1 mineadas con stop estructural H1
 //!
-//! Sistema portado desde `apps/rbf-review/api/shorts_htf_backtest.py`.
+//! Sistema portado desde `apps/rbf-review/api/mtf_shorts_backtest.py`.
 //! Patrones mineados por MFE/MAE sobre 9,000+ barras M1 reales.
 //! Edge existe EXCLUSIVAMENTE con stop H1 < 0.75% del precio de entrada.
 //!
@@ -34,7 +34,7 @@ const BLOCKED_HOURS: [u8; 0] = [];
 // ── Tipos públicos ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HtfSignal {
+pub struct MtfSignal {
     pub symbol: String,
     pub ts_ms: i64,
     pub sig: String,
@@ -53,8 +53,8 @@ pub struct HtfSignal {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HtfTrade {
-    pub signal: HtfSignal,
+pub struct MtfTrade {
+    pub signal: MtfSignal,
     pub result_r: Option<f64>,
     pub gross_r: Option<f64>,   // antes de fees (para comparar con backtest)
     pub fee_r: Option<f64>,     // costo en R (fee_r = 0.07% * entry / risk)
@@ -77,7 +77,7 @@ pub struct H1Candle {
 
 /// Contexto de barra M1 que el monitor pasa al detector
 #[derive(Debug, Clone)]
-pub struct HtfBarContext {
+pub struct MtfBarContext {
     pub ts_ms: i64,
     pub open: f64,
     pub high: f64,
@@ -97,11 +97,14 @@ pub struct HtfBarContext {
     pub atr: f64,
     pub stacked_imb: String,
     pub equal_low: bool,
+    /// Régimen de funding — "ExtremeLong"|"ElevatedLong"|"Neutral"|"ElevatedShort"|"ExtremeShort"
+    /// "" o "Neutral" = sin dato (no bloquea).
+    pub funding_regime: String,
 }
 
 // ── Estado del detector ───────────────────────────────────────────────────────
 
-pub struct HtfShortsState {
+pub struct MtfShortsState {
     symbol: String,
     last_sig_bar: usize,
     bar_count: usize,
@@ -126,11 +129,11 @@ struct ActiveTrade {
     risk: f64,
     target: f64,
     fee_r: f64,
-    signal: HtfSignal,
+    signal: MtfSignal,
     bars_in_trade: usize,
 }
 
-impl HtfShortsState {
+impl MtfShortsState {
     pub fn new(symbol: &str) -> Self {
         Self {
             symbol: symbol.to_string(),
@@ -160,7 +163,7 @@ impl HtfShortsState {
     ) {
         let risk   = stop - entry;
         let fee_r  = 0.0007 * entry / risk;
-        let signal = HtfSignal {
+        let signal = MtfSignal {
             symbol: self.symbol.clone(), ts_ms, sig, entry, stop, target,
             stop_pct, session, d1_trend, obi_entry, cvd_slope_entry,
             dz_score, stacked_imb, equal_low,
@@ -172,6 +175,13 @@ impl HtfShortsState {
         self.last_sig_bar = self.bar_count;
     }
 
+    pub fn has_active_trade(&self) -> bool { self.active_trade.is_some() }
+
+    /// ts_ms de entrada del trade activo — para filtrar barras de warmup anteriores a la entrada.
+    pub fn active_entry_ms(&self) -> Option<i64> {
+        self.active_trade.as_ref().map(|t| t.signal.ts_ms)
+    }
+
     /// Seed con velas D1 históricas de Binance — llamar en warm_up antes de on_bar_close.
     /// `closes` debe estar ordenado de más antiguo a más reciente.
     pub fn seed_d1(&mut self, closes: &[f64]) {
@@ -179,7 +189,7 @@ impl HtfShortsState {
             self.push_d1_close(c);
         }
         println!(
-            "[htf] D1 seeded {} closes, EMA20={:?}",
+            "[mtf] D1 seeded {} closes, EMA20={:?}",
             closes.len(),
             self.d1_ema20.map(|v| format!("{v:.2}"))
         );
@@ -193,7 +203,7 @@ impl HtfShortsState {
             let candle = H1Candle { ts_h, high: h, low: l, close: c, bar_count: 60 };
             self.push_h1_complete(candle);
         }
-        println!("[htf] H1 seeded {} candles", candles.len());
+        println!("[mtf] H1 seeded {} candles", candles.len());
     }
 
     fn push_d1_close(&mut self, close: f64) {
@@ -241,7 +251,7 @@ impl HtfShortsState {
     }
 
     /// Llamar en cada cierre de barra M1.
-    pub fn on_bar_close(&mut self, ctx: &HtfBarContext) -> Option<HtfTrade> {
+    pub fn on_bar_close(&mut self, ctx: &MtfBarContext) -> Option<MtfTrade> {
         self.bar_count += 1;
 
         // ── Mantener H1 bucket UTC real ───────────────────────────────────────
@@ -305,6 +315,14 @@ impl HtfShortsState {
             return None;
         }
 
+        // ── 3b. Funding regime filter ─────────────────────────────────────────
+        // ExtremeLong  = arbitrageurs compran para cobrar funding → sostienen precio arriba → mal para shorts
+        // ElevatedShort = shorts pagando mucho → squeeze inminente → precio sube → mal para shorts
+        // Backtested 14d in-sample: block estos dos regimenes +$375 PnL vs base.
+        if matches!(ctx.funding_regime.as_str(), "ExtremeLong" | "ElevatedShort") {
+            return None;
+        }
+
         // ── 4. Detectar señal M1 ─────────────────────────────────────────────
         let sig = detect_signal(&self.symbol, ctx)?;
 
@@ -330,7 +348,7 @@ impl HtfShortsState {
         self.obi_streak = 0;
 
         let d1_trend = self.d1_trend(ctx.close).to_string();
-        let signal = HtfSignal {
+        let signal = MtfSignal {
             symbol: self.symbol.clone(),
             ts_ms: ctx.ts_ms,
             sig,
@@ -347,7 +365,7 @@ impl HtfShortsState {
             equal_low: ctx.equal_low,
         };
 
-        let htf_trade = HtfTrade {
+        let htf_trade = MtfTrade {
             signal: signal.clone(),
             result_r: None,
             gross_r: None,
@@ -372,7 +390,7 @@ impl HtfShortsState {
         Some(htf_trade)
     }
 
-    fn update_active_trade(&mut self, mut trade: ActiveTrade, ctx: &HtfBarContext) -> TradeUpdate {
+    fn update_active_trade(&mut self, mut trade: ActiveTrade, ctx: &MtfBarContext) -> TradeUpdate {
         trade.bars_in_trade += 1;
         let h = ctx.high;
         let l = ctx.low;
@@ -410,9 +428,9 @@ impl HtfShortsState {
         TradeUpdate::StillOpen(trade)
     }
 
-    fn close_trade(&self, trade: ActiveTrade, gross_r: f64, reason: &str, exit_px: f64, exit_ts_ms: i64) -> HtfTrade {
+    fn close_trade(&self, trade: ActiveTrade, gross_r: f64, reason: &str, exit_px: f64, exit_ts_ms: i64) -> MtfTrade {
         let net_r = gross_r - trade.fee_r;
-        HtfTrade {
+        MtfTrade {
             signal:        trade.signal,
             result_r:      Some((net_r   * 10000.0).round() / 10000.0),
             gross_r:       Some((gross_r * 10000.0).round() / 10000.0),
@@ -428,12 +446,12 @@ impl HtfShortsState {
 
 enum TradeUpdate {
     StillOpen(ActiveTrade),
-    Closed(HtfTrade),
+    Closed(MtfTrade),
 }
 
 // ── Detector de señales M1 ────────────────────────────────────────────────────
 
-fn detect_signal(symbol: &str, ctx: &HtfBarContext) -> Option<String> {
+fn detect_signal(symbol: &str, ctx: &MtfBarContext) -> Option<String> {
     if matches!(ctx.session.as_str(), "OffHours" | "Asia") {
         return None;
     }

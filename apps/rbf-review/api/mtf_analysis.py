@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HTF Shorts — Análisis de distribución
+MTF Shorts — Análisis de distribución
 Corre el backtest y calcula:
 1. WR / AvgR / n por patrón (sig)
 2. Distribución de stop_pct en buckets
@@ -13,7 +13,7 @@ import json, subprocess, sys
 from pathlib import Path
 from collections import defaultdict
 
-SCRIPT = Path(__file__).parent / 'shorts_htf_backtest.py'
+SCRIPT = Path(__file__).parent / 'shorts_mtf_backtest.py'
 
 def run_backtest(days=14):
     r = subprocess.run(

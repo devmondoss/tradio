@@ -48,6 +48,7 @@ function DetailPanel({ trade }: { trade: Trade }) {
       <InfoRow label="Symbol"    value={trade.sym.replace('USDT', '')} />
       <InfoRow label="Dir"       value={trade.dir} color={trade.dir === 'Short' ? 'var(--red)' : 'var(--green)'} />
       <InfoRow label="Sesion"    value={sesLabel(trade.session)} />
+      <InfoRow label="Entry at"  value={(() => { const d = new Date(trade.tsMs); return `${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')} ${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')} UTC` })()} />
       <InfoRow label="Resultado" value={trade.isOpen ? 'OPEN' : fmtR(r)} color={rColor} />
       {!trade.isOpen && <InfoRow label="PnL" value={fmtUsd(trade.pnlUsd)} color={rColor} />}
       {trade.durationMin != null && <InfoRow label="Dur" value={fmtDur(trade.durationMin)} />}

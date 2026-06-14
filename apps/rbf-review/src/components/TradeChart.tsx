@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts'
 import type { Trade } from '../lib/types'
-import { fetchKlines } from '../lib/binance'
+import { fetchKlines, TF_SECONDS } from '../lib/binance'
 
 interface Props { trade: Trade | null }
 type CandleSeries = ISeriesApi<'Candlestick', Time>
@@ -80,6 +80,8 @@ export default function TradeChart({ trade }: Props) {
   const [activeTool, _setTool] = useState<Tool>('cursor')
   const [magnet,     setMagnet] = useState(false)
   const [textInput,  setTextInput] = useState<TextInput | null>(null)
+  const [interval,   setInterval] = useState('1m')
+  const intervalRef = useRef('1m')
   const [, bump] = useState(0)
 
   function setTool(t: Tool) {
@@ -187,7 +189,7 @@ export default function TradeChart({ trade }: Props) {
     }
   }, [])
 
-  // ── load candles ────────────────────────────────────────────────────────────
+  // ── reset drawings only when trade changes (not on TF change) ──────────────
   useEffect(() => {
     if (!trade) return
     tradeRef.current = trade
@@ -195,40 +197,60 @@ export default function TradeChart({ trade }: Props) {
     colorIdx.current = 0; hovHit.current = null
     dragOp.current = null
     setTextInput(null); forceRedraw()
+  }, [trade?.id])
 
+  // ── load candles (trade change OR interval change) ───────────────────────
+  useEffect(() => {
+    if (!trade) return
     const series = serRef.current, chart = chartRef.current
     if (!series || !chart) return
-    // Retroceder suficiente para mostrar la formación del rango + contexto previo
-    const rangeBars   = trade.rangeBars ?? 15
-    const extraBars   = rangeBars + 220
-    const nowSec      = Math.floor(Date.now() / 1000)
-    const closedAtSec = trade.isOpen
+
+    const barSec       = TF_SECONDS[interval] ?? 60
+    const nowSec       = Math.floor(Date.now() / 1000)
+    const closedAtSec  = trade.isOpen
       ? nowSec
       : trade.closedAt
         ? Math.floor(new Date(trade.closedAt).getTime() / 1000)
         : trade.ts + (trade.durationMin ?? 90) * 60
-    // Para trades abiertos traemos hasta ahora + 200 barras de contexto post-cierre
-    const rightPad    = trade.isOpen ? 0 : 200
-    const durationBars = Math.ceil((closedAtSec - trade.ts) / 60) + rightPad
-    const totalLimit = Math.min(extraBars + durationBars, 1500)
-    fetchKlines(trade.sym, trade.tsMs, totalLimit, extraBars).then(cs => {
+
+    // context before entry: enough for range formation in any TF
+    // M1=220bars(~3.7h)  M5=60bars(5h)  M15=30bars(7.5h)  H1=24bars(1day)
+    const extraBars    = Math.max(Math.ceil(13200 / barSec), 24)
+    // post-close view: always ~200 min
+    const rightPadBars = trade.isOpen ? 0 : Math.ceil(12000 / barSec)
+    const durationBars = Math.ceil((closedAtSec - trade.ts) / barSec) + rightPadBars
+    const totalLimit   = Math.min(extraBars + durationBars, 1500)
+
+    // visible window: show 100 bars of context before entry in any TF
+    const visContextBars = Math.min(100, extraBars)
+
+    fetchKlines(trade.sym, trade.tsMs, totalLimit, extraBars, undefined, interval).then(cs => {
       if (tradeRef.current?.id !== trade.id) return
       candlesRef.current = cs
       series.setData(cs.map(c => ({ ...c, time: c.time as Time })))
 
-      requestAnimationFrame(() => {
+      const applyRange = () => {
         if (tradeRef.current?.id !== trade.id) return
         const visTo = trade.isOpen
-          ? (nowSec + 10 * 60) as Time          // pequeño margen a la derecha para trades abiertos
-          : (closedAtSec + 200 * 60) as Time    // 200 min post-cierre para ver qué pasó después
+          ? (nowSec + 10 * barSec) as Time
+          : (closedAtSec + rightPadBars * barSec) as Time
         chart.timeScale().setVisibleRange({
-          from: (trade.ts - (rangeBars + 100) * 60) as Time,
+          from: (trade.ts - visContextBars * barSec) as Time,
           to:   visTo,
         })
-        draw()
+      }
+
+      // RAF chain: setData → layout → setVisibleRange → layout → draw
+      requestAnimationFrame(() => {
+        applyRange()
+        requestAnimationFrame(() => {
+          draw()
+          // fallback: LWC sometimes needs one more frame to map coords
+          requestAnimationFrame(draw)
+        })
       })
     })
-  }, [trade?.id])
+  }, [trade?.id, interval])
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
   function syncCanvas() {
@@ -407,13 +429,20 @@ export default function TradeChart({ trade }: Props) {
     const tY=cv(series.priceToCoordinate(t.target))
     if (eX==null||eY==null||sY==null||tY==null) return
     const isShort = t.dir === 'Short'
-    let exitTs=t.ts+90*60
-    if (t.closedAt) { const ex=Math.floor(new Date(t.closedAt).getTime()/1000); if(ex>t.ts) exitTs=ex }
-    else if (t.durationMin && t.durationMin > 0) { exitTs = t.ts + t.durationMin * 60 }
+    // Para trades ABIERTOS: proyectar hasta el máximo forward window (20h = 1200 barras M1)
+    // durationMin en trades abiertos = barras transcurridas, no la duración total → no usarlo para exitTs
+    const FORWARD_MAX_SEC = 20 * 3600
+    let exitTs = t.isOpen
+      ? t.ts + FORWARD_MAX_SEC
+      : t.ts + 90 * 60
+    if (!t.isOpen) {
+      if (t.closedAt) { const ex=Math.floor(new Date(t.closedAt).getTime()/1000); if(ex>t.ts) exitTs=ex }
+      else if (t.durationMin && t.durationMin > 0) { exitTs = t.ts + t.durationMin * 60 }
+    }
     // Buscar primera vela que tocó el nivel de exit real según dirección y tipo
     // Short: TP = low <= target, SL = high >= stop
     // Long:  TP = high >= target, SL = low <= stop
-    if (t.exit && t.exit > 0 && candlesRef.current.length > 0) {
+    if (!t.isOpen && t.exit && t.exit > 0 && candlesRef.current.length > 0) {
       const isStopLoss = t.reason === 'STOP_LOSS'
       const touchLevel = isStopLoss ? t.stop : t.exit
       const firstTouch = candlesRef.current.find(c =>
@@ -423,7 +452,7 @@ export default function TradeChart({ trade }: Props) {
             : (isStopLoss ? c.low  <= touchLevel : c.high >= touchLevel)
         )
       )
-      if (firstTouch) exitTs = firstTouch.time + 60
+      if (firstTouch) exitTs = firstTouch.time + (TF_SECONDS[intervalRef.current] ?? 60)
     }
     const xXraw=cv(chart.timeScale().timeToCoordinate(exitTs as Time))
     const x1=(xXraw==null||xXraw<=eX)?eX+Math.max(canvas.width*0.25,120):xXraw
@@ -894,21 +923,34 @@ export default function TradeChart({ trade }: Props) {
         )}
       </div>
 
-      {/* Auto-center button — top-right */}
-      <button
-        title="Centrar trade (reset Y)"
-        onClick={() => {
-          chartRef.current?.timeScale().fitContent()
-          serRef.current?.priceScale().applyOptions({ autoScale: true })
-        }}
-        style={{
-          position:'absolute',top:8,right:8,zIndex:10,
-          width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',
-          background:'var(--bg2)',border:'1px solid var(--border)',
-          borderRadius:5,color:'var(--text3)',fontSize:15,cursor:'pointer',
-          backdropFilter:'blur(6px)',fontFamily:'monospace',
-        }}
-      >⊕</button>
+      {/* Top-right: TF selector + auto-center */}
+      <div style={{ position:'absolute', top:8, right:8, zIndex:10, display:'flex', alignItems:'center', gap:3 }}>
+        {(['1m','5m','15m','1h'] as const).map(tf => (
+          <button key={tf} title={`Temporalidad ${tf}`} onClick={() => { intervalRef.current = tf; setInterval(tf) }} style={{
+            height:26, padding:'0 7px',
+            display:'flex', alignItems:'center', justifyContent:'center',
+            background: interval===tf ? 'var(--blue-bg)' : 'var(--bg2)',
+            border: interval===tf ? '1px solid var(--blue)' : '1px solid var(--border)',
+            borderRadius:4,
+            color: interval===tf ? 'var(--blue)' : 'var(--text3)',
+            fontSize:10, fontWeight:700, cursor:'pointer', backdropFilter:'blur(6px)', letterSpacing:.3,
+          }}>{tf}</button>
+        ))}
+        <div style={{ width:1, height:20, background:'var(--border)', margin:'0 2px' }} />
+        <button
+          title="Centrar trade (reset Y)"
+          onClick={() => {
+            chartRef.current?.timeScale().fitContent()
+            serRef.current?.priceScale().applyOptions({ autoScale: true })
+          }}
+          style={{
+            width:30, height:26, display:'flex', alignItems:'center', justifyContent:'center',
+            background:'var(--bg2)', border:'1px solid var(--border)',
+            borderRadius:4, color:'var(--text3)', fontSize:15, cursor:'pointer',
+            backdropFilter:'blur(6px)', fontFamily:'monospace',
+          }}
+        >⊕</button>
+      </div>
     </div>
   )
 }
