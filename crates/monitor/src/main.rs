@@ -4466,12 +4466,17 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
 
     // Restaurar posiciones activas ANTES del warm-up para que las barras históricas
     // sean evaluadas por el paper trader y detecten SL/TP ocurridos durante el downtime.
+    // earliest_entry_ms: rastrea la entrada más antigua entre todas las posiciones
+    // restauradas para calcular cuántas barras históricas necesitamos en el warm-up.
+    let mut earliest_entry_ms: i64 = i64::MAX;
+
     if let Some(sb) = state.supabase.clone() {
         if let Some(pos) = sb.load_rbf_active(&symbol_str).await {
             println!(
                 "[rbf_paper] RESTORED {:?} entry={:.1} stop={:.1} target={:.1} id={}",
                 pos.direction, pos.entry_price, pos.stop_price, pos.target_price, pos.signal_id
             );
+            earliest_entry_ms = earliest_entry_ms.min(pos.entry_ms);
             state.rbf_paper.restore(
                 pos.signal_id,
                 pos.direction,
@@ -4486,6 +4491,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
                 "[amd_paper] RESTORED {:?} entry={:.4} stop={:.4} target={:.4} id={}",
                 pos.direction, pos.entry_price, pos.stop_price, pos.target_price, pos.signal_id
             );
+            earliest_entry_ms = earliest_entry_ms.min(pos.entry_ms);
             state.amd_paper.restore(
                 pos.signal_id,
                 pos.direction,
@@ -4500,6 +4506,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
                 "[be_paper] RESTORED entry={:.4} stop={:.4} target={:.4} id={}",
                 pos.entry_price, pos.stop_price, pos.target_price, pos.signal_id
             );
+            earliest_entry_ms = earliest_entry_ms.min(pos.entry_ms);
             state.be_paper.restore(
                 pos.signal_id,
                 pos.entry_price,
@@ -4515,6 +4522,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
                 "[mtf] RESTORED Short {} sig={} entry={:.4} stop={:.4} target={:.4}",
                 symbol_str, pos.sig, pos.entry, pos.stop, pos.target
             );
+            earliest_entry_ms = earliest_entry_ms.min(pos.ts_ms);
             state.mtf_state.restore_active_trade(
                 pos.entry, pos.stop, pos.target,
                 pos.ts_ms, pos.sig, pos.session, pos.trend,
@@ -4530,6 +4538,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
                     "[mtf_long] RESTORED Long {} sig={} entry={:.4} stop={:.4} target={:.4}",
                     symbol_str, pos.sig, pos.entry, pos.stop, pos.target
                 );
+                earliest_entry_ms = earliest_entry_ms.min(pos.ts_ms);
                 state.mtf_longs_state.restore_active_trade(
                     pos.entry, pos.stop, pos.target,
                     pos.ts_ms, pos.sig, pos.session, pos.trend,
@@ -4540,9 +4549,25 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         }
     }
 
+    // Calcular cuántas barras necesitamos: desde la entrada más antigua hasta ahora.
+    // Esto garantiza cobertura completa del downtime sin importar cuánto duró.
+    // Mínimo 150 (warm-up normal), máximo 1500 (25h a M1 = FORWARD_MAX completo).
+    let warmup_limit = if earliest_entry_ms < i64::MAX {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let bars_since_entry = ((now_ms - earliest_entry_ms) / (tf_min as i64 * 60_000)) as usize;
+        let needed = bars_since_entry + 20; // +20 buffer
+        println!("[warmup] posición restaurada hace ~{bars_since_entry} barras → cargando {needed} barras");
+        needed.clamp(150, 1500)
+    } else {
+        150
+    };
+
     // Seed bar history from REST — si hay posición restaurada, warm_up_history también
     // la alimenta al paper trader para cerrar cualquier SL/TP ocurrido durante downtime.
-    warm_up_history(&mut state, &symbol_str, tf_min, 150).await;
+    warm_up_history(&mut state, &symbol_str, tf_min, warmup_limit).await;
     state.rbf_state.reset_signal_cooldown();
     state.amd_state.reset_signal_cooldown();
     state.be_state.reset_signal_cooldown();
