@@ -205,10 +205,11 @@ export default function TradeChart({ trade }: Props) {
     const series = serRef.current, chart = chartRef.current
     if (!series || !chart) return
 
-    const barSec       = TF_SECONDS[interval] ?? 60
-    const nowSec       = Math.floor(Date.now() / 1000)
-    const closedAtSec  = trade.isOpen
-      ? nowSec
+    const barSec         = TF_SECONDS[interval] ?? 60
+    const nowSec         = Math.floor(Date.now() / 1000)
+    const FORWARD_MAX_S  = 20 * 3600  // 20h = FORWARD_MAX del detector
+    const closedAtSec    = trade.isOpen
+      ? trade.ts + FORWARD_MAX_S  // proyectar el horizonte completo para carga + visRange
       : trade.closedAt
         ? Math.floor(new Date(trade.closedAt).getTime() / 1000)
         : trade.ts + (trade.durationMin ?? 90) * 60
@@ -216,9 +217,11 @@ export default function TradeChart({ trade }: Props) {
     // context before entry: enough for range formation in any TF
     // M1=220bars(~3.7h)  M5=60bars(5h)  M15=30bars(7.5h)  H1=24bars(1day)
     const extraBars    = Math.max(Math.ceil(13200 / barSec), 24)
-    // post-close view: always ~200 min
-    const rightPadBars = trade.isOpen ? 0 : Math.ceil(12000 / barSec)
-    const durationBars = Math.ceil((closedAtSec - trade.ts) / barSec) + rightPadBars
+    // post-close view: always ~200 min; open trades: pad más allá del box
+    const rightPadBars = Math.ceil(12000 / barSec)
+    // Para fetching solo pedimos barras hasta "ahora" (no existen barras futuras)
+    const fetchEndSec  = trade.isOpen ? nowSec : closedAtSec
+    const durationBars = Math.ceil((fetchEndSec - trade.ts) / barSec) + rightPadBars
     const totalLimit   = Math.min(extraBars + durationBars, 1500)
 
     // visible window: show 100 bars of context before entry in any TF
@@ -231,8 +234,10 @@ export default function TradeChart({ trade }: Props) {
 
       const applyRange = () => {
         if (tradeRef.current?.id !== trade.id) return
+        // Trades abiertos: el visTo es entry+20h para que timeToCoordinate(exitTs) tenga
+        // un punto válido en el eje de tiempo y el box se dibuje hasta el horizonte completo.
         const visTo = trade.isOpen
-          ? (nowSec + 10 * barSec) as Time
+          ? (trade.ts + FORWARD_MAX_S + rightPadBars * barSec) as Time
           : (closedAtSec + rightPadBars * barSec) as Time
         chart.timeScale().setVisibleRange({
           from: (trade.ts - visContextBars * barSec) as Time,
