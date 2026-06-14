@@ -1,6 +1,6 @@
 # MTF System — Documentación Completa
 
-**Última actualización:** 2026-06-14  
+**Última actualización:** 2026-06-14 (v2)  
 **Estado:** Baseline v3 activo — Shorts (5 símbolos) + Longs (ETH/SOL) — reglas congeladas, pendiente walk-forward  
 **Shorts v3 (14 días, 5 símbolos):** n=133+, WR≈58%, AvgR≈+0.55R, $500→$2,012 (+302%)  
 **Longs baseline (8 días, ETH/SOL):** n=125, WR=56.0%, AvgR=+0.526R, $500→$1,748 (+250%)
@@ -432,6 +432,9 @@ Tres opciones: **Combined / Shorts / Longs**
 12. **Unificación tabla**: longs ahora escriben a `mtf_trades` con `direction='Long'` (antes: tabla `mtf_long_trades` inexistente → pérdida silenciosa de todos los longs)
 13. **Trade recovery redeploy-safe**: `load_mtf_active()` + `restore_active_trade()` → open trades sobreviven reinicios de Railway
 14. **UI métricas separadas**: MTFModuleView header muestra Short | Long independientemente; selector Combined/Shorts/Longs en tab backtest
+15. **Funding regime filter (shorts)**: bloquea entrada en `ExtremeLong` y `ElevatedShort` — +$375 PnL en 14d in-sample (ver §18)
+16. **Warmup recovery completo**: warm_up_history ahora pasa barras históricas por `mtf_state`/`mtf_longs_state` post-restart; cierra TP/SL perdidos durante downtime (ver §19)
+17. **Chart fix TradeChart**: trades OPEN proyectan box hasta `entry + 20h`; visible range sincronizado con el box para que `timeToCoordinate` funcione correctamente
 
 ---
 
@@ -443,6 +446,159 @@ Los patrones de BTC/ETH/SOL fueron minados y backtestados sobre los **mismos dat
 **No modificar** detectores ni parámetros hasta walk-forward.  
 **Fecha objetivo walk-forward:** ~2026-07-05  
 **Criterio pass:** WR ≥ 55% y AvgR ≥ +0.30R sobre datos nuevos (ambas direcciones)
+
+---
+
+## 18. Funding Regime Filter — Shorts (2026-06-14)
+
+### Concepto
+
+"Gamma environment": el régimen de funding rate como variable de contexto de mercado. No es vol implícita de opciones, sino el régimen de funding de perps como proxy de posicionamiento institucional.
+
+### Lógica de bloqueo para shorts
+
+| Régimen | Por qué bloquear |
+|---------|-----------------|
+| `ExtremeLong` | Arbitrageurs compran spot para cobrar funding → sostienen precio arriba → shorts contra el flujo |
+| `ElevatedShort` | Shorts pagando mucho → squeeze inminente → precio sube → shorts en peligro |
+| `ElevatedLong` | Permiten — WR positivo |
+| `Neutral` | Permiten — base |
+| `ExtremeShort` | Permiten — precio ya bajó, shorts bien posicionados |
+
+### Para longs: sin filtro
+El espejo exacto no aplica: incluso en el "peor" régimen para longs (`Neutral`, WR=47.8%), el AvgR sigue siendo positivo (+0.34R). Quitar trades positivos empeora el PnL absoluto.
+
+### Resultados backtest in-sample (14 días)
+
+| Variante | n | WR% | AvgR | PnL |
+|----------|---|-----|------|-----|
+| Base | 133 | 58.6% | +0.548R | $1,512 |
+| + Filtro funding (bloquea ExtremeLong+ElevatedShort) | ~95 | ~65% | +0.71R | **$1,887 (+$375)** |
+| + OI Declining | — | +WR | — | peor PnL (quita trades +0.15R avg) |
+
+**Decisión**: solo filtro funding en shorts. OI Declining descartado.
+
+### Implementación
+
+`data/src/strategy/detectors/mtf_shorts_detector.rs`, step 3b en `on_bar_close()`:
+```rust
+// Paso 3b — DESPUÉS del active trade check (step 1), antes de signal detection (step 4)
+if matches!(ctx.funding_regime.as_str(), "ExtremeLong" | "ElevatedShort") {
+    return None;
+}
+```
+
+`MtfBarContext` tiene campo `funding_regime: String`. El monitor lo puebla en `main.rs`:
+```rust
+let htf_funding_regime = ctx.institutional
+    .as_ref()
+    .map(|inst| format!("{:?}", inst.funding.regime))
+    .unwrap_or_else(|| "Neutral".into());
+```
+
+El warmup usa `funding_regime: "Neutral".into()` → nunca bloquea recovery de trades ya abiertos.
+
+---
+
+## 19. Bug: Warmup Recovery MTF (detectado y fixeado 2026-06-14)
+
+### El bug
+
+`warm_up_history` alimentaba barras históricas post-restart a `rbf_paper` y `be_paper` para detectar SL/TP golpeados durante el downtime, pero **nunca llamaba `mtf_state.on_bar_close()`** con esas barras.
+
+Consecuencia: si el monitor se reiniciaba (Railway rolling restart, nuevo deploy) y el TP/SL de un trade MTF se golpeaba durante los minutos/horas de downtime, el trade quedaba stuck OPEN en Supabase para siempre.
+
+**Caso real (2026-06-14):**
+- Trade BTC Short abrió 12:36 UTC, entry=64334, TP=63704.9
+- TP golpeado a las 17:56 UTC (low=63650 en M1)
+- Monitor se reinició entre medio → warmup viejo no procesó `mtf_state` → trade quedó OPEN
+- Se detectó y se parchó manualmente en Supabase
+
+### Fix 1: warmup procesa mtf_state
+
+`crates/monitor/src/main.rs` — dentro del loop de `warm_up_history`, después del bloque `be_paper`:
+
+```rust
+if state.mtf_state.has_active_trade() {
+    if let Some(entry_ms) = state.mtf_state.active_entry_ms() {
+        if open_ms > entry_ms {
+            // contexto minimal — cvd_slope=None suprime CVD exhaustion,
+            // solo evalúa TP/SL/EXPIRED
+            let warmup_ctx = MtfBarContext { high, low, close, ts_ms: open_ms,
+                cvd_slope: None, funding_regime: "Neutral".into(), ... };
+            if let Some(closed) = state.mtf_state.on_bar_close(&warmup_ctx) {
+                // PATCH Supabase con el cierre
+            }
+        }
+    }
+}
+// idem para mtf_longs_state
+```
+
+Nuevos métodos públicos en `MtfShortsState` y `MtfLongsState`:
+- `has_active_trade() -> bool`
+- `active_entry_ms() -> Option<i64>`
+
+### Fix 2: warmup dinámico (barras desde la entrada)
+
+**Antes**: `warm_up_history(150)` — siempre 150 barras = 2.5h de cobertura.
+
+**Problema**: si el downtime dura más de 2.5h, el TP/SL sigue sin detectarse.
+
+**Fix**: calcular cuántas barras han pasado desde la entrada del trade más antiguo:
+
+```rust
+let warmup_limit = if earliest_entry_ms < i64::MAX {
+    let bars_since_entry = ((now_ms - earliest_entry_ms) / (tf_min * 60_000)) as usize;
+    (bars_since_entry + 20).clamp(150, 1500)  // mínimo 150, máximo 1500 (25h = FORWARD_MAX)
+} else {
+    150
+};
+warm_up_history(&mut state, &symbol_str, tf_min, warmup_limit).await;
+```
+
+Log al arrancar:
+```
+[warmup] posición restaurada hace ~380 barras → cargando 400 barras
+```
+
+**Cobertura garantizada**: cualquier restart de Railway (segundos a minutos) queda dentro de las barras cargadas. Un downtime de hasta 25h (máximo de vida de un trade) queda cubierto.
+
+---
+
+## 20. Chart: Trades OPEN en TradeChart (2026-06-14)
+
+### Bug
+
+El box del trade OPEN se dibujaba solo hasta "ahora" porque:
+
+1. **`durationMin` mal usado**: en trades abiertos, `durationMin` = barras transcurridas desde la entrada (no la duración total proyectada). Usar `exitTs = entry + durationMin * 60` hacía que el box terminara en "now".
+
+2. **`visibleRange` no extendido**: la corrección de `exitTs = entry + 20h` no bastaba porque `chart.timeScale().setVisibleRange({ to: nowSec + 10bars })` limitaba el rango visible. `timeToCoordinate(entry + 20h)` devolvía `null` → el box no se renderizaba más allá del borde derecho.
+
+### Fix
+
+```typescript
+// 1. exitTs correcto para trades abiertos
+const FORWARD_MAX_SEC = 20 * 3600
+let exitTs = t.isOpen ? t.ts + FORWARD_MAX_SEC : t.ts + 90 * 60
+
+// 2. visibleRange sincronizado con el box
+const FORWARD_MAX_S = 20 * 3600
+const closedAtSec = trade.isOpen
+  ? trade.ts + FORWARD_MAX_S   // proyectar horizonte completo
+  : /* fecha real de cierre */
+
+// visTo alcanza entry+20h para que timeToCoordinate tenga coordenadas válidas
+const visTo = trade.isOpen
+  ? (trade.ts + FORWARD_MAX_S + rightPadBars * barSec) as Time
+  : (closedAtSec + rightPadBars * barSec) as Time
+
+// 3. fetch solo hasta "now" (barras futuras no existen)
+const fetchEndSec = trade.isOpen ? nowSec : closedAtSec
+```
+
+El chart muestra candles hasta "now" y espacio vacío a la derecha hasta `entry + 20h`, igual que TradingView — el box siempre alcanza las zonas de TP y SL.
 
 ---
 
