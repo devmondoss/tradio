@@ -157,8 +157,17 @@ export default function HTFModuleView() {
     return () => { supabase.removeChannel(ch) }
   }, [])
 
-  const closed = trades.filter(t => !t.is_open)
-  const openCount = trades.filter(t => t.is_open).length
+  // Deduplicar: si existe un trade cerrado con el mismo (symbol, entry_at),
+  // descartar el registro OPEN huérfano (quedó abierto por restart del monitor)
+  const dedupedTrades = (() => {
+    const closedKeys = new Set(
+      trades.filter(t => !t.is_open).map(t => `${t.symbol}|${t.entry_at}`)
+    )
+    return trades.filter(t => !t.is_open || !closedKeys.has(`${t.symbol}|${t.entry_at}`))
+  })()
+
+  const closed = dedupedTrades.filter(t => !t.is_open)
+  const openCount = dedupedTrades.filter(t => t.is_open).length
 
   // Header stats — live cuando en live, backtest cuando en backtest
   const isLive  = sub === 'live'
@@ -223,7 +232,7 @@ export default function HTFModuleView() {
         {sub === 'live' ? (
           loading
             ? <div className="mod-center">Cargando…</div>
-            : <LiveView trades={trades} dir="Short" />
+            : <LiveView trades={dedupedTrades} dir="Short" />
         ) : (
           <BacktestView strategy="shorts" onStats={setBtStats} />
         )}

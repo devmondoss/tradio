@@ -1769,17 +1769,37 @@ impl SupabaseWriter {
             "closed_at":     closed_at,
         });
 
-        let url = format!("{}/rest/v1/htf_trades", self.url);
-        let result = self.client
-            .post(&url)
-            .header("apikey", &self.key)
-            .header("Authorization", format!("Bearer {}", self.key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await;
-        if let Err(e) = result {
-            eprintln!("[supabase] write_htf_trade error: {e}");
+        if event.is_open {
+            // Apertura: INSERT de fila nueva
+            let url = format!("{}/rest/v1/htf_trades", self.url);
+            let result = self.client
+                .post(&url)
+                .header("apikey", &self.key)
+                .header("Authorization", format!("Bearer {}", self.key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await;
+            if let Err(e) = result {
+                eprintln!("[supabase] write_htf_trade INSERT error: {e}");
+            }
+        } else {
+            // Cierre: PATCH sobre la fila abierta (match por symbol + entry_at)
+            let url = format!("{}/rest/v1/htf_trades", self.url);
+            let result = self.client
+                .patch(&url)
+                .query(&[("symbol", format!("eq.{symbol}")),
+                         ("entry_at", format!("eq.{entry_at}")),
+                         ("is_open", "eq.true".to_string())])
+                .header("apikey", &self.key)
+                .header("Authorization", format!("Bearer {}", self.key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await;
+            if let Err(e) = result {
+                eprintln!("[supabase] write_htf_trade PATCH error: {e}");
+            }
         }
     }
 
@@ -1818,17 +1838,35 @@ impl SupabaseWriter {
             "closed_at":     closed_at,
         });
 
-        let url = format!("{}/rest/v1/htf_long_trades", self.url);
-        let result = self.client
-            .post(&url)
-            .header("apikey", &self.key)
-            .header("Authorization", format!("Bearer {}", self.key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await;
-        if let Err(e) = result {
-            eprintln!("[supabase] write_htf_long_trade error: {e}");
+        if event.is_open {
+            let url = format!("{}/rest/v1/htf_long_trades", self.url);
+            let result = self.client
+                .post(&url)
+                .header("apikey", &self.key)
+                .header("Authorization", format!("Bearer {}", self.key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await;
+            if let Err(e) = result {
+                eprintln!("[supabase] write_htf_long_trade INSERT error: {e}");
+            }
+        } else {
+            let url = format!("{}/rest/v1/htf_long_trades", self.url);
+            let result = self.client
+                .patch(&url)
+                .query(&[("symbol", format!("eq.{symbol}")),
+                         ("entry_at", format!("eq.{entry_at}")),
+                         ("is_open", "eq.true".to_string())])
+                .header("apikey", &self.key)
+                .header("Authorization", format!("Bearer {}", self.key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await;
+            if let Err(e) = result {
+                eprintln!("[supabase] write_htf_long_trade PATCH error: {e}");
+            }
         }
     }
 }
