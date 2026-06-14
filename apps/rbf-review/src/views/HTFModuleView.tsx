@@ -157,14 +157,14 @@ export default function HTFModuleView() {
     return () => { supabase.removeChannel(ch) }
   }, [])
 
-  // Deduplicar: si existe un trade cerrado con el mismo (symbol, entry_at),
-  // descartar el registro OPEN huérfano (quedó abierto por restart del monitor)
-  const dedupedTrades = (() => {
-    const closedKeys = new Set(
-      trades.filter(t => !t.is_open).map(t => `${t.symbol}|${t.entry_at}`)
-    )
-    return trades.filter(t => !t.is_open || !closedKeys.has(`${t.symbol}|${t.entry_at}`))
-  })()
+  // Ocultar trades OPEN huérfanos: cualquier OPEN con más de 20h es un orphan
+  // (el sistema hace EXPIRED a las 20h, así que si sigue OPEN es por restart del monitor)
+  const MAX_OPEN_MS = 20 * 60 * 60 * 1000
+  const now = Date.now()
+  const dedupedTrades = trades.filter(t => {
+    if (!t.is_open) return true
+    return (now - new Date(t.entry_at).getTime()) < MAX_OPEN_MS
+  })
 
   const closed = dedupedTrades.filter(t => !t.is_open)
   const openCount = dedupedTrades.filter(t => t.is_open).length
