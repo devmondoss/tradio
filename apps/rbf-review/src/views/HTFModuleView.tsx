@@ -1,7 +1,44 @@
 import { useEffect, useState } from 'react'
 import { supabase, type HtfTrade } from '../lib/supabase'
-import { fmtR, sesLabel } from '../lib/utils'
+import { fmtR } from '../lib/utils'
 import BacktestView from './BacktestView'
+import TradeChart from '../components/TradeChart'
+import type { Trade } from '../lib/types'
+
+function htfToTrade(t: HtfTrade, idx: number, dir: 'Short' | 'Long' = 'Short'): Trade {
+  const tsMs = new Date(t.entry_at).getTime()
+  return {
+    idx,
+    id: String(t.id),
+    sym: t.symbol,
+    dir,
+    session: t.session ?? '',
+    score: null,
+    entry: t.entry,
+    stop: t.stop,
+    target: t.target,
+    exit: t.exit_price ?? 0,
+    resultR: t.result_r ?? null,
+    pnlUsd: (t.result_r ?? 0) * 10,
+    riskUsd: 10,
+    stopPct: t.stop_pct,
+    equity: 0,
+    reason: t.reason ?? '',
+    tsMs,
+    ts: Math.floor(tsMs / 1000),
+    closedAt: t.closed_at ?? null,
+    regime: '',
+    sessionPhase: '',
+    evidence: [t.sig],
+    confluenceFlags: [],
+    vetoReason: '',
+    cvdInRange: null, vr: null, priceVsVwap: null,
+    funding: null, cvdSlope: null, obi: null, dz: null,
+    rangePct: null, rangeBars: null, rangeTouch: null,
+    durationMin: t.duration_bars ?? null,
+    isOpen: t.is_open,
+  }
+}
 
 type SubTab = 'live' | 'backtest'
 
@@ -21,138 +58,70 @@ function equity(trades: HtfTrade[]): number {
   return eq
 }
 
-// ── Trade row ─────────────────────────────────────────────────────────────────
-
-function TradeRow({ t, idx }: { t: HtfTrade; idx: number }) {
-  const isOpen  = t.is_open
-  const r       = t.result_r
-  const gross   = t.gross_r
-  const isWin   = !isOpen && r != null && r > 0
-  const rowCol  = isOpen ? 'var(--blue)' : isWin ? 'var(--green)' : r != null ? 'var(--red)' : 'var(--text3)'
-
-  const entryDate = new Date(t.entry_at)
-  const dateFmt   = `${entryDate.getUTCDate()} ${entryDate.toLocaleString('en', { month: 'short', timeZone: 'UTC' })} ${String(entryDate.getUTCHours()).padStart(2,'0')}:${String(entryDate.getUTCMinutes()).padStart(2,'0')}`
-
-  const sym = t.symbol.replace('USDT', '')
-  const ses = sesLabel(t.session)
-
-  return (
-    <tr style={{ background: idx % 2 === 1 ? 'var(--bg3)' : 'transparent', borderLeft: `2px solid ${rowCol}` }}>
-      <td style={{ padding: '4px 8px', color: 'var(--text3)', fontSize: 9 }}>{dateFmt}</td>
-      <td style={{ padding: '4px 6px', fontWeight: 700, fontSize: 10 }}>{sym}</td>
-      <td style={{ padding: '4px 6px', color: 'var(--text2)', fontSize: 9 }}>{t.sig}</td>
-      <td style={{ padding: '4px 6px', color: 'var(--text3)', fontSize: 9 }}>{ses}</td>
-      <td style={{ padding: '4px 6px', color: 'var(--text2)', fontSize: 9, textAlign: 'right' }}>{t.entry.toFixed(2)}</td>
-      <td style={{ padding: '4px 6px', color: 'var(--text3)', fontSize: 9, textAlign: 'right' }}>{t.stop_pct.toFixed(2)}%</td>
-      <td style={{ padding: '4px 6px', color: 'var(--text2)', fontSize: 9, textAlign: 'right' }}>
-        {isOpen
-          ? <span style={{ color: 'var(--blue)', fontWeight: 700 }}>OPEN</span>
-          : t.reason}
-      </td>
-      <td style={{ padding: '4px 8px', fontWeight: 700, fontSize: 11, textAlign: 'right', color: rowCol }}>
-        {isOpen ? '—' : r != null ? fmtR(r) : '—'}
-      </td>
-      {/* gross_r para comparar con backtest */}
-      <td style={{ padding: '4px 8px', fontSize: 9, textAlign: 'right', color: 'var(--text3)' }}>
-        {gross != null ? fmtR(gross) : '—'}
-      </td>
-    </tr>
-  )
-}
 
 // ── Live view ─────────────────────────────────────────────────────────────────
 
-function LiveView({ trades }: { trades: HtfTrade[] }) {
+function LiveView({ trades, dir }: { trades: HtfTrade[]; dir: 'Short' | 'Long' }) {
+  const [selId, setSelId] = useState<number | null>(trades.length ? trades[trades.length - 1].id : null)
+
+  const sel = trades.find(t => t.id === selId) ?? trades[trades.length - 1] ?? null
+  const selTrade: Trade | null = sel ? htfToTrade(sel, trades.indexOf(sel) + 1, dir) : null
+
   if (!trades.length) return (
     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 11 }}>
       Sin trades paper aún — el monitor Rust emitirá señales en cuanto detecte un patrón
     </div>
   )
 
-  const closed = trades.filter(t => !t.is_open)
-
-  // Breakdown por símbolo
-  const syms = ['BTC', 'ETH', 'SOL']
-  const bySymRows = syms.map(s => {
-    const g    = closed.filter(t => t.symbol.startsWith(s))
-    const wins = g.filter(t => (t.result_r ?? 0) > 0).length
-    const tot  = g.reduce((a, t) => a + (t.result_r ?? 0), 0)
-    return { s, n: g.length, wr: g.length ? wins / g.length * 100 : 0, tot, ar: g.length ? tot / g.length : 0 }
-  }).filter(r => r.n > 0)
-
-  // Breakdown por patrón (sig)
-  const sigMap = new Map<string, { wins: number; n: number; tot: number }>()
-  for (const t of closed) {
-    const e = sigMap.get(t.sig) ?? { wins: 0, n: 0, tot: 0 }
-    e.n++
-    e.tot += t.result_r ?? 0
-    if ((t.result_r ?? 0) > 0) e.wins++
-    sigMap.set(t.sig, e)
-  }
-  const sigRows = [...sigMap.entries()]
-    .map(([sig, e]) => ({ sig, ...e, wr: e.n ? e.wins / e.n * 100 : 0, ar: e.n ? e.tot / e.n : 0 }))
-    .sort((a, b) => b.tot - a.tot)
-
   return (
-    <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+    <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
 
-      {/* ── Trade list ───────────────────────────────────────────────── */}
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
-        <thead>
-          <tr style={{ borderBottom: '1px solid var(--border)' }}>
-            {['Fecha UTC', 'Sym', 'Patrón', 'Sesión', 'Entry', 'Stop%', 'Razón', 'Net R', 'Gross R'].map(h => (
-              <th key={h} style={{ padding: '4px 6px', color: 'var(--text3)', fontWeight: 500, fontSize: 7.5, textTransform: 'uppercase', letterSpacing: .6, textAlign: h === 'Fecha UTC' || h === 'Sym' || h === 'Patrón' || h === 'Sesión' ? 'left' : 'right' }}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {[...trades].reverse().map((t, i) => <TradeRow key={t.id} t={t} idx={i} />)}
-        </tbody>
-      </table>
+      {/* ── Trade list (izquierda) ───────────────────────────────────── */}
+      <div style={{ width: 340, flexShrink: 0, overflow: 'auto', borderRight: '1px solid var(--border)' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, background: 'var(--bg2)', zIndex: 1 }}>
+              {['Fecha', 'Sym', 'Patrón', 'R'].map(h => (
+                <th key={h} style={{ padding: '4px 6px', color: 'var(--text3)', fontWeight: 500, fontSize: 7.5, textTransform: 'uppercase', letterSpacing: .6, textAlign: h === 'R' ? 'right' : 'left' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[...trades].reverse().map((t, i) => {
+              const isOpen  = t.is_open
+              const r       = t.result_r
+              const isWin   = !isOpen && r != null && r > 0
+              const rowCol  = isOpen ? 'var(--blue)' : isWin ? 'var(--green)' : r != null ? 'var(--red)' : 'var(--text3)'
+              const isSel   = t.id === selId
+              const d       = new Date(t.entry_at)
+              const dateFmt = `${d.getUTCDate()} ${d.toLocaleString('en', { month: 'short', timeZone: 'UTC' })} ${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`
+              return (
+                <tr key={t.id}
+                  onClick={() => setSelId(t.id)}
+                  style={{
+                    cursor: 'pointer',
+                    background: isSel ? 'var(--bg3)' : i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent',
+                    borderLeft: `2px solid ${isSel ? 'var(--blue)' : rowCol}`,
+                    outline: isSel ? '1px solid var(--border2)' : 'none',
+                  }}>
+                  <td style={{ padding: '4px 8px', color: 'var(--text3)', fontSize: 8.5 }}>{dateFmt}</td>
+                  <td style={{ padding: '4px 6px', fontWeight: 700, fontSize: 10 }}>{t.symbol.replace('USDT','')}</td>
+                  <td style={{ padding: '4px 6px', color: 'var(--text2)', fontSize: 8.5 }}>{t.sig}</td>
+                  <td style={{ padding: '4px 8px', fontWeight: 700, fontSize: 11, textAlign: 'right', color: rowCol }}>
+                    {isOpen ? <span style={{ color: 'var(--blue)', fontSize: 9 }}>OPEN</span> : r != null ? fmtR(r) : '—'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
 
-      {/* ── Breakdowns ───────────────────────────────────────────────── */}
-      {closed.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0, borderTop: '1px solid var(--border)', marginTop: 4 }}>
+      {/* ── Gráfico (derecha) ────────────────────────────────────────── */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minWidth: 0 }}>
+        <TradeChart trade={selTrade} />
+      </div>
 
-          {/* Por símbolo */}
-          <div style={{ padding: '8px 10px', borderRight: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 7.5, textTransform: 'uppercase', letterSpacing: .8, color: 'var(--text3)', marginBottom: 6, fontWeight: 600 }}>Por símbolo</div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 9 }}>
-              <thead><tr>{['', 'n', 'WR', 'Avg R', 'Tot R'].map(h => <th key={h} style={{ padding: '2px 4px', color: 'var(--text3)', fontWeight: 500, fontSize: 7.5, textAlign: h === '' ? 'left' : 'right' }}>{h}</th>)}</tr></thead>
-              <tbody>
-                {bySymRows.map(r => (
-                  <tr key={r.s}>
-                    <td style={{ padding: '3px 4px', fontWeight: 700 }}>{r.s}</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', color: 'var(--text3)' }}>{r.n}</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', color: r.wr >= 55 ? 'var(--green)' : r.wr >= 45 ? 'var(--yellow)' : 'var(--red)', fontWeight: 600 }}>{r.wr.toFixed(0)}%</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', color: rC(r.ar) }}>{fmtR(r.ar)}</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', color: rC(r.tot), fontWeight: 600 }}>{fmtR(r.tot)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Por patrón */}
-          <div style={{ padding: '8px 10px' }}>
-            <div style={{ fontSize: 7.5, textTransform: 'uppercase', letterSpacing: .8, color: 'var(--text3)', marginBottom: 6, fontWeight: 600 }}>Por patrón</div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 9 }}>
-              <thead><tr>{['', 'n', 'WR', 'Avg R', 'Tot R'].map(h => <th key={h} style={{ padding: '2px 4px', color: 'var(--text3)', fontWeight: 500, fontSize: 7.5, textAlign: h === '' ? 'left' : 'right' }}>{h}</th>)}</tr></thead>
-              <tbody>
-                {sigRows.map(r => (
-                  <tr key={r.sig}>
-                    <td style={{ padding: '3px 4px', color: 'var(--text2)', fontSize: 8.5 }}>{r.sig}</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', color: 'var(--text3)' }}>{r.n}</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', color: r.wr >= 55 ? 'var(--green)' : r.wr >= 45 ? 'var(--yellow)' : 'var(--red)', fontWeight: 600 }}>{r.wr.toFixed(0)}%</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', color: rC(r.ar) }}>{fmtR(r.ar)}</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', color: rC(r.tot), fontWeight: 600 }}>{fmtR(r.tot)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -254,7 +223,7 @@ export default function HTFModuleView() {
         {sub === 'live' ? (
           loading
             ? <div className="mod-center">Cargando…</div>
-            : <LiveView trades={trades} />
+            : <LiveView trades={trades} dir="Short" />
         ) : (
           <BacktestView strategy="shorts" onStats={setBtStats} />
         )}
