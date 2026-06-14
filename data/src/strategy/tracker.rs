@@ -28,9 +28,7 @@ struct TrackedSignal {
 impl TrackedSignal {
     fn new(symbol: &str, signal: StrategySignal, open_price: f64) -> Self {
         let tp1_price = match (signal.entry_price, signal.stop_price, signal.side) {
-            (Some(entry), Some(stop), Some(Side::Long)) => {
-                Some(entry + 1.5 * (entry - stop).abs())
-            }
+            (Some(entry), Some(stop), Some(Side::Long)) => Some(entry + 1.5 * (entry - stop).abs()),
             (Some(entry), Some(stop), Some(Side::Short)) => {
                 Some(entry - 1.5 * (entry - stop).abs())
             }

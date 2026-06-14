@@ -1,4 +1,4 @@
-import type { RbfSignal } from './supabase'
+import type { RbfSignal, AmdSignal, BeSignal } from './supabase'
 import type { Trade } from './types'
 import { RISK_USD, ACCOUNT } from './types'
 
@@ -93,6 +93,94 @@ export function fmtDate(ms: number) {
   const d = new Date(ms)
   return `${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')} ${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`
 }
+
+// ─── AMD converter ────────────────────────────────────────────────────────────
+
+export function amdSignalToTrade(sig: AmdSignal, idx: number, equity: number): Trade {
+  const entry   = sig.entry_price ?? 1
+  const stop    = sig.stop_price  ?? entry
+  const stopPct = Math.abs(entry - stop) / entry
+  const r       = sig.result_r ?? null
+  const pnlUsd  = r != null ? r * RISK_USD : 0
+  const isOpen  = sig.result_r == null
+
+  const durationMin = (() => {
+    if (!sig.closed_at_ms || !sig.timestamp_ms) return null
+    return Math.floor((sig.closed_at_ms - sig.timestamp_ms) / 60000)
+  })()
+
+  return {
+    idx, id: sig.id, sym: sig.symbol, dir: sig.direction,
+    session: sig.session, score: null,
+    entry, stop, target: sig.target_price ?? entry, exit: 0,
+    resultR: r, pnlUsd: Math.round(pnlUsd * 100) / 100,
+    riskUsd: Math.round(RISK_USD * 10000) / 10000,
+    stopPct: Math.round(stopPct * 100000) / 1000,
+    equity,
+    reason: sig.exit_reason ?? (isOpen ? 'OPEN' : '?'),
+    tsMs: sig.timestamp_ms, ts: Math.floor(sig.timestamp_ms / 1000),
+    closedAt: sig.closed_at_ms ? new Date(sig.closed_at_ms).toISOString() : null,
+    regime: '', sessionPhase: '', evidence: [], confluenceFlags: [], vetoReason: '',
+    cvdInRange: null, vr: null, priceVsVwap: null, funding: null,
+    cvdSlope: null, obi: null, dz: null,
+    rangePct: null, rangeBars: null, rangeTouch: null, durationMin, isOpen,
+  }
+}
+
+export function buildAmdTrades(signals: AmdSignal[]): Trade[] {
+  let equity = ACCOUNT
+  return signals.map((sig, i) => {
+    const t = amdSignalToTrade(sig, i + 1, equity)
+    equity = Math.round((equity + t.pnlUsd) * 100) / 100
+    return t
+  })
+}
+
+// ─── BE converter ─────────────────────────────────────────────────────────────
+
+export function beSignalToTrade(sig: BeSignal, idx: number, equity: number): Trade {
+  const entry   = sig.entry_price ?? 1
+  const stop    = sig.stop_price  ?? entry
+  const stopPct = Math.abs(entry - stop) / entry
+  const r       = sig.result_r ?? null
+  const pnlUsd  = r != null ? r * RISK_USD : 0
+  const isOpen  = sig.result_r == null
+
+  const durationMin = (() => {
+    if (!sig.closed_at || !sig.timestamp_ms) return null
+    try { return Math.floor((new Date(sig.closed_at).getTime() - sig.timestamp_ms) / 60000) }
+    catch { return null }
+  })()
+
+  return {
+    idx, id: sig.id, sym: sig.symbol, dir: 'Short',
+    session: sig.session, score: null,
+    entry, stop, target: sig.target_price ?? entry, exit: 0,
+    resultR: r, pnlUsd: Math.round(pnlUsd * 100) / 100,
+    riskUsd: Math.round(RISK_USD * 10000) / 10000,
+    stopPct: Math.round(stopPct * 100000) / 1000,
+    equity,
+    reason: sig.exit_reason ?? (isOpen ? 'OPEN' : '?'),
+    tsMs: sig.timestamp_ms, ts: Math.floor(sig.timestamp_ms / 1000),
+    closedAt: sig.closed_at,
+    regime: '', sessionPhase: '', evidence: [], confluenceFlags: [], vetoReason: '',
+    cvdInRange: sig.range_cvd, vr: sig.vr_at_breakout, priceVsVwap: null,
+    funding: null, cvdSlope: null, obi: null, dz: null,
+    rangePct: sig.range_pct, rangeBars: sig.range_bars, rangeTouch: null,
+    durationMin, isOpen,
+  }
+}
+
+export function buildBeTrades(signals: BeSignal[]): Trade[] {
+  let equity = ACCOUNT
+  return signals.map((sig, i) => {
+    const t = beSignalToTrade(sig, i + 1, equity)
+    equity = Math.round((equity + t.pnlUsd) * 100) / 100
+    return t
+  })
+}
+
+// ─── Stats helpers ────────────────────────────────────────────────────────────
 
 export function winRate(trades: Trade[]) {
   const closed = trades.filter(t => !t.isOpen)

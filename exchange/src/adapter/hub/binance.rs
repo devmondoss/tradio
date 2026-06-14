@@ -1,5 +1,6 @@
 use crate::{
-    Event, FundingRate, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs,
+    Event, FundingRate, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade,
+    UnixMs,
     adapter::limiter::DynamicRateLimiterConfig,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
@@ -181,7 +182,11 @@ impl BinanceHandle {
         range: Option<(UnixMs, UnixMs)>,
     ) -> Result<Vec<FundingRate>, AdapterError> {
         self.request_port
-            .request(move |reply| BinanceCommand::FundingRate { ticker, range, reply })
+            .request(move |reply| BinanceCommand::FundingRate {
+                ticker,
+                range,
+                reply,
+            })
             .await
     }
 

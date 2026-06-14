@@ -1,4 +1,4 @@
-﻿use crate::strategy::{adapter, types::*};
+use crate::strategy::{adapter, types::*};
 
 const MAX_STOP_ATR_MULT: f64 = 1.5;
 
@@ -53,7 +53,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         && ob.microprice.map(|m| m >= px).unwrap_or(true)
         && !flow.ask_wall_nearby;
 
-    if long_location && long_flow && long_book && adapter::basis_ok(flow.basis, true)
+    if long_location
+        && long_flow
+        && long_book
+        && adapter::basis_ok(flow.basis, true)
         && adapter::funding_long_ok(flow.funding_rate)
     {
         let mut targets = vp.hvn_nearby.clone();
@@ -128,12 +131,16 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     // bid_wall_nearby = support immediately below → blocks the breakdown path
     // microprice gate relaxed when CVD slope is strongly negative (overwhelming bear flow)
-    let strong_bear_flow = flow.cvd_slope.unwrap_or(0.0) < -5.0 || matches!(ctx.regime, Regime::Expansion | Regime::TrendDown);
+    let strong_bear_flow = flow.cvd_slope.unwrap_or(0.0) < -5.0
+        || matches!(ctx.regime, Regime::Expansion | Regime::TrendDown);
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps
         && (ob.microprice.map(|m| m <= px).unwrap_or(true) || strong_bear_flow)
         && !flow.bid_wall_nearby;
 
-    if short_location && short_flow && short_book && adapter::basis_ok(flow.basis, false)
+    if short_location
+        && short_flow
+        && short_book
+        && adapter::basis_ok(flow.basis, false)
         && adapter::funding_short_ok(flow.funding_rate)
     {
         let mut targets = vp.hvn_nearby.clone();

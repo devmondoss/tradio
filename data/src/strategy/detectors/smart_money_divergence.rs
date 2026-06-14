@@ -1,4 +1,4 @@
-﻿use crate::institutional::{DivergenceSignal, FundingRegime, InstitutionalContext, OiTrendDir};
+use crate::institutional::{DivergenceSignal, FundingRegime, InstitutionalContext, OiTrendDir};
 use crate::strategy::types::*;
 
 // Note: toxic_flow_gate is evaluated once in the router before calling any detector.
@@ -50,12 +50,12 @@ pub fn detect(
 
     // Sprint 2 — OI rising on negative delta = someone adding positions while sellers are active.
     // Used in SHORT branch: institutions absorbing dip-sells (bullish-ish undercurrent in a short).
-    let oi_rising_on_negative_delta = flow.oi_delta.unwrap_or(0.0) > 0.0
-        && flow.delta.unwrap_or(0.0) < -0.20 * atr;
+    let oi_rising_on_negative_delta =
+        flow.oi_delta.unwrap_or(0.0) > 0.0 && flow.delta.unwrap_or(0.0) < -0.20 * atr;
 
     // For LONG: OI rising on positive delta = direct accumulation confirmation.
-    let oi_rising_on_positive_delta = flow.oi_delta.unwrap_or(0.0) > 0.0
-        && flow.delta.unwrap_or(0.0) > 0.20 * atr;
+    let oi_rising_on_positive_delta =
+        flow.oi_delta.unwrap_or(0.0) > 0.0 && flow.delta.unwrap_or(0.0) > 0.20 * atr;
 
     if strong_divergence_short && funding_confirms_short && oi_confirms && at_resistance && cvd_weak
     {
@@ -74,15 +74,21 @@ pub fn detect(
             ];
             // Fase A — OB logging (peso 0)
             if let Some(ref obs) = ctx.order_blocks {
-                if obs.nearest_bearish.is_some() { evidence.push("bearish_ob_at_divergence".into()); }
+                if obs.nearest_bearish.is_some() {
+                    evidence.push("bearish_ob_at_divergence".into());
+                }
             }
             // Fase A — LiqMap logging (peso 0)
             if let Some(ref inst) = ctx.institutional {
                 if let Some(ref lm) = inst.liq_map {
-                    if lm.primary_target_below.is_some() { evidence.push("liq_target_below".into()); }
+                    if lm.primary_target_below.is_some() {
+                        evidence.push("liq_target_below".into());
+                    }
                 }
             }
-            if oi_rising_on_negative_delta { evidence.push("oi_rising_on_negative_delta".into()); }
+            if oi_rising_on_negative_delta {
+                evidence.push("oi_rising_on_negative_delta".into());
+            }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::SmartMoneyDivergence),
@@ -154,15 +160,21 @@ pub fn detect(
             ];
             // Fase A — OB logging (peso 0)
             if let Some(ref obs) = ctx.order_blocks {
-                if obs.nearest_bullish.is_some() { evidence.push("bullish_ob_at_divergence".into()); }
+                if obs.nearest_bullish.is_some() {
+                    evidence.push("bullish_ob_at_divergence".into());
+                }
             }
             // Fase A — LiqMap logging (peso 0)
             if let Some(ref inst) = ctx.institutional {
                 if let Some(ref lm) = inst.liq_map {
-                    if lm.primary_target_above.is_some() { evidence.push("liq_target_above".into()); }
+                    if lm.primary_target_above.is_some() {
+                        evidence.push("liq_target_above".into());
+                    }
                 }
             }
-            if oi_rising_on_positive_delta { evidence.push("oi_accumulation_confirmed".into()); }
+            if oi_rising_on_positive_delta {
+                evidence.push("oi_accumulation_confirmed".into());
+            }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::SmartMoneyDivergence),
@@ -296,7 +308,7 @@ mod tests {
                 dominant_side: LiqSide::Longs,
                 cascade_detected: false,
                 last_event_ms: None,
-            total_zscore: None,
+                total_zscore: None,
             },
             ls_ratio: LsRatioContext {
                 top_traders_long_pct: 0.38, // smart money predominantly short

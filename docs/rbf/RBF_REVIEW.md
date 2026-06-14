@@ -1,124 +1,181 @@
-# RBF Review — App de revisión y backtest
+# RBF Trade Reviewer — Documentación
 
-*Última revisión: 2026-06-10*
-
----
-
-## Qué es
-
-`apps/rbf-review/` es una app React/TypeScript/Vite para revisar señales RBF — tanto el paper trading
-live como backtests históricos. Corre localmente con `npm run dev`.
+**Última actualización:** 2026-06-13  
+**Ruta:** `apps/rbf-review/`  
+**Stack:** React + Vite + TypeScript + Python backend
 
 ---
 
-## Cómo correr
-
-```bash
-cd apps/rbf-review
-npm install     # primera vez
-npm run dev     # inicia Vite + middleware Python en http://localhost:5173
-```
-
-El servidor Vite intercepta `/api/backtest` y ejecuta `api/backtest_script.py` como subprocess.
-No hace falta uvicorn ni ningún proceso separado.
-
----
-
-## Vistas
-
-### Live
-
-Muestra los trades del paper trader RBF cargados desde Supabase (`rbf_signals`).
-
-- **TradeList** — panel izquierdo: lista de todos los trades con color verde/rojo, sesión, R obtenido
-  - Cabecera con capital: `$500.00 → $607.050 (+21.41%)` en badge con contraste
-- **TradeChart** — panel central: gráfico TradingView Lightweight con velas M5, cajas SL/TP, punto de entrada
-  - Botón `⊕` (esquina superior derecha) para resetear el zoom Y cuando el precio de un activo
-    difiere mucho del anterior (BTC ~70k vs BNB ~590)
-- **TradeDetail** — panel derecho: métricas del trade seleccionado (score, confluencia, vr, dz, etc.)
-
-### Backtest
-
-Corre el detector RBF sobre los datos históricos de Supabase (`*_bars`).
-
-- **Pre-run:** muestra "Datos en BD desde: 5 jun (~5d)" consultando el primer bar de `btc_bars`
-- **Selector de días:** botones dinámicos — solo muestra días que realmente existen en la BD
-  (si hay 5 días de datos, muestra `1d | 3d | 5d`, no `7d | 14d | 30d`)
-- **Post-run:** cabecera con `{n} trades · {actualDays}d datos` donde `actualDays` viene del
-  script Python (primer bar real encontrado entre los 5 símbolos)
-
-### Stats
-
-Tabla de rendimiento desglosada por sesión, símbolo y dirección.
-
-- **Capital summary** — 4 celdas: Capital Inicial / Capital Final / Ganancia / Retorno %
-- **Equity curve** — SVG escalado al contenedor, puntos por trade, línea base VWAP-style
-- **3 tablas:** Por Sesión / Por Símbolo / Long vs Short con WR%, AvgR, TotR, PnL
-
----
-
-## Parámetros del backtest (backtest_script.py)
+## 1. Arquitectura general
 
 ```
-Capital:          $500    Riesgo/trade:  $10 (2% fijo)
-VR mínimo:        3.0×    Sesiones OK:   London, LondonNyOverlap, NewYork
-Breakout ext min: 0.1%    VWAP gate:     max 0.3% bajo VWAP
-Trail ATR:        1.2×    Activa trail Short: 1.75R  (calibrado 2026-06-10)
-                          Activa trail Long:  1.5R
-Time stop:        off     Cooldown:      60 barras
-RR Short:         2.0     Solo Shorts    (Longs desactivados — WR=14%)
+App.tsx
+├── Tab: Overview  → DashboardView
+├── Tab: RBF       → RBFModuleView (live + stats)
+├── Tab: HTF       → HTFModuleView (backtest HTF shorts) — ver docs/htf/
+├── Tab: AMD       → StrategyModuleView strategy="amd"
+└── Tab: BE        → StrategyModuleView strategy="be"
 ```
 
-**Calibración trailing (2026-06-10):** 4 Short trailing cases salieron a +0.90–1.32R cuando el
-target era 2R. TRAIL_ACTIVATE_R_SHORT subido de 1.5 a 1.75 para reducir exits prematuros.
-
-**Live (2026-06-02 → 2026-06-10):** 72 trades en BTC/ETH/BNB/SOL/XRP.
-Ver [RBF_CALIBRACION_POR_ACTIVO.md](RBF_CALIBRACION_POR_ACTIVO.md) para análisis por símbolo.
-
-El script no replica fielmente todos los filtros del monitor live (le faltan `obi_l5`, `cvd_slope`,
-`stacked_imb` que son NULL en el backfill histórico). Es una aproximación válida para OHLCV + flow.
+El backend Python corre como subprocess vía proxy Vite (`vite.config.ts`):
+- `/api/backtest` → `backtest_script.py`
+- `/api/backtest/shorts` → `shorts_htf_backtest.py`
 
 ---
 
-## Arquitectura
+## 2. Vistas
 
-```
-apps/rbf-review/
-├── src/
-│   ├── views/
-│   │   ├── LiveView.tsx       — layout 3 paneles (TradeList + TradeChart + TradeDetail)
-│   │   ├── BacktestView.tsx   — pre-run / loading / post-run, llama a /api/backtest
-│   │   └── StatsView.tsx      — CapitalSummary + EquityChart + 3 StatTables
-│   ├── components/
-│   │   ├── TradeList.tsx      — lista scrollable con header de capital
-│   │   ├── TradeChart.tsx     — gráfico Lightweight Charts + botón ⊕
-│   │   └── TradeDetail.tsx    — métricas del trade seleccionado
-│   └── lib/
-│       ├── types.ts           — Trade, ACCOUNT ($500)
-│       ├── supabase.ts        — cliente Supabase
-│       └── utils.ts           — fmtR, fmtUsd, sesLabel, winRate, avgR...
-└── api/
-    ├── server.ts              — middleware Vite que intercepta /api/backtest
-    └── backtest_script.py     — detector RBF en Python puro (stdlib + urllib)
-```
+### RBFModuleView
+Subtabs: `live` | `stats`
+
+- **live**: lista de trades en tiempo real desde Supabase `rbf_signals`. Click en trade → TradeChart.
+- **stats**: StatsView con equity curve SVG + R Distribution + tablas por sesión/símbolo/exit reason.
+
+BacktestView fue eliminado de RBF — solo existe en HTFModuleView.
+
+### HTFModuleView
+Módulo independiente para el sistema HTF shorts. Renderiza `<BacktestView strategy="shorts" />`.  
+Ver documentación completa en `docs/htf/`.
+
+### BacktestView
+Strategies: `'rbf'` | `'sweep'` | `'shorts'`  
+Auto-run al cargar. Presets de días configurables por strategy.
 
 ---
 
-## Cómo interpreta los datos
+## 3. TradeChart — overlay visual
 
-- `ACCOUNT = 500` — capital inicial fijo en `lib/types.ts`
-- `RISK_USD = 10` — riesgo por trade (2% de 500)
-- `equity` — acumulado de `ACCOUNT + sum(pnlUsd)` recalculado al cargar
-- `isOpen` — trades con `result_r = null` (posición viva en el monitor)
-- `resultR` — R realizado: `2.0` = target alcanzado, `-1.0` = stop
+**Archivo:** `apps/rbf-review/src/components/TradeChart.tsx`
+
+### 3.1 Fetch de velas
+
+```typescript
+// binance.ts — fetchKlines con cache y endMs opcional
+fetchKlines(symbol, tsMs, totalLimit, extraBars, endMs?)
+
+// Cálculo de límites:
+closedAtSec   = new Date(trade.closedAt).getTime() / 1000
+durationBars  = ceil((closedAtSec - trade.ts) / 60) + 30
+extraBars     = rangeBars + 220
+totalLimit    = min(extraBars + durationBars, 1500)
+```
+
+Trades largos (ej. 16h) fetchan hasta 1500 velas para cubrir el SL/TP real.
+
+### 3.2 Vista inicial
+
+```
+from: trade.ts - (rangeBars + 100) * 60   ← 100 velas de contexto previo
+to:   closedAtSec + 120 * 60              ← 120 velas post-exit para ver reacción
+```
+
+### 3.3 Borde derecho de la caja (exitTs)
+
+Busca la **primera vela real** que tocó el nivel de exit, según dirección y tipo de cierre:
+
+| Dirección | Exit type  | Condición de toque      |
+|-----------|------------|-------------------------|
+| Short     | STOP_LOSS  | `c.high >= t.stop`      |
+| Short     | TP / CVD   | `c.low  <= t.exit`      |
+| Long      | STOP_LOSS  | `c.low  <= t.stop`      |
+| Long      | TP / CVD   | `c.high >= t.exit`      |
+
+Reglas:
+- Excluye la vela de entry (`c.time > t.ts`, no `>=`)
+- Sin tolerancia de precio (exacto, no `* 1.001`)
+- `exitTs = firstTouch.time + 60` (+1 vela para ver la mecha completa)
+- Fallback: `closedAt` → `ts + durationMin * 60` → `ts + 90min`
+
+### 3.4 Caja de riesgo (roja)
+
+- Cubre zona `entry → stop`
+- Alpha 7% en wins (apenas visible), 25% en losses
+- Texto "STOP LOSS" centrado, 20% opacity wins / 60% losses
+
+### 3.5 Caja de profit (verde)
+
+**`exitedEarly`** = `t.exit > 0 && reason !== 'TAKE_PROFIT' && reason !== 'STOP_LOSS'`  
+No requiere `isWin` — aplica a cualquier exit intermedio (CVD_EXHAUSTION, EXPIRED, etc.)
+
+| Caso | Altura de la caja |
+|------|-------------------|
+| `TAKE_PROFIT` | entry → target completo |
+| `STOP_LOSS` | entry → target (potencial, se ve como zona) |
+| `CVD_EXHAUSTION` / `EXPIRED` | entry → exit real |
+
+Cuando `exitedEarly`:
+- Caja verde termina en `t.exit`
+- Línea fantasma tenue (25% opacity, dashed) muestra dónde estaba el TP completo
+- Texto dentro = razón de exit (`"CVD EXHAUSTION"`)
+
+### 3.6 Línea de exit
+
+Solo cuando `exitedEarly`. Para TP/SL el borde de la caja es el indicador visual.  
+Color: verde si win, rojo si loss.  
+Label: `"CVD EXHAUSTION  60517.3"` a la derecha del borde.
+
+### 3.7 Labels de precio (posición por dirección)
+
+| Label | Short | Long |
+|-------|-------|------|
+| `ENTRY` | `eY - 3` | `eY - 3` |
+| `SL` | `sY - 3` (encima) | `sY + 12` (debajo) |
+| `TP` | `tY + 12` (debajo) | `tY - 3` (encima) |
+| `SHORT`/`LONG` | `eY - 16` siempre | `eY - 16` siempre |
+| Badge R/PnL | `max(boxTop - 8, 16)` — clampea para no salir del canvas |
+
+### 3.8 Herramientas de dibujo (toolbar izquierda)
+
+| Herramienta | Función |
+|-------------|---------|
+| cursor | selección y arrastre de dibujos existentes |
+| shortpos / longpos | posición con SL/TP/time draggable |
+| trendline / ray / extline | líneas de tendencia |
+| hline / vline | niveles horizontales y verticales |
+| rect | rectángulos de zonas |
+| arrow / text | anotaciones |
+| measure | medida R/% entre dos puntos |
+| eraser | borrador selectivo |
+| ⌖ imán | snap a OHLC de la vela más cercana |
+| ⊕ (top-right) | reset zoom / fitContent |
 
 ---
 
-## Notas de UX
+## 4. StatsView — R Distribution
 
-- El selector de días consulta Supabase al montar para detectar cuántos días hay realmente.
-  Si la BD tiene 5 días, no tiene sentido mostrar el botón "30d".
-- El botón `⊕` en TradeChart existe porque BTC cotiza ~70k y BNB ~590 — al cambiar de activo
-  el eje Y queda desescalado. El botón llama a `fitContent()` + `autoScale: true`.
-- `actualDays` vs `days`: el script Python retorna cuántos días reales encontró. Si pediste
-  30d pero solo hay 5d de barras, la cabecera muestra "5d datos (pedido 30d)" en amarillo.
+Dots por cada trade posicionados en su R exacto:
+- Rojo = STOP_LOSS
+- Azul = TRAILING_STOP / CVD_EXHAUSTION
+- Verde = TAKE_PROFIT
+
+Leyenda: n, %, avg R, total R por tipo de exit.
+
+---
+
+## 5. Supabase realtime
+
+`App.tsx` subscribe a `rbf_signals` con `postgres_changes`:
+- `INSERT` → append al state
+- `UPDATE` → replace por id
+
+90 días de historia en el query inicial. Símbolos: BTC, ETH, BNB, SOL, XRP.
+
+---
+
+## 6. Archivos clave
+
+| Archivo | Descripción |
+|---------|-------------|
+| `apps/rbf-review/src/App.tsx` | Tabs + Supabase realtime |
+| `apps/rbf-review/src/views/RBFModuleView.tsx` | live + stats subtabs |
+| `apps/rbf-review/src/views/HTFModuleView.tsx` | módulo HTF independiente |
+| `apps/rbf-review/src/views/BacktestView.tsx` | runner backtest UI |
+| `apps/rbf-review/src/views/StatsView.tsx` | equity curve + R distribution |
+| `apps/rbf-review/src/views/LiveView.tsx` | lista trades + chart |
+| `apps/rbf-review/src/components/TradeChart.tsx` | chart individual + overlay |
+| `apps/rbf-review/src/components/FilterBar.tsx` | filtros por sesión/símbolo/dirección |
+| `apps/rbf-review/src/lib/binance.ts` | fetchKlines con cache + endMs |
+| `apps/rbf-review/src/lib/supabase.ts` | cliente + tipos RbfSignal |
+| `apps/rbf-review/src/lib/utils.ts` | buildTrades, fmtR, applyFilters |
+| `apps/rbf-review/vite.config.ts` | proxy /api/backtest/* → scripts Python |
+| `docs/htf/HTF_SHORTS_SISTEMA.md` | documentación completa del sistema HTF |

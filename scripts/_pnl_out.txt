@@ -1,0 +1,95 @@
+Trades cerrados: 72
+
+  #  Fecha             Sym       Dir     Ses              Sc       R      PnL$    Balance
+------------------------------------------------------------------------------------------
+  1  2026-06-02 08:48  BTCUSDT   Short   London           None  +2.00R   +18.00$  $ 468.00 W
+  2  2026-06-02 10:11  BTCUSDT   Long    London           None  -1.00R    -9.00$  $ 459.00 L
+  3  2026-06-02 12:18  BTCUSDT   Short   London           None  +2.00R   +18.00$  $ 477.00 W
+  4  2026-06-02 16:36  BTCUSDT   Short   LondonNyOverlap  None  +2.00R   +18.00$  $ 495.00 W
+  5  2026-06-02 20:51  BTCUSDT   Long    NewYork          None  -1.00R    -9.00$  $ 486.00 L
+  6  2026-06-03 08:32  BTCUSDT   Long    London           None  -1.00R    -9.00$  $ 477.00 L
+  7  2026-06-03 09:48  BTCUSDT   Short   London           None  -1.00R    -9.00$  $ 468.00 L
+  8  2026-06-03 11:34  BTCUSDT   Short   London           None  +2.00R   +18.00$  $ 486.00 W
+  9  2026-06-03 13:25  BTCUSDT   Short   LondonNyOverlap  None  +2.00R   +18.00$  $ 504.00 W
+ 10  2026-06-03 16:01  BTCUSDT   Short   LondonNyOverlap  None  +2.00R   +18.00$  $ 522.00 W
+ 11  2026-06-04 12:48  BTCUSDT   Long    London           None  -1.00R    -9.00$  $ 513.00 L
+ 12  2026-06-04 16:30  BTCUSDT   Short   LondonNyOverlap  None  +2.00R   +18.00$  $ 531.00 W
+ 13  2026-06-05 08:55  BTCUSDT   Short   London           0   +2.00R   +18.00$  $ 549.00 W
+ 14  2026-06-05 10:44  BTCUSDT   Long    London           0   -1.00R    -9.00$  $ 540.00 L
+ 15  2026-06-05 13:20  BTCUSDT   Long    LondonNyOverlap  0   -1.00R    -9.00$  $ 531.00 L
+ 16  2026-06-06 08:27  BTCUSDT   Long    London           0   +1.00R    +8.97$  $ 539.97 W
+ 17  2026-06-06 09:47  BTCUSDT   Short   London           0   +1.32R   +11.91$  $ 551.89 W
+ 18  2026-06-06 11:02  BTCUSDT   Long    London           0   -1.00R    -9.00$  $ 542.89 L
+ 19  2026-06-06 12:03  BTCUSDT   Long    London           0   -0.05R    -0.41$  $ 542.48 L
+ 20  2026-06-06 16:19  BNBUSDT   Short   LondonNyOverlap  0   +2.00R   +18.00$  $ 560.48 W
+ 21  2026-06-07 08:02  BTCUSDT   Long    London           0   -1.00R    -9.00$  $ 551.48 L
+ 22  2026-06-07 08:05  ETHUSDT   Short   London           4   -1.00R    -9.00$  $ 542.48 L
+ 23  2026-06-07 08:36  SOLUSDT   Long    London           5   +1.80R   +16.20$  $ 558.68 W
+ 24  2026-06-07 09:47  ETHUSDT   Short   London           4   -1.00R    -9.00$  $ 549.68 L
+ 25  2026-06-07 09:47  BNBUSDT   Short   London           3   -1.00R    -9.00$  $ 540.68 L
+ 26  2026-06-07 11:36  BTCUSDT   Long    London           5   -0.05R    -0.41$  $ 540.26 L
+ 27  2026-06-07 11:38  ETHUSDT   Long    London           5   -1.00R    -9.00$  $ 531.26 L
+ 28  2026-06-07 12:07  BNBUSDT   Short   London           3   +2.00R   +18.00$  $ 549.26 W
+ 29  2026-06-07 14:17  SOLUSDT   Long    LondonNyOverlap  0   +1.02R    +9.21$  $ 558.47 W
+ 30  2026-06-07 14:18  ETHUSDT   Long    LondonNyOverlap  6   +1.80R   +16.20$  $ 574.67 W
+ 31  2026-06-07 14:18  BNBUSDT   Long    LondonNyOverlap  4   +1.80R   +16.20$  $ 590.87 W
+ 32  2026-06-07 15:30  BTCUSDT   Long    LondonNyOverlap  4   -0.07R    -0.63$  $ 590.24 L
+ 33  2026-06-07 15:39  BNBUSDT   Long    LondonNyOverlap  0   -1.00R    -9.00$  $ 581.24 L
+ 34  2026-06-07 15:45  ETHUSDT   Short   LondonNyOverlap  0   -1.00R    -9.00$  $ 572.24 L
+ 35  2026-06-08 08:00  BNBUSDT   Short   London           4   -1.00R    -9.00$  $ 563.24 L
+ 36  2026-06-08 08:01  ETHUSDT   Short   London           3   +2.00R   +18.00$  $ 581.24 W
+ 37  2026-06-08 09:03  BTCUSDT   Long    London           6   +1.80R   +16.20$  $ 597.44 W
+ 38  2026-06-08 10:17  BTCUSDT   Short   London           0   -0.01R    -0.11$  $ 597.33 L
+ 39  2026-06-08 10:27  BNBUSDT   Short   London           0   -1.00R    -9.00$  $ 588.33 L
+ 40  2026-06-08 11:10  SOLUSDT   Long    London           6   +1.80R   +16.20$  $ 604.53 W
+ 41  2026-06-08 11:36  BTCUSDT   Long    London           4   -1.00R    -9.00$  $ 595.53 L
+ 42  2026-06-08 12:01  BNBUSDT   Short   London           4   -1.00R    -9.00$  $ 586.53 L
+ 43  2026-06-08 12:57  BNBUSDT   Long    London           5   -1.00R    -9.00$  $ 577.53 L
+ 44  2026-06-08 13:29  BNBUSDT   Short   LondonNyOverlap  5   -1.00R    -9.00$  $ 568.53 L
+ 45  2026-06-08 15:01  BNBUSDT   Long    LondonNyOverlap  4   +1.80R   +16.20$  $ 584.73 W
+ 46  2026-06-08 15:12  BTCUSDT   Long    LondonNyOverlap  5   -1.00R    -9.00$  $ 575.73 L
+ 47  2026-06-08 16:21  ETHUSDT   Long    LondonNyOverlap  4   -1.00R    -9.00$  $ 566.73 L
+ 48  2026-06-08 16:55  SOLUSDT   Short   LondonNyOverlap  3   +2.00R   +18.00$  $ 584.73 W
+ 49  2026-06-09 08:06  SOLUSDT   Short   London           5   -0.30R    -2.70$  $ 582.02 L
+ 50  2026-06-09 08:07  BNBUSDT   Short   London           3   +2.00R   +18.00$  $ 600.02 W
+ 51  2026-06-09 09:16  ETHUSDT   Long    London           5   -1.00R    -9.00$  $ 591.02 L
+ 52  2026-06-09 10:56  BTCUSDT   Long    London           0   -1.00R    -9.00$  $ 582.02 L
+ 53  2026-06-09 10:56  SOLUSDT   Long    London           4   -1.00R    -9.00$  $ 573.02 L
+ 54  2026-06-09 11:14  BNBUSDT   Short   London           4   -1.00R    -9.00$  $ 564.02 L
+ 55  2026-06-09 11:14  ETHUSDT   Short   London           4   -1.00R    -9.00$  $ 555.02 L
+ 56  2026-06-09 11:58  SOLUSDT   Long    London           0   +1.80R   +16.20$  $ 571.22 W
+ 57  2026-06-09 12:03  BTCUSDT   Long    London           3   -0.40R    -3.59$  $ 567.64 L
+ 58  2026-06-09 12:59  SOLUSDT   Long    London           3   -0.06R    -0.54$  $ 567.09 L
+ 59  2026-06-09 12:59  ETHUSDT   Long    London           5   -1.00R    -9.00$  $ 558.09 L
+ 60  2026-06-09 13:37  BTCUSDT   Short   LondonNyOverlap  4   -1.00R    -9.00$  $ 549.09 L
+ 61  2026-06-09 14:04  BNBUSDT   Short   LondonNyOverlap  0   +0.80R    +7.22$  $ 556.31 W
+ 62  2026-06-09 15:55  BTCUSDT   Short   LondonNyOverlap  4   -2.42R   -21.78$  $ 534.53 L
+ 63  2026-06-09 16:19  SOLUSDT   Short   LondonNyOverlap  4   -2.26R   -20.34$  $ 514.19 L
+ 64  2026-06-09 20:42  XRPUSDT   Long    NewYork          4   -1.00R    -9.00$  $ 505.19 L
+ 65  2026-06-09 21:18  ETHUSDT   Short   NewYork          5   +1.32R   +11.90$  $ 517.09 W
+ 66  2026-06-09 21:19  SOLUSDT   Short   NewYork          4   +2.00R   +18.00$  $ 535.09 W
+ 67  2026-06-09 21:19  BTCUSDT   Short   NewYork          5   +1.25R   +11.25$  $ 546.34 W
+ 68  2026-06-10 08:03  SOLUSDT   Short   London           0   -1.00R    -9.00$  $ 537.34 L
+ 69  2026-06-10 09:19  BNBUSDT   Short   London           5   +1.00R    +9.00$  $ 546.34 W
+ 70  2026-06-10 09:19  BTCUSDT   Short   London           5   +1.00R    +9.00$  $ 555.34 W
+ 71  2026-06-10 11:25  BNBUSDT   Short   London           4   -1.00R    -9.00$  $ 546.34 L
+ 72  2026-06-10 15:48  BNBUSDT   Short   LondonNyOverlap  3   -1.00R    -9.00$  $ 537.34 L
+------------------------------------------------------------------------------------------
+  n=72  WR=40.3%  TotalR=+9.70R  PnL=+87.34$  Balance=537.34$
+  ROI=+19.4%   Wins=29  Losses=43
+
+Sesion                  n     WR    TotalR      PnL$
+-------------------------------------------------------
+London                 45    33%     +0.66R    +5.92$
+LondonNyOverlap        22    50%     +6.47R   +58.28$
+NewYork                 5    60%     +2.57R   +23.15$
+
+Symbol        n     WR    TotalR      PnL$
+---------------------------------------------
+BNBUSDT      17    41%     +1.40R   +12.62$
+BTCUSDT      32    41%     +6.38R   +57.40$
+ETHUSDT      11    27%     -2.88R   -25.90$
+SOLUSDT      11    55%     +5.80R   +52.23$
+XRPUSDT       1     0%     -1.00R    -9.00$
+
+CSV -> scripts/rbf_pnl_450.csv

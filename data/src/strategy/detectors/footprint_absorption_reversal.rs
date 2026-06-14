@@ -1,4 +1,4 @@
-﻿use crate::strategy::types::*;
+use crate::strategy::types::*;
 
 fn rr_ok(entry: f64, stop: f64, target: f64, cfg: &StrategyConfig) -> bool {
     let risk = (entry - stop).abs();
@@ -106,13 +106,19 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                         "seller_pressure_fading".into(),
                         "target_poc_or_vah".into(),
                     ];
-                    if flow.finish_action_bullish { ev.push("finish_action_bullish".into()); }
-                    if flow.big_trade_bullish { ev.push("big_trade_bullish".into()); }
+                    if flow.finish_action_bullish {
+                        ev.push("finish_action_bullish".into());
+                    }
+                    if flow.big_trade_bullish {
+                        ev.push("big_trade_bullish".into());
+                    }
                     ev
                 },
                 missing: {
                     let mut miss = vec![];
-                    if flow.unfinish_action_bearish { miss.push("unfinish_action_bearish_magnet_above".into()); }
+                    if flow.unfinish_action_bearish {
+                        miss.push("unfinish_action_bearish_magnet_above".into());
+                    }
                     miss
                 },
                 invalidation: vec![
@@ -164,13 +170,19 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                         "buyer_pressure_fading".into(),
                         "target_poc_or_val".into(),
                     ];
-                    if flow.finish_action_bearish { ev.push("finish_action_bearish".into()); }
-                    if flow.big_trade_bearish { ev.push("big_trade_bearish".into()); }
+                    if flow.finish_action_bearish {
+                        ev.push("finish_action_bearish".into());
+                    }
+                    if flow.big_trade_bearish {
+                        ev.push("big_trade_bearish".into());
+                    }
                     ev
                 },
                 missing: {
                     let mut miss = vec![];
-                    if flow.unfinish_action_bullish { miss.push("unfinish_action_bullish_magnet_below".into()); }
+                    if flow.unfinish_action_bullish {
+                        miss.push("unfinish_action_bullish_magnet_below".into());
+                    }
                     miss
                 },
                 invalidation: vec![

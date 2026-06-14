@@ -72,15 +72,34 @@ impl SpeedOfTapeIndicator {
                     .sum::<f64>()
                     / window.len() as f64
             };
-            let ratio = if mean > 0.0 { (cur_vol / mean) as f32 } else { 1.0 };
-            let direction = dp.kline.volume.buy_sell().map(|(b, s)| {
-                let bf = f32::from(b);
-                let sf = f32::from(s);
-                if bf > sf { 1.0 } else if sf > bf { -1.0 } else { 0.0 }
-            }).unwrap_or(0.0);
+            let ratio = if mean > 0.0 {
+                (cur_vol / mean) as f32
+            } else {
+                1.0
+            };
+            let direction = dp
+                .kline
+                .volume
+                .buy_sell()
+                .map(|(b, s)| {
+                    let bf = f32::from(b);
+                    let sf = f32::from(s);
+                    if bf > sf {
+                        1.0
+                    } else if sf > bf {
+                        -1.0
+                    } else {
+                        0.0
+                    }
+                })
+                .unwrap_or(0.0);
             result.insert(
                 **time,
-                SpeedPoint { ratio, direction, anomaly: ratio > ANOMALY_THRESHOLD },
+                SpeedPoint {
+                    ratio,
+                    direction,
+                    anomaly: ratio > ANOMALY_THRESHOLD,
+                },
             );
         }
         result
@@ -97,18 +116,41 @@ impl SpeedOfTapeIndicator {
             let mean = if window.is_empty() {
                 cur_vol
             } else {
-                window.iter()
+                window
+                    .iter()
                     .map(|d| f64::from(f32::from(d.kline.volume.total())))
                     .sum::<f64>()
                     / window.len() as f64
             };
-            let ratio = if mean > 0.0 { (cur_vol / mean) as f32 } else { 1.0 };
-            let direction = dp.kline.volume.buy_sell().map(|(b, s)| {
-                let bf = f32::from(b);
-                let sf = f32::from(s);
-                if bf > sf { 1.0 } else if sf > bf { -1.0 } else { 0.0 }
-            }).unwrap_or(0.0);
-            result.insert(i as u64, SpeedPoint { ratio, direction, anomaly: ratio > ANOMALY_THRESHOLD });
+            let ratio = if mean > 0.0 {
+                (cur_vol / mean) as f32
+            } else {
+                1.0
+            };
+            let direction = dp
+                .kline
+                .volume
+                .buy_sell()
+                .map(|(b, s)| {
+                    let bf = f32::from(b);
+                    let sf = f32::from(s);
+                    if bf > sf {
+                        1.0
+                    } else if sf > bf {
+                        -1.0
+                    } else {
+                        0.0
+                    }
+                })
+                .unwrap_or(0.0);
+            result.insert(
+                i as u64,
+                SpeedPoint {
+                    ratio,
+                    direction,
+                    anomaly: ratio > ANOMALY_THRESHOLD,
+                },
+            );
         }
         result
     }
@@ -125,9 +167,13 @@ impl SpeedOfTapeIndicator {
 
         let classify = |p: &SpeedPoint| {
             if p.anomaly {
-                BarClass::Overlay { overlay: p.ratio * if p.direction >= 0.0 { 1.0 } else { -1.0 } }
+                BarClass::Overlay {
+                    overlay: p.ratio * if p.direction >= 0.0 { 1.0 } else { -1.0 },
+                }
             } else if p.direction != 0.0 {
-                BarClass::Overlay { overlay: p.ratio * p.direction }
+                BarClass::Overlay {
+                    overlay: p.ratio * p.direction,
+                }
             } else {
                 BarClass::Single
             }
@@ -137,16 +183,28 @@ impl SpeedOfTapeIndicator {
             .bar_width_factor(0.85)
             .with_tooltip(tooltip);
 
-        indicator_row(main_chart, &self.cache, plot, self.data.as_plot_series(), visible_range)
+        indicator_row(
+            main_chart,
+            &self.cache,
+            plot,
+            self.data.as_plot_series(),
+            visible_range,
+        )
     }
 }
 
 impl KlineIndicatorImpl for SpeedOfTapeIndicator {
-    fn clear_all_caches(&mut self) { self.cache.clear_all(); }
-    fn clear_crosshair_caches(&mut self) { self.cache.clear_crosshair(); }
+    fn clear_all_caches(&mut self) {
+        self.cache.clear_all();
+    }
+    fn clear_crosshair_caches(&mut self) {
+        self.cache.clear_crosshair();
+    }
 
     fn element<'a>(
-        &'a self, chart: &'a ViewState, visible_range: RangeInclusive<u64>,
+        &'a self,
+        chart: &'a ViewState,
+        visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         self.indicator_elem(chart, visible_range)
     }
@@ -175,19 +233,39 @@ impl KlineIndicatorImpl for SpeedOfTapeIndicator {
 
             let mean = self.history.iter().copied().map(|c| c as f64).sum::<f64>()
                 / self.history.len() as f64;
-            let ratio = if mean > 0.0 { count as f32 / mean as f32 } else { 1.0 };
+            let ratio = if mean > 0.0 {
+                count as f32 / mean as f32
+            } else {
+                1.0
+            };
 
             // Determine direction from the latest kline
             if let Some(k) = klines.last() {
-                let direction = k.volume.buy_sell().map(|(b, s)| {
-                    let bf = f32::from(b);
-                    let sf = f32::from(s);
-                    if bf > sf { 1.0 } else if sf > bf { -1.0 } else { 0.0 }
-                }).unwrap_or(0.0);
+                let direction = k
+                    .volume
+                    .buy_sell()
+                    .map(|(b, s)| {
+                        let bf = f32::from(b);
+                        let sf = f32::from(s);
+                        if bf > sf {
+                            1.0
+                        } else if sf > bf {
+                            -1.0
+                        } else {
+                            0.0
+                        }
+                    })
+                    .unwrap_or(0.0);
 
-                let point = SpeedPoint { ratio, direction, anomaly: ratio > ANOMALY_THRESHOLD };
+                let point = SpeedPoint {
+                    ratio,
+                    direction,
+                    anomaly: ratio > ANOMALY_THRESHOLD,
+                };
                 match &mut self.data {
-                    BasisSeries::Time(map) => { map.insert(k.time, point); }
+                    BasisSeries::Time(map) => {
+                        map.insert(k.time, point);
+                    }
                     BasisSeries::Tick(map) => {
                         let idx = map.len() as u64;
                         map.insert(idx, point);
@@ -203,7 +281,10 @@ impl KlineIndicatorImpl for SpeedOfTapeIndicator {
     }
 
     fn on_insert_trades(
-        &mut self, trades: &[Trade], _old_dp_len: usize, _source: &PlotData<KlineDataPoint>,
+        &mut self,
+        trades: &[Trade],
+        _old_dp_len: usize,
+        _source: &PlotData<KlineDataPoint>,
     ) {
         self.current_bar_trades += trades.len() as u32;
         // Initialise history on first trades so we switch to live mode
@@ -212,6 +293,10 @@ impl KlineIndicatorImpl for SpeedOfTapeIndicator {
         }
     }
 
-    fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) { self.rebuild_from_source(source); }
-    fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) { self.rebuild_from_source(source); }
+    fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) {
+        self.rebuild_from_source(source);
+    }
+    fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
+        self.rebuild_from_source(source);
+    }
 }

@@ -76,18 +76,18 @@ impl KlineIndicator {
 impl Display for KlineIndicator {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            KlineIndicator::Volume         => write!(f, "Volume"),
+            KlineIndicator::Volume => write!(f, "Volume"),
             KlineIndicator::CumulativeDelta => write!(f, "CVD"),
-            KlineIndicator::OpenInterest   => write!(f, "Open Interest"),
-            KlineIndicator::OiDelta        => write!(f, "OI Delta"),
-            KlineIndicator::OiZScore       => write!(f, "OI Z-Score"),
-            KlineIndicator::FundingRate    => write!(f, "Funding Rate"),
-            KlineIndicator::Vwap           => write!(f, "VWAP"),
-            KlineIndicator::VolumeProfile  => write!(f, "Vol Profile"),
-            KlineIndicator::Atr            => write!(f, "ATR"),
+            KlineIndicator::OpenInterest => write!(f, "Open Interest"),
+            KlineIndicator::OiDelta => write!(f, "OI Delta"),
+            KlineIndicator::OiZScore => write!(f, "OI Z-Score"),
+            KlineIndicator::FundingRate => write!(f, "Funding Rate"),
+            KlineIndicator::Vwap => write!(f, "VWAP"),
+            KlineIndicator::VolumeProfile => write!(f, "Vol Profile"),
+            KlineIndicator::Atr => write!(f, "ATR"),
             KlineIndicator::RelativeVolume => write!(f, "Rel Volume"),
-            KlineIndicator::SpeedOfTape    => write!(f, "Speed of Tape"),
-            KlineIndicator::CvdLarge       => write!(f, "CVD Large"),
+            KlineIndicator::SpeedOfTape => write!(f, "Speed of Tape"),
+            KlineIndicator::CvdLarge => write!(f, "CVD Large"),
             KlineIndicator::MarketPressure => write!(f, "Market Pressure"),
         }
     }

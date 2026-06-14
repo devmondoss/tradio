@@ -111,6 +111,10 @@ pre_breakout_rr       = 3.0     # target más profundo vs post-breakout 2.0 (ent
 pre_breakout_vr_min   = 1.5     # VR mínimo para modo pre (más bajo que el 3.0× post-breakout)
 pre_breakout_oi_max   = 3       # oi_mom_n≤3 → WR=58% PnL=+4.5R; quitar con pre_breakout_oi_max = 255
 cooldown_bars         = 60      # alineado con backtest app calibrado; evita overtrading M1
+# Sweep & Reclaim Long (habilitado por defecto; ETH/XRP se deshabilitan en el monitor por símbolo)
+sweep_reclaim_long_enabled = true
+sweep_max_risk_frac        = 0.003  # max (close - wick_low) / close = 0.3%
+# sweep_min_risk_usd se sobrescribe por símbolo en monitor: BTC=15.0, BNB=0.5, SOL=0.08
 
 # ============================================================================
 # AMD — Accumulation · Manipulation · Distribution

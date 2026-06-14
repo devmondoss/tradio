@@ -13,8 +13,8 @@
 //!   2. Una inserción a `flowsurface.smoke_test` aparece en la colección.
 //!   3. La conversión Document↔BSON funciona round-trip.
 
-use mongodb::bson::{doc, oid::ObjectId, Document};
 use mongodb::Client;
+use mongodb::bson::{Document, doc, oid::ObjectId};
 
 const URI: &str = "mongodb://localhost:27018";
 const DB: &str = "flowsurface";
@@ -74,7 +74,10 @@ fn loader_reads_seeded_params_for_trendup() {
 
     let base = StrategyConfig::default();
     assert_eq!(base.min_rr, 1.5, "default min_rr cambió, ajustar el test");
-    assert_eq!(base.min_score, 0.60, "default min_score cambió, ajustar el test");
+    assert_eq!(
+        base.min_score, 0.60,
+        "default min_score cambió, ajustar el test"
+    );
 
     let loader = MongoConfigLoader::spawn(
         "mongodb://localhost:27018".into(),
@@ -123,8 +126,8 @@ async fn end_to_end_signal_and_trade_pipeline() {
     use flowsurface_data::strategy::mongo_writer::MongoWriter;
     use flowsurface_data::strategy::paper::ClosedTrade;
     use flowsurface_data::strategy::types::{StrategyMarketContext, StrategySignal};
-    use mongodb::bson::{doc, Document};
     use mongodb::Client;
+    use mongodb::bson::{Document, doc};
     use serde_json::json;
     use std::thread::sleep;
     use std::time::Duration;
@@ -221,10 +224,7 @@ async fn end_to_end_signal_and_trade_pipeline() {
     let trade: ClosedTrade = serde_json::from_value(trade_json).expect("trade parse");
 
     // ── 2. Spawn writer y ejecutar la ruta exacta de la UI ─────────────────
-    let writer = MongoWriter::spawn(
-        "mongodb://localhost:27018".into(),
-        "flowsurface".into(),
-    );
+    let writer = MongoWriter::spawn("mongodb://localhost:27018".into(), "flowsurface".into());
     let oid = writer
         .write_signal(&signal, &ctx)
         .expect("write_signal debe retornar oid (action!=Wait)");
@@ -260,7 +260,10 @@ async fn end_to_end_signal_and_trade_pipeline() {
     let out_doc = out_doc.expect("signal_outcomes doc no apareció en 4s");
 
     assert_eq!(sig_doc.get_str("symbol").ok(), Some("BTCUSDT_E2E_TEST"));
-    assert_eq!(sig_doc.get_str("strategy").ok(), Some("VwapValuePullbackContinuation"));
+    assert_eq!(
+        sig_doc.get_str("strategy").ok(),
+        Some("VwapValuePullbackContinuation")
+    );
     assert_eq!(sig_doc.get_str("side").ok(), Some("Long"));
     assert_eq!(sig_doc.get_str("regime_combined").ok(), Some("TrendUp"));
     assert_eq!(sig_doc.get_str("action").ok(), Some("ShadowSignal"));
@@ -276,7 +279,10 @@ async fn end_to_end_signal_and_trade_pipeline() {
     assert_eq!(out_doc.get_str("close_reason").ok(), Some("TARGET_HIT"));
     assert!((out_doc.get_f64("pnl_net_usd").unwrap() - 3.92).abs() < 1e-9);
     let r_mult = out_doc.get_f64("r_multiple").unwrap();
-    assert!(r_mult > 1.9 && r_mult < 2.1, "r_multiple esperado ~2.0, fue {r_mult}");
+    assert!(
+        r_mult > 1.9 && r_mult < 2.1,
+        "r_multiple esperado ~2.0, fue {r_mult}"
+    );
 
     // ── 5. Cleanup ────────────────────────────────────────────────────────
     cleanup(&signals, doc! { "_id": oid }).await;

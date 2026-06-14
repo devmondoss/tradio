@@ -1068,7 +1068,10 @@ impl Dashboard {
         let mut found_match = false;
 
         // Pass 1: update KlineChart/Comparison panes; collect strategy snapshots from KlineCharts.
-        let mut snapshots: Vec<(Option<data::layout::pane::LinkGroup>, crate::strategy::snapshot::StrategySnapshot)> = vec![];
+        let mut snapshots: Vec<(
+            Option<data::layout::pane::LinkGroup>,
+            crate::strategy::snapshot::StrategySnapshot,
+        )> = vec![];
 
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
@@ -1094,9 +1097,9 @@ impl Dashboard {
             self.iter_all_panes_mut(main_window)
                 .for_each(|(_, _, pane_state)| {
                     if matches!(pane_state.content, pane::Content::StrategyMonitor(_)) {
-                        let matched = snapshots.iter().find(|(lg, _)| {
-                            lg.is_some() && pane_state.link_group == *lg
-                        });
+                        let matched = snapshots
+                            .iter()
+                            .find(|(lg, _)| lg.is_some() && pane_state.link_group == *lg);
                         let (_, snapshot) = matched.unwrap_or(&snapshots[0]);
                         pane_state.push_strategy_snapshot(snapshot.clone());
                     }
@@ -1223,10 +1226,7 @@ impl Dashboard {
 
     /// Returns TickerInfo for all active LinearPerps kline panes.
     /// Used to subscribe to `@forceOrder` streams.
-    pub fn active_liquidation_tickers(
-        &self,
-        main_window: window::Id,
-    ) -> Vec<exchange::TickerInfo> {
+    pub fn active_liquidation_tickers(&self, main_window: window::Id) -> Vec<exchange::TickerInfo> {
         use std::collections::HashSet;
         let mut seen: HashSet<exchange::TickerInfo> = HashSet::new();
         let mut result = Vec::new();

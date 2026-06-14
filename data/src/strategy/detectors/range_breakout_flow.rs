@@ -280,6 +280,8 @@ const RANGE_WINDOWS: &[usize] = &[15, 20, 30, 45, 60];
 const RANGE_MIN_PCT: f64 = 0.08;
 const RANGE_MAX_PCT: f64 = 0.55;
 const BREAKOUT_VR_MIN: f64 = 3.0;
+const BREAKOUT_VR_MAX: f64 = 5.0; // VR>5x = agotamiento; WR=25% en backtest → excluir
+const SWEEP_MAX_RISK_FRAC: f64 = 0.003; // max (close - wick_low) / close para sweep & reclaim
 const VR_WINDOW: usize = 50;
 const DZ_WINDOW: usize = 50;
 // Stop dinámico: stop = ATR_STOP_K × ATR. Reemplaza stop_pct fijo cuando ATR disponible.
@@ -416,6 +418,9 @@ pub struct RbfSignal {
     /// antes de que el VR≥3× confirmara el breakout. Stop = range_high, RR = pre_breakout_rr.
     /// El flag "pre_breakout" también se incluye en confluence_flags para queries Supabase.
     pub is_pre_breakout: bool,
+    /// True si es una entrada Sweep & Reclaim Long: wick barrió por debajo de range_low
+    /// pero el close recuperó dentro del rango. Stop = wick_low, dirección = Long.
+    pub is_sweep_reclaim: bool,
 }
 
 // ── Estado interno ─────────────────────────────────────────────────────────────
@@ -444,6 +449,7 @@ pub struct RangeBreakoutState {
     bars_seen: usize,
     last_signal_bar: usize,
     last_pre_signal_bar: usize,
+    last_sweep_bar: usize,
 }
 
 impl RangeBreakoutState {
@@ -460,6 +466,7 @@ impl RangeBreakoutState {
             bars_seen: 0,
             last_signal_bar: 0,
             last_pre_signal_bar: 0,
+            last_sweep_bar: 0,
         }
     }
 
@@ -578,7 +585,11 @@ impl RangeBreakoutState {
         if self.bars_seen < VR_WINDOW + max_history {
             return None;
         }
-        if self.bars_seen - self.last_signal_bar < cfg.cooldown_bars {
+        // Salida rápida solo si AMBOS cooldowns están activos — permite que el sweep
+        // dispare aunque un short haya consumido su cooldown recientemente, y viceversa.
+        let short_in_cooldown = self.bars_seen - self.last_signal_bar < cfg.cooldown_bars;
+        let sweep_in_cooldown = self.bars_seen - self.last_sweep_bar < cfg.cooldown_bars;
+        if short_in_cooldown && sweep_in_cooldown {
             return None;
         }
         if !is_operative(session) {
@@ -861,6 +872,7 @@ impl RangeBreakoutState {
                                         confluence_flags,
                                         veto_reason: None,
                                         is_pre_breakout: true,
+                                        is_sweep_reclaim: false,
                                     });
                                 }
                             }
@@ -870,12 +882,124 @@ impl RangeBreakoutState {
                 continue; // pre-breakout no disparó — próxima ventana de rango
             }
 
+            // ── SWEEP & RECLAIM LONG ───────────────────────────────────────────────
+            // Wick barrió por debajo de range_low pero el precio cerró dentro del rango.
+            // Firma: venta agresiva absorbida por compradores pasivos → reversión larga.
+            // Cooldown independiente del short — no se bloquean mutuamente.
+            if cfg.sweep_reclaim_long_enabled && !sweep_in_cooldown && !breaks_down {
+                if low < range_low
+                    && close > range_low
+                    && bar_delta < 0.0
+                    && obi > 0.0
+                    && vr >= cfg.pre_breakout_vr_min
+                {
+                    let sweep_risk = close - low;
+                    if sweep_risk > 1e-6 && sweep_risk >= cfg.sweep_min_risk_usd && sweep_risk / close <= cfg.sweep_max_risk_frac {
+                        let rr_sweep = 2.0_f64;
+                        let stop_price = low;
+                        let target_price = close + rr_sweep * sweep_risk;
+                        let (confluence_score, mut confluence_flags, veto_reason) =
+                            if let Some(g) = gate {
+                                score_confluence(
+                                    RbfDirection::Long,
+                                    macro_regime,
+                                    cvd_slope,
+                                    obi,
+                                    vwap,
+                                    close,
+                                    target_price,
+                                    g,
+                                    cfg,
+                                )
+                            } else {
+                                (0, vec![], None)
+                            };
+                        let price_vs_vwap_sr =
+                            vwap.filter(|&v| v > 0.0).map(|v| (close - v) / v * 100.0);
+                        let vr_tier_sr: u8 = if vr >= 4.0 { 3 } else if vr >= 2.0 { 2 } else { 1 };
+                        let bar_disp_sr =
+                            if high > low { (close - open).abs() / (high - low) } else { 0.5 };
+                        let cvd_per_bar_sr = if range_bars > 0 {
+                            cvd_in_range / range_bars as f64
+                        } else {
+                            0.0
+                        };
+                        let signal_score_sr = {
+                            let conf = confluence_score as f64 / 6.0 * 0.50;
+                            let obi_c = if obi > cfg.obi_threshold { 0.20 } else { 0.10 };
+                            let vr_c = if vr >= 2.0 { 0.15 } else { 0.05 };
+                            (conf + obi_c + vr_c).min(1.0)
+                        };
+                        let sizing_sr: f64 = if signal_score_sr >= 0.50 { 1.5 } else { 1.0 };
+                        confluence_flags.push("sweep_reclaim".to_string());
+                        self.last_sweep_bar = self.bars_seen;
+                        println!(
+                            "[rbf_sweep] Long entry={:.2} stop={:.2} target={:.2} rr={:.1} vr={:.2}x obi={:.3} score={}/6 veto={:?}",
+                            close, stop_price, target_price, rr_sweep, vr, obi, confluence_score, veto_reason
+                        );
+                        return Some(RbfSignal {
+                            direction: RbfDirection::Long,
+                            entry_price: close,
+                            stop_price,
+                            target_price,
+                            rr: rr_sweep,
+                            range_high,
+                            range_low,
+                            range_pct,
+                            range_bars,
+                            cvd_in_range,
+                            vr_at_breakout: vr,
+                            macro_regime,
+                            session,
+                            timestamp_ms,
+                            evidence: vec![
+                                "sweep_reclaim".to_string(),
+                                format!("range_pct={:.3}%", range_pct),
+                                format!("vr={:.2}x", vr),
+                                format!("obi={:.3}", obi),
+                                format!("delta={:.0}", bar_delta),
+                                format!("risk={:.4}%", sweep_risk / close * 100.0),
+                            ],
+                            range_touch_count: touches_high,
+                            session_phase,
+                            price_vs_vwap_pct: price_vs_vwap_sr,
+                            funding_at_entry: funding_rate,
+                            liq_ratio_pre: liq_ratio,
+                            cvd_slope_at_entry: cvd_slope,
+                            dz_at_entry: dz,
+                            obi_at_entry: obi,
+                            absorption_score: 0.5,
+                            bar_displacement: bar_disp_sr,
+                            oi_delta_pct: gate.and_then(|g| g.oi_delta_pct),
+                            cvd_divergence_bars: gate.and_then(|g| g.cvd_divergence_bars),
+                            vr_tier: vr_tier_sr,
+                            range_touch_symmetry: 0.5,
+                            cvd_per_bar: cvd_per_bar_sr,
+                            breakout_extension_pct: 0.0,
+                            signal_score_v2: signal_score_sr,
+                            sizing_multiplier: sizing_sr,
+                            htf_h1_trend: gate.and_then(|g| g.htf_h1_trend.clone()),
+                            htf_h1_aligned: None,
+                            vp_open_bias: gate.and_then(|g| g.vp_open_bias.clone()),
+                            confluence_score,
+                            confluence_flags,
+                            veto_reason,
+                            is_pre_breakout: false,
+                            is_sweep_reclaim: true,
+                        });
+                    }
+                }
+            }
+
             // ── POST-BREAKOUT PATH (precio fuera del rango, VR≥3×) ───────────────
             if !breaks_down && !breaks_up {
                 continue;
             }
-            // Requiere VR completo para confirmar el breakout
-            if vr < BREAKOUT_VR_MIN {
+            if short_in_cooldown {
+                continue;
+            }
+            // Requiere VR completo para confirmar el breakout; VR>5x = agotamiento
+            if vr < BREAKOUT_VR_MIN || vr > BREAKOUT_VR_MAX {
                 continue;
             }
 
@@ -1204,6 +1328,7 @@ impl RangeBreakoutState {
                 confluence_flags,
                 veto_reason,
                 is_pre_breakout: false,
+                is_sweep_reclaim: false,
             });
         }
 
@@ -1304,6 +1429,16 @@ pub struct RangeBreakoutConfig {
     /// Barras mínimas entre señales del mismo detector (cooldown).
     /// Configurable desde strategy.toml [range_breakout] cooldown_bars.
     pub cooldown_bars: usize,
+    /// Habilita detección de Sweep & Reclaim Long.
+    /// Backtest 7d: BTC WR=54%+20R, BNB WR=42%+4R, SOL WR=50%+4R.
+    /// ETH (WR=22%) y XRP (WR=25%) desactivados por símbolo en el monitor.
+    pub sweep_reclaim_long_enabled: bool,
+    /// Riesgo máximo en sweep = (close - wick_low) / close.
+    /// Default 0.003 (0.3%). Wicks más grandes → stop demasiado amplio.
+    pub sweep_max_risk_frac: f64,
+    /// Piso absoluto en USD para el riesgo del sweep (close - wick_low).
+    /// Filtra wicks de spread/ruido ($0.10 BNB, $0.03 SOL). Default 0.0 (sin filtro).
+    pub sweep_min_risk_usd: f64,
 }
 
 impl Default for RangeBreakoutConfig {
@@ -1347,6 +1482,9 @@ impl Default for RangeBreakoutConfig {
             min_confluence_score_override: None,
             obi_max_short: None,
             cooldown_bars: 30,
+            sweep_reclaim_long_enabled: false,
+            sweep_max_risk_frac: SWEEP_MAX_RISK_FRAC,
+            sweep_min_risk_usd: 0.0,
         }
     }
 }

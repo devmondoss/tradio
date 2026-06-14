@@ -1,4 +1,4 @@
-﻿use crate::institutional::{InstitutionalContext, LiqSide};
+use crate::institutional::{InstitutionalContext, LiqSide};
 use crate::strategy::types::*;
 
 // Note: toxic_flow_gate is evaluated once in the router before calling any detector.
@@ -293,7 +293,7 @@ mod tests {
                 dominant_side: LiqSide::Shorts,
                 cascade_detected: false,
                 last_event_ms: Some(1710000000000),
-            total_zscore: None,
+                total_zscore: None,
             },
             ls_ratio: LsRatioContext {
                 top_traders_long_pct: 0.55,

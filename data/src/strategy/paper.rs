@@ -305,7 +305,10 @@ impl PaperAccount {
     pub fn new() -> Self {
         let config = PaperConfig::from_env();
         let balance = config.initial_capital;
-        let trade_config = TradeConfig { risk_pct: config.risk_pct, ..TradeConfig::default() };
+        let trade_config = TradeConfig {
+            risk_pct: config.risk_pct,
+            ..TradeConfig::default()
+        };
         Self {
             equity: balance,
             balance,
@@ -341,8 +344,10 @@ impl PaperAccount {
                             state.closed_trades.len(),
                         );
                         let config = PaperConfig::from_env();
-                        let trade_config =
-                            TradeConfig { risk_pct: config.risk_pct, ..TradeConfig::default() };
+                        let trade_config = TradeConfig {
+                            risk_pct: config.risk_pct,
+                            ..TradeConfig::default()
+                        };
                         return Self {
                             balance: state.balance,
                             equity: state.equity,
@@ -502,7 +507,11 @@ impl PaperAccount {
                 } else {
                     self.open_positions[i]
                         .check_close(bar_high, bar_low, now_ms)
-                        .or(if invalidated { Some("INVALIDATED") } else { None })
+                        .or(if invalidated {
+                            Some("INVALIDATED")
+                        } else {
+                            None
+                        })
                 };
             if let Some(reason) = reason {
                 let pos = self.open_positions.remove(i);
@@ -561,20 +570,27 @@ impl PaperAccount {
         // por eso net_pnl ya los cubre y la fórmula no tiene términos implícitos.
         self.balance += self.position_margin(&pos) + net_pnl;
 
-        let (stop_initial, stop_final, stop_state_at_close, target_structural, intermediate_level, trade_phase_at_close, bars_open) =
-            if let Some(ref at) = pos.active_trade {
-                (
-                    Some(at.stop_initial),
-                    Some(at.stop_price),
-                    Some(at.stop_state.name().to_string()),
-                    Some(at.levels.target),
-                    at.levels.intermediate,
-                    Some(at.phase.name().to_string()),
-                    at.bars_open,
-                )
-            } else {
-                (None, pos.stop_price, None, pos.target_price, None, None, 0)
-            };
+        let (
+            stop_initial,
+            stop_final,
+            stop_state_at_close,
+            target_structural,
+            intermediate_level,
+            trade_phase_at_close,
+            bars_open,
+        ) = if let Some(ref at) = pos.active_trade {
+            (
+                Some(at.stop_initial),
+                Some(at.stop_price),
+                Some(at.stop_state.name().to_string()),
+                Some(at.levels.target),
+                at.levels.intermediate,
+                Some(at.phase.name().to_string()),
+                at.bars_open,
+            )
+        } else {
+            (None, pos.stop_price, None, pos.target_price, None, None, 0)
+        };
 
         ClosedTrade {
             id: pos.id,
@@ -647,20 +663,27 @@ impl PaperAccount {
         let full_funding = self.open_positions[idx].funding_paid;
 
         // Snapshot active_trade state for the ClosedTrade record
-        let (stop_initial, stop_final, stop_state_name, target_structural, intermediate_level, trade_phase_name, bars_open) =
-            if let Some(ref at) = self.open_positions[idx].active_trade {
-                (
-                    Some(at.stop_initial),
-                    Some(at.stop_price),
-                    Some(at.stop_state.name().to_string()),
-                    Some(at.levels.target),
-                    at.levels.intermediate,
-                    Some(at.phase.name().to_string()),
-                    at.bars_open,
-                )
-            } else {
-                (None, orig_stop, None, target_price, None, None, 0)
-            };
+        let (
+            stop_initial,
+            stop_final,
+            stop_state_name,
+            target_structural,
+            intermediate_level,
+            trade_phase_name,
+            bars_open,
+        ) = if let Some(ref at) = self.open_positions[idx].active_trade {
+            (
+                Some(at.stop_initial),
+                Some(at.stop_price),
+                Some(at.stop_state.name().to_string()),
+                Some(at.levels.target),
+                at.levels.intermediate,
+                Some(at.phase.name().to_string()),
+                at.bars_open,
+            )
+        } else {
+            (None, orig_stop, None, target_price, None, None, 0)
+        };
 
         // --- Partial accounting ---
         let partial_size = full_size * 0.5;
@@ -678,7 +701,11 @@ impl PaperAccount {
             Side::Short => partial_size * (entry_price - exit_price),
         };
         let net_pnl = gross_pnl - total_fees - partial_funding;
-        let net_pnl_pct = if balance_at_open > 0.0 { net_pnl / balance_at_open } else { 0.0 };
+        let net_pnl_pct = if balance_at_open > 0.0 {
+            net_pnl / balance_at_open
+        } else {
+            0.0
+        };
 
         // Credit released margin + net_pnl to free balance
         self.balance += partial_margin + net_pnl;
@@ -696,7 +723,9 @@ impl PaperAccount {
             pos.stop_price = Some(be_price);
             if let Some(ref mut at) = pos.active_trade {
                 at.stop_price = be_price;
-                at.stop_state = StopState::BreakEven { confirmed_level: be_price };
+                at.stop_state = StopState::BreakEven {
+                    confirmed_level: be_price,
+                };
                 at.phase = TradePhase::Level1Confirmed;
                 at.position_size *= 0.5;
             }
@@ -831,7 +860,13 @@ impl PaperAccount {
         self.next_id += 1;
 
         let (entry_vwap, entry_val, entry_vah) = ctx
-            .map(|c| (c.vwap.vwap_session, c.volume_profile.val, c.volume_profile.vah))
+            .map(|c| {
+                (
+                    c.vwap.vwap_session,
+                    c.volume_profile.val,
+                    c.volume_profile.vah,
+                )
+            })
             .unwrap_or((None, None, None));
 
         let active_trade = TargetSelector::from_signal(signal, ctx, side).and_then(|levels| {
@@ -993,7 +1028,10 @@ mod tests {
             funding_rate: 0.0001,
         };
         let balance = config.initial_capital;
-        let trade_config = TradeConfig { risk_pct: config.risk_pct, ..TradeConfig::default() };
+        let trade_config = TradeConfig {
+            risk_pct: config.risk_pct,
+            ..TradeConfig::default()
+        };
         PaperAccount {
             equity: balance,
             balance,
@@ -1027,7 +1065,15 @@ mod tests {
 
         let mut acc = default_account();
         // Bar N close — signal arrives
-        acc.on_bar_close("BTCUSDT", 3_000.0, 3_010.0, 2_990.0, 1_000_000, Some(&sig), None);
+        acc.on_bar_close(
+            "BTCUSDT",
+            3_000.0,
+            3_010.0,
+            2_990.0,
+            1_000_000,
+            Some(&sig),
+            None,
+        );
 
         // risk_amount = 3000 * 0.01 = 30
         // size = 30 / 250 = 0.12
@@ -1133,11 +1179,27 @@ mod tests {
         );
 
         let mut acc = default_account();
-        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig), None);
+        acc.on_bar_close(
+            "BTCUSDT",
+            1_000.0,
+            1_010.0,
+            990.0,
+            1_000_000,
+            Some(&sig),
+            None,
+        );
         assert_eq!(acc.open_positions.len(), 1);
 
         // Second signal — same symbol, same side, different strategy. Should be blocked.
-        acc.on_bar_close("BTCUSDT", 1_010.0, 1_020.0, 1_000.0, 1_100_000, Some(&sig2), None);
+        acc.on_bar_close(
+            "BTCUSDT",
+            1_010.0,
+            1_020.0,
+            1_000.0,
+            1_100_000,
+            Some(&sig2),
+            None,
+        );
         assert_eq!(
             acc.open_positions.len(),
             1,
@@ -1214,7 +1276,15 @@ mod tests {
         );
 
         let mut acc = default_account();
-        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig), None);
+        acc.on_bar_close(
+            "BTCUSDT",
+            1_000.0,
+            1_010.0,
+            990.0,
+            1_000_000,
+            Some(&sig),
+            None,
+        );
         // Both stop and target hit in same bar
         acc.on_bar_close("BTCUSDT", 1_050.0, 1_150.0, 850.0, 1_100_000, None, None);
 
@@ -1236,7 +1306,15 @@ mod tests {
         );
 
         let mut acc = default_account();
-        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig), None);
+        acc.on_bar_close(
+            "BTCUSDT",
+            1_000.0,
+            1_010.0,
+            990.0,
+            1_000_000,
+            Some(&sig),
+            None,
+        );
         // Price stays safe but TTL expires
         acc.on_bar_close("BTCUSDT", 1_010.0, 1_020.0, 1_005.0, 1_060_000, None, None);
 
@@ -1263,7 +1341,15 @@ mod tests {
         );
 
         let mut acc = default_account();
-        acc.on_bar_close("BTCUSDT", 1_000.0, 1_010.0, 990.0, 1_000_000, Some(&sig), None);
+        acc.on_bar_close(
+            "BTCUSDT",
+            1_000.0,
+            1_010.0,
+            990.0,
+            1_000_000,
+            Some(&sig),
+            None,
+        );
         let expected_entry = 1_000.0 * (1.0 - 1.0 / 10_000.0);
         let pos_size = acc.open_positions[0].size;
         assert!((acc.open_positions[0].entry_price - expected_entry).abs() < 1e-6);
@@ -1361,14 +1447,20 @@ mod tests {
             assert!(
                 (t.net_pnl - (t.gross_pnl - t.fees_paid - t.funding_paid)).abs() < 1e-9,
                 "net_pnl formula mismatch for {}: gross={} fees={} funding={} net={}",
-                t.close_reason, t.gross_pnl, t.fees_paid, t.funding_paid, t.net_pnl
+                t.close_reason,
+                t.gross_pnl,
+                t.fees_paid,
+                t.funding_paid,
+                t.net_pnl
             );
         }
 
         // Balance after both closes = pre_close + sum(notional_i + net_pnl_i)
         let expected_balance = pre_close_balance
-            + acc.closed_trades[0].notional + acc.closed_trades[0].net_pnl
-            + acc.closed_trades[1].notional + acc.closed_trades[1].net_pnl;
+            + acc.closed_trades[0].notional
+            + acc.closed_trades[0].net_pnl
+            + acc.closed_trades[1].notional
+            + acc.closed_trades[1].net_pnl;
         assert!(
             (acc.balance - expected_balance).abs() < 1e-6,
             "balance={} expected={}",

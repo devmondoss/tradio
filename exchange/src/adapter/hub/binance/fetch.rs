@@ -1,7 +1,6 @@
 use crate::{
     FundingRate, Kline, OpenInterest, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe,
-    Trade, UnixMs,
-    Volume,
+    Trade, UnixMs, Volume,
     depth::{DeOrder, DepthPayload},
     serde_util,
     serde_util::de_string_to_number,

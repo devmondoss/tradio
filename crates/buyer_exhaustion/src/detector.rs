@@ -73,31 +73,31 @@ fn score_be_confluence(gate: &RbfGateContext) -> (u8, Vec<String>) {
 // ── Snapshot interno de cada barra ───────────────────────────────────────────
 
 struct BarSnapshot {
-    high:   f64,
-    low:    f64,
-    open:   f64,
-    close:  f64,
+    high: f64,
+    low: f64,
+    open: f64,
+    close: f64,
     volume: f64,
-    delta:  f64,
+    delta: f64,
 }
 
 // ── Estado del detector ───────────────────────────────────────────────────────
 
 pub struct BuyerExhaustionState {
     /// Historial de barras (incluye la barra actual tras el push).
-    history:          VecDeque<BarSnapshot>,
+    history: VecDeque<BarSnapshot>,
     /// Historial de volumen para calcular el VR base.
-    vol_hist:         VecDeque<f64>,
-    bars_seen:        usize,
-    last_signal_bar:  usize,
+    vol_hist: VecDeque<f64>,
+    bars_seen: usize,
+    last_signal_bar: usize,
 }
 
 impl BuyerExhaustionState {
     pub fn new() -> Self {
         Self {
-            history:         VecDeque::with_capacity(40),
-            vol_hist:        VecDeque::with_capacity(60),
-            bars_seen:       0,
+            history: VecDeque::with_capacity(40),
+            vol_hist: VecDeque::with_capacity(60),
+            bars_seen: 0,
             last_signal_bar: 0,
         }
     }
@@ -116,16 +116,16 @@ impl BuyerExhaustionState {
     /// - `gate`: contexto microestructural live (None en warm-up)
     pub fn on_bar_close(
         &mut self,
-        high:         f64,
-        low:          f64,
-        open:         f64,
-        close:        f64,
-        volume:       f64,
-        bar_delta:    f64,
+        high: f64,
+        low: f64,
+        open: f64,
+        close: f64,
+        volume: f64,
+        bar_delta: f64,
         timestamp_ms: i64,
-        symbol:       &str,
-        cfg:          &BuyerExhaustionConfig,
-        gate:         Option<&RbfGateContext>,
+        symbol: &str,
+        cfg: &BuyerExhaustionConfig,
+        gate: Option<&RbfGateContext>,
     ) -> Option<BuyerExhaustionSignal> {
         self.bars_seen += 1;
 
@@ -138,7 +138,14 @@ impl BuyerExhaustionState {
         }
 
         // Agregar barra actual al historial
-        self.history.push_back(BarSnapshot { high, low, open, close, volume, delta: bar_delta });
+        self.history.push_back(BarSnapshot {
+            high,
+            low,
+            open,
+            close,
+            volume,
+            delta: bar_delta,
+        });
         if self.history.len() > max_window + 5 {
             self.history.pop_front();
         }
@@ -220,16 +227,15 @@ impl BuyerExhaustionState {
             }
 
             let win_start = hist_len - win - 1;
-            let window: Vec<&BarSnapshot> = self.history
-                .iter()
-                .skip(win_start)
-                .take(win)
-                .collect();
+            let window: Vec<&BarSnapshot> = self.history.iter().skip(win_start).take(win).collect();
 
             // Dimensiones del rango
-            let range_high = window.iter().map(|b| b.high).fold(f64::NEG_INFINITY, f64::max);
-            let range_low  = window.iter().map(|b| b.low ).fold(f64::INFINITY,     f64::min);
-            let range_pct  = (range_high - range_low) / close * 100.0;
+            let range_high = window
+                .iter()
+                .map(|b| b.high)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let range_low = window.iter().map(|b| b.low).fold(f64::INFINITY, f64::min);
+            let range_pct = (range_high - range_low) / close * 100.0;
 
             if range_pct < cfg.range_min_pct || range_pct > cfg.range_max_pct {
                 continue;
@@ -282,13 +288,13 @@ impl BuyerExhaustionState {
                 base.max(high) // incluye el high de la barra de entrada
             };
 
-            let risk         = stop_price - close;   // Short: stop > entry
+            let risk = stop_price - close; // Short: stop > entry
             if risk <= 1e-10 {
                 continue;
             }
 
             let target_price = close - 2.0 * risk; // 2R fijo: reward siempre ≥ 1R
-            let reward       = close - target_price;
+            let reward = close - target_price;
 
             // El low de la barra de ruptura ya tocó/superó el target → el move pasó
             if low <= target_price {
@@ -301,9 +307,8 @@ impl BuyerExhaustionState {
             }
 
             // Microestructura gate (Layer 2)
-            let (confluence_score, confluence_flags) = gate
-                .map(|g| score_be_confluence(g))
-                .unwrap_or((0, vec![]));
+            let (confluence_score, confluence_flags) =
+                gate.map(|g| score_be_confluence(g)).unwrap_or((0, vec![]));
 
             // Min-score filter: 0 = VETO activo, dejar pasar 1+
             if gate.is_some() && confluence_score == 0 && !confluence_flags.is_empty() {
@@ -317,32 +322,43 @@ impl BuyerExhaustionState {
                 "[be] {} | session={:?} entry={:.2} stop={:.2} target={:.2} \
                  rr={:.2} range={:.3}%×{}b cvd={:.1} pre={:.1} flip={:.2} vr={:.2}x delta={:.1} \
                  μscore={}/6 flags={:?}",
-                symbol, session,
-                close, stop_price, target_price, rr,
-                range_pct, win, range_cvd, pre_cvd, flip_ratio, vr, bar_delta,
-                confluence_score, confluence_flags
+                symbol,
+                session,
+                close,
+                stop_price,
+                target_price,
+                rr,
+                range_pct,
+                win,
+                range_cvd,
+                pre_cvd,
+                flip_ratio,
+                vr,
+                bar_delta,
+                confluence_score,
+                confluence_flags
             );
 
             return Some(BuyerExhaustionSignal {
                 timestamp_ms,
                 session,
                 symbol: symbol.to_string(),
-                entry_price:   close,
+                entry_price: close,
                 stop_price,
                 target_price,
                 rr,
                 range_high,
                 range_low,
                 range_pct,
-                range_bars:    win,
+                range_bars: win,
                 range_cvd,
-                pre_cvd_flip:  pre_cvd,
+                pre_cvd_flip: pre_cvd,
                 cvd_flip_ratio: flip_ratio,
                 vr_at_breakout: vr,
                 breakout_delta: bar_delta,
                 confluence_score,
                 confluence_flags,
-                supabase_id:   None,
+                supabase_id: None,
             });
         }
 
@@ -354,11 +370,11 @@ impl BuyerExhaustionState {
 
 fn is_session_enabled(session: TradingSession, enabled: &[String]) -> bool {
     let name = match session {
-        TradingSession::Asia            => "Asia",
-        TradingSession::London          => "London",
+        TradingSession::Asia => "Asia",
+        TradingSession::London => "London",
         TradingSession::LondonNyOverlap => "LondonNyOverlap",
-        TradingSession::NewYork         => "NewYork",
-        TradingSession::OffHours        => "OffHours",
+        TradingSession::NewYork => "NewYork",
+        TradingSession::OffHours => "OffHours",
     };
     enabled.iter().any(|s| s == name)
 }

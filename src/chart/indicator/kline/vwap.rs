@@ -45,9 +45,18 @@ impl SessionWindow {
     }
 }
 
-const ASIA:   SessionWindow = SessionWindow { start_hour: 0,  end_hour: 8  };
-const LONDON: SessionWindow = SessionWindow { start_hour: 8,  end_hour: 16 };
-const NY:     SessionWindow = SessionWindow { start_hour: 13, end_hour: 21 };
+const ASIA: SessionWindow = SessionWindow {
+    start_hour: 0,
+    end_hour: 8,
+};
+const LONDON: SessionWindow = SessionWindow {
+    start_hour: 8,
+    end_hour: 16,
+};
+const NY: SessionWindow = SessionWindow {
+    start_hour: 13,
+    end_hour: 21,
+};
 
 pub struct VwapIndicator {
     cache: Caches,
@@ -113,11 +122,15 @@ impl VwapIndicator {
         result
     }
 
-    pub fn session_vwap_lines(&self, earliest: u64, latest: u64) -> Vec<(Vec<(u64, f32)>, [f32; 4])> {
+    pub fn session_vwap_lines(
+        &self,
+        earliest: u64,
+        latest: u64,
+    ) -> Vec<(Vec<(u64, f32)>, [f32; 4])> {
         let colors: [[f32; 4]; 3] = [
-            [1.0, 0.7, 0.0, 0.75],  // Asia  — amber
-            [0.2, 0.8, 0.4, 0.75],  // London — green
-            [0.7, 0.3, 1.0, 0.75],  // NY    — purple
+            [1.0, 0.7, 0.0, 0.75], // Asia  — amber
+            [0.2, 0.8, 0.4, 0.75], // London — green
+            [0.7, 0.3, 1.0, 0.75], // NY    — purple
         ];
 
         let mut series: [Vec<(u64, f32)>; 3] = [vec![], vec![], vec![]];
@@ -336,9 +349,13 @@ impl VwapIndicator {
 
     fn rebuild_user_avwap(&mut self, source: &PlotData<KlineDataPoint>) {
         self.user_avwap.clear();
-        let Some(anchor) = self.user_anchor else { return };
+        let Some(anchor) = self.user_anchor else {
+            return;
+        };
 
-        let PlotData::TimeBased(ts) = source else { return };
+        let PlotData::TimeBased(ts) = source else {
+            return;
+        };
 
         let mut cum_vol = 0.0_f64;
         let mut cum_pv = 0.0_f64;

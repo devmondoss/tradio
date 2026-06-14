@@ -70,7 +70,11 @@ impl FvgDetector {
         if self.bars.len() >= self.max_bars {
             self.bars.pop_front();
         }
-        self.bars.push_back(Bar { high, low, timestamp_ms });
+        self.bars.push_back(Bar {
+            high,
+            low,
+            timestamp_ms,
+        });
     }
 
     pub fn snapshot(&self, current_price: f64) -> FvgContext {
@@ -130,13 +134,21 @@ impl FvgDetector {
         let nearest_bullish = bullish_fvgs
             .iter()
             .filter(|g| g.high < current_price)
-            .max_by(|a, b| a.high.partial_cmp(&b.high).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| {
+                a.high
+                    .partial_cmp(&b.high)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .cloned();
 
         let nearest_bearish = bearish_fvgs
             .iter()
             .filter(|g| g.low > current_price)
-            .min_by(|a, b| a.low.partial_cmp(&b.low).unwrap_or(std::cmp::Ordering::Equal))
+            .min_by(|a, b| {
+                a.low
+                    .partial_cmp(&b.low)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .cloned();
 
         FvgContext {

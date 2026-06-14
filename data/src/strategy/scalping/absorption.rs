@@ -6,9 +6,11 @@
 //!
 //! Solo opera en ScalpingRegime::Range.
 
-use crate::strategy::types::Side;
-use super::{ScalpingContext, ScalpingRegime, ScalpingSignal, ScalpingStrategyId, is_scalping_session};
+use super::{
+    ScalpingContext, ScalpingRegime, ScalpingSignal, ScalpingStrategyId, is_scalping_session,
+};
 use crate::strategy::types::ScalpingConfig;
+use crate::strategy::types::Side;
 
 /// Score de absorción: cuantifica la intensidad de la señal.
 ///
@@ -25,8 +27,8 @@ pub fn absorption_score(ctx: &ScalpingContext, side: Side) -> f64 {
 
     // Absorción base (peso 22): DZ fuerte en contra del precio
     let as_score = match side {
-        Side::Long => (-ctx.dz).max(0.0),   // delta negativo fuerte = vendedores absorbidos
-        Side::Short => ctx.dz.max(0.0),      // delta positivo fuerte = compradores absorbidos
+        Side::Long => (-ctx.dz).max(0.0), // delta negativo fuerte = vendedores absorbidos
+        Side::Short => ctx.dz.max(0.0),   // delta positivo fuerte = compradores absorbidos
     };
     score += 22.0 * intensity(as_score, 1.5, 3.0);
 
@@ -148,7 +150,7 @@ pub fn detect(ctx: &ScalpingContext, cfg: &ScalpingConfig) -> Option<ScalpingSig
     }
 
     let side = if pct_in_range < 0.35 {
-        Side::Long  // precio cerca del low → buscar long en absorción bajista
+        Side::Long // precio cerca del low → buscar long en absorción bajista
     } else {
         Side::Short // precio cerca del high → buscar short en absorción alcista
     };
@@ -178,7 +180,7 @@ pub fn detect(ctx: &ScalpingContext, cfg: &ScalpingConfig) -> Option<ScalpingSig
 
     // Gate 9: precio cerró en contra del delta (absorción real)
     let price_vs_delta_ok = match side {
-        Side::Long => ctx.bar_close > ctx.bar_open,  // vela alcista pese a delta negativo
+        Side::Long => ctx.bar_close > ctx.bar_open, // vela alcista pese a delta negativo
         Side::Short => ctx.bar_close < ctx.bar_open, // vela bajista pese a delta positivo
     };
     if !price_vs_delta_ok {
@@ -240,14 +242,18 @@ fn build_sl_tp(
         Side::Long => {
             let entry = ctx.bar_close + tick;
             let sl = (ctx.bar_low - 0.25 * atr).min(range.range_low - 3.0 * tick);
-            let tp1 = ctx.poc.unwrap_or(range.range_low + (range.range_high - range.range_low) * 0.5);
+            let tp1 = ctx
+                .poc
+                .unwrap_or(range.range_low + (range.range_high - range.range_low) * 0.5);
             let tp2 = range.range_high;
             (entry, sl, tp1, tp2)
         }
         Side::Short => {
             let entry = ctx.bar_close - tick;
             let sl = (ctx.bar_high + 0.25 * atr).max(range.range_high + 3.0 * tick);
-            let tp1 = ctx.poc.unwrap_or(range.range_low + (range.range_high - range.range_low) * 0.5);
+            let tp1 = ctx
+                .poc
+                .unwrap_or(range.range_low + (range.range_high - range.range_low) * 0.5);
             let tp2 = range.range_low;
             (entry, sl, tp1, tp2)
         }
@@ -257,7 +263,13 @@ fn build_sl_tp(
     let reward = (tp1 - entry).abs();
     let rr = reward / risk;
 
-    Some(SlTpResult { entry, sl, tp1, tp2, rr })
+    Some(SlTpResult {
+        entry,
+        sl,
+        tp1,
+        tp2,
+        rr,
+    })
 }
 
 fn build_evidence(ctx: &ScalpingContext, side: Side, score: f64) -> Vec<String> {

@@ -9,12 +9,57 @@ type Panel = 'trades' | 'stats'
 const STRATEGY_META = {
   rbf: {
     apiPath:    '/api/backtest',
-    label:      'Backtest RBF — Python backend · $500 capital · $10/trade',
+    label:      'Backtest RBF — Short post+pre · $500 capital · $10/trade',
     detail:     'VR≥3× · CVD rango < 0 · Stop = Range HIGH · Target 2R\nTrail ATR×1.2 activa 1.75R · Sin time stop · Cooldown 60 bars\nSessions: London · Overlap · NY',
     detail2:    'Pre-breakout: VR≥1.5 · OI mom ≤3 barras · Pre-CVD 5b ≤ 0\nETH: CVD≥−700 · OBI≤0.10 | BNB: cum_delta≥−500 | BTC: cum_delta≤+200',
     presets:    [1, 3, 7, 14, 30] as number[],
     maxDays:    null as number | null,   // limitado por Supabase (necesita cvd_slope/vwap)
     defaultDays: null as number | null,  // null = usar todos los disponibles en Supabase
+  },
+  sweep: {
+    apiPath:    '/api/backtest/sweep',
+    label:      'Backtest Sweep & Reclaim Long · BTC/BNB/SOL · $500 capital · $10/trade',
+    detail:     'Wick < range_low · close > range_low · bar_delta < 0 · OBI > 0\nVR≥1.5 · Riesgo wick ≤0.3% · min USD: BTC $15 · BNB $0.50 · SOL $0.08\nTarget 2R · Trail 1.90R · Sessions: London · Overlap · NY',
+    detail2:    'ETH (WR=22%) y XRP (WR=25%) excluidos · Cooldown 60 bars independiente de shorts',
+    presets:    [1, 3, 7, 14, 30] as number[],
+    maxDays:    null as number | null,
+    defaultDays: null as number | null,
+  },
+  combined: {
+    apiPath:    '/api/backtest',
+    label:      'Backtest Combinado · Short + Sweep · $500 capital · $10/trade',
+    detail:     'Short: VR≥3× · CVD < 0 · Stop = Range HIGH · Trail ATR 1.75R\nSweep Long: Wick < range_low · bar_delta < 0 · OBI > 0 · Trail 1.90R\nCooldowns independientes · Filtro USD mínimo por símbolo',
+    detail2:    'Ambas estrategias con sus propias reglas y cooldowns · 5 símbolos (ETH/XRP excluidos de sweep)',
+    presets:    [1, 3, 7, 14, 30] as number[],
+    maxDays:    null as number | null,
+    defaultDays: null as number | null,
+  },
+  absorption: {
+    apiPath:    '/api/backtest/absorption',
+    label:      'Backtest Absorption Long · 5 símbolos · Compounding 2% · Todas sesiones',
+    detail:     'wick_atr < 0.5 · bar_delta < 0 · OBI > 0.2 · vwap_dev < -0.3% · cvd_slope < -5\nEntrada: open barra i+1 · Stop: wick_low - 0.15×ATR · Target 2R · Trail 1.90R\nCompounding: 2% del capital actual por trade (no fijo)',
+    detail2:    'Minería retrospectiva 9d · BTC-dominante · n≥60 requerido para validar edge real',
+    presets:    [1, 3, 7, 14, 30] as number[],
+    maxDays:    null as number | null,
+    defaultDays: null as number | null,
+  },
+  longs: {
+    apiPath:    '/api/backtest/longs',
+    label:      'Backtest Longs Minería · 5 símbolos · Patrones por símbolo · Compounding 2%',
+    detail:     'BTC: decline>p75 + oi_momentum=False · ETH: vwap_dev<p25 + London\nBNB: cvd>p90 + Overlap · SOL: Overlap + vr<p25 · XRP: London + wick_hi>0.5ATR\nCooldown 15 min · Stop swing_low - 0.15ATR · Trail 1.90R',
+    detail2:    'Thresholds adaptativos por símbolo (percentiles reales) · Detectores calibrados individualmente\nBTC +280%E / ETH +86%E en 8d · BNB/SOL marginal · XRP marginal',
+    presets:    [1, 3, 7, 14, 30] as number[],
+    maxDays:    null as number | null,
+    defaultDays: null as number | null,
+  },
+  shorts: {
+    apiPath:    '/api/backtest/shorts',
+    label:      'Backtest Shorts HTF+M1 · BTC/ETH/SOL/BNB · Compounding 2% · D1 bear filter',
+    detail:     'D1: precio < EMA20 (bear/neutral) · H1: equal_high + oi_momentum / stacked_imb / shooting star\nM1 entrada: rejection@high · shooting star M1 · ask absorption · Stop H1_high + 0.3×ATR_H1\nTrail activa 2.0R → best − 1.5×ATR_M1 · Fee 0.07% RT (maker+taker)',
+    detail2:    'BTC: eq_hi+oi / oi+obi+ses / shoot+oi · ETH: oi+obi / eq_hi+bear\nSOL: stacked+vr+ses / oi+shoot · BNB: eq_hi+obi / stacked+obi (stop>0.40%)\n$500→$773 (+54.7%) · n=23 · WR=74% · AvgR=+0.97R · MaxDD=6.4%',
+    presets:    [1, 3, 7, 14, 30] as number[],
+    maxDays:    null as number | null,
+    defaultDays: null as number | null,
   },
   be: {
     apiPath:    '/api/backtest/be',
@@ -33,7 +78,7 @@ export default function BacktestView({
   strategy = 'rbf',
   onStats,
 }: {
-  strategy?: 'rbf' | 'be'
+  strategy?: 'rbf' | 'sweep' | 'be' | 'combined' | 'absorption' | 'longs' | 'shorts'
   onStats?: (s: BtStats | null) => void
 }) {
   const meta_cfg = STRATEGY_META[strategy]

@@ -891,7 +891,9 @@ impl canvas::Program<Message> for HeatmapChart {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
             Interaction::PlacingAvwapAnchor => mouse::Interaction::Cell,
-            Interaction::None | Interaction::Ruler { .. } | Interaction::DraggingScalpingPanel { .. } => {
+            Interaction::None
+            | Interaction::Ruler { .. }
+            | Interaction::DraggingScalpingPanel { .. } => {
                 if cursor.is_over(bounds) {
                     return mouse::Interaction::Crosshair;
                 }

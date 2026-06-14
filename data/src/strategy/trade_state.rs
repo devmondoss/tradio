@@ -57,8 +57,8 @@ pub enum CloseReason {
 impl CloseReason {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::StopHit    => "STOP_HIT",
-            Self::TargetHit  => "TARGET_HIT",
+            Self::StopHit => "STOP_HIT",
+            Self::TargetHit => "TARGET_HIT",
             Self::TrailingHit => "TRAILING_HIT",
             Self::TTLExpired => "TTL_EXPIRED",
             Self::Invalidated => "INVALIDATED",

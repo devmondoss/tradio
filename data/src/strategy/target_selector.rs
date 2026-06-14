@@ -1,4 +1,4 @@
-﻿use super::trade_state::StructuralLevels;
+use super::trade_state::StructuralLevels;
 use super::types::{Side, StrategyMarketContext, StrategySignal};
 
 pub struct TargetSelector;
@@ -81,7 +81,6 @@ impl TargetSelector {
 mod tests {
     use super::*;
     use crate::strategy::types::*;
-
 
     fn make_signal(entry: f64, stop: f64, target: f64, side: Side) -> StrategySignal {
         StrategySignal {

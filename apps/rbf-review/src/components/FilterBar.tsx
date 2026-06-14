@@ -79,11 +79,11 @@ interface Props {
 
 const SES_ORDER  = ['London', 'LondonNyOverlap', 'NewYork', 'Asia', 'SessionEnd']
 const SES_COLOR: Record<string, string> = {
-  London:          '#388bfd',
-  LondonNyOverlap: '#8b5cf6',
-  NewYork:         '#3fb950',
-  Asia:            '#d29922',
-  SessionEnd:      '#6e7681',
+  London:          '#2563eb',
+  LondonNyOverlap: '#7c3aed',
+  NewYork:         '#16a34a',
+  Asia:            '#d97706',
+  SessionEnd:      '#a0a0b0',
 }
 
 export default function FilterBar({ trades, filters, filtered, onChange }: Props) {
@@ -152,7 +152,7 @@ export default function FilterBar({ trades, filters, filtered, onChange }: Props
             padding: '12px 14px',
             display: 'flex', flexDirection: 'column', gap: 12,
             minWidth: 280,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.10)',
           }}
         >
           <Group label="Simbolo">
@@ -160,7 +160,7 @@ export default function FilterBar({ trades, filters, filtered, onChange }: Props
               <Pill key={s}
                 label={s.replace('USDT', '')}
                 active={filters.syms.has(s)}
-                color="#388bfd"
+                color="#2563eb"
                 onClick={() => onChange({ ...filters, syms: toggle(filters.syms, s) })}
               />
             ))}
@@ -182,7 +182,7 @@ export default function FilterBar({ trades, filters, filtered, onChange }: Props
               <Pill key={d}
                 label={d}
                 active={filters.dirs.has(d)}
-                color={d === 'Short' ? '#f85149' : '#3fb950'}
+                color={d === 'Short' ? '#dc2626' : '#16a34a'}
                 onClick={() => onChange({ ...filters, dirs: toggle(filters.dirs, d) })}
               />
             ))}
@@ -193,7 +193,7 @@ export default function FilterBar({ trades, filters, filtered, onChange }: Props
               <Pill key={r}
                 label={{ win: 'Win', loss: 'Loss', open: 'Open' }[r]}
                 active={filters.results.has(r)}
-                color={{ win: '#3fb950', loss: '#f85149', open: '#388bfd' }[r]}
+                color={{ win: '#16a34a', loss: '#dc2626', open: '#2563eb' }[r]}
                 onClick={() => onChange({ ...filters, results: toggle(filters.results, r) })}
               />
             ))}

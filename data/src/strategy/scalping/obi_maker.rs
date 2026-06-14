@@ -6,9 +6,9 @@
 //! Basado en Cont-Kukanov-Stoikov 2014: el micro-precio predice mejor el
 //! precio futuro inmediato que el mid-price simple.
 
-use crate::strategy::types::Side;
 use super::{ScalpingContext, ScalpingSignal, ScalpingStrategyId, is_scalping_session};
 use crate::strategy::types::ScalpingConfig;
+use crate::strategy::types::Side;
 
 /// Evalúa si el OBI tiene convicción suficiente para sesgarse en un lado.
 ///
@@ -89,9 +89,9 @@ pub fn detect(ctx: &ScalpingContext, cfg: &ScalpingConfig) -> Option<ScalpingSig
             let be_move = 0.00040 * bid_px;
             // ×1.8 para que TP1 > fees+slippage (×1.2 era estructuralmente negativo en TP1)
             let target = (be_move * 1.8).max(6.0 * tick);
-            let tp1 = round_tick(bid_px + target);        // 1R  (~$52 a $73k)
-            let tp2 = round_tick(bid_px + target * 1.5);  // 1.5R (~$78)
-            let sl  = round_tick(bid_px - target * 0.65); // RR = 1.54
+            let tp1 = round_tick(bid_px + target); // 1R  (~$52 a $73k)
+            let tp2 = round_tick(bid_px + target * 1.5); // 1.5R (~$78)
+            let sl = round_tick(bid_px - target * 0.65); // RR = 1.54
             (bid_px, sl, tp1, tp2)
         }
         Side::Short => {
@@ -100,7 +100,7 @@ pub fn detect(ctx: &ScalpingContext, cfg: &ScalpingConfig) -> Option<ScalpingSig
             let target = (be_move * 1.8).max(6.0 * tick);
             let tp1 = round_tick(ask_px - target);
             let tp2 = round_tick(ask_px - target * 1.5);
-            let sl  = round_tick(ask_px + target * 0.65);
+            let sl = round_tick(ask_px + target * 0.65);
             (ask_px, sl, tp1, tp2)
         }
     };

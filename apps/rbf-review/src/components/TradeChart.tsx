@@ -93,22 +93,66 @@ export default function TradeChart({ trade }: Props) {
   function forceRedraw() { bump(v => v + 1) }
 
   // ── chart init ──────────────────────────────────────────────────────────────
+  function applyChartTheme() {
+    const chart = chartRef.current; const series = serRef.current
+    if (!chart || !series) return
+    const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim()
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+    chart.applyOptions({
+      layout: { background: { color: css('--bg2') || (isDark ? '#141418' : '#ffffff') }, textColor: css('--text2') || (isDark ? '#9090a0' : '#5c5c6e') },
+      grid:   { vertLines: { color: css('--border') || (isDark ? '#26262e' : '#e8e8ec') }, horzLines: { color: css('--border') || (isDark ? '#26262e' : '#e8e8ec') } },
+      timeScale:       { borderColor: css('--border2') || (isDark ? '#32323c' : '#d0d0d6') },
+      rightPriceScale: { borderColor: css('--border2') || (isDark ? '#32323c' : '#d0d0d6') },
+    })
+    if (isDark) {
+      series.applyOptions({
+        upColor:         '#e8e8f0',
+        downColor:       '#3a3a48',
+        borderUpColor:   '#e8e8f0',
+        borderDownColor: '#5a5a6e',
+        wickUpColor:     '#e8e8f0',
+        wickDownColor:   '#5a5a6e',
+      })
+    } else {
+      series.applyOptions({
+        upColor:         '#16a34a',
+        downColor:       '#dc2626',
+        borderUpColor:   '#16a34a',
+        borderDownColor: '#dc2626',
+        wickUpColor:     '#16a34a',
+        wickDownColor:   '#dc2626',
+      })
+    }
+  }
+
   useEffect(() => {
     if (!wrapRef.current) return
+    const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim()
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
     const chart = createChart(wrapRef.current, {
       width: wrapRef.current.clientWidth, height: wrapRef.current.clientHeight,
-      layout: { background: { color: '#0d1117' }, textColor: '#8b949e' },
-      grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      layout: { background: { color: css('--bg2') || '#ffffff' }, textColor: css('--text2') || '#5c5c6e' },
+      grid: { vertLines: { color: css('--border') || '#e8e8ec' }, horzLines: { color: css('--border') || '#e8e8ec' } },
       crosshair: { mode: 1 },
-      timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
-      rightPriceScale: { borderColor: '#30363d' },
+      timeScale: { borderColor: css('--border2') || '#d0d0d6', timeVisible: true, secondsVisible: false },
+      rightPriceScale: { borderColor: css('--border2') || '#d0d0d6' },
+      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+      handleScale:  { mouseWheel: false, pinch: true, axisPressedMouseMove: true, axisDoubleClickReset: true },
     })
+    const upC   = isDark ? '#e8e8f0' : '#16a34a'
+    const dnC   = isDark ? '#3a3a48' : '#dc2626'
+    const upB   = isDark ? '#e8e8f0' : '#16a34a'
+    const dnB   = isDark ? '#5a5a6e' : '#dc2626'
     const series = chart.addSeries(CandlestickSeries, {
-      upColor: '#3fb950', downColor: '#f85149',
-      borderUpColor: '#3fb950', borderDownColor: '#f85149',
-      wickUpColor: '#3fb950', wickDownColor: '#f85149',
+      upColor: upC, downColor: dnC,
+      borderUpColor: upB, borderDownColor: dnB,
+      wickUpColor: upB, wickDownColor: dnB,
     })
     chartRef.current = chart; serRef.current = series
+
+    // observe <html data-theme> changes to re-apply colors without remounting
+    const themeObserver = new MutationObserver(() => { applyChartTheme(); draw() })
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 
     const ro = new ResizeObserver(() => {
       if (!wrapRef.current) return
@@ -138,7 +182,7 @@ export default function TradeChart({ trade }: Props) {
     document.addEventListener('mousemove', onDocMove)
 
     return () => {
-      chart.remove(); ro.disconnect()
+      chart.remove(); ro.disconnect(); themeObserver.disconnect()
       document.removeEventListener('mousemove', onDocMove)
     }
   }, [])
@@ -155,21 +199,23 @@ export default function TradeChart({ trade }: Props) {
     const series = serRef.current, chart = chartRef.current
     if (!series || !chart) return
     // Retroceder suficiente para mostrar la formación del rango + contexto previo
-    const rangeBars  = trade.rangeBars ?? 15
-    const extraBars  = rangeBars + 120  // rango + 120 barras de contexto previo
-    fetchKlines(trade.sym, trade.tsMs, 400, extraBars).then(cs => {
+    const rangeBars   = trade.rangeBars ?? 15
+    const extraBars   = rangeBars + 220
+    const closedAtSec = trade.closedAt
+      ? Math.floor(new Date(trade.closedAt).getTime() / 1000)
+      : trade.ts + (trade.durationMin ?? 90) * 60
+    const durationBars = Math.ceil((closedAtSec - trade.ts) / 60) + 30
+    const totalLimit = Math.min(extraBars + durationBars, 1500)
+    fetchKlines(trade.sym, trade.tsMs, totalLimit, extraBars).then(cs => {
       if (tradeRef.current?.id !== trade.id) return
       candlesRef.current = cs
       series.setData(cs.map(c => ({ ...c, time: c.time as Time })))
 
-      // setData() puede triggear un fitContent interno en lightweight-charts;
-      // diferimos la vista al siguiente frame para que nuestro range gane.
       requestAnimationFrame(() => {
         if (tradeRef.current?.id !== trade.id) return
-        // Usamos tiempo real (segundos) en vez de índice lógico — más robusto ante resizes
         chart.timeScale().setVisibleRange({
-          from: (trade.ts - (rangeBars + 15) * 60) as Time,
-          to:   (trade.ts + 60 * 60) as Time,
+          from: (trade.ts - (rangeBars + 100) * 60) as Time,
+          to:   (closedAtSec + 120 * 60) as Time,
         })
         draw()
       })
@@ -338,6 +384,10 @@ export default function TradeChart({ trade }: Props) {
     const canvas=canvasRef.current,wrap=wrapRef.current
     if (!t||!chart||!series||!canvas||!wrap) return
     syncCanvas()
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+    const entryLineColor  = isDark ? 'rgba(240,240,244,0.5)'  : 'rgba(10,10,15,0.4)'
+    const entryLabelColor = isDark ? 'rgba(240,240,244,0.85)' : 'rgba(10,10,15,0.75)'
+    const vlineColor      = isDark ? 'rgba(59,130,246,0.25)'  : 'rgba(37,99,235,0.2)'
     const ctx=canvas.getContext('2d')!
     ctx.clearRect(0,0,canvas.width,canvas.height)
     const prec=t.entry>100?1:t.entry>1?4:6
@@ -348,48 +398,97 @@ export default function TradeChart({ trade }: Props) {
     const sY=cv(series.priceToCoordinate(t.stop))
     const tY=cv(series.priceToCoordinate(t.target))
     if (eX==null||eY==null||sY==null||tY==null) return
+    const isShort = t.dir === 'Short'
     let exitTs=t.ts+90*60
-    if (t.closedAt) { const ex=Math.floor(new Date(t.closedAt).getTime()/1000); if(ex>t.ts&&ex<t.ts+180*60) exitTs=ex }
+    if (t.closedAt) { const ex=Math.floor(new Date(t.closedAt).getTime()/1000); if(ex>t.ts) exitTs=ex }
+    else if (t.durationMin && t.durationMin > 0) { exitTs = t.ts + t.durationMin * 60 }
+    // Buscar primera vela que tocó el nivel de exit real según dirección y tipo
+    // Short: TP = low <= target, SL = high >= stop
+    // Long:  TP = high >= target, SL = low <= stop
+    if (t.exit && t.exit > 0 && candlesRef.current.length > 0) {
+      const isStopLoss = t.reason === 'STOP_LOSS'
+      const touchLevel = isStopLoss ? t.stop : t.exit
+      const firstTouch = candlesRef.current.find(c =>
+        c.time > t.ts && (  // > en vez de >= para excluir la vela de entry
+          isShort
+            ? (isStopLoss ? c.high >= touchLevel : c.low  <= touchLevel)
+            : (isStopLoss ? c.low  <= touchLevel : c.high >= touchLevel)
+        )
+      )
+      if (firstTouch) exitTs = firstTouch.time + 60
+    }
     const xXraw=cv(chart.timeScale().timeToCoordinate(exitTs as Time))
     const x1=(xXraw==null||xXraw<=eX)?eX+Math.max(canvas.width*0.25,120):xXraw
     const x0=eX,w2=Math.max(x1-x0,4)
     const sy0=Math.min(eY,sY),sh=Math.abs(sY-eY)
-    ctx.fillStyle='rgba(248,81,73,0.25)';ctx.fillRect(x0,sy0,w2,sh)
-    ctx.strokeStyle='rgba(248,81,73,0.8)';ctx.lineWidth=1.5;ctx.setLineDash([]);ctx.strokeRect(x0,sy0,w2,sh)
-    const ty0=Math.min(eY,tY),th=Math.abs(tY-eY)
-    ctx.fillStyle='rgba(63,185,80,0.25)';ctx.fillRect(x0,ty0,w2,th)
-    ctx.strokeStyle='rgba(63,185,80,0.8)';ctx.lineWidth=1.5;ctx.strokeRect(x0,ty0,w2,th)
-    ctx.strokeStyle='rgba(230,237,243,0.5)';ctx.lineWidth=1;ctx.setLineDash([5,4])
+    const isWin=(t.resultR??0)>0
+    const stopAlpha=isWin?0.07:0.22; const stopStroke=isWin?'rgba(220,38,38,0.3)':'rgba(220,38,38,0.75)'
+    ctx.fillStyle=`rgba(220,38,38,${stopAlpha})`;ctx.fillRect(x0,sy0,w2,sh)
+    ctx.strokeStyle=stopStroke;ctx.lineWidth=isWin?0.8:1.5;ctx.setLineDash([]);ctx.strokeRect(x0,sy0,w2,sh)
+
+    // Bug2 fix: exitedEarly aplica tanto a wins como a losses con exit antes del TP/SL estructural
+    const exitedEarly = t.exit && t.exit > 0 && t.reason !== 'TAKE_PROFIT' && t.reason !== 'STOP_LOSS'
+    const profYBottom = exitedEarly && t.exit ? cv(series.priceToCoordinate(t.exit)) : tY
+    const effectiveProfY = profYBottom ?? tY
+    const ty0=Math.min(eY,effectiveProfY),th=Math.abs(effectiveProfY-eY)
+
+    // TP fantasma (línea tenue) cuando salió antes del TP completo
+    if (exitedEarly && tY != null) {
+      ctx.strokeStyle='rgba(22,163,74,0.25)';ctx.lineWidth=1;ctx.setLineDash([3,5])
+      ctx.beginPath();ctx.moveTo(x0,tY);ctx.lineTo(x1,tY);ctx.stroke();ctx.setLineDash([])
+      ctx.font='10px monospace';ctx.textAlign='left';ctx.fillStyle='rgba(22,163,74,0.5)'
+      ctx.fillText('TP  '+t.target.toFixed(prec),x1+6,tY+4)
+    }
+    const profAlpha=isWin?0.28:0.10; const profStroke=isWin?'rgba(22,163,74,0.9)':'rgba(22,163,74,0.5)'
+    ctx.fillStyle=`rgba(22,163,74,${profAlpha})`;ctx.fillRect(x0,ty0,w2,th)
+    ctx.strokeStyle=profStroke;ctx.lineWidth=isWin?1.8:1.5;ctx.strokeRect(x0,ty0,w2,th)
+    ctx.strokeStyle=entryLineColor;ctx.lineWidth=1;ctx.setLineDash([5,4])
     ctx.beginPath();ctx.moveTo(x0,eY);ctx.lineTo(x1,eY);ctx.stroke();ctx.setLineDash([])
-    ctx.strokeStyle='rgba(88,166,255,0.2)';ctx.lineWidth=1;ctx.setLineDash([3,5])
+    ctx.strokeStyle=vlineColor;ctx.lineWidth=1;ctx.setLineDash([3,5])
     ctx.beginPath();ctx.moveTo(x0,0);ctx.lineTo(x0,canvas.height);ctx.stroke();ctx.setLineDash([])
-    if (t.exit&&t.exit>0) {
+
+    // Línea de exit — solo si no es TP/SL (esos ya tienen sus bordes de caja)
+    if (t.exit && t.exit > 0 && exitedEarly) {
       const xpY=cv(series.priceToCoordinate(t.exit))
       if (xpY!=null) {
-        const exitCol=(t.resultR??0)>0?'rgba(63,185,80,0.8)':'rgba(248,81,73,0.8)'
+        const exitCol=isWin?'rgba(22,163,74,0.9)':'rgba(220,38,38,0.9)'
         ctx.strokeStyle=exitCol;ctx.lineWidth=1.5;ctx.setLineDash([3,3])
         ctx.beginPath();ctx.moveTo(x0,xpY);ctx.lineTo(x1,xpY);ctx.stroke();ctx.setLineDash([])
-        // Label con la razón de exit para que no quede como línea misteriosa
-        const exitLbl = (t.reason ?? 'EXIT').replace('_',' ')
+        const exitLbl = (t.reason ?? 'EXIT').replace(/_/g,' ')
         ctx.font='bold 10px monospace';ctx.textAlign='left';ctx.fillStyle=exitCol
         ctx.fillText(`${exitLbl}  ${t.exit.toFixed(prec)}`, x1+6, xpY+4)
       }
     }
+
+    // Bug5 fix: separar labels si están demasiado juntos (stop_pct mínimo)
     ctx.font='bold 11px monospace';ctx.textAlign='left'
-    ctx.fillStyle='rgba(230,237,243,0.9)';ctx.fillText('ENTRY  '+t.entry.toFixed(prec),x1+6,eY-3)
-    ctx.fillStyle='rgba(248,81,73,0.95)';ctx.fillText('SL  '+t.stop.toFixed(prec),x1+6,sY+4)
-    ctx.fillStyle='rgba(63,185,80,0.95)';ctx.fillText('TP  '+t.target.toFixed(prec),x1+6,tY+4)
+    ctx.fillStyle=entryLabelColor;ctx.fillText('ENTRY  '+t.entry.toFixed(prec),x1+6,eY-3)
+    // SL label: arriba del nivel si es long (sY está debajo de eY en canvas), abajo si es short
+    const slLabelY = isShort ? sY-3 : sY+12
+    ctx.fillStyle='rgba(220,38,38,0.95)';ctx.fillText('SL  '+t.stop.toFixed(prec),x1+6,slLabelY)
+    if (!exitedEarly) {
+      // TP label: arriba del nivel si es long (tY arriba), abajo si es short
+      const tpLabelY = isShort ? tY+12 : tY-3
+      ctx.fillStyle='rgba(22,163,74,0.95)';ctx.fillText('TP  '+t.target.toFixed(prec),x1+6,tpLabelY)
+    }
+
     ctx.font='bold 10px monospace';ctx.textAlign='center'
-    if(sh>14){ctx.fillStyle='rgba(248,81,73,0.6)';ctx.fillText('STOP LOSS',x0+w2/2,sy0+sh/2+4)}
-    if(th>14){ctx.fillStyle='rgba(63,185,80,0.6)';ctx.fillText('TAKE PROFIT',x0+w2/2,ty0+th/2+4)}
+    if(sh>14){ctx.fillStyle=isWin?'rgba(220,38,38,0.3)':'rgba(220,38,38,0.7)';ctx.fillText('STOP LOSS',x0+w2/2,sy0+sh/2+4)}
+    const profBoxLabel = exitedEarly ? (t.reason??'EXIT').replace(/_/g,' ') : 'TAKE PROFIT'
+    if(th>14){ctx.fillStyle=isWin?'rgba(22,163,74,0.75)':'rgba(22,163,74,0.45)';ctx.fillText(profBoxLabel,x0+w2/2,ty0+th/2+4)}
     ctx.textAlign='left'
+
     const rStr=t.isOpen?'OPEN':((t.resultR??0)>=0?'+':'')+(t.resultR??0).toFixed(3)+'R'
     const uStr=t.isOpen?'':` ${t.pnlUsd>=0?'+$':'-$'}${Math.abs(t.pnlUsd).toFixed(3)}`
-    const rCol=t.isOpen?'rgba(56,139,253,0.9)':(t.resultR??0)>0?'rgba(63,185,80,0.95)':'rgba(248,81,73,0.95)'
+    const rCol=t.isOpen?'rgba(37,99,235,0.9)':(t.resultR??0)>0?'rgba(22,163,74,0.95)':'rgba(220,38,38,0.95)'
+    // Bug7 fix: badge siempre dentro del canvas (min arriba del target, max abajo del stop)
+    const boxTop = Math.min(sy0, ty0)
+    const badgeY = Math.max(boxTop - 8, 16)
     ctx.font='bold 13px monospace';ctx.fillStyle=rCol
-    const badgeY=Math.min(sy0,ty0)-8;ctx.fillText(rStr+uStr,x0+6,badgeY>16?badgeY:16)
-    ctx.font='bold 11px monospace';ctx.fillStyle=t.dir==='Short'?'rgba(248,81,73,0.8)':'rgba(63,185,80,0.8)'
-    ctx.fillText(t.dir.toUpperCase(),x0+6,eY+(t.dir==='Short'?-16:14))
+    ctx.fillText(rStr+uStr,x0+6,badgeY)
+    // Bug6 fix: DIR label siempre encima del entry (arriba en canvas = Y menor)
+    ctx.font='bold 11px monospace';ctx.fillStyle=isShort?'rgba(220,38,38,0.85)':'rgba(22,163,74,0.85)'
+    ctx.fillText(t.dir.toUpperCase(),x0+6,eY-16)
 
     // ── User drawings ─────────────────────────────────────────────────────────
     const curHit = hovHit.current
@@ -402,7 +501,7 @@ export default function TradeChart({ trade }: Props) {
     const pd=pending.current, {x:mx,y:my}=mouse.current
     if (pd) {
       const snap=snapPoint(mx,my), ex=snap?.x??mx, ey=snap?.y??my
-      ctx.strokeStyle='rgba(240,192,64,0.55)';ctx.lineWidth=1.2;ctx.setLineDash([5,4])
+      ctx.strokeStyle='rgba(217,119,6,0.55)';ctx.lineWidth=1.2;ctx.setLineDash([5,4])
       if (pd.tool==='shortpos'||pd.tool==='longpos') {
         ctx.setLineDash([])
         const ep=cv(series.coordinateToPrice(pd.y1)) as unknown as number
@@ -418,7 +517,7 @@ export default function TradeChart({ trade }: Props) {
           }
         }
       } else if (pd.tool==='rect') {
-        ctx.fillStyle='rgba(88,166,255,0.06)';ctx.fillRect(pd.x1,pd.y1,ex-pd.x1,ey-pd.y1)
+        ctx.fillStyle='rgba(37,99,235,0.05)';ctx.fillRect(pd.x1,pd.y1,ex-pd.x1,ey-pd.y1)
         ctx.strokeRect(pd.x1,pd.y1,ex-pd.x1,ey-pd.y1)
       } else {
         drawLineShape(ctx,canvas,pd.tool,pd.x1,pd.y1,ex,ey)
@@ -429,7 +528,7 @@ export default function TradeChart({ trade }: Props) {
     // magnet dot
     if (magnetRef.current&&toolRef.current!=='cursor') {
       const snap=snapPoint(mx,my)
-      if (snap) { ctx.fillStyle='rgba(240,192,64,0.9)';ctx.beginPath();ctx.arc(snap.x,snap.y,5,0,Math.PI*2);ctx.fill() }
+      if (snap) { ctx.fillStyle='rgba(217,119,6,0.9)';ctx.beginPath();ctx.arc(snap.x,snap.y,5,0,Math.PI*2);ctx.fill() }
     }
   }
 
@@ -445,47 +544,51 @@ export default function TradeChart({ trade }: Props) {
     const w=tx2-tx
 
     const lossTop=Math.min(entY,stoY),lossH=Math.abs(stoY-entY)
-    ctx.globalAlpha=hovHandle==='stop'?0.35:0.2;ctx.fillStyle='#f85149';ctx.fillRect(tx,lossTop,w,lossH)
-    ctx.globalAlpha=1;ctx.strokeStyle=hovHandle==='stop'?'#ff8070':'rgba(248,81,73,0.8)';ctx.lineWidth=1.2;ctx.setLineDash([]);ctx.strokeRect(tx,lossTop,w,lossH)
+    ctx.globalAlpha=hovHandle==='stop'?0.35:0.2;ctx.fillStyle='#dc2626';ctx.fillRect(tx,lossTop,w,lossH)
+    ctx.globalAlpha=1;ctx.strokeStyle=hovHandle==='stop'?'#ef4444':'rgba(220,38,38,0.8)';ctx.lineWidth=1.2;ctx.setLineDash([]);ctx.strokeRect(tx,lossTop,w,lossH)
 
     const profTop=Math.min(entY,tarY),profH=Math.abs(tarY-entY)
-    ctx.globalAlpha=hovHandle==='target'?0.35:0.2;ctx.fillStyle='#3fb950';ctx.fillRect(tx,profTop,w,profH)
-    ctx.globalAlpha=1;ctx.strokeStyle=hovHandle==='target'?'#6fe08a':'rgba(63,185,80,0.8)';ctx.lineWidth=1.2;ctx.strokeRect(tx,profTop,w,profH)
+    ctx.globalAlpha=hovHandle==='target'?0.35:0.2;ctx.fillStyle='#16a34a';ctx.fillRect(tx,profTop,w,profH)
+    ctx.globalAlpha=1;ctx.strokeStyle=hovHandle==='target'?'#22c55e':'rgba(22,163,74,0.8)';ctx.lineWidth=1.2;ctx.strokeRect(tx,profTop,w,profH)
 
     // entry line
-    ctx.strokeStyle=hovHandle==='entry'?'#fff':'rgba(230,237,243,0.7)';ctx.lineWidth=hovHandle==='entry'?2:1.5;ctx.setLineDash([4,3])
+    const isDarkPos = document.documentElement.getAttribute('data-theme') === 'dark'
+    const posTextColor  = isDarkPos ? 'rgba(240,240,244,0.85)' : 'rgba(10,10,15,0.75)'
+    const posLineColor  = isDarkPos ? 'rgba(240,240,244,0.5)'  : 'rgba(10,10,15,0.5)'
+    const posActiveColor = isDarkPos ? '#f0f0f4' : '#0a0a0f'
+    ctx.strokeStyle=hovHandle==='entry'?posActiveColor:posLineColor;ctx.lineWidth=hovHandle==='entry'?2:1.5;ctx.setLineDash([4,3])
     ctx.beginPath();ctx.moveTo(tx,entY);ctx.lineTo(canvas.width,entY);ctx.stroke();ctx.setLineDash([])
 
     // left anchor handle
-    const anchorCol=hovHandle==='time'?'#f0c040':'rgba(255,255,255,0.25)'
+    const anchorCol=hovHandle==='time'?'#d97706':(isDarkPos?'rgba(240,240,244,0.2)':'rgba(10,10,15,0.2)')
     ctx.fillStyle=anchorCol;ctx.fillRect(tx-4,lossTop,4,Math.abs(lossTop-(profTop+profH))+lossH)
 
     // right edge handle
-    const rEdgeCol=hovHandle==='right_edge'?'#f0c040':'rgba(255,255,255,0.2)'
+    const rEdgeCol=hovHandle==='right_edge'?'#d97706':(isDarkPos?'rgba(240,240,244,0.15)':'rgba(10,10,15,0.15)')
     ctx.fillStyle=rEdgeCol;ctx.fillRect(tx2,lossTop,4,Math.abs(lossTop-(profTop+profH))+lossH)
 
     // handle circles on left edge
     const handleY=[entY,stoY,tarY]
-    const handleCols=['rgba(230,237,243,0.8)','rgba(248,81,73,0.9)','rgba(63,185,80,0.9)']
+    const handleCols=[isDarkPos?'rgba(240,240,244,0.7)':'rgba(10,10,15,0.7)','rgba(220,38,38,0.9)','rgba(22,163,74,0.9)']
     const handleHov=['entry','stop','target']
     handleY.forEach((hy,i)=>{
-      ctx.fillStyle=hovHandle===handleHov[i]?'#fff':handleCols[i]
+      ctx.fillStyle=hovHandle===handleHov[i]?posActiveColor:handleCols[i]
       ctx.beginPath();ctx.arc(tx,hy,5,0,Math.PI*2);ctx.fill()
-      ctx.strokeStyle='rgba(0,0,0,0.4)';ctx.lineWidth=1;ctx.stroke()
+      ctx.strokeStyle=isDarkPos?'rgba(255,255,255,0.2)':'rgba(0,0,0,0.4)';ctx.lineWidth=1;ctx.stroke()
     })
 
     // labels just outside right edge
     ctx.font='bold 10px monospace';ctx.textAlign='left'
-    ctx.fillStyle=hovHandle==='entry'?'#fff':'rgba(230,237,243,0.9)'
+    ctx.fillStyle=hovHandle==='entry'?posActiveColor:posTextColor
     ctx.fillText(entry.toFixed(prec),tx2+8,entY+4)
-    ctx.fillStyle=hovHandle==='stop'?'#ff8070':'rgba(248,81,73,0.95)'
+    ctx.fillStyle=hovHandle==='stop'?'#ef4444':'rgba(220,38,38,0.95)'
     ctx.fillText(`${stop.toFixed(prec)}  -${pctR}%`,tx2+8,stoY+4)
-    ctx.fillStyle=hovHandle==='target'?'#6fe08a':'rgba(63,185,80,0.95)'
+    ctx.fillStyle=hovHandle==='target'?'#22c55e':'rgba(22,163,74,0.95)'
     ctx.fillText(`${target.toFixed(prec)}  +${pctP}%`,tx2+8,tarY+4)
 
     // center badges
-    if(lossH>18){ctx.font='bold 11px monospace';ctx.textAlign='center';ctx.fillStyle='rgba(248,81,73,0.8)';ctx.fillText(`-${pctR}%`,tx+w/2,lossTop+lossH/2+4)}
-    if(profH>18){ctx.font='bold 11px monospace';ctx.textAlign='center';ctx.fillStyle='rgba(63,185,80,0.9)';ctx.fillText(`+${pctP}% · ${rr}R`,tx+w/2,profTop+profH/2+4)}
+    if(lossH>18){ctx.font='bold 11px monospace';ctx.textAlign='center';ctx.fillStyle='rgba(220,38,38,0.8)';ctx.fillText(`-${pctR}%`,tx+w/2,lossTop+lossH/2+4)}
+    if(profH>18){ctx.font='bold 11px monospace';ctx.textAlign='center';ctx.fillStyle='rgba(22,163,74,0.9)';ctx.fillText(`+${pctP}% · ${rr}R`,tx+w/2,profTop+profH/2+4)}
     ctx.textAlign='left'
   }
 
@@ -508,8 +611,11 @@ export default function TradeChart({ trade }: Props) {
     }
 
     ctx.globalAlpha=hov?1:0.9
-    const C='color' in d ? d.color : '#fff'
-    const lw=hov?2:1.3, col=hov?'#fff':C
+    const _isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+    const _defaultColor = _isDark ? '#f0f0f4' : '#0a0a0f'
+    const _hovColor     = _isDark ? '#ffffff'  : '#0a0a0f'
+    const C='color' in d ? d.color : _defaultColor
+    const lw=hov?2:1.3, col=hov?_hovColor:C
 
     if (d.type==='hline') {
       const y=cv(series.priceToCoordinate(d.price));if(y==null){ctx.globalAlpha=1;return}
@@ -535,11 +641,11 @@ export default function TradeChart({ trade }: Props) {
       if(x1==null||y1==null||x2==null||y2==null){ctx.globalAlpha=1;return}
       ctx.globalAlpha=hov?0.2:0.1;ctx.fillStyle=C;ctx.fillRect(x1,y1,x2-x1,y2-y1)
       ctx.globalAlpha=1;ctx.strokeStyle=col;ctx.lineWidth=lw;ctx.setLineDash([]);ctx.strokeRect(x1,y1,x2-x1,y2-y1)
-      if(hov){[[x1,y1],[x2,y2],[x1,y2],[x2,y1]].forEach(([cx,cy])=>{ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(cx as number,cy as number,5,0,Math.PI*2);ctx.fill()})}
+      if(hov){[[x1,y1],[x2,y2],[x1,y2],[x2,y1]].forEach(([cx,cy])=>{ctx.fillStyle=_hovColor;ctx.beginPath();ctx.arc(cx as number,cy as number,5,0,Math.PI*2);ctx.fill()})}
     } else if (d.type==='text') {
       const x=cv(chart.timeScale().timeToCoordinate(d.time as Time)),y=cv(series.priceToCoordinate(d.price))
       if(x==null||y==null){ctx.globalAlpha=1;return}
-      if(hov){ctx.fillStyle='rgba(255,255,255,0.1)';ctx.fillRect(x-2,y-14,d.label.length*7.5,18)}
+      if(hov){ctx.fillStyle=_isDark?'rgba(255,255,255,0.07)':'rgba(10,10,15,0.07)';ctx.fillRect(x-2,y-14,d.label.length*7.5,18)}
       ctx.font='bold 12px monospace';ctx.fillStyle=col;ctx.fillText(d.label,x+4,y-3)
       ctx.fillStyle=col;ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fill()
     } else if (d.type==='measure') {
@@ -549,11 +655,11 @@ export default function TradeChart({ trade }: Props) {
       const pd2=d.p2-d.p1,pct=((pd2/d.p1)*100).toFixed(3)
       const risk=Math.abs(t.stop-t.entry),rMult=risk>0?(pd2/risk).toFixed(2):null
       const label=`${pd2>=0?'+':''}${pd2.toFixed(prec)}  ${pct}%${rMult?`  ${rMult}R`:''}`
-      ctx.globalAlpha=hov?0.25:0.14;ctx.fillStyle=pd2<0?'#f85149':'#3fb950'
+      ctx.globalAlpha=hov?0.25:0.14;ctx.fillStyle=pd2<0?'#dc2626':'#16a34a'
       ctx.fillRect(Math.min(x1,x2),Math.min(y1,y2),Math.abs(x2-x1),Math.abs(y2-y1))
-      ctx.globalAlpha=1;ctx.strokeStyle=hov?'#fff':(pd2<0?'rgba(248,81,73,0.7)':'rgba(63,185,80,0.7)')
+      ctx.globalAlpha=1;ctx.strokeStyle=hov?'#0a0a0f':(pd2<0?'rgba(220,38,38,0.7)':'rgba(22,163,74,0.7)')
       ctx.lineWidth=hov?2:1;ctx.setLineDash([4,3]);ctx.strokeRect(Math.min(x1,x2),Math.min(y1,y2),Math.abs(x2-x1),Math.abs(y2-y1));ctx.setLineDash([])
-      ctx.font='bold 11px monospace';ctx.fillStyle=pd2<0?'#f85149':'#3fb950';ctx.textAlign='center'
+      ctx.font='bold 11px monospace';ctx.fillStyle=pd2<0?'#dc2626':'#16a34a';ctx.textAlign='center'
       ctx.fillText(label,Math.min(x1,x2)+Math.abs(x2-x1)/2,Math.min(y1,y2)+Math.abs(y2-y1)/2+5);ctx.textAlign='left'
     }
     ctx.globalAlpha=1
@@ -732,8 +838,8 @@ export default function TradeChart({ trade }: Props) {
           onKeyDown={e=>{if(e.key==='Enter')commitText((e.target as HTMLInputElement).value);if(e.key==='Escape')setTextInput(null)}}
           onBlur={e=>commitText(e.target.value)}
           style={{position:'absolute',zIndex:20,left:textInput.x,top:textInput.y-14,
-            background:'rgba(22,27,34,0.95)',border:'1px solid #388bfd',
-            color:'#e6edf3',fontSize:12,fontFamily:'monospace',padding:'2px 6px',borderRadius:3,outline:'none',minWidth:120}}
+            background:'var(--bg2)',border:'1px solid var(--blue)',
+            color:'var(--text)',fontSize:12,fontFamily:'monospace',padding:'2px 6px',borderRadius:3,outline:'none',minWidth:120}}
           placeholder="Enter para confirmar"
         />
       )}
@@ -742,18 +848,18 @@ export default function TradeChart({ trade }: Props) {
       <div style={{position:'absolute',top:8,left:8,zIndex:10,display:'flex',flexDirection:'column',gap:2}}>
         {GROUPS.map((group,gi)=>(
           <div key={gi} style={{display:'flex',flexDirection:'column',gap:2,marginBottom:gi<GROUPS.length-1?3:0}}>
-            {gi>0&&<div style={{height:1,background:'rgba(48,54,61,0.6)',margin:'1px 3px'}}/>}
+            {gi>0&&<div style={{height:1,background:'var(--border)',margin:'1px 3px'}}/>}
             {group.map(t=>{
               const def=TOOL_DEF[t],isActive=activeTool===t
               return (
                 <button key={t} title={def.tip} onClick={()=>setTool(t)} style={{
                   width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',
-                  background:isActive?'rgba(56,139,253,0.2)':'rgba(13,17,23,0.88)',
-                  border:isActive?'1px solid rgba(56,139,253,0.65)':'1px solid rgba(33,38,45,0.8)',
+                  background:isActive?'var(--blue-bg)':'var(--bg2)',
+                  border:isActive?'1px solid var(--blue)':'1px solid var(--border)',
                   borderRadius:5,
-                  color:t==='shortpos'&&isActive?'#f85149':t==='longpos'&&isActive?'#3fb950'
-                       :t==='shortpos'?'rgba(248,81,73,0.7)':t==='longpos'?'rgba(63,185,80,0.7)'
-                       :t==='eraser'?(isActive?'#f0c040':'#8b949e'):isActive?'#58a6ff':'#8b949e',
+                  color:t==='shortpos'&&isActive?'var(--red)':t==='longpos'&&isActive?'var(--green)'
+                       :t==='shortpos'?'var(--red)':t==='longpos'?'var(--green)'
+                       :t==='eraser'?(isActive?'var(--yellow)':'var(--text3)'):isActive?'var(--blue)':'var(--text3)',
                   fontSize:t==='text'?14:12,fontWeight:t==='text'?700:400,
                   cursor:'pointer',backdropFilter:'blur(6px)',fontFamily:'monospace',
                   letterSpacing:t==='extline'?-1:0,
@@ -764,18 +870,18 @@ export default function TradeChart({ trade }: Props) {
             })}
           </div>
         ))}
-        <div style={{height:1,background:'rgba(48,54,61,0.6)',margin:'1px 3px'}}/>
+        <div style={{height:1,background:'var(--border)',margin:'1px 3px'}}/>
         <button title="Imán — snap a OHLC" onClick={()=>{magnetRef.current=!magnet;setMagnet(m=>!m)}} style={{
           width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',
-          background:magnet?'rgba(240,192,64,0.18)':'rgba(13,17,23,0.88)',
-          border:magnet?'1px solid rgba(240,192,64,0.65)':'1px solid rgba(33,38,45,0.8)',
-          borderRadius:5,color:magnet?'#f0c040':'#8b949e',fontSize:16,cursor:'pointer',backdropFilter:'blur(6px)',
+          background:magnet?'var(--yellow-bg)':'var(--bg2)',
+          border:magnet?'1px solid var(--yellow)':'1px solid var(--border)',
+          borderRadius:5,color:magnet?'var(--yellow)':'var(--text3)',fontSize:16,cursor:'pointer',backdropFilter:'blur(6px)',
         }}>⌖</button>
         {draws.current.length>0&&(
           <button title="Borrar todos" onClick={()=>{draws.current=[];pending.current=null;hovHit.current=null;forceRedraw();draw()}} style={{
             width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',
-            background:'rgba(13,17,23,0.88)',border:'1px solid rgba(248,81,73,0.4)',
-            borderRadius:5,color:'rgba(248,81,73,0.8)',fontSize:14,cursor:'pointer',backdropFilter:'blur(6px)',
+            background:'var(--red-bg)',border:'1px solid var(--red)',
+            borderRadius:5,color:'var(--red)',fontSize:14,cursor:'pointer',backdropFilter:'blur(6px)',
           }}>✕</button>
         )}
       </div>
@@ -790,8 +896,8 @@ export default function TradeChart({ trade }: Props) {
         style={{
           position:'absolute',top:8,right:8,zIndex:10,
           width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',
-          background:'rgba(13,17,23,0.88)',border:'1px solid rgba(33,38,45,0.8)',
-          borderRadius:5,color:'#8b949e',fontSize:15,cursor:'pointer',
+          background:'var(--bg2)',border:'1px solid var(--border)',
+          borderRadius:5,color:'var(--text3)',fontSize:15,cursor:'pointer',
           backdropFilter:'blur(6px)',fontFamily:'monospace',
         }}
       >⊕</button>

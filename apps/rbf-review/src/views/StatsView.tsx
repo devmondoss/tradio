@@ -51,7 +51,7 @@ function TRow({ label, trades, isTotal }: { label: string; trades: Trade[]; isTo
   const pnl    = closed.reduce((s, t) => s + t.pnlUsd, 0)
   const nc     = closed.length
 
-  const bg = isTotal ? 'rgba(30,38,46,0.6)' : 'transparent'
+  const bg = isTotal ? 'var(--bg3)' : 'transparent'
   const rBg = (v: number) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--text3)'
 
   return (
@@ -91,7 +91,7 @@ function EquityChart({ trades }: { trades: Trade[] }) {
   const d    = pts.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')
   const area = d + ` L${x(pts.length - 1).toFixed(1)},${H} L0,${H} Z`
   const final = pts[pts.length - 1]
-  const color = final >= ACCOUNT ? '#3fb950' : '#f85149'
+  const color = final >= ACCOUNT ? '#16a34a' : '#dc2626'
 
   // grid lines
   const range  = hi - lo
@@ -108,24 +108,24 @@ function EquityChart({ trades }: { trades: Trade[] }) {
         <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%" preserveAspectRatio="none" style={{ display: 'block' }}>
           <defs>
             <linearGradient id="eq-grad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor={color} stopOpacity="0.3" />
+              <stop offset="0%"   stopColor={color} stopOpacity="0.25" />
               <stop offset="100%" stopColor={color} stopOpacity="0.02" />
             </linearGradient>
           </defs>
           {/* grid */}
           {gridYs.map((v, i) => (
-            <line key={i} x1={0} y1={y(v)} x2={W} y2={y(v)} stroke="#21262d" strokeWidth={1} />
+            <line key={i} x1={0} y1={y(v)} x2={W} y2={y(v)} stroke="#e8e8ec" strokeWidth={1} />
           ))}
           {/* baseline */}
-          <line x1={0} y1={y(ACCOUNT)} x2={W} y2={y(ACCOUNT)} stroke="#388bfd" strokeWidth={1} strokeDasharray="8,6" strokeOpacity="0.4" />
+          <line x1={0} y1={y(ACCOUNT)} x2={W} y2={y(ACCOUNT)} stroke="#2563eb" strokeWidth={1} strokeDasharray="8,6" strokeOpacity="0.4" />
           {/* area + line */}
           <path d={area} fill="url(#eq-grad)" />
           <path d={d}    fill="none" stroke={color} strokeWidth={2} />
           {/* trade dots */}
           {pts.map((v, i) => (
             <circle key={i} cx={x(i)} cy={y(v)} r={i === pts.length - 1 ? 5 : 3}
-              fill={v >= ACCOUNT ? '#3fb950' : '#f85149'}
-              stroke={i === pts.length - 1 ? '#fff' : 'none'} strokeWidth={1} />
+              fill={v >= ACCOUNT ? '#16a34a' : '#dc2626'}
+              stroke={i === pts.length - 1 ? '#ffffff' : 'none'} strokeWidth={1} />
           ))}
         </svg>
       </div>
@@ -186,11 +186,11 @@ const REASON_LABEL: Record<string, string> = {
   DATA_END:       'Data End',
 }
 const REASON_COLOR: Record<string, string> = {
-  TAKE_PROFIT:   '#3fb950',
-  TRAILING_STOP: '#58a6ff',
-  STOP_LOSS:     '#f85149',
-  TARGET:        '#3fb950',
-  STOP:          '#f85149',
+  TAKE_PROFIT:   '#16a34a',
+  TRAILING_STOP: '#2563eb',
+  STOP_LOSS:     '#dc2626',
+  TARGET:        '#16a34a',
+  STOP:          '#dc2626',
 }
 
 // ─── R Distribution chart ─────────────────────────────────────────────────────
@@ -206,7 +206,7 @@ function RDistribution({ trades }: { trades: Trade[] }) {
   const pad = 40
   const xOf = (r: number) => pad + ((r - minR) / (maxR - minR)) * (W - pad * 2)
 
-  const colorOf = (t: Trade) => REASON_COLOR[t.reason ?? ''] ?? (( t.resultR ?? 0) > 0 ? '#3fb950' : '#f85149')
+  const colorOf = (t: Trade) => REASON_COLOR[t.reason ?? ''] ?? (( t.resultR ?? 0) > 0 ? '#16a34a' : '#dc2626')
 
   // Group by reason for legend
   const byReason = REASON_ORDER
@@ -241,7 +241,7 @@ function RDistribution({ trades }: { trades: Trade[] }) {
             return (
               <circle key={i} cx={xOf(r)} cy={yPos} r={7}
                 fill={colorOf(t)} fillOpacity={0.85}
-                stroke="#0d1117" strokeWidth={1}
+                stroke="#ffffff" strokeWidth={1}
               />
             )
           })}

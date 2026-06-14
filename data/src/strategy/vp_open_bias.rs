@@ -47,14 +47,18 @@ pub struct DailyVpContext {
 impl DailyVpContext {
     /// Returns `true` if the bias supports a directional move toward `poc` from above (short-biased day)
     pub fn bias_supports_short(&self) -> bool {
-        matches!(self.bias, DailyVpBias::OutsideVaInsidePa | DailyVpBias::FadeGap)
-            && self.session_open > self.prev_vah
+        matches!(
+            self.bias,
+            DailyVpBias::OutsideVaInsidePa | DailyVpBias::FadeGap
+        ) && self.session_open > self.prev_vah
     }
 
     /// Returns `true` if the bias supports a directional move toward `poc` from below (long-biased day)
     pub fn bias_supports_long(&self) -> bool {
-        matches!(self.bias, DailyVpBias::OutsideVaInsidePa | DailyVpBias::FadeGap)
-            && self.session_open < self.prev_val
+        matches!(
+            self.bias,
+            DailyVpBias::OutsideVaInsidePa | DailyVpBias::FadeGap
+        ) && self.session_open < self.prev_val
     }
 
     /// Returns `true` if this is a range day (trade extremes, not breakouts)
@@ -201,9 +205,7 @@ impl DailyVpTracker {
 
             // Check for gap acceptance: if we opened outside VA but price has re-entered
             if !self.gap_acceptance_checked {
-                if let (Some(bias_ctx), Some(prev)) =
-                    (&mut self.current_bias, &self.prev_session)
-                {
+                if let (Some(bias_ctx), Some(prev)) = (&mut self.current_bias, &self.prev_session) {
                     if matches!(
                         bias_ctx.bias,
                         DailyVpBias::OutsideVaInsidePa | DailyVpBias::TrendDay
@@ -266,7 +268,7 @@ impl NakedPocTracker {
         new_poc: Option<f64>,
         price: f64,
         touch_band: f64,
-    ) -> &[( i64, f64)] {
+    ) -> &[(i64, f64)] {
         let day = day_ms / 86_400_000;
 
         // On day transition: commit the previous session's POC to the naked list.
@@ -338,7 +340,10 @@ impl HtfVpContext {
         if total_levels == 0 {
             return 1.0;
         }
-        for lvl in [&self.weekly, &self.monthly].iter().filter_map(|x| x.as_ref()) {
+        for lvl in [&self.weekly, &self.monthly]
+            .iter()
+            .filter_map(|x| x.as_ref())
+        {
             match lvl.location {
                 HtfValueLocation::AboveVah if is_long => aligned += 1,
                 HtfValueLocation::BelowVal if !is_long => aligned += 1,
@@ -400,7 +405,15 @@ impl HtfVpTracker {
     }
 
     /// Update with bar data. Returns the current HTF VP level if available.
-    pub fn update(&mut self, bar_ms: i64, high: f64, low: f64, _close: f64, volume: f64, price: f64) -> Option<&HtfVpLevel> {
+    pub fn update(
+        &mut self,
+        bar_ms: i64,
+        high: f64,
+        low: f64,
+        _close: f64,
+        volume: f64,
+        price: f64,
+    ) -> Option<&HtfVpLevel> {
         let period = bar_ms / self.period_ms;
 
         if period != self.current_period {
@@ -423,7 +436,12 @@ impl HtfVpTracker {
             if self.bin_step == 0.0 || self.bins.is_empty() {
                 self.bin_step = range / N_BINS as f64;
                 self.bins = (0..N_BINS)
-                    .map(|i| (self.period_low + i as f64 * self.bin_step + self.bin_step * 0.5, 0.0))
+                    .map(|i| {
+                        (
+                            self.period_low + i as f64 * self.bin_step + self.bin_step * 0.5,
+                            0.0,
+                        )
+                    })
                     .collect();
             }
             // Distribute bar volume proportionally across [low, high]
@@ -447,16 +465,24 @@ impl HtfVpTracker {
     }
 
     fn compute_levels(bins: &[(f64, f64)], _bin_step: f64, price: f64) -> Option<HtfVpLevel> {
-        if bins.is_empty() { return None; }
+        if bins.is_empty() {
+            return None;
+        }
 
         // POC = max volume bin
-        let (poc_idx, _) = bins.iter().enumerate()
-            .max_by(|(_, (_, va)), (_, (_, vb))| va.partial_cmp(vb).unwrap_or(std::cmp::Ordering::Equal))?;
+        let (poc_idx, _) = bins
+            .iter()
+            .enumerate()
+            .max_by(|(_, (_, va)), (_, (_, vb))| {
+                va.partial_cmp(vb).unwrap_or(std::cmp::Ordering::Equal)
+            })?;
         let poc = bins[poc_idx].0;
 
         // Total volume
         let total_vol: f64 = bins.iter().map(|(_, v)| v).sum();
-        if total_vol <= 0.0 { return None; }
+        if total_vol <= 0.0 {
+            return None;
+        }
 
         // VAH/VAL: 70% of volume centered on POC
         let target = total_vol * 0.70;
@@ -465,7 +491,9 @@ impl HtfVpTracker {
         let mut hi_idx = poc_idx;
 
         while included < target && (lo_idx > 0 || hi_idx < bins.len() - 1) {
-            let expand_lo = lo_idx > 0 && (hi_idx >= bins.len() - 1 || bins[lo_idx - 1].1 >= bins[(hi_idx + 1).min(bins.len()-1)].1);
+            let expand_lo = lo_idx > 0
+                && (hi_idx >= bins.len() - 1
+                    || bins[lo_idx - 1].1 >= bins[(hi_idx + 1).min(bins.len() - 1)].1);
             if expand_lo {
                 lo_idx -= 1;
                 included += bins[lo_idx].1;
@@ -488,7 +516,12 @@ impl HtfVpTracker {
             HtfValueLocation::InValue
         };
 
-        Some(HtfVpLevel { poc, vah, val, location })
+        Some(HtfVpLevel {
+            poc,
+            vah,
+            val,
+            location,
+        })
     }
 
     pub fn current_level(&self) -> Option<&HtfVpLevel> {
@@ -541,9 +574,25 @@ mod tests {
         let day2_ms: i64 = 86_400_000; // day 1
 
         // Day 1 bars
-        t.update(day1_ms, 100_000.0, 101_000.0, 99_000.0, Some(100_000.0), Some(100_500.0), Some(99_500.0));
+        t.update(
+            day1_ms,
+            100_000.0,
+            101_000.0,
+            99_000.0,
+            Some(100_000.0),
+            Some(100_500.0),
+            Some(99_500.0),
+        );
         // Day 2 open — should classify vs day 1
-        let bias = t.update(day2_ms, 100_700.0, 101_000.0, 100_500.0, Some(100_300.0), Some(101_000.0), Some(100_000.0));
+        let bias = t.update(
+            day2_ms,
+            100_700.0,
+            101_000.0,
+            100_500.0,
+            Some(100_300.0),
+            Some(101_000.0),
+            Some(100_000.0),
+        );
         assert!(bias.is_some());
         let b = bias.unwrap();
         // 100_700 is above VAH (100_500) but below session_high (101_000) → OutsideVaInsidePa

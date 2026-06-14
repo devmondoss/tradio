@@ -1,8 +1,7 @@
-﻿use crate::strategy::{adapter, types::*};
+use crate::strategy::{adapter, types::*};
 
 // Note: toxic_flow_gate is evaluated once in the router before calling any detector.
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
-
     let px = ctx.price;
     let atr = ctx.atr.unwrap_or(0.0);
     let vp = &ctx.volume_profile;
@@ -38,7 +37,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     let short_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_above;
 
-    if short_location && short_flow && short_book && adapter::basis_ok(flow.basis, false)
+    if short_location
+        && short_flow
+        && short_book
+        && adapter::basis_ok(flow.basis, false)
         && adapter::funding_short_ok(flow.funding_rate)
     {
         let entry = px;
@@ -55,19 +57,27 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 "delta_aligned_short".into(),
                 "target_POC".into(),
             ];
-            if chop_strict { evidence.push("chop_strict_gates_passed".into()); }
+            if chop_strict {
+                evidence.push("chop_strict_gates_passed".into());
+            }
             // Fase A — OB logging (peso 0, solo evidencia)
             if let Some(ref obs) = ctx.order_blocks {
                 if let Some(ref ob) = obs.nearest_bearish {
-                    if (ob.high - px).abs() < atr { evidence.push("bearish_ob_nearby".into()); }
+                    if (ob.high - px).abs() < atr {
+                        evidence.push("bearish_ob_nearby".into());
+                    }
                 }
             }
-            if ctx.flow.finish_action_bearish { evidence.push("finish_action_bearish".into()); }
+            if ctx.flow.finish_action_bearish {
+                evidence.push("finish_action_bearish".into());
+            }
             if ctx.flow.delta_velocity.map(|v| v > 0.05).unwrap_or(false) {
                 evidence.push("delta_drain_bearish".into());
             }
             let mut missing = vec![];
-            if ctx.flow.unfinish_action_bullish { missing.push("unfinish_action_bullish_magnet_below".into()); }
+            if ctx.flow.unfinish_action_bullish {
+                missing.push("unfinish_action_bullish_magnet_below".into());
+            }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::ValueAreaFailedAuction),
@@ -109,7 +119,10 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     let long_book = ob.spread_bps.unwrap_or(999.0) <= cfg.max_spread_bps && !ob.thin_zone_below;
 
-    if long_location && long_flow && long_book && adapter::basis_ok(flow.basis, true)
+    if long_location
+        && long_flow
+        && long_book
+        && adapter::basis_ok(flow.basis, true)
         && adapter::funding_long_ok(flow.funding_rate)
     {
         let entry = px;
@@ -126,19 +139,27 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 "delta_aligned_long".into(),
                 "target_POC".into(),
             ];
-            if chop_strict { evidence.push("chop_strict_gates_passed".into()); }
+            if chop_strict {
+                evidence.push("chop_strict_gates_passed".into());
+            }
             // Fase A — OB logging (peso 0, solo evidencia)
             if let Some(ref obs) = ctx.order_blocks {
                 if let Some(ref ob) = obs.nearest_bullish {
-                    if (px - ob.low).abs() < atr { evidence.push("bullish_ob_nearby".into()); }
+                    if (px - ob.low).abs() < atr {
+                        evidence.push("bullish_ob_nearby".into());
+                    }
                 }
             }
-            if ctx.flow.finish_action_bullish { evidence.push("finish_action_bullish".into()); }
+            if ctx.flow.finish_action_bullish {
+                evidence.push("finish_action_bullish".into());
+            }
             if ctx.flow.delta_velocity.map(|v| v < -0.05).unwrap_or(false) {
                 evidence.push("delta_drain_bullish".into());
             }
             let mut missing = vec![];
-            if ctx.flow.unfinish_action_bearish { missing.push("unfinish_action_bearish_magnet_above".into()); }
+            if ctx.flow.unfinish_action_bearish {
+                missing.push("unfinish_action_bearish_magnet_above".into());
+            }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::ValueAreaFailedAuction),
@@ -202,7 +223,7 @@ mod tests {
             flow: OrderFlowContext {
                 cvd: Some(1000.0),
                 cvd_slope: Some(-0.2),
-                delta: Some(-80.0), // aligned SHORT (negative)
+                delta: Some(-80.0),          // aligned SHORT (negative)
                 taker_imbalance: Some(0.03), // < 0.05 threshold (neutral-to-bearish for SHORT)
                 buy_volume: Some(5000.0),
                 sell_volume: Some(4800.0),

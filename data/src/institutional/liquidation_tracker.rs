@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use super::types::{LiqSide, LiquidationEvent, LiquidationSnapshot};
 
 const WINDOW_MS: i64 = 5 * 60 * 1_000; // 5 minutes
-const CASCADE_WINDOW_MS: i64 = 60_000;  // 60 seconds
+const CASCADE_WINDOW_MS: i64 = 60_000; // 60 seconds
 const CASCADE_THRESHOLD_USD: f64 = 5_000_000.0; // $5M in 60s
 const BAR_HISTORY: usize = 20; // rolling window for z-score (20 bars = 100 min at M5)
 
@@ -29,10 +29,9 @@ impl LiquidationTracker {
         // 20 samples spanning quiet ($20K), moderate ($100K), and one active spike ($500K).
         // Mean ≈ $78K, std ≈ $105K → z-score for a $5M crash ≈ 46, for $500K bar ≈ 4.0.
         const SEED: [f64; 20] = [
-            30_000.0, 45_000.0, 20_000.0,  80_000.0, 35_000.0,
-            60_000.0, 25_000.0, 150_000.0, 40_000.0, 30_000.0,
-            55_000.0, 70_000.0, 28_000.0,  90_000.0, 35_000.0,
-           500_000.0, 45_000.0, 30_000.0,  65_000.0, 40_000.0,
+            30_000.0, 45_000.0, 20_000.0, 80_000.0, 35_000.0, 60_000.0, 25_000.0, 150_000.0,
+            40_000.0, 30_000.0, 55_000.0, 70_000.0, 28_000.0, 90_000.0, 35_000.0, 500_000.0,
+            45_000.0, 30_000.0, 65_000.0, 40_000.0,
         ];
         for v in SEED {
             self.bar_totals.push_back(v);
@@ -54,7 +53,12 @@ impl LiquidationTracker {
             return None;
         }
         let mean = self.bar_totals.iter().sum::<f64>() / n as f64;
-        let variance = self.bar_totals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
+        let variance = self
+            .bar_totals
+            .iter()
+            .map(|x| (x - mean).powi(2))
+            .sum::<f64>()
+            / n as f64;
         let std = variance.sqrt();
         if std < 1.0 {
             return None;
@@ -69,7 +73,12 @@ impl LiquidationTracker {
     /// Remove events older than the 5-minute window.
     pub fn prune(&mut self, now_ms: i64) {
         let cutoff = now_ms - WINDOW_MS;
-        while self.events.front().map(|e| e.timestamp_ms < cutoff).unwrap_or(false) {
+        while self
+            .events
+            .front()
+            .map(|e| e.timestamp_ms < cutoff)
+            .unwrap_or(false)
+        {
             self.events.pop_front();
         }
     }
@@ -127,7 +136,11 @@ mod tests {
     use super::*;
 
     fn ev(ts: i64, side: LiqSide, usd: f64) -> LiquidationEvent {
-        LiquidationEvent { timestamp_ms: ts, side, quantity_usd: usd }
+        LiquidationEvent {
+            timestamp_ms: ts,
+            side,
+            quantity_usd: usd,
+        }
     }
 
     #[test]
@@ -170,7 +183,11 @@ mod tests {
         let now = 10 * 60 * 1_000_i64;
         // $6M but spread over 5 minutes — only $1.5M in any 60s window
         for i in 0..4 {
-            t.push(ev(now - (i as i64 + 1) * 70_000, LiqSide::Longs, 1_500_000.0));
+            t.push(ev(
+                now - (i as i64 + 1) * 70_000,
+                LiqSide::Longs,
+                1_500_000.0,
+            ));
         }
         let snap = t.snapshot(now);
         assert!(!snap.cascade_detected);

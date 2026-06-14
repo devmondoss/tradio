@@ -180,8 +180,16 @@ impl RangeDetector {
         }
 
         // ── 1. Range bounds from window ───────────────────────────────────────
-        let range_high = self.bars.iter().map(|b| b.high).fold(f64::NEG_INFINITY, f64::max);
-        let range_low = self.bars.iter().map(|b| b.low).fold(f64::INFINITY, f64::min);
+        let range_high = self
+            .bars
+            .iter()
+            .map(|b| b.high)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let range_low = self
+            .bars
+            .iter()
+            .map(|b| b.low)
+            .fold(f64::INFINITY, f64::min);
         let range_size = range_high - range_low;
         let range_size_atr = range_size / atr;
 
@@ -266,22 +274,32 @@ impl RangeDetector {
 
         // ── 7. Sweep detection (last SWEEP_LOOKBACK bars) ────────────────────
         let sweep_low_bars: Vec<f64> = self
-            .bars.iter().rev().take(SWEEP_LOOKBACK)
+            .bars
+            .iter()
+            .rev()
+            .take(SWEEP_LOOKBACK)
             .filter(|b| b.low < range_low && b.close >= range_low)
             .map(|b| range_low - b.low)
             .collect();
         let sweep_range_low = !sweep_low_bars.is_empty();
-        let sweep_low_depth = sweep_low_bars.iter().copied()
+        let sweep_low_depth = sweep_low_bars
+            .iter()
+            .copied()
             .reduce(f64::max)
             .filter(|&d| d > 0.0);
 
         let sweep_high_bars: Vec<f64> = self
-            .bars.iter().rev().take(SWEEP_LOOKBACK)
+            .bars
+            .iter()
+            .rev()
+            .take(SWEEP_LOOKBACK)
             .filter(|b| b.high > range_high && b.close <= range_high)
             .map(|b| b.high - range_high)
             .collect();
         let sweep_range_high = !sweep_high_bars.is_empty();
-        let sweep_high_depth = sweep_high_bars.iter().copied()
+        let sweep_high_depth = sweep_high_bars
+            .iter()
+            .copied()
             .reduce(f64::max)
             .filter(|&d| d > 0.0);
 
@@ -361,11 +379,7 @@ fn ols_slope_per_atr(closes: &[f64], atr: f64) -> f64 {
     let n = closes.len() as f64;
     let sum_x: f64 = (0..closes.len()).map(|i| i as f64).sum();
     let sum_y: f64 = closes.iter().sum();
-    let sum_xy: f64 = closes
-        .iter()
-        .enumerate()
-        .map(|(i, &y)| i as f64 * y)
-        .sum();
+    let sum_xy: f64 = closes.iter().enumerate().map(|(i, &y)| i as f64 * y).sum();
     let sum_x2: f64 = (0..closes.len()).map(|i| (i * i) as f64).sum();
     let denom = n * sum_x2 - sum_x * sum_x;
     if denom.abs() < 1e-10 {
@@ -385,7 +399,11 @@ mod tests {
         let mut d = RangeDetector::new();
         for i in 0..n {
             let close = low + (high - low) * 0.5 + (i as f64 % 3.0 - 1.0) * (high - low) * 0.05;
-            let bar_high = if i % 10 == 0 { high + 10.0 } else { high - 10.0 };
+            let bar_high = if i % 10 == 0 {
+                high + 10.0
+            } else {
+                high - 10.0
+            };
             let bar_low = if i % 7 == 0 { low - 10.0 } else { low + 10.0 };
             d.push_bar(bar_high, bar_low, close);
         }

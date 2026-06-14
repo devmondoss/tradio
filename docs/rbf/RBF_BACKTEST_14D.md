@@ -1,5 +1,7 @@
 # RBF Backtest — 14 días M1 (May 23 – Jun 6, 2026)
 
+> Documento histórico de backtest. No usar como fuente de verdad operativa. Para reglas live usar [RBF_REGLAS_ACTIVAS.md](RBF_REGLAS_ACTIVAS.md).
+
 **Fecha de ejecución:** 2026-06-07  
 **Script:** `scripts/rbf_backtest.py --extended --days 14`  
 **Símbolo:** BTCUSDT perpetual (Binance FAPI)

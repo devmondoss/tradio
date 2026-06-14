@@ -1,7 +1,6 @@
 use crate::session::{TradingSession, classify_session};
 
 use super::auction_state::{AuctionState, AuctionStateContext};
-use super::vp_open_bias::DailyVpContext;
 use super::detectors::{
     cvd_divergence_reversal, delta_range_reversal, dom_imbalance_breakout,
     footprint_absorption_reversal, funding_exhaustion_reversal, liquidation_hunt,
@@ -11,19 +10,26 @@ use super::detectors::{
 };
 use super::scoring::{StrategyProfile, score_signal};
 use super::types::*;
+use super::vp_open_bias::DailyVpContext;
 
 fn blocked_log(missing_reason: &str) -> Vec<DetectorSnap> {
-    let names = ["DRR","VAFA","LVN","DIB","SOB","OBR","FAR","VWAP","CDR","LIQ","FER","SMD"];
-    names.iter().map(|&n| DetectorSnap {
-        name: n.into(),
-        status: DetectorStatus::GlobalBlocked,
-        ..Default::default()
-    }).chain(std::iter::once(DetectorSnap {
-        name: "GLOBAL".into(),
-        status: DetectorStatus::GlobalBlocked,
-        missing: vec![missing_reason.into()],
-        ..Default::default()
-    })).collect()
+    let names = [
+        "DRR", "VAFA", "LVN", "DIB", "SOB", "OBR", "FAR", "VWAP", "CDR", "LIQ", "FER", "SMD",
+    ];
+    names
+        .iter()
+        .map(|&n| DetectorSnap {
+            name: n.into(),
+            status: DetectorStatus::GlobalBlocked,
+            ..Default::default()
+        })
+        .chain(std::iter::once(DetectorSnap {
+            name: "GLOBAL".into(),
+            status: DetectorStatus::GlobalBlocked,
+            missing: vec![missing_reason.into()],
+            ..Default::default()
+        }))
+        .collect()
 }
 
 /// Sesiones válidas hardcodeadas por estrategia según la propuesta de integración.
@@ -180,12 +186,15 @@ fn apply_vp_bias_gate(
 
     for (i, reason) in blocked.into_iter().rev() {
         let removed = candidates.remove(i);
-        rejections.push(format!("{}:{}", detector_name_for(removed.strategy_id), reason));
+        rejections.push(format!(
+            "{}:{}",
+            detector_name_for(removed.strategy_id),
+            reason
+        ));
         let name = detector_name_for(removed.strategy_id);
-        if let Some(snap) = detector_log
-            .iter_mut()
-            .find(|d| d.name == name && d.status == DetectorStatus::Fired && d.score == removed.score)
-        {
+        if let Some(snap) = detector_log.iter_mut().find(|d| {
+            d.name == name && d.status == DetectorStatus::Fired && d.score == removed.score
+        }) {
             snap.status = DetectorStatus::Skip;
             snap.missing.push(reason.into());
         }
@@ -213,7 +222,8 @@ fn apply_auction_state_gate(
     let is_vwap_dib = |id: Option<StrategyId>| {
         matches!(
             id,
-            Some(StrategyId::VwapValuePullbackContinuation) | Some(StrategyId::DomImbalanceBreakout)
+            Some(StrategyId::VwapValuePullbackContinuation)
+                | Some(StrategyId::DomImbalanceBreakout)
         )
     };
 
@@ -259,72 +269,87 @@ fn apply_auction_state_gate(
     // Remove in reverse order to preserve indices
     for (i, reason) in blocked.into_iter().rev() {
         let removed = candidates.remove(i);
-        rejections.push(format!("{}:{}", detector_name_for(removed.strategy_id), reason));
+        rejections.push(format!(
+            "{}:{}",
+            detector_name_for(removed.strategy_id),
+            reason
+        ));
         let name = detector_name_for(removed.strategy_id);
-        if let Some(snap) = detector_log
-            .iter_mut()
-            .find(|d| d.name == name && d.status == DetectorStatus::Fired && d.score == removed.score)
-        {
+        if let Some(snap) = detector_log.iter_mut().find(|d| {
+            d.name == name && d.status == DetectorStatus::Fired && d.score == removed.score
+        }) {
             snap.status = DetectorStatus::Skip;
             snap.missing.push(reason.into());
         }
     }
 }
 
-pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (StrategySignal, Vec<DetectorSnap>) {
+pub fn route_strategy(
+    ctx: &StrategyMarketContext,
+    cfg: &StrategyConfig,
+) -> (StrategySignal, Vec<DetectorSnap>) {
     if !cfg.enabled {
-        return (StrategySignal {
-            action: StrategyAction::Wait,
-            strategy_id: None,
-            side: None,
-            regime: ctx.regime,
-            entry_price: None,
-            stop_price: None,
-            target_price: None,
-            score: 0.0,
-            ttl_ms: 0,
-            evidence: vec![],
-            missing: vec!["STRATEGY_DISABLED".into()],
-            invalidation: vec![],
-            created_at_ms: ctx.timestamp_ms,
-        }, blocked_log("STRATEGY_DISABLED"));
+        return (
+            StrategySignal {
+                action: StrategyAction::Wait,
+                strategy_id: None,
+                side: None,
+                regime: ctx.regime,
+                entry_price: None,
+                stop_price: None,
+                target_price: None,
+                score: 0.0,
+                ttl_ms: 0,
+                evidence: vec![],
+                missing: vec!["STRATEGY_DISABLED".into()],
+                invalidation: vec![],
+                created_at_ms: ctx.timestamp_ms,
+            },
+            blocked_log("STRATEGY_DISABLED"),
+        );
     }
 
     // ATR guard: if ATR is unavailable or < $1, stops and R:R are unreliable.
     if ctx.atr.map(|a| a < 1.0).unwrap_or(true) {
-        return (StrategySignal {
-            action: StrategyAction::Wait,
-            strategy_id: None,
-            side: None,
-            regime: ctx.regime,
-            entry_price: None,
-            stop_price: None,
-            target_price: None,
-            score: 0.0,
-            ttl_ms: 0,
-            evidence: vec![],
-            missing: vec!["ATR_NOT_READY".into()],
-            invalidation: vec![],
-            created_at_ms: ctx.timestamp_ms,
-        }, blocked_log("ATR_NOT_READY"));
+        return (
+            StrategySignal {
+                action: StrategyAction::Wait,
+                strategy_id: None,
+                side: None,
+                regime: ctx.regime,
+                entry_price: None,
+                stop_price: None,
+                target_price: None,
+                score: 0.0,
+                ttl_ms: 0,
+                evidence: vec![],
+                missing: vec!["ATR_NOT_READY".into()],
+                invalidation: vec![],
+                created_at_ms: ctx.timestamp_ms,
+            },
+            blocked_log("ATR_NOT_READY"),
+        );
     }
 
     if let Err(reason) = toxic_flow_gate(ctx, cfg) {
-        return (StrategySignal {
-            action: StrategyAction::Blocked,
-            strategy_id: None,
-            side: None,
-            regime: ctx.regime,
-            entry_price: None,
-            stop_price: None,
-            target_price: None,
-            score: 0.0,
-            ttl_ms: 0,
-            evidence: vec![],
-            missing: vec![reason.clone()],
-            invalidation: vec![],
-            created_at_ms: ctx.timestamp_ms,
-        }, blocked_log(&reason));
+        return (
+            StrategySignal {
+                action: StrategyAction::Blocked,
+                strategy_id: None,
+                side: None,
+                regime: ctx.regime,
+                entry_price: None,
+                stop_price: None,
+                target_price: None,
+                score: 0.0,
+                ttl_ms: 0,
+                evidence: vec![],
+                missing: vec![reason.clone()],
+                invalidation: vec![],
+                created_at_ms: ctx.timestamp_ms,
+            },
+            blocked_log(&reason),
+        );
     }
 
     // Sesión activa para filtrado opcional
@@ -468,8 +493,18 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (Str
         }
     }
 
-    apply_auction_state_gate(&mut candidates, ctx.auction_state.as_ref(), &mut rejections, &mut detector_log);
-    apply_vp_bias_gate(&mut candidates, ctx.vp_open_bias.as_ref(), &mut rejections, &mut detector_log);
+    apply_auction_state_gate(
+        &mut candidates,
+        ctx.auction_state.as_ref(),
+        &mut rejections,
+        &mut detector_log,
+    );
+    apply_vp_bias_gate(
+        &mut candidates,
+        ctx.vp_open_bias.as_ref(),
+        &mut rejections,
+        &mut detector_log,
+    );
 
     let best_idx = candidates
         .iter()
@@ -478,7 +513,11 @@ pub fn route_strategy(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> (Str
             a.score
                 .partial_cmp(&b.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.strategy_id.map(|s| s as u8).cmp(&b.strategy_id.map(|s| s as u8)))
+                .then_with(|| {
+                    a.strategy_id
+                        .map(|s| s as u8)
+                        .cmp(&b.strategy_id.map(|s| s as u8))
+                })
         })
         .map(|(i, _)| i);
 

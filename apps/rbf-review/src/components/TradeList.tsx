@@ -45,9 +45,9 @@ export default function TradeList({ trades, selected, onSelect }: Props) {
           </span>
           <span style={{
             fontWeight: 700, fontSize: 10,
-            color: '#fff',
-            background: equity >= ACCOUNT ? 'rgba(63,185,80,0.25)' : 'rgba(248,81,73,0.25)',
-            border: `1px solid ${equity >= ACCOUNT ? 'rgba(63,185,80,0.5)' : 'rgba(248,81,73,0.5)'}`,
+            color: equity >= ACCOUNT ? 'var(--green)' : 'var(--red)',
+            background: equity >= ACCOUNT ? 'var(--green-bg)' : 'var(--red-bg)',
+            border: `1px solid ${equity >= ACCOUNT ? 'rgba(22,163,74,0.3)' : 'rgba(220,38,38,0.3)'}`,
             borderRadius: 4, padding: '1px 5px',
           }}>
             {equity >= ACCOUNT ? '+' : ''}{((equity - ACCOUNT) / ACCOUNT * 100).toFixed(2)}%
@@ -79,10 +79,16 @@ export default function TradeList({ trades, selected, onSelect }: Props) {
                 </span>
                 <span style={{
                   fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3,
-                  background: t.dir === 'Short' ? 'rgba(248,81,73,0.2)' : 'rgba(63,185,80,0.2)',
+                  background: t.dir === 'Short' ? 'var(--red-bg)' : 'var(--green-bg)',
                   color: t.dir === 'Short' ? 'var(--red)' : 'var(--green)',
                   flexShrink: 0,
                 }}>{t.dir.toUpperCase()}</span>
+                {(t as any).isSweepReclaim && (
+                  <span style={{
+                    fontSize: 8, fontWeight: 700, padding: '1px 3px', borderRadius: 2,
+                    background: 'var(--blue-bg)', color: 'var(--blue)', flexShrink: 0,
+                  }}>SWP</span>
+                )}
                 <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', flexShrink: 0 }}>
                   {t.sym.replace('USDT', '')}
                 </span>

@@ -62,8 +62,8 @@ pub struct BuyerExhaustionConfig {
     pub min_rr: f64,
 
     // ── Risk cap diario ─────────────────────────────────────────────────────
-    pub day_loss_limit:  f64,
-    pub day_profit_cap:  f64,
+    pub day_loss_limit: f64,
+    pub day_profit_cap: f64,
 
     // ── Cooldown entre señales ──────────────────────────────────────────────
     /// Barras mínimas entre dos señales consecutivas. Evita múltiples entradas
@@ -77,26 +77,26 @@ pub struct BuyerExhaustionConfig {
 impl Default for BuyerExhaustionConfig {
     fn default() -> Self {
         Self {
-            enabled:                     true,
-            range_windows:               vec![8],
-            range_min_pct:               0.05,
-            range_max_pct:               0.50,
-            require_positive_range_cvd:  true,
-            pre_cvd_bars:                5,
-            cvd_flip_min_ratio:          0.40,
-            breakout_vr_min:             2.5,
-            vr_window:                   50,
+            enabled: true,
+            range_windows: vec![8],
+            range_min_pct: 0.05,
+            range_max_pct: 0.50,
+            require_positive_range_cvd: true,
+            pre_cvd_bars: 5,
+            cvd_flip_min_ratio: 0.40,
+            breakout_vr_min: 2.5,
+            vr_window: 50,
             require_negative_breakout_delta: true,
             // Micro-confirmación (backtest 163d: +3pp WR, +0.047R avg vs sin filtros)
-            close_location_max:          Some(0.35),
-            bear_body_min:               Some(0.35),
-            upper_wick_max:              Some(0.30),
-            stop_at_range_high:          true,
-            time_stop_bars:              60,
-            min_rr:                      1.80,
-            day_loss_limit:             -3.0,
-            day_profit_cap:              6.0,
-            signal_cooldown_bars:        60,
+            close_location_max: Some(0.35),
+            bear_body_min: Some(0.35),
+            upper_wick_max: Some(0.30),
+            stop_at_range_high: true,
+            time_stop_bars: 60,
+            min_rr: 1.80,
+            day_loss_limit: -3.0,
+            day_profit_cap: 6.0,
+            signal_cooldown_bars: 60,
             sessions_enabled: vec![
                 // London excluido: WR=24% avg=-0.202R (180d backtest 2026-06-11)
                 "LondonNyOverlap".into(),

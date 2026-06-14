@@ -292,7 +292,10 @@ mod tests {
     fn no_signal_when_persistence_below_threshold() {
         let ctx = base_ctx(100400.0, 2, Regime::Chop);
         let cfg = StrategyConfig::default();
-        assert!(detect(&ctx, &cfg).is_none(), "persistence=2 should not fire");
+        assert!(
+            detect(&ctx, &cfg).is_none(),
+            "persistence=2 should not fire"
+        );
     }
 
     #[test]

@@ -949,7 +949,8 @@ pub fn connect_liquidation_stream(
                     loop {
                         match ws.read_frame().await {
                             Ok(msg) if msg.opcode == OpCode::Text => {
-                                if let Some(liq) = parse_force_order(&msg.payload[..], ticker_info) {
+                                if let Some(liq) = parse_force_order(&msg.payload[..], ticker_info)
+                                {
                                     let _ = output
                                         .send(Event::LiquidationsReceived(
                                             ticker_info,
@@ -994,8 +995,7 @@ fn parse_force_order(payload: &[u8], ticker_info: TickerInfo) -> Option<crate::L
     let qty_f: f64 = o.get("z")?.as_str()?.parse().ok()?;
     let price_f: f64 = o.get("ap")?.as_str()?.parse().ok()?;
     let ts: u64 = o.get("T")?.as_u64()?;
-    let price = crate::Price::from_f32(price_f as f32)
-        .round_to_min_tick(ticker_info.min_ticksize);
+    let price = crate::Price::from_f32(price_f as f32).round_to_min_tick(ticker_info.min_ticksize);
     let qty = crate::Qty::from_f32_lossy(qty_f as f32);
     Some(crate::Liquidation {
         time: crate::UnixMs::new(ts),

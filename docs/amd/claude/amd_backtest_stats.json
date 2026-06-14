@@ -1,0 +1,206 @@
+[
+  {
+    "label": "Baseline (sin gates)",
+    "n_total": 58,
+    "n_closed": 58,
+    "n_wins": 44,
+    "n_losses": 14,
+    "wr": 0.759,
+    "avg_r": 1.276,
+    "expectancy": 1.276,
+    "signals_per_day": 1.9,
+    "sessions": {
+      "Asia": {
+        "n": 21,
+        "wr": 0.762,
+        "avg_r": 1.286
+      },
+      "London": {
+        "n": 14,
+        "wr": 0.786,
+        "avg_r": 1.357
+      },
+      "LondonNyOverlap": {
+        "n": 8,
+        "wr": 0.75,
+        "avg_r": 1.25
+      },
+      "NewYork": {
+        "n": 10,
+        "wr": 0.7,
+        "avg_r": 1.1
+      }
+    },
+    "directions": {
+      "SHORT": {
+        "n": 25,
+        "wr": 0.72,
+        "avg_r": 1.16
+      },
+      "LONG": {
+        "n": 33,
+        "wr": 0.788,
+        "avg_r": 1.364
+      }
+    },
+    "avg_liq_winners": 1.439,
+    "avg_liq_losers": 0.906,
+    "avg_dz_winners": 57.778,
+    "avg_dz_losers": 37.987,
+    "avg_accum_bars": 36.5,
+    "avg_bars_to_exit": 4.8
+  },
+  {
+    "label": "Gate dz >= 1.0",
+    "n_total": 60,
+    "n_closed": 60,
+    "n_wins": 47,
+    "n_losses": 13,
+    "wr": 0.783,
+    "avg_r": 1.35,
+    "expectancy": 1.35,
+    "signals_per_day": 2.0,
+    "sessions": {
+      "Asia": {
+        "n": 22,
+        "wr": 0.818,
+        "avg_r": 1.455
+      },
+      "London": {
+        "n": 14,
+        "wr": 0.786,
+        "avg_r": 1.357
+      },
+      "LondonNyOverlap": {
+        "n": 8,
+        "wr": 0.75,
+        "avg_r": 1.25
+      },
+      "NewYork": {
+        "n": 11,
+        "wr": 0.727,
+        "avg_r": 1.182
+      }
+    },
+    "directions": {
+      "SHORT": {
+        "n": 26,
+        "wr": 0.769,
+        "avg_r": 1.308
+      },
+      "LONG": {
+        "n": 34,
+        "wr": 0.794,
+        "avg_r": 1.382
+      }
+    },
+    "avg_liq_winners": 1.46,
+    "avg_liq_losers": 0.93,
+    "avg_dz_winners": 54.45,
+    "avg_dz_losers": 40.841,
+    "avg_accum_bars": 36.7,
+    "avg_bars_to_exit": 4.9
+  },
+  {
+    "label": "Gate liq_ratio < 1.5",
+    "n_total": 63,
+    "n_closed": 63,
+    "n_wins": 50,
+    "n_losses": 13,
+    "wr": 0.794,
+    "avg_r": 1.381,
+    "expectancy": 1.381,
+    "signals_per_day": 2.1,
+    "sessions": {
+      "Asia": {
+        "n": 21,
+        "wr": 0.762,
+        "avg_r": 1.286
+      },
+      "London": {
+        "n": 15,
+        "wr": 0.8,
+        "avg_r": 1.4
+      },
+      "LondonNyOverlap": {
+        "n": 11,
+        "wr": 0.909,
+        "avg_r": 1.727
+      },
+      "NewYork": {
+        "n": 12,
+        "wr": 0.75,
+        "avg_r": 1.25
+      }
+    },
+    "directions": {
+      "SHORT": {
+        "n": 32,
+        "wr": 0.812,
+        "avg_r": 1.438
+      },
+      "LONG": {
+        "n": 31,
+        "wr": 0.774,
+        "avg_r": 1.323
+      }
+    },
+    "avg_liq_winners": 0.674,
+    "avg_liq_losers": 0.603,
+    "avg_dz_winners": 56.809,
+    "avg_dz_losers": 43.633,
+    "avg_accum_bars": 36.3,
+    "avg_bars_to_exit": 6.2
+  },
+  {
+    "label": "Ambos gates (dz + liq)",
+    "n_total": 64,
+    "n_closed": 64,
+    "n_wins": 52,
+    "n_losses": 12,
+    "wr": 0.812,
+    "avg_r": 1.438,
+    "expectancy": 1.438,
+    "signals_per_day": 2.1,
+    "sessions": {
+      "Asia": {
+        "n": 21,
+        "wr": 0.81,
+        "avg_r": 1.429
+      },
+      "London": {
+        "n": 15,
+        "wr": 0.8,
+        "avg_r": 1.4
+      },
+      "LondonNyOverlap": {
+        "n": 11,
+        "wr": 0.909,
+        "avg_r": 1.727
+      },
+      "NewYork": {
+        "n": 13,
+        "wr": 0.769,
+        "avg_r": 1.308
+      }
+    },
+    "directions": {
+      "SHORT": {
+        "n": 33,
+        "wr": 0.848,
+        "avg_r": 1.545
+      },
+      "LONG": {
+        "n": 31,
+        "wr": 0.774,
+        "avg_r": 1.323
+      }
+    },
+    "avg_liq_winners": 0.664,
+    "avg_liq_losers": 0.604,
+    "avg_dz_winners": 54.865,
+    "avg_dz_losers": 47.196,
+    "avg_accum_bars": 36.6,
+    "avg_bars_to_exit": 6.3
+  }
+]

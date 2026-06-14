@@ -836,34 +836,93 @@ pub fn evaluate_smd(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<Ne
     let mut results = vec![];
 
     // SHORT — forming when smart money is short OR retail is long (partial signals)
-    let partial_short = top_long < cfg.smart_short_threshold || retail_long > cfg.retail_long_threshold;
+    let partial_short =
+        top_long < cfg.smart_short_threshold || retail_long > cfg.retail_long_threshold;
     if partial_short {
         let mut met = vec![];
         let mut blocked = vec![];
 
-        let check = |cond: bool, ok: &'static str, fail: &'static str,
-                     met: &mut Vec<&'static str>, blocked: &mut Vec<&'static str>| {
-            if cond { met.push(ok) } else { blocked.push(fail) }
+        let check = |cond: bool,
+                     ok: &'static str,
+                     fail: &'static str,
+                     met: &mut Vec<&'static str>,
+                     blocked: &mut Vec<&'static str>| {
+            if cond {
+                met.push(ok)
+            } else {
+                blocked.push(fail)
+            }
         };
 
-        check(top_long < cfg.smart_short_threshold, "smart_money_short", "top_traders_long_dominant", &mut met, &mut blocked);
-        check(retail_long > cfg.retail_long_threshold, "retail_long_extreme", "retail_not_extreme_long", &mut met, &mut blocked);
-        check(divergence > cfg.min_divergence, "divergence_ok", "divergence_insufficient", &mut met, &mut blocked);
         check(
-            matches!(inst.funding.regime, crate::institutional::FundingRegime::ElevatedLong | crate::institutional::FundingRegime::ExtremeLong),
-            "funding_elevated_long", "funding_not_elevated", &mut met, &mut blocked,
+            top_long < cfg.smart_short_threshold,
+            "smart_money_short",
+            "top_traders_long_dominant",
+            &mut met,
+            &mut blocked,
         );
         check(
-            !matches!(inst.oi_trend.trend, crate::institutional::OiTrendDir::AccumulatingFast),
-            "oi_mature", "oi_accumulating_fast", &mut met, &mut blocked,
+            retail_long > cfg.retail_long_threshold,
+            "retail_long_extreme",
+            "retail_not_extreme_long",
+            &mut met,
+            &mut blocked,
         );
         check(
-            vp.vah.map(|vah| (px - vah).abs() < 0.5 * atr).unwrap_or(false)
-                || ob.walls_above.iter().any(|&w| w.is_finite() && (w - px).abs() < 0.3 * atr),
-            "price_at_resistance", "price_not_at_resistance", &mut met, &mut blocked,
+            divergence > cfg.min_divergence,
+            "divergence_ok",
+            "divergence_insufficient",
+            &mut met,
+            &mut blocked,
         );
-        check(flow.cvd_slope.unwrap_or(0.0) <= 0.0, "cvd_weak", "cvd_strong", &mut met, &mut blocked);
-        check(!inst.liquidations.cascade_detected, "no_cascade", "cascade_active", &mut met, &mut blocked);
+        check(
+            matches!(
+                inst.funding.regime,
+                crate::institutional::FundingRegime::ElevatedLong
+                    | crate::institutional::FundingRegime::ExtremeLong
+            ),
+            "funding_elevated_long",
+            "funding_not_elevated",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            !matches!(
+                inst.oi_trend.trend,
+                crate::institutional::OiTrendDir::AccumulatingFast
+            ),
+            "oi_mature",
+            "oi_accumulating_fast",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            vp.vah
+                .map(|vah| (px - vah).abs() < 0.5 * atr)
+                .unwrap_or(false)
+                || ob
+                    .walls_above
+                    .iter()
+                    .any(|&w| w.is_finite() && (w - px).abs() < 0.3 * atr),
+            "price_at_resistance",
+            "price_not_at_resistance",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            flow.cvd_slope.unwrap_or(0.0) <= 0.0,
+            "cvd_weak",
+            "cvd_strong",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            !inst.liquidations.cascade_detected,
+            "no_cascade",
+            "cascade_active",
+            &mut met,
+            &mut blocked,
+        );
 
         let total = met.len() + blocked.len();
         let score_pct = ((met.len() * 100).checked_div(total).unwrap_or(0)) as u8;
@@ -891,34 +950,93 @@ pub fn evaluate_smd(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<Ne
     }
 
     // LONG — forming when smart money is long OR retail is short
-    let partial_long = top_long > (1.0 - cfg.smart_short_threshold) || retail_long < (1.0 - cfg.retail_long_threshold);
+    let partial_long = top_long > (1.0 - cfg.smart_short_threshold)
+        || retail_long < (1.0 - cfg.retail_long_threshold);
     if partial_long {
         let mut met = vec![];
         let mut blocked = vec![];
 
-        let check = |cond: bool, ok: &'static str, fail: &'static str,
-                     met: &mut Vec<&'static str>, blocked: &mut Vec<&'static str>| {
-            if cond { met.push(ok) } else { blocked.push(fail) }
+        let check = |cond: bool,
+                     ok: &'static str,
+                     fail: &'static str,
+                     met: &mut Vec<&'static str>,
+                     blocked: &mut Vec<&'static str>| {
+            if cond {
+                met.push(ok)
+            } else {
+                blocked.push(fail)
+            }
         };
 
-        check(top_long > (1.0 - cfg.smart_short_threshold), "smart_money_long", "top_traders_short_dominant", &mut met, &mut blocked);
-        check(retail_long < (1.0 - cfg.retail_long_threshold), "retail_short_extreme", "retail_not_extreme_short", &mut met, &mut blocked);
-        check((-divergence) > cfg.min_divergence, "divergence_ok", "divergence_insufficient", &mut met, &mut blocked);
         check(
-            matches!(inst.funding.regime, crate::institutional::FundingRegime::ElevatedShort | crate::institutional::FundingRegime::ExtremeShort),
-            "funding_elevated_short", "funding_not_elevated", &mut met, &mut blocked,
+            top_long > (1.0 - cfg.smart_short_threshold),
+            "smart_money_long",
+            "top_traders_short_dominant",
+            &mut met,
+            &mut blocked,
         );
         check(
-            !matches!(inst.oi_trend.trend, crate::institutional::OiTrendDir::AccumulatingFast),
-            "oi_mature", "oi_accumulating_fast", &mut met, &mut blocked,
+            retail_long < (1.0 - cfg.retail_long_threshold),
+            "retail_short_extreme",
+            "retail_not_extreme_short",
+            &mut met,
+            &mut blocked,
         );
         check(
-            vp.val.map(|val| (px - val).abs() < 0.5 * atr).unwrap_or(false)
-                || ob.walls_below.iter().any(|&w| w.is_finite() && (px - w).abs() < 0.3 * atr),
-            "price_at_support", "price_not_at_support", &mut met, &mut blocked,
+            (-divergence) > cfg.min_divergence,
+            "divergence_ok",
+            "divergence_insufficient",
+            &mut met,
+            &mut blocked,
         );
-        check(flow.cvd_slope.unwrap_or(0.0) >= 0.0, "cvd_recovering", "cvd_weak", &mut met, &mut blocked);
-        check(!inst.liquidations.cascade_detected, "no_cascade", "cascade_active", &mut met, &mut blocked);
+        check(
+            matches!(
+                inst.funding.regime,
+                crate::institutional::FundingRegime::ElevatedShort
+                    | crate::institutional::FundingRegime::ExtremeShort
+            ),
+            "funding_elevated_short",
+            "funding_not_elevated",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            !matches!(
+                inst.oi_trend.trend,
+                crate::institutional::OiTrendDir::AccumulatingFast
+            ),
+            "oi_mature",
+            "oi_accumulating_fast",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            vp.val
+                .map(|val| (px - val).abs() < 0.5 * atr)
+                .unwrap_or(false)
+                || ob
+                    .walls_below
+                    .iter()
+                    .any(|&w| w.is_finite() && (px - w).abs() < 0.3 * atr),
+            "price_at_support",
+            "price_not_at_support",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            flow.cvd_slope.unwrap_or(0.0) >= 0.0,
+            "cvd_recovering",
+            "cvd_weak",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            !inst.liquidations.cascade_detected,
+            "no_cascade",
+            "cascade_active",
+            &mut met,
+            &mut blocked,
+        );
 
         let total = met.len() + blocked.len();
         let score_pct = ((met.len() * 100).checked_div(total).unwrap_or(0)) as u8;
@@ -974,9 +1092,16 @@ pub fn evaluate_fer(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<Ne
 
     let mut results = vec![];
 
-    let check = |cond: bool, ok: &'static str, fail: &'static str,
-                 met: &mut Vec<&'static str>, blocked: &mut Vec<&'static str>| {
-        if cond { met.push(ok) } else { blocked.push(fail) }
+    let check = |cond: bool,
+                 ok: &'static str,
+                 fail: &'static str,
+                 met: &mut Vec<&'static str>,
+                 blocked: &mut Vec<&'static str>| {
+        if cond {
+            met.push(ok)
+        } else {
+            blocked.push(fail)
+        }
     };
 
     // ── SHORT — extreme positive funding → longs exhausted, reversal down ──
@@ -986,21 +1111,57 @@ pub fn evaluate_fer(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<Ne
         let mut met = vec![];
         let mut blocked = vec![];
 
-        check(funding_extreme_long, "funding_extreme_long", "funding_not_extreme", &mut met, &mut blocked);
-        check(top_long < 0.52, "smart_money_exiting_long", "top_traders_still_long", &mut met, &mut blocked);
-        check(retail_long > 0.62, "retail_trapped_long", "retail_not_extreme_long", &mut met, &mut blocked);
-        check(oi_weakening, "oi_weakening", "oi_not_weakening", &mut met, &mut blocked);
         check(
-            flow.cvd_slope.unwrap_or(0.0) <= 0.0,
-            "cvd_slope_negative", "cvd_slope_bullish", &mut met, &mut blocked,
+            funding_extreme_long,
+            "funding_extreme_long",
+            "funding_not_extreme",
+            &mut met,
+            &mut blocked,
         );
         check(
-            inst.taker_ratio.as_ref().map(|t| t.buy_sell_ratio < 1.0).unwrap_or(false),
-            "taker_sell_dominant", "taker_buy_dominant", &mut met, &mut blocked,
+            top_long < 0.52,
+            "smart_money_exiting_long",
+            "top_traders_still_long",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            retail_long > 0.62,
+            "retail_trapped_long",
+            "retail_not_extreme_long",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            oi_weakening,
+            "oi_weakening",
+            "oi_not_weakening",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            flow.cvd_slope.unwrap_or(0.0) <= 0.0,
+            "cvd_slope_negative",
+            "cvd_slope_bullish",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            inst.taker_ratio
+                .as_ref()
+                .map(|t| t.buy_sell_ratio < 1.0)
+                .unwrap_or(false),
+            "taker_sell_dominant",
+            "taker_buy_dominant",
+            &mut met,
+            &mut blocked,
         );
         check(
             inst.liquidations.long_liq_usd_5m < cfg.liq_cascade_threshold,
-            "no_long_cascade", "long_cascade_active", &mut met, &mut blocked,
+            "no_long_cascade",
+            "long_cascade_active",
+            &mut met,
+            &mut blocked,
         );
 
         let total = met.len() + blocked.len();
@@ -1013,10 +1174,16 @@ pub fn evaluate_fer(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<Ne
             price: px,
             regime: format!("{:?}", ctx.regime),
             atr: ctx.atr,
-            met, blocked, score_pct,
-            vah: vp.vah, val: vp.val, poc: vp.poc,
-            delta: flow.delta, cvd_slope: flow.cvd_slope,
-            vpin: flow.vpin, spread_bps: ob.spread_bps,
+            met,
+            blocked,
+            score_pct,
+            vah: vp.vah,
+            val: vp.val,
+            poc: vp.poc,
+            delta: flow.delta,
+            cvd_slope: flow.cvd_slope,
+            vpin: flow.vpin,
+            spread_bps: ob.spread_bps,
             failed_acceptance: flow.failed_acceptance,
         });
     }
@@ -1028,21 +1195,57 @@ pub fn evaluate_fer(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<Ne
         let mut met = vec![];
         let mut blocked = vec![];
 
-        check(funding_extreme_short, "funding_extreme_short", "funding_not_extreme", &mut met, &mut blocked);
-        check(top_long > cfg.fer_top_long_min, "smart_money_positioning_long", "top_traders_not_bullish", &mut met, &mut blocked);
-        check(retail_long < cfg.fer_retail_long_max, "retail_not_chasing_longs", "retail_long_crowded", &mut met, &mut blocked);
-        check(oi_weakening, "oi_weakening", "oi_not_weakening", &mut met, &mut blocked);
         check(
-            flow.cvd_slope.unwrap_or(0.0) >= 0.0,
-            "cvd_recovering", "cvd_slope_bearish", &mut met, &mut blocked,
+            funding_extreme_short,
+            "funding_extreme_short",
+            "funding_not_extreme",
+            &mut met,
+            &mut blocked,
         );
         check(
-            inst.taker_ratio.as_ref().map(|t| t.buy_sell_ratio > 1.0).unwrap_or(false),
-            "taker_buy_dominant", "taker_sell_dominant", &mut met, &mut blocked,
+            top_long > cfg.fer_top_long_min,
+            "smart_money_positioning_long",
+            "top_traders_not_bullish",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            retail_long < cfg.fer_retail_long_max,
+            "retail_not_chasing_longs",
+            "retail_long_crowded",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            oi_weakening,
+            "oi_weakening",
+            "oi_not_weakening",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            flow.cvd_slope.unwrap_or(0.0) >= 0.0,
+            "cvd_recovering",
+            "cvd_slope_bearish",
+            &mut met,
+            &mut blocked,
+        );
+        check(
+            inst.taker_ratio
+                .as_ref()
+                .map(|t| t.buy_sell_ratio > 1.0)
+                .unwrap_or(false),
+            "taker_buy_dominant",
+            "taker_sell_dominant",
+            &mut met,
+            &mut blocked,
         );
         check(
             inst.liquidations.short_liq_usd_5m < cfg.liq_cascade_threshold,
-            "no_short_cascade", "short_cascade_active", &mut met, &mut blocked,
+            "no_short_cascade",
+            "short_cascade_active",
+            &mut met,
+            &mut blocked,
         );
 
         let total = met.len() + blocked.len();
@@ -1055,10 +1258,16 @@ pub fn evaluate_fer(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Vec<Ne
             price: px,
             regime: format!("{:?}", ctx.regime),
             atr: ctx.atr,
-            met, blocked, score_pct,
-            vah: vp.vah, val: vp.val, poc: vp.poc,
-            delta: flow.delta, cvd_slope: flow.cvd_slope,
-            vpin: flow.vpin, spread_bps: ob.spread_bps,
+            met,
+            blocked,
+            score_pct,
+            vah: vp.vah,
+            val: vp.val,
+            poc: vp.poc,
+            delta: flow.delta,
+            cvd_slope: flow.cvd_slope,
+            vpin: flow.vpin,
+            spread_bps: ob.spread_bps,
             failed_acceptance: flow.failed_acceptance,
         });
     }

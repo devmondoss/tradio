@@ -26,10 +26,10 @@
 //! sin bloquearse.
 
 use super::types::StrategyConfig;
-use mongodb::bson::{doc, Bson, Document};
-use mongodb::options::FindOneOptions;
 use mongodb::Client;
-use std::sync::{mpsc, Arc, RwLock};
+use mongodb::bson::{Bson, Document, doc};
+use mongodb::options::FindOneOptions;
+use std::sync::{Arc, RwLock, mpsc};
 use std::thread;
 
 // Misma instancia dedicada que el writer; ver mongo_writer.rs.
@@ -59,7 +59,9 @@ impl MongoConfigLoader {
                 Self::spawn(uri, db, base)
             }
             Err(_) => {
-                println!("[mongo-cfg] MONGODB_URI not set — config loader disabled (using base only)");
+                println!(
+                    "[mongo-cfg] MONGODB_URI not set — config loader disabled (using base only)"
+                );
                 let current = Arc::new(RwLock::new(base));
                 let (tx, _rx) = mpsc::channel::<LoaderCmd>();
                 Self { current, tx }
@@ -151,7 +153,9 @@ fn run_loader_thread(
                             base.clone()
                         }
                         Err(e) => {
-                            eprintln!("[mongo-cfg] query failed for regime={regime}: {e}; using base");
+                            eprintln!(
+                                "[mongo-cfg] query failed for regime={regime}: {e}; using base"
+                            );
                             base.clone()
                         }
                     };
@@ -172,28 +176,74 @@ fn apply_overrides(mut cfg: StrategyConfig, doc: &Document) -> StrategyConfig {
     let g_i64 = |k: &str| params.get_i64(k).ok();
     let g_bool = |k: &str| params.get_bool(k).ok();
 
-    if let Some(v) = g_bool("enabled") { cfg.enabled = v; }
-    if let Some(v) = g_f64("min_score") { cfg.min_score = v; }
-    if let Some(v) = g_f64("min_score_institutional") { cfg.min_score_institutional = v; }
-    if let Some(v) = g_f64("max_spread_bps") { cfg.max_spread_bps = v; }
-    if let Some(v) = g_f64("max_vpin") { cfg.max_vpin = v; }
-    if let Some(v) = g_f64("min_rr") { cfg.min_rr = v; }
-    if let Some(v) = g_f64("max_rr_m5") { cfg.max_rr_m5 = v; }
-    if let Some(v) = g_i64("default_ttl_ms") { cfg.default_ttl_ms = v; }
-    if let Some(v) = g_bool("session_filter_enabled") { cfg.session_filter_enabled = v; }
-    if let Some(v) = g_bool("htf_scoring_enabled") { cfg.htf_scoring_enabled = v; }
-    if let Some(v) = g_bool("spoof_gate_enabled") { cfg.spoof_gate_enabled = v; }
-    if let Some(v) = g_i64("cooldown_bars") { cfg.cooldown_bars = v as u64; }
-    if let Some(v) = g_f64("liq_hunt_min_usd") { cfg.liq_hunt_min_usd = v; }
-    if let Some(v) = g_f64("liq_cascade_threshold") { cfg.liq_cascade_threshold = v; }
-    if let Some(v) = g_i64("liq_ttl_ms") { cfg.liq_ttl_ms = v; }
-    if let Some(v) = g_f64("funding_extreme_threshold") { cfg.funding_extreme_threshold = v; }
-    if let Some(v) = g_i64("funding_ttl_ms") { cfg.funding_ttl_ms = v; }
-    if let Some(v) = g_f64("fer_top_long_min") { cfg.fer_top_long_min = v; }
-    if let Some(v) = g_f64("fer_retail_long_max") { cfg.fer_retail_long_max = v; }
-    if let Some(v) = g_f64("smart_short_threshold") { cfg.smart_short_threshold = v; }
-    if let Some(v) = g_f64("retail_long_threshold") { cfg.retail_long_threshold = v; }
-    if let Some(v) = g_f64("min_divergence") { cfg.min_divergence = v; }
-    if let Some(v) = g_i64("smd_ttl_ms") { cfg.smd_ttl_ms = v; }
+    if let Some(v) = g_bool("enabled") {
+        cfg.enabled = v;
+    }
+    if let Some(v) = g_f64("min_score") {
+        cfg.min_score = v;
+    }
+    if let Some(v) = g_f64("min_score_institutional") {
+        cfg.min_score_institutional = v;
+    }
+    if let Some(v) = g_f64("max_spread_bps") {
+        cfg.max_spread_bps = v;
+    }
+    if let Some(v) = g_f64("max_vpin") {
+        cfg.max_vpin = v;
+    }
+    if let Some(v) = g_f64("min_rr") {
+        cfg.min_rr = v;
+    }
+    if let Some(v) = g_f64("max_rr_m5") {
+        cfg.max_rr_m5 = v;
+    }
+    if let Some(v) = g_i64("default_ttl_ms") {
+        cfg.default_ttl_ms = v;
+    }
+    if let Some(v) = g_bool("session_filter_enabled") {
+        cfg.session_filter_enabled = v;
+    }
+    if let Some(v) = g_bool("htf_scoring_enabled") {
+        cfg.htf_scoring_enabled = v;
+    }
+    if let Some(v) = g_bool("spoof_gate_enabled") {
+        cfg.spoof_gate_enabled = v;
+    }
+    if let Some(v) = g_i64("cooldown_bars") {
+        cfg.cooldown_bars = v as u64;
+    }
+    if let Some(v) = g_f64("liq_hunt_min_usd") {
+        cfg.liq_hunt_min_usd = v;
+    }
+    if let Some(v) = g_f64("liq_cascade_threshold") {
+        cfg.liq_cascade_threshold = v;
+    }
+    if let Some(v) = g_i64("liq_ttl_ms") {
+        cfg.liq_ttl_ms = v;
+    }
+    if let Some(v) = g_f64("funding_extreme_threshold") {
+        cfg.funding_extreme_threshold = v;
+    }
+    if let Some(v) = g_i64("funding_ttl_ms") {
+        cfg.funding_ttl_ms = v;
+    }
+    if let Some(v) = g_f64("fer_top_long_min") {
+        cfg.fer_top_long_min = v;
+    }
+    if let Some(v) = g_f64("fer_retail_long_max") {
+        cfg.fer_retail_long_max = v;
+    }
+    if let Some(v) = g_f64("smart_short_threshold") {
+        cfg.smart_short_threshold = v;
+    }
+    if let Some(v) = g_f64("retail_long_threshold") {
+        cfg.retail_long_threshold = v;
+    }
+    if let Some(v) = g_f64("min_divergence") {
+        cfg.min_divergence = v;
+    }
+    if let Some(v) = g_i64("smd_ttl_ms") {
+        cfg.smd_ttl_ms = v;
+    }
     cfg
 }

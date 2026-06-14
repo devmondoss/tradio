@@ -37,6 +37,9 @@ export interface Trade {
   rangeTouch: number | null
   durationMin: number | null
   isOpen: boolean
+  isPreBreakout?: boolean
+  isSweepReclaim?: boolean
+  htf?: unknown
 }
 
 export const ACCOUNT  = 500

@@ -7,7 +7,9 @@ pub mod okex;
 use crate::adapter::AdapterError;
 use crate::adapter::limiter::RateLimiter;
 use crate::depth::DepthPayload;
-use crate::{FundingRate, Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
+use crate::{
+    FundingRate, Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs,
+};
 
 use futures::future::BoxFuture;
 use reqwest::{Client, Method, Response, header};

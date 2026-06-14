@@ -86,7 +86,13 @@ impl MarketPressureIndicator {
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         let tooltip = |v: &f32, _: Option<&f32>| {
-            let emoji = if *v > 20.0 { "▲" } else if *v < -20.0 { "▼" } else { "~" };
+            let emoji = if *v > 20.0 {
+                "▲"
+            } else if *v < -20.0 {
+                "▼"
+            } else {
+                "~"
+            };
             PlotTooltip::new(format!("Pressure: {:+.1} {}", v, emoji))
         };
 
@@ -96,16 +102,28 @@ impl MarketPressureIndicator {
             .padding(0.05)
             .with_tooltip(tooltip);
 
-        indicator_row(main_chart, &self.cache, plot, self.data.as_plot_series(), visible_range)
+        indicator_row(
+            main_chart,
+            &self.cache,
+            plot,
+            self.data.as_plot_series(),
+            visible_range,
+        )
     }
 }
 
 impl KlineIndicatorImpl for MarketPressureIndicator {
-    fn clear_all_caches(&mut self) { self.cache.clear_all(); }
-    fn clear_crosshair_caches(&mut self) { self.cache.clear_crosshair(); }
+    fn clear_all_caches(&mut self) {
+        self.cache.clear_all();
+    }
+    fn clear_crosshair_caches(&mut self) {
+        self.cache.clear_crosshair();
+    }
 
     fn element<'a>(
-        &'a self, chart: &'a ViewState, visible_range: RangeInclusive<u64>,
+        &'a self,
+        chart: &'a ViewState,
+        visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         self.indicator_elem(chart, visible_range)
     }
@@ -132,7 +150,9 @@ impl KlineIndicatorImpl for MarketPressureIndicator {
             self.pressure = self.pressure * (1.0 - ALPHA) + imb * ALPHA * 100.0;
             let point = self.pressure as f32;
             match &mut self.data {
-                BasisSeries::Time(map) => { map.insert(k.time, point); }
+                BasisSeries::Time(map) => {
+                    map.insert(k.time, point);
+                }
                 BasisSeries::Tick(map) => {
                     let idx = map.len() as u64;
                     map.insert(idx, point);
@@ -143,11 +163,18 @@ impl KlineIndicatorImpl for MarketPressureIndicator {
     }
 
     fn on_insert_trades(
-        &mut self, _trades: &[Trade], _old_dp_len: usize, _source: &PlotData<KlineDataPoint>,
+        &mut self,
+        _trades: &[Trade],
+        _old_dp_len: usize,
+        _source: &PlotData<KlineDataPoint>,
     ) {
         // Pressure is updated per bar close only (on_insert_klines), not intrabar.
     }
 
-    fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) { self.rebuild_from_source(source); }
-    fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) { self.rebuild_from_source(source); }
+    fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) {
+        self.rebuild_from_source(source);
+    }
+    fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
+        self.rebuild_from_source(source);
+    }
 }

@@ -689,6 +689,8 @@ struct BarState {
     // H4 EMA (FASE 2.6) — EMA-240M1 ≈ 4H para contexto estructural de RBF y AMD
     ema_h1: f64,        // EMA-60M1 (≈1H) alpha = 2/(60+1) ≈ 0.0328
     ema_h1_bars: usize, // barras acumuladas hasta warmup (warmup = 60)
+    // HTF Shorts detector — D1 EMA20 real + H1 buckets UTC reales + fees descontados
+    htf_state: data::strategy::detectors::htf_shorts_detector::HtfShortsState,
     // WebSocket broadcast — envía barras y señales al dashboard web
     ws_tx: ws_server::Sender,
 }
@@ -702,6 +704,7 @@ impl BarState {
         liq_raw_counter: Arc<AtomicU64>,
         liq_global_raw_counter: Arc<AtomicU64>,
         ws_tx: ws_server::Sender,
+        symbol: &str,
     ) -> Self {
         Self {
             bars: VecDeque::with_capacity(VP_WINDOW + 1),
@@ -808,6 +811,7 @@ impl BarState {
             be_last_session: data::session::session_tracker::TradingSession::OffHours,
             ema_h1: 0.0,
             ema_h1_bars: 0,
+            htf_state: data::strategy::detectors::htf_shorts_detector::HtfShortsState::new(symbol),
             ws_tx,
         }
     }
@@ -2372,13 +2376,22 @@ impl BarState {
                 match symbol {
                     "BTCUSDT" => {
                         rbf_cfg.cum_delta_max_short = Some(200.0);
+                        rbf_cfg.sweep_min_risk_usd = 15.0; // filtro anti-ruido: wick < $15 = spread
                     }
                     "BNBUSDT" => {
                         rbf_cfg.cum_delta_min_short = Some(-500.0);
+                        rbf_cfg.sweep_min_risk_usd = 0.5;  // filtro anti-ruido: wick < $0.50 = spread
+                    }
+                    "SOLUSDT" => {
+                        rbf_cfg.sweep_min_risk_usd = 0.08; // filtro anti-ruido: wick < $0.08 = spread
                     }
                     "ETHUSDT" => {
                         rbf_cfg.cvd_in_range_min_short = Some(-700.0);
                         rbf_cfg.obi_max_short = Some(0.10);
+                        rbf_cfg.sweep_reclaim_long_enabled = false; // ETH: WR=22% en backtest
+                    }
+                    "XRPUSDT" => {
+                        rbf_cfg.sweep_reclaim_long_enabled = false; // XRP: WR=25% en backtest
                     }
                     _ => {}
                 };
@@ -2807,6 +2820,84 @@ impl BarState {
                             self.be_paper.day_r
                         );
                     }
+                }
+            }
+        }
+
+        // ── HTF Shorts detector ───────────────────────────────────────────────────
+        {
+            use data::strategy::detectors::htf_shorts_detector::HtfBarContext;
+
+            let htf_vr = {
+                let vols: Vec<f64> = self.bars.iter().map(|b| b.volume.total().to_f32_lossy() as f64).collect();
+                let n = vols.len().min(50);
+                if n > 0 {
+                    let mean = vols[vols.len()-n..].iter().sum::<f64>() / n as f64;
+                    if mean > 0.0 { vol / mean } else { 0.0 }
+                } else { 0.0 }
+            };
+            let htf_dz = {
+                let n = self.bar_delta_history.len();
+                if n >= 5 {
+                    let mean = self.bar_delta_history.iter().sum::<f64>() / n as f64;
+                    let std = (self.bar_delta_history.iter().map(|d| (d-mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+                    if std > 1e-8 { (bar_delta - mean) / std } else { 0.0 }
+                } else { 0.0 }
+            };
+            let htf_eq_high = {
+                let eq_tol = 0.0003;
+                let highs50 = self.bars.iter().rev().take(50)
+                    .map(|b| b.high.to_f32() as f64)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                highs50 > f64::NEG_INFINITY && (h - highs50).abs() / highs50 <= eq_tol
+            };
+
+            let htf_ctx = HtfBarContext {
+                ts_ms:       bar_ms,
+                open:        o,
+                high:        h,
+                low:         l,
+                close:       c,
+                cvd_slope,
+                obi_l5:      ctx.orderbook.obi_l5.unwrap_or(0.0),
+                obi_fast:    self.obi_ema_fast,
+                vr:          htf_vr,
+                oi_momentum: oi_momentum_aligned,
+                equal_high:  htf_eq_high,
+                dz:          htf_dz,
+                absorption:  match footprint_absorption {
+                    AbsorptionSide::Ask => "Ask".into(),
+                    AbsorptionSide::Bid => "Bid".into(),
+                    _ => "None".into(),
+                },
+                vpin:    bar_vpin.unwrap_or(0.0),
+                regime:  format!("{:?}", effective_regime),
+                session: format!("{:?}", session.session),
+                atr,
+            };
+
+            if let Some(event) = self.htf_state.on_bar_close(&htf_ctx) {
+                if let Some(sb) = self.supabase.clone() {
+                    let ev = event.clone();
+                    let sym = symbol.to_string();
+                    tokio::spawn(async move { sb.write_htf_trade(&ev, &sym).await; });
+                }
+                if event.is_open {
+                    println!(
+                        "[htf] SIGNAL {} sig={} entry={:.2} stop={:.3}% d1={} session={}",
+                        symbol, event.signal.sig, event.signal.entry,
+                        event.signal.stop_pct, event.signal.d1_trend, event.signal.session
+                    );
+                } else {
+                    println!(
+                        "[htf] CLOSED {} sig={} net={:+.4}R gross={:+.4}R fee={:.4}R reason={} dur={}bars",
+                        symbol, event.signal.sig,
+                        event.result_r.unwrap_or(0.0),
+                        event.gross_r.unwrap_or(0.0),
+                        event.fee_r.unwrap_or(0.0),
+                        event.reason.as_deref().unwrap_or("?"),
+                        event.duration_bars.unwrap_or(0)
+                    );
                 }
             }
         }
@@ -4028,6 +4119,53 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         state.micro_buffer.reset(next_open_ms);
         state.current_candle_open_ms = next_open_ms;
     }
+    // ── HTF seed: D1 EMA20 real + H1 buckets reales ──────────────────────────
+    // Fetch 30 velas D1 para que EMA20 sea precisa desde el arranque
+    {
+        let d1_url = format!(
+            "https://fapi.binance.com/fapi/v1/klines?symbol={}&interval=1d&limit=31",
+            symbol
+        );
+        if let Ok(resp) = reqwest::get(&d1_url).await {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                if let Some(arr) = json.as_array() {
+                    // excluir la vela D1 aún abierta (la última)
+                    let closes: Vec<f64> = arr[..arr.len().saturating_sub(1)]
+                        .iter()
+                        .filter_map(|e| e.as_array())
+                        .filter_map(|a| a.get(4)?.as_str()?.parse::<f64>().ok())
+                        .collect();
+                    state.htf_state.seed_d1(&closes);
+                }
+            }
+        }
+    }
+    // Fetch 14 velas H1 para que ATR H1 sea preciso
+    {
+        let h1_url = format!(
+            "https://fapi.binance.com/fapi/v1/klines?symbol={}&interval=1h&limit=15",
+            symbol
+        );
+        if let Ok(resp) = reqwest::get(&h1_url).await {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                if let Some(arr) = json.as_array() {
+                    let candles: Vec<(i64, f64, f64, f64)> = arr[..arr.len().saturating_sub(1)]
+                        .iter()
+                        .filter_map(|e| e.as_array())
+                        .filter_map(|a| {
+                            let ts   = a.get(0)?.as_i64()?;
+                            let high = a.get(2)?.as_str()?.parse::<f64>().ok()?;
+                            let low  = a.get(3)?.as_str()?.parse::<f64>().ok()?;
+                            let cls  = a.get(4)?.as_str()?.parse::<f64>().ok()?;
+                            Some((ts, high, low, cls))
+                        })
+                        .collect();
+                    state.htf_state.seed_h1(&candles);
+                }
+            }
+        }
+    }
+
     println!(
         "[warmup] complete — {} bars loaded, atr={atr:.2}, regime={regime:?}",
         state.bars.len()
@@ -4173,6 +4311,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         Arc::clone(&liq_raw_counter),
         Arc::clone(&liq_global_raw_counter),
         ws_tx,
+        &symbol_str,
     );
     state.intrabar_cfg.log_boot();
 

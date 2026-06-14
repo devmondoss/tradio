@@ -113,9 +113,7 @@ impl TpoTracker {
             .bin_visits
             .iter()
             .filter(|(bin, visits)| {
-                visits.len() == 1
-                    && visits[0] != current_period
-                    && (*bin - close_bin).abs() > 0 // not at current price
+                visits.len() == 1 && visits[0] != current_period && (*bin - close_bin).abs() > 0 // not at current price
             })
             .map(|(bin, _)| *bin)
             .collect();
@@ -215,7 +213,10 @@ mod tests {
 
         let mids = tracker.single_print_mids();
         // All bins visited twice → no single prints
-        assert!(mids.is_empty(), "revisited bins should not be single prints");
+        assert!(
+            mids.is_empty(),
+            "revisited bins should not be single prints"
+        );
     }
 
     #[test]

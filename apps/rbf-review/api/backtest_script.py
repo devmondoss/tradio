@@ -33,6 +33,7 @@ RANGE_WINDOWS    = [15, 20, 30, 45, 60]
 RANGE_MIN_PCT    = 0.08          # % mínimo del rango
 RANGE_MAX_PCT    = 0.55          # % máximo del rango
 VR_MIN           = 3.0           # volumen ratio mínimo para breakout
+VR_MAX           = 5.0           # VR>5x = agotamiento, no fakeout limpio (WR=25% → excluir)
 MIN_RANGE_ATR    = 1.5           # rango mínimo en ATRs
 COOLDOWN_BARS    = 60            # barras entre señales del mismo símbolo
 SESSIONS_OK      = {'London', 'LondonNyOverlap', 'NewYork'}
@@ -47,6 +48,13 @@ PRE_VR_MIN       = 1.5
 PRE_ZONE_PCT     = 0.001
 PRE_RR           = 3.0
 PRE_OI_MAX       = 3    # oi_mom_bars_recent <= 3 → WR=58% (idéntico a live pre_breakout_oi_max)
+
+# Sweep & Reclaim Long
+RR_LONG            = 2.0
+SWEEP_VR_MIN       = 1.5
+SWEEP_MAX_RISK_PCT = 0.003
+SWEEP_MIN_RISK_USD = {'BTCUSDT': 15.0, 'BNBUSDT': 0.5, 'SOLUSDT': 0.08}  # piso USD para filtrar spread/ruido
+SWEEP_EXCLUDE_SYMS = {'ETHUSDT', 'XRPUSDT'}  # WR<25% en backtest 7d → excluir
 
 TABLES = {
     'BTCUSDT': 'btc_bars', 'ETHUSDT': 'eth_bars', 'BNBUSDT': 'bnb_bars',
@@ -140,6 +148,45 @@ def simulate(bars, entry, stop, target, atr):
     last_c = bars[-1]['close'] if bars else entry
     return round((entry - last_c) / risk, 4), 'DATA_END', len(bars), (bars[-1]['ts_ms'] if bars else 0)
 
+def simulate_long(bars, entry, stop, target, atr):
+    """Simula un trade Long — mirror de simulate() pero hacia arriba."""
+    risk         = abs(stop - entry)
+    trail_stop   = stop
+    best_high    = entry
+    trailing_on  = False
+
+    for k, b in enumerate(bars):
+        h, l = b['high'], b['low']
+        atr_b = b.get('atr') or atr
+
+        if h > best_high:
+            best_high = h
+
+        if not trailing_on and (best_high - entry) / risk >= TRAIL_ACTIVATE_R:
+            trailing_on = True
+            floor = entry + TRAIL_ACTIVATE_R * risk
+            if floor > trail_stop:
+                trail_stop = floor
+
+        if trailing_on and atr_b > 0.0:
+            candidate = best_high - TRAIL_ATR_K * atr_b
+            if candidate > trail_stop:
+                trail_stop = candidate
+
+        # Stop hit: precio cae al trail_stop o stop original
+        if l <= trail_stop:
+            reason = 'TRAILING_STOP' if trailing_on else 'STOP_LOSS'
+            r = (trail_stop - entry) / risk
+            return round(r, 4), reason, k+1, b['ts_ms']
+
+        # Target hit
+        if h >= target:
+            r = (target - entry) / risk
+            return round(r, 4), 'TAKE_PROFIT', k+1, b['ts_ms']
+
+    last_c = bars[-1]['close'] if bars else entry
+    return round((last_c - entry) / risk, 4), 'DATA_END', len(bars), (bars[-1]['ts_ms'] if bars else 0)
+
 OBI_THRESHOLD = 0.15  # debe coincidir con obi_threshold en strategy.toml
 
 def score_confluence(b, entry, is_short=True):
@@ -195,19 +242,20 @@ def score_confluence(b, entry, is_short=True):
 
     return score, flags
 
-def build_trade(sym, b, entry, stop_p, target, rr, rw, rp, deltas, sim_bars, reason, r, dur, exit_ms, equity, idx_off, count, is_pre):
+def build_trade(sym, b, entry, stop_p, target, rr, rw, rp, deltas, sim_bars, reason, r, dur, exit_ms, equity, idx_off, count, is_pre, direction='Short', is_sweep_reclaim=False):
+    is_short = (direction == 'Short')
     closed = datetime.fromtimestamp(exit_ms/1000, tz=timezone.utc).isoformat() if exit_ms else None
     vwap   = b.get('vwap')
-    # exit_p calculado desde r para ser exacto sin importar el tipo de salida
     risk   = abs(stop_p - entry)
-    exit_p = round(entry - r * risk, 6)
+    # exit_p: Short → precio baja (entry - r*risk), Long → precio sube (entry + r*risk)
+    exit_p = round(entry - r * risk if is_short else entry + r * risk, 6)
     pnl = round(r * RISK_USD, 2)
-    sc, cf = score_confluence(b, entry, is_short=True)
+    sc, cf = score_confluence(b, entry, is_short=is_short)
     return {
         'idx':            idx_off + count,
         'id':             f'bt-{sym}-{b["ts_ms"]}',
         'sym':            sym,
-        'dir':            'Short',
+        'dir':            direction,
         'session':        b.get('session') or '',
         'score':          sc,
         'entry':          round(entry, 6),
@@ -234,6 +282,7 @@ def build_trade(sym, b, entry, stop_p, target, rr, rw, rp, deltas, sim_bars, rea
         'priceVsVwap':    round((entry - vwap) / vwap * 100, 3) if (vwap and vwap > 0) else None,
         'isOpen':         reason == 'DATA_END',
         'isPreBreakout':  is_pre,
+        'isSweepReclaim': is_sweep_reclaim,
         # campos requeridos por Trade type en React
         'regime': '', 'sessionPhase': '', 'evidence': [], 'confluenceFlags': cf,
         'vetoReason': '', 'funding': None, 'rangeTouch': None, 'htf': None,
@@ -241,120 +290,174 @@ def build_trade(sym, b, entry, stop_p, target, rr, rw, rp, deltas, sim_bars, rea
 
 def detect(sym, bars, idx_off, equity_start):
     trades, equity, last_sig = [], equity_start, -COOLDOWN_BARS
-    last_pre_sig = -COOLDOWN_BARS
+    last_pre_sig   = -COOLDOWN_BARS
+    last_sweep_sig = -COOLDOWN_BARS
+    # pending_sweep: detección en barra i esperando confirmación en barra i+1
+    # Entrada real en open de barra i+2 (Opción B — sin lookahead)
+    pending_sweep  = None
     n = len(bars)
+
     for i in range(COOLDOWN_BARS, n):
         b   = bars[i]
         ses = b.get('session') or ''
         vr  = b.get('vr') or 0
         atr = b.get('atr') or 0
         if ses not in SESSIONS_OK: continue
-        # ETH London skip (live n=11: WR=14% London → excluir)
         if sym == 'ETHUSDT' and ses == 'London': continue
         if atr <= 0: continue
-        # Solo barras con microestructura real (monitor live)
         if b.get('cvd_slope') is None or b.get('vwap') is None: continue
 
-        # expansion_bars_recent: cuenta barras Expansion en las 25 anteriores.
-        # SOL/XRP: bypass (correlación invertida / muestra insuficiente).
-        # BTC/ETH/BNB: filtro ≤1 (análisis 72 trades: ≤1→WR=54.5% vs ≤3→48.8%).
+        short_in_cd = i - last_sig < COOLDOWN_BARS
+        sweep_in_cd = i - last_sweep_sig < COOLDOWN_BARS
+        if short_in_cd and sweep_in_cd:
+            pending_sweep = None  # limpiar pending si ambos están en cooldown
+            continue
+
+        # ── CONFIRMACIÓN SWEEP (Opción B): barra i confirma, entrada en i+1 open ──
+        if pending_sweep is not None and not sweep_in_cd:
+            conf_close = b['close']
+            conf_low   = b['low']
+            range_low_p = pending_sweep['range_low']
+            if conf_close <= range_low_p or conf_low < pending_sweep['sweep_low']:
+                # No sostuvo el reclaim — señal inválida
+                pending_sweep = None
+            elif i + 1 < n:
+                entry_bar  = bars[i + 1]
+                entry      = entry_bar['open']
+                sweep_low  = pending_sweep['sweep_low']
+                atr_buf    = (pending_sweep['atr'] or atr) * 0.15
+                stop_p     = sweep_low - atr_buf
+                sweep_risk = entry - stop_p
+                if sweep_risk > 1e-6 and sweep_risk / entry <= SWEEP_MAX_RISK_PCT * 2:
+                    target = entry + RR_LONG * sweep_risk
+                    sim    = bars[i + 2:i + 2 + 300]
+                    r, reason, dur, exit_ms = simulate_long(sim, entry, stop_p, target,
+                                                            pending_sweep['atr'] or atr)
+                    equity = round(equity + r * RISK_USD, 2)
+                    bd     = pending_sweep['b_detect']
+                    trades.append(build_trade(sym, bd, entry, stop_p, target, RR_LONG,
+                                              pending_sweep['rw'], pending_sweep['rp'],
+                                              pending_sweep['deltas'], sim, reason, r, dur, exit_ms,
+                                              equity - r * RISK_USD,
+                                              idx_off, len(trades) + 1, False,
+                                              direction='Long', is_sweep_reclaim=True))
+                    last_sweep_sig = i
+                pending_sweep = None
+                continue
+            else:
+                pending_sweep = None
+
+        vwap = b.get('vwap')
+
+        delta_win = bars[max(0, i-25):i]
+        cum_d25   = sum(x.get('bar_delta') or 0 for x in delta_win)
+        short_blocked = False
         if sym not in ('SOLUSDT', 'XRPUSDT'):
             exp_window = bars[max(0, i-25):i]
             exp_count  = sum(1 for x in exp_window if x.get('regime') == 'Expansion')
-            if exp_count > 1: continue
-        if i - last_sig < COOLDOWN_BARS: continue
-        vwap = b.get('vwap')
-        # vswap_gate DESACTIVADO (strategy.toml 2026-06-11): recolectando datos live
-
-        # cum_delta_25b gate por símbolo (calibración 2026-06-10):
-        # BNB: wins avg -78, losses -1357 → rechazar si < -500
-        # BTC: losses cum_delta = +377 → rechazar si > +200 (compradores agresivos = fakeout)
-        delta_win = bars[max(0, i-25):i]
-        cum_d25   = sum(x.get('bar_delta') or 0 for x in delta_win)
-        if sym == 'BNBUSDT' and cum_d25 < -500: continue
-        if sym == 'BTCUSDT' and cum_d25 > 200:  continue
+            if exp_count > 1:
+                short_blocked = True
+        if sym == 'BNBUSDT' and cum_d25 < -500: short_blocked = True
+        if sym == 'BTCUSDT' and cum_d25 > 200:  short_blocked = True
+        if short_blocked and short_in_cd:
+            if sweep_in_cd: continue
+            short_in_cd = True
 
         fired = False
+        close = b['close']
 
-        for rw in RANGE_WINDOWS:
-            if i < rw + 1: continue
-            win    = bars[i-rw:i]
-            hi     = max(x['high'] for x in win)
-            lo     = min(x['low']  for x in win)
-            rng    = hi - lo
-            rp     = rng / b['close'] * 100.0
-            if rp < RANGE_MIN_PCT or rp > RANGE_MAX_PCT: continue
-            if rng < MIN_RANGE_ATR * atr: continue
-            deltas = [x.get('bar_delta') for x in win]
-            cvd_ok = all(d is not None for d in deltas) and sum(deltas) < 0
+        # ── SHORT (post + pre) ───────────────────────────────────────────────
+        if not short_in_cd and not short_blocked:
+            for rw in RANGE_WINDOWS:
+                if i < rw + 1: continue
+                win    = bars[i-rw:i]
+                hi     = max(x['high'] for x in win)
+                lo     = min(x['low']  for x in win)
+                rng    = hi - lo
+                rp     = rng / close * 100.0
+                if rp < RANGE_MIN_PCT or rp > RANGE_MAX_PCT: continue
+                if rng < MIN_RANGE_ATR * atr: continue
+                deltas = [x.get('bar_delta') for x in win]
+                cvd_ok = all(d is not None for d in deltas) and sum(deltas) < 0
 
-            close  = b['close']
+                if VR_MIN <= vr <= VR_MAX and close < lo:
+                    if not cvd_ok: continue
+                    cvd_sum_win = sum(d or 0 for d in deltas)
+                    if ses == 'London' and cvd_sum_win > 200: continue
+                    pre5 = sum(d or 0 for d in deltas[-5:])
+                    if pre5 > 0: continue
+                    if sym == 'ETHUSDT':
+                        if cvd_sum_win < -700: continue
+                        if (b.get('obi_l5') or 0) > 0.10: continue
+                    entry  = close
+                    stop_p = hi
+                    target = entry - RR_SHORT * (stop_p - entry)
+                    sim    = bars[i+1:i+1+300]
+                    r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr)
+                    equity = round(equity + r * RISK_USD, 2)
+                    trades.append(build_trade(sym, b, entry, stop_p, target, RR_SHORT, rw, rp,
+                                              deltas, sim, reason, r, dur, exit_ms, equity - r*RISK_USD,
+                                              idx_off, len(trades)+1, False))
+                    last_sig = i
+                    fired = True
+                    break
 
-            # ── MODO POST-BREAKOUT (normal) ──────────────────────────────────
-            if vr >= VR_MIN and close < lo:
-                # breakout_ext_gate DESACTIVADO (strategy.toml 2026-06-11): recolectando datos live
-                if not cvd_ok: continue
-                # CVD London gate (análisis 72 trades): ganadores CVD=-597 vs perdedores=+1979.
-                # En London, si la presión compradora fue fuerte durante el rango → fakeout.
-                cvd_sum_win = sum(d or 0 for d in deltas)
-                if ses == 'London' and cvd_sum_win > 200: continue
-                # Pre-CVD gate: últimas 5 barras del rango.
-                # Autopsia 39 trades: pre_cvd_5b > 0 → WR=0% (n=7). Compradores no capitularon.
-                # "En su lugar": no activamos fired/last_sig → la barra siguiente re-escanea
-                # el mismo rango; si CVD giró negativo, entra 1-2 barras después (entrada diferida).
-                pre5 = sum(d or 0 for d in deltas[-5:])
-                if pre5 > 0: continue
-                # ETH gates (calibración 2026-06-10, live n=11):
-                #   cvd_in_range < -700 → agotamiento vendedor, fakeout (WR=14%)
-                #   obi_l5 > 0.10       → compradores dominan, breakout resistido
-                if sym == 'ETHUSDT':
-                    cvd_sum = sum(d or 0 for d in deltas)
-                    if cvd_sum < -700: continue
-                    if (b.get('obi_l5') or 0) > 0.10: continue
-                entry  = close
-                stop_p = hi
-                target = entry - RR_SHORT * (stop_p - entry)
-                sim    = bars[i+1:i+1+300]
-                r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr)
-                equity = round(equity + r * RISK_USD, 2)
-                trades.append(build_trade(sym, b, entry, stop_p, target, RR_SHORT, rw, rp,
-                                          deltas, sim, reason, r, dur, exit_ms, equity - r*RISK_USD,
-                                          idx_off, len(trades)+1, False))
-                last_sig = i
-                fired = True
-                break
+                if (vr >= PRE_VR_MIN
+                        and close <= lo * (1.0 + PRE_ZONE_PCT)
+                        and cvd_ok
+                        and i - last_pre_sig >= COOLDOWN_BARS):
+                    oi_mom_recent = sum(1 for x in bars[max(0, i-25):i] if x.get('oi_momentum') is True)
+                    if oi_mom_recent > PRE_OI_MAX: continue
+                    pre5 = sum(d or 0 for d in deltas[-5:])
+                    if pre5 > 0: continue
+                    entry  = close
+                    stop_p = hi
+                    risk   = stop_p - entry
+                    if risk < 1e-6: continue
+                    target = entry - PRE_RR * risk
+                    if (entry - target) / risk < 1.5: continue
+                    sim    = bars[i+1:i+1+300]
+                    r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr)
+                    equity = round(equity + r * RISK_USD, 2)
+                    trades.append(build_trade(sym, b, entry, stop_p, target, PRE_RR, rw, rp,
+                                              deltas, sim, reason, r, dur, exit_ms, equity - r*RISK_USD,
+                                              idx_off, len(trades)+1, True))
+                    last_sig     = i
+                    last_pre_sig = i
+                    fired = True
+                    break
 
-            # ── MODO PRE-BREAKOUT (entrada anticipada) ────────────────────────
-            # Gate OI: idéntico al live (main.rs:2168) — contar barras true en últimas 25.
-            # Calibración n=30 Shorts: oi_mom_bars_recent<=3 → WR=58%.
-            if (not fired
-                    and vr >= PRE_VR_MIN
-                    and close <= lo * (1.0 + PRE_ZONE_PCT)
-                    and cvd_ok
-                    and i - last_pre_sig >= COOLDOWN_BARS):
-                oi_mom_recent = sum(1 for x in bars[max(0, i-25):i] if x.get('oi_momentum') is True)
-                if oi_mom_recent > PRE_OI_MAX: continue
-                # Pre-CVD gate: si compradores activos en últimas 5 barras → no entrar.
-                # Autopsia 39 trades: pre_cvd_5b > 0 → WR=0% (n=7). Entrada diferida:
-                # no seteamos fired/last_sig → barra siguiente re-escanea el mismo rango.
-                pre5 = sum(d or 0 for d in deltas[-5:])
-                if pre5 > 0: continue
-                entry  = close
-                stop_p = hi
-                risk   = stop_p - entry
-                if risk < 1e-6: continue
-                target = entry - PRE_RR * risk
-                if (entry - target) / risk < 1.5: continue
-                sim    = bars[i+1:i+1+300]
-                r, reason, dur, exit_ms = simulate(sim, entry, stop_p, target, atr)
-                equity = round(equity + r * RISK_USD, 2)
-                trades.append(build_trade(sym, b, entry, stop_p, target, PRE_RR, rw, rp,
-                                          deltas, sim, reason, r, dur, exit_ms, equity - r*RISK_USD,
-                                          idx_off, len(trades)+1, True))
-                last_sig     = i
-                last_pre_sig = i
-                fired = True
-                break
+        # ── SWEEP DETECCIÓN: barra i — no entra, guarda pending ─────────────
+        # Confirmación en barra i+1, entrada en barra i+2 open (sin lookahead)
+        if not fired and not sweep_in_cd and sym not in SWEEP_EXCLUDE_SYMS and pending_sweep is None:
+            if (vr >= SWEEP_VR_MIN
+                    and (b.get('bar_delta') or 0) < 0
+                    and (b.get('obi_l5') or 0) > 0):
+                sweep_risk_detect = close - b['low']
+                min_usd = SWEEP_MIN_RISK_USD.get(sym, 0)
+                if sweep_risk_detect > 1e-6 and sweep_risk_detect >= min_usd and sweep_risk_detect / close <= SWEEP_MAX_RISK_PCT:
+                    for rw in RANGE_WINDOWS:
+                        if i < rw + 1: continue
+                        win    = bars[i-rw:i]
+                        hi_sw  = max(x['high'] for x in win)
+                        lo_sw  = min(x['low']  for x in win)
+                        rng_sw = hi_sw - lo_sw
+                        rp_sw  = rng_sw / close * 100.0
+                        if rp_sw < RANGE_MIN_PCT or rp_sw > RANGE_MAX_PCT: continue
+                        if rng_sw < MIN_RANGE_ATR * atr: continue
+                        if b['low'] >= lo_sw: continue
+                        if close <= lo_sw: continue
+                        deltas_sw = [x.get('bar_delta') for x in win]
+                        pending_sweep = {
+                            'range_low': lo_sw,
+                            'sweep_low': b['low'],
+                            'rw':        rw,
+                            'rp':        rp_sw,
+                            'deltas':    deltas_sw,
+                            'atr':       atr,
+                            'b_detect':  b,
+                        }
+                        break
 
         if fired: continue
     return trades
@@ -393,10 +496,12 @@ def main():
         eq = round(eq + t['pnlUsd'], 2)
         t['equity'] = eq
 
-    wins      = sum(1 for t in all_trades if t['resultR'] > 0)
-    n         = len(all_trades)
-    pre_trades = [t for t in all_trades if t.get('isPreBreakout')]
-    pre_wins   = sum(1 for t in pre_trades if t['resultR'] > 0)
+    wins       = sum(1 for t in all_trades if t['resultR'] > 0)
+    n          = len(all_trades)
+    pre_trades  = [t for t in all_trades if t.get('isPreBreakout')]
+    pre_wins    = sum(1 for t in pre_trades if t['resultR'] > 0)
+    long_trades = [t for t in all_trades if t['dir'] == 'Long']
+    long_wins   = sum(1 for t in long_trades if t['resultR'] > 0)
 
     actual_days = args.days
     if first_bar_ms[0] is not None:
@@ -415,6 +520,8 @@ def main():
         'equity':           eq,
         'n_pre':            len(pre_trades),
         'wins_pre':         pre_wins,
+        'n_long':           len(long_trades),
+        'wins_long':        long_wins,
         'calibration_note': (
             'expansion_bars_recent filter NOT simulated (no regime col in historical bars). '
             'Pre-breakout oi_mom gate NOT simulated (no OI in historical bars). '

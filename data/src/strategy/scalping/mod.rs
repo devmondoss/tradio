@@ -3,8 +3,8 @@ pub mod cvd_divergence;
 pub mod obi_maker;
 pub mod paper;
 
-use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
 use crate::detectors::range_detector::RangeContext;
 use crate::session::TradingSession;
@@ -248,8 +248,12 @@ impl ScalpingState {
             let lvl = (i + 1) as u32;
             if self.session_vol_milestone < lvl && self.session_vol_usd >= threshold {
                 self.session_vol_milestone = lvl;
-                println!("[vol_milestone] {}B USD — session_vol={:.2}B big_cvd={:+.1}",
-                    lvl, self.session_vol_usd / 1e9, self.big_cvd_session);
+                println!(
+                    "[vol_milestone] {}B USD — session_vol={:.2}B big_cvd={:+.1}",
+                    lvl,
+                    self.session_vol_usd / 1e9,
+                    self.big_cvd_session
+                );
             }
         }
 
@@ -285,15 +289,25 @@ impl ScalpingState {
             return None;
         }
         let w = window.min(n);
-        let vals: Vec<f64> = self.cvd_bar_history.iter().rev().take(w)
-            .cloned().collect::<Vec<_>>().into_iter().rev().collect();
+        let vals: Vec<f64> = self
+            .cvd_bar_history
+            .iter()
+            .rev()
+            .take(w)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         let nf = vals.len() as f64;
         let sx: f64 = (0..vals.len()).map(|i| i as f64).sum();
         let sy: f64 = vals.iter().sum();
         let sxy: f64 = vals.iter().enumerate().map(|(i, y)| i as f64 * y).sum();
         let sx2: f64 = (0..vals.len()).map(|i| (i * i) as f64).sum();
         let den = nf * sx2 - sx * sx;
-        if den.abs() < 1e-10 { return None; }
+        if den.abs() < 1e-10 {
+            return None;
+        }
         Some((nf * sxy - sx * sy) / den)
     }
 
@@ -340,7 +354,11 @@ impl ScalpingState {
         big_trade_bearish: bool,
     ) -> ScalpingContext {
         let dz = self.compute_dz();
-        let vr = if bar_volume > 0.0 { self.compute_vr() } else { 1.0 };
+        let vr = if bar_volume > 0.0 {
+            self.compute_vr()
+        } else {
+            1.0
+        };
         // Slope externo (indicador CumulativeDelta) tiene prioridad; fallback al interno (20 barras)
         let cvd_slope_resolved = cvd_slope.or_else(|| self.compute_cvd_slope(20));
 

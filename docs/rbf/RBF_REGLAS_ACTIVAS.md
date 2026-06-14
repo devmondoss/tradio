@@ -21,7 +21,7 @@ Si hay conflicto entre docs y código/config, gana el código/config y este docu
 | Detector principal | Range Breakout Flow (`RangeBreakoutState`) |
 | Temporalidad | M1 |
 | Símbolos live | BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT |
-| Dirección operada | Solo Shorts (`allow_long=false`, `allow_short=true`) |
+| Dirección operada | Shorts + Sweep & Reclaim Long (BTC/BNB/SOL) |
 | Sesiones operativas | London, LondonNyOverlap, NewYork |
 | Rango válido | 0.08% - 0.55%, ventanas 15/20/30/45/60 barras M1 |
 | Breakout post-confirmado | Close fuera del rango + VR >= 3.0 |
@@ -40,8 +40,10 @@ Si hay conflicto entre docs y código/config, gana el código/config y este docu
 | Parámetro | Valor vigente | Nota |
 |-----------|---------------|------|
 | `enabled` | true | RBF activo |
-| `allow_long` | false | Longs desactivados por performance live |
+| `allow_long` | false | Long breakout desactivado; Sweep & Reclaim Long opera por rama separada |
 | `allow_short` | true | Path principal |
+| `sweep_reclaim_long_enabled` | true | Activo para BTC/BNB/SOL; desactivado por símbolo en ETH (WR=22%) y XRP (WR=25%) |
+| `sweep_max_risk_frac` | 0.003 | Riesgo máximo sweep = (close - wick_low) / close <= 0.3% |
 | `min_rr` | 1.5 | Mínimo para emitir |
 | `cvd_slope_gate` | false | CVD slope direccional quedó invertido/no confiable |
 | `dz_min` / `dz_max` | 0.5 / 3.0 | Exige presión, evita extremos que revierten |
@@ -90,6 +92,23 @@ Razón: se promovió la configuración calibrada de la app para evitar moves ya 
 9. Calcula score de confluencia.
 10. Registra si no hay veto y score >= `min_confluence_score`.
 11. Opera si no hay veto, score >= 2 y score != 4.
+
+### Sweep & Reclaim Long
+
+Rama independiente de `allow_long`. Se activa por `sweep_reclaim_long_enabled` por símbolo (BTC/BNB/SOL activos; ETH/XRP desactivados en monitor).
+
+| Condición | Valor |
+|-----------|-------|
+| `low < range_low` | Wick barró por debajo del rango |
+| `close > range_low` | Precio recuperó dentro del rango |
+| `bar_delta < 0` | Barra vendedora (selling agresivo fue absorbido) |
+| `obi > 0` | Soporte bid presente al cierre |
+| `VR >= pre_breakout_vr_min` (1.5) | Volumen suficiente |
+| `sweep_risk / close <= 0.003` | Wick no demasiado amplio (max 0.3%) |
+| Stop | `wick_low` (low de la barra) |
+| Target | `close + 2 × (close - wick_low)` |
+
+Backtest 7d documentado en el código: WR=43%, +20R (n=61). BTC/BNB/SOL muestran edge; ETH y XRP excluidos por WR bajo.
 
 ### Pre-breakout
 
@@ -193,13 +212,13 @@ Muestras intrabar cada ~10s:
 
 ## Reglas por símbolo
 
-| Símbolo | Activo | Estado |
-|---------|--------|--------|
-| BTCUSDT | `expansion_max_bars=1`, `cum_delta_25b <= 200` | Evita compradores agresivos/fakeout |
-| ETHUSDT | `expansion_max_bars=1`, London off, `cvd_in_range >= -700`, `obi_l5 <= 0.10` | Evita London débil, selling consumido y OBI comprador resistente |
-| BNBUSDT | `expansion_max_bars=1`, `cum_delta_25b >= -500` | Evita selling masivo ya consumido |
-| SOLUSDT | expansion bypass | Expansión invertida; no aplicar gate global |
-| XRPUSDT | expansion bypass | Muestra insuficiente |
+| Símbolo | Short gates | Sweep & Reclaim Long |
+|---------|-------------|----------------------|
+| BTCUSDT | `expansion_max_bars=1`, `cum_delta_25b <= 200` | Activo |
+| ETHUSDT | `expansion_max_bars=1`, London off, `cvd_in_range >= -700`, `obi_l5 <= 0.10` | Desactivado (WR=22%) |
+| BNBUSDT | `expansion_max_bars=1`, `cum_delta_25b >= -500` | Activo |
+| SOLUSDT | expansion bypass | Activo |
+| XRPUSDT | expansion bypass | Desactivado (WR=25%, muestra insuficiente) |
 
 Los gates `cum_delta_min_short`, `cum_delta_max_short`, `cvd_in_range_min_short` y `min_confluence_score_override` existen en el código/config loader, pero no están activos en `strategy.toml` al 2026-06-12.
 

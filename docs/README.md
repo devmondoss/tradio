@@ -1,15 +1,16 @@
 # Documentacion canonica
 
-Ultima revision: 2026-06-02
+Ultima revision: 2026-06-12
 
-Este indice existe para evitar leer documentacion historica como si fuera el estado actual del sistema. Para proximas revisiones, empezar siempre por los documentos canonicos.
+Este indice existe para evitar leer documentacion historica como si fuera el estado actual del sistema. Para proximas revisiones de RBF, empezar siempre por los documentos canonicos de `docs/rbf`.
 
 ## Leer primero
 
 | Documento | Uso |
 | --- | --- |
-| [DRR_PRESENTE_Y_FUTURO.md](DRR_PRESENTE_Y_FUTURO.md) | Estado presente y futuro del sistema. Puerta de entrada para nuevas sesiones. |
-| [ESTADO_CHECKLIST.md](ESTADO_CHECKLIST.md) | Checklist tecnico por capas. Inventario detallado del sistema. |
+| [rbf/RBF_REGLAS_ACTIVAS.md](rbf/RBF_REGLAS_ACTIVAS.md) | Fuente de verdad operativa de RBF: reglas live, config, score, vetos y dataset. |
+| [rbf/RBF_FEATURE_MATRIX.md](rbf/RBF_FEATURE_MATRIX.md) | Contrato de features RBF para ciencia/ingenieria de datos. |
+| [rbf/DATASET.md](rbf/DATASET.md) | Dataset M1 + microestructura, tablas y limites de backfill/live. |
 | [BUILD.md](BUILD.md) | Setup local de build en Windows. |
 
 ## Referencias oficiales
@@ -25,18 +26,20 @@ Este indice existe para evitar leer documentacion historica como si fuera el est
 | [HEALTH_MONITORING_BAR_LOG.md](HEALTH_MONITORING_BAR_LOG.md) | Observabilidad de streams y bar logs. |
 | [BUGS_Y_FIXES.md](BUGS_Y_FIXES.md) | Historial oficial de bugs corregidos. |
 
-## Estado vigente (2026-06-02)
+## Estado vigente (2026-06-12)
 
-- **Motor activo:** Scalping S1/S2/S3 (circuit breaker activo, pendiente fix de target) + RangeBreakoutFlow (pendiente deploy).
+- **Motor principal:** RangeBreakoutFlow sobre M1. Es la linea prioritaria del proyecto.
+- **Modo RBF:** Solo Shorts, sesiones London/LondonNyOverlap/NewYork, post-breakout + pre-breakout.
+- **Dataset activo:** `*_bars` por simbolo, `rbf_signals`, `obi_10s`, `regime_history`.
+- **Microestructura:** OBI L5/L10/L20, spread, CVD slope, DZ, VR, absorption, stacked imbalance, VPIN, OI, VWAP.
+- **Scalping S1/S2/S3:** etapa previa/soporte historico, no foco operativo actual.
+- **MomentumFlow v2:** paper hasta acumular muestra out-of-sample suficiente.
 - **DRR:** desactivado. Tablas `shadow_signals` y `signal_outcomes` eliminadas de Supabase.
-- **DB activa:** `scalping_bars`, `scalping_signals`, `scalping_trades`, `regime_history`, `micro_windows`.
-- **Pendiente:** correr `supabase/migration_rbf.sql` y hacer `git push` para activar RangeBreakoutFlow en Railway.
-- **Fase actual:** validacion en vivo del detector RBF validado en backtest (30 dias M1).
 
 ## Archivo historico
 
-Los documentos obsoletos o de investigacion previa estan en [archive/pre-drr-and-research/](archive/pre-drr-and-research/). No usarlos como fuente de verdad.
+Los documentos obsoletos o de investigacion previa estan en [archive/pre-drr-and-research/](archive/pre-drr-and-research/) y en varios planes RBF antiguos. No usarlos como fuente de verdad si contradicen [rbf/RBF_REGLAS_ACTIVAS.md](rbf/RBF_REGLAS_ACTIVAS.md).
 
 ## Regla para mantener docs
 
-Cuando cambie el sistema live, actualizar primero [DRR_PRESENTE_Y_FUTURO.md](DRR_PRESENTE_Y_FUTURO.md) y despues este indice. No crear otro documento de "estado actual".
+Cuando cambie RBF live, actualizar primero [rbf/RBF_REGLAS_ACTIVAS.md](rbf/RBF_REGLAS_ACTIVAS.md), despues [rbf/RBF_FEATURE_MATRIX.md](rbf/RBF_FEATURE_MATRIX.md) si cambia el contrato de datos, y por ultimo este indice. No crear otro documento de "estado actual".

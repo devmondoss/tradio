@@ -1,4 +1,4 @@
-﻿use crate::strategy::{adapter, types::*};
+use crate::strategy::{adapter, types::*};
 
 // Note: toxic_flow_gate is evaluated once in the router before calling any detector.
 pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<StrategySignal> {
@@ -245,7 +245,12 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
         })
         .unwrap_or(true);
 
-    if short_context && short_flow && short_book && funding_ok_short && adapter::basis_ok(flow.basis, false) {
+    if short_context
+        && short_flow
+        && short_book
+        && funding_ok_short
+        && adapter::basis_ok(flow.basis, false)
+    {
         let entry = px;
         // min() → closest of (VAH structural level, 1×ATR ceiling).
         let stop = f64::min(vah, entry + 1.0 * atr);
@@ -442,7 +447,7 @@ mod tests {
                 dominant_side: LiqSide::Neutral,
                 cascade_detected: false,
                 last_event_ms: None,
-            total_zscore: None,
+                total_zscore: None,
             },
             ls_ratio: LsRatioContext {
                 top_traders_long_pct: 0.52,

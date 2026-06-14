@@ -87,18 +87,17 @@ impl MarketStructureTracker {
         }
     }
 
-    pub fn push_bar(
-        &mut self,
-        open: f64,
-        high: f64,
-        low: f64,
-        close: f64,
-        timestamp_ms: i64,
-    ) {
+    pub fn push_bar(&mut self, open: f64, high: f64, low: f64, close: f64, timestamp_ms: i64) {
         if self.bars.len() >= self.max_bars {
             self.bars.pop_front();
         }
-        self.bars.push_back(Bar { open, high, low, close, timestamp_ms });
+        self.bars.push_back(Bar {
+            open,
+            high,
+            low,
+            close,
+            timestamp_ms,
+        });
         self.recompute();
     }
 
@@ -145,23 +144,22 @@ impl MarketStructureTracker {
         let current_ts = bars.last().unwrap().timestamp_ms;
 
         // Zona del precio dentro del rango
-        let (price_zone, premium_threshold, discount_threshold) =
-            match (range_high, range_low) {
-                (Some(rh), Some(rl)) if rh > rl => {
-                    let range = rh - rl;
-                    let premium = rl + range * 0.75;
-                    let discount = rl + range * 0.25;
-                    let zone = if current_price > premium {
-                        PriceZone::Premium
-                    } else if current_price < discount {
-                        PriceZone::Discount
-                    } else {
-                        PriceZone::Equilibrium
-                    };
-                    (zone, Some(premium), Some(discount))
-                }
-                _ => (PriceZone::Unknown, None, None),
-            };
+        let (price_zone, premium_threshold, discount_threshold) = match (range_high, range_low) {
+            (Some(rh), Some(rl)) if rh > rl => {
+                let range = rh - rl;
+                let premium = rl + range * 0.75;
+                let discount = rl + range * 0.25;
+                let zone = if current_price > premium {
+                    PriceZone::Premium
+                } else if current_price < discount {
+                    PriceZone::Discount
+                } else {
+                    PriceZone::Equilibrium
+                };
+                (zone, Some(premium), Some(discount))
+            }
+            _ => (PriceZone::Unknown, None, None),
+        };
 
         let prev_bias = self
             .last_context

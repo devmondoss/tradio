@@ -3034,38 +3034,34 @@ fn strategy_monitor_view(
             .spacing(4);
 
             if has_side {
-                det_row = det_row.push(
-                    text(side_str).size(10).style(move |t: &Theme| {
-                        let p = t.extended_palette();
-                        text::Style {
-                            color: Some(if is_long {
-                                p.success.weak.color
-                            } else if is_short {
-                                p.danger.weak.color
-                            } else {
-                                p.background.strong.color
-                            }),
-                        }
-                    }),
-                );
+                det_row = det_row.push(text(side_str).size(10).style(move |t: &Theme| {
+                    let p = t.extended_palette();
+                    text::Style {
+                        color: Some(if is_long {
+                            p.success.weak.color
+                        } else if is_short {
+                            p.danger.weak.color
+                        } else {
+                            p.background.strong.color
+                        }),
+                    }
+                }));
             }
 
             if !score_str.is_empty() {
                 let score_val = det.score;
-                det_row = det_row.push(
-                    text(score_str).size(10).style(move |t: &Theme| {
-                        let p = t.extended_palette();
-                        text::Style {
-                            color: Some(if score_val >= 0.7 {
-                                p.success.weak.color
-                            } else if score_val >= 0.5 {
-                                p.secondary.weak.color
-                            } else {
-                                p.danger.weak.color
-                            }),
-                        }
-                    }),
-                );
+                det_row = det_row.push(text(score_str).size(10).style(move |t: &Theme| {
+                    let p = t.extended_palette();
+                    text::Style {
+                        color: Some(if score_val >= 0.7 {
+                            p.success.weak.color
+                        } else if score_val >= 0.5 {
+                            p.secondary.weak.color
+                        } else {
+                            p.danger.weak.color
+                        }),
+                    }
+                }));
             }
 
             col = col.push(det_row);
@@ -3076,22 +3072,21 @@ fn strategy_monitor_view(
                 DetectorStatus::Active | DetectorStatus::LowScore | DetectorStatus::Fired
             ) {
                 for ev in &det.evidence {
-                    col = col.push(
-                        text(format!("  ✓ {ev}"))
-                            .size(9)
-                            .style(|t: &Theme| text::Style {
-                                color: Some(t.extended_palette().success.weak.color),
-                            }),
-                    );
+                    col = col.push(text(format!("  ✓ {ev}")).size(9).style(|t: &Theme| {
+                        text::Style {
+                            color: Some(t.extended_palette().success.weak.color),
+                        }
+                    }));
                 }
                 for m in &det.missing {
-                    col = col.push(
-                        text(format!("  ✗ {m}"))
-                            .size(9)
-                            .style(|t: &Theme| text::Style {
-                                color: Some(t.extended_palette().danger.weak.color),
-                            }),
-                    );
+                    col =
+                        col.push(
+                            text(format!("  ✗ {m}"))
+                                .size(9)
+                                .style(|t: &Theme| text::Style {
+                                    color: Some(t.extended_palette().danger.weak.color),
+                                }),
+                        );
                 }
             }
         }

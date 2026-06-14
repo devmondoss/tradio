@@ -75,9 +75,12 @@ mod tests {
     fn detects_smart_short_retail_long() {
         let mut t = LsRatioTracker::new();
         t.push(snap(LsSource::TopTraderPosition, 0.38)); // smart money 38% long
-        t.push(snap(LsSource::GlobalAccount, 0.65));     // retail 65% long
+        t.push(snap(LsSource::GlobalAccount, 0.65)); // retail 65% long
         let ctx = t.snapshot();
-        assert_eq!(ctx.divergence_signal, DivergenceSignal::SmartShortRetailLong);
+        assert_eq!(
+            ctx.divergence_signal,
+            DivergenceSignal::SmartShortRetailLong
+        );
     }
 
     #[test]
@@ -86,7 +89,10 @@ mod tests {
         t.push(snap(LsSource::TopTraderPosition, 0.70));
         t.push(snap(LsSource::GlobalAccount, 0.40));
         let ctx = t.snapshot();
-        assert_eq!(ctx.divergence_signal, DivergenceSignal::SmartLongRetailShort);
+        assert_eq!(
+            ctx.divergence_signal,
+            DivergenceSignal::SmartLongRetailShort
+        );
     }
 
     #[test]

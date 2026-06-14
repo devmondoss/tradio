@@ -114,7 +114,11 @@ pub trait KlineIndicatorImpl {
 
     /// Return additional named line series for overlay drawing (e.g. session VWAPs).
     /// Each entry is (points, rgba_color). Points are (interval_key, price_f32).
-    fn overlay_extra_lines(&self, _earliest: u64, _latest: u64) -> Vec<(Vec<(u64, f32)>, [f32; 4])> {
+    fn overlay_extra_lines(
+        &self,
+        _earliest: u64,
+        _latest: u64,
+    ) -> Vec<(Vec<(u64, f32)>, [f32; 4])> {
         vec![]
     }
 
@@ -266,9 +270,7 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
             Box::new(super::kline::open_interest::OpenInterestIndicator::new())
         }
         KlineIndicator::OiDelta => Box::new(super::kline::oi_delta::OiDeltaIndicator::new()),
-        KlineIndicator::OiZScore => {
-            Box::new(super::kline::oi_zscore::OiZScoreIndicator::new())
-        }
+        KlineIndicator::OiZScore => Box::new(super::kline::oi_zscore::OiZScoreIndicator::new()),
         KlineIndicator::FundingRate => {
             Box::new(super::kline::funding_rate::FundingRateIndicator::new())
         }
@@ -283,9 +285,7 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
         KlineIndicator::SpeedOfTape => {
             Box::new(super::kline::speed_of_tape::SpeedOfTapeIndicator::new())
         }
-        KlineIndicator::CvdLarge => {
-            Box::new(super::kline::cvd_large::CvdLargeIndicator::new())
-        }
+        KlineIndicator::CvdLarge => Box::new(super::kline::cvd_large::CvdLargeIndicator::new()),
         KlineIndicator::MarketPressure => {
             Box::new(super::kline::market_pressure::MarketPressureIndicator::new())
         }

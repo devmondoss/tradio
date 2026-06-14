@@ -5,8 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::strategy::types::Side;
 use super::ScalpingSignal;
+use crate::strategy::types::Side;
 
 /// Fees maker→maker Binance con BNB (0.018% × 2 = 0.036%)
 const MAKER_FEE_RT: f64 = 0.00036;
@@ -319,7 +319,9 @@ impl ScalpingPaper {
 
     /// Cerrar la posición activa y registrar el trade.
     pub fn close(&mut self, exit_price: f64, exit_ms: i64, reason: ScalpingExitReason) {
-        let Some(pos) = self.active.take() else { return };
+        let Some(pos) = self.active.take() else {
+            return;
+        };
 
         let gross = match pos.signal.side {
             Side::Long => (exit_price - pos.signal.entry_price) * pos.lot_btc,
@@ -330,8 +332,15 @@ impl ScalpingPaper {
         let net = gross - fees - slippage;
 
         // result_r: ganancia en múltiplos del riesgo planeado
-        let risk_usd = pos.lot_btc * (pos.signal.entry_price - pos.signal.stop_price).abs().max(0.10);
-        let result_r = if risk_usd > 0.0 { gross / risk_usd } else { 0.0 };
+        let risk_usd = pos.lot_btc
+            * (pos.signal.entry_price - pos.signal.stop_price)
+                .abs()
+                .max(0.10);
+        let result_r = if risk_usd > 0.0 {
+            gross / risk_usd
+        } else {
+            0.0
+        };
 
         self.daily_pnl += net;
         self.total_equity += net;

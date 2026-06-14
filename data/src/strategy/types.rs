@@ -9,7 +9,7 @@ use crate::structure::MarketStructureContext;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum DetectorStatus {
     #[default]
-    Skip,           // Returned None — conditions not met
+    Skip, // Returned None — conditions not met
     SessionInvalid, // Filtered by session gate
     Fired,          // Passed detection and was scored
     LowScore,       // Was best candidate but score < threshold
@@ -501,7 +501,8 @@ impl Default for StrategyConfig {
             cooldown_bars: 5,
             drr_enabled: true,
             scalping: ScalpingConfig::default(),
-            range_breakout: crate::strategy::detectors::range_breakout_flow::RangeBreakoutConfig::default(),
+            range_breakout:
+                crate::strategy::detectors::range_breakout_flow::RangeBreakoutConfig::default(),
             amd: crate::strategy::detectors::amd_detector::AmdDetectorConfig::default(),
         }
     }

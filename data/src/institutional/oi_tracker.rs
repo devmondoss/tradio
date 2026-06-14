@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use super::types::{OiHistSnapshot, OiTrend, OiTrendDir};
 
 const MAX_SAMPLES: usize = 30; // 150 minutes at 5-minute intervals
-const SAMPLES_30M: usize = 6;  // 30 minutes
+const SAMPLES_30M: usize = 6; // 30 minutes
 const SLOPE_WINDOW: usize = 5;
 const ZSCORE_WINDOW: usize = 20; // ~100 min rolling window for delta z-score
 
@@ -72,7 +72,16 @@ impl OiTracker {
         };
 
         let slope_5bar = if n >= SLOPE_WINDOW {
-            let vals: Vec<f64> = self.history.iter().rev().take(SLOPE_WINDOW).map(|s| s.open_interest_usd).collect::<Vec<_>>().into_iter().rev().collect();
+            let vals: Vec<f64> = self
+                .history
+                .iter()
+                .rev()
+                .take(SLOPE_WINDOW)
+                .map(|s| s.open_interest_usd)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
             ols_slope(&vals).unwrap_or(0.0) / current.max(1.0)
         } else {
             0.0
@@ -86,7 +95,12 @@ impl OiTracker {
             _ => OiTrendDir::Flat,
         };
 
-        OiTrend { current, change_30m, slope_5bar, trend }
+        OiTrend {
+            current,
+            change_30m,
+            slope_5bar,
+            trend,
+        }
     }
 }
 
@@ -111,7 +125,10 @@ mod tests {
     use super::*;
 
     fn snap(oi: f64) -> OiHistSnapshot {
-        OiHistSnapshot { timestamp_ms: 0, open_interest_usd: oi }
+        OiHistSnapshot {
+            timestamp_ms: 0,
+            open_interest_usd: oi,
+        }
     }
 
     #[test]
@@ -142,6 +159,9 @@ mod tests {
             t.push(snap(1_000_000.0 - i as f64 * 2_000.0));
         }
         let oi = t.snapshot();
-        assert!(matches!(oi.trend, OiTrendDir::Decreasing | OiTrendDir::DecreasingFast));
+        assert!(matches!(
+            oi.trend,
+            OiTrendDir::Decreasing | OiTrendDir::DecreasingFast
+        ));
     }
 }

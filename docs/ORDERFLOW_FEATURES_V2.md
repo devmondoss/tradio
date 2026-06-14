@@ -3,6 +3,9 @@
 **RBF + AMD · 22 nuevos campos · FASE 1–5**  
 *Implementado: 2026-06-09*
 
+> Documento histórico de instrumentación. Para RBF operativo usar `docs/rbf/RBF_REGLAS_ACTIVAS.md` y `docs/rbf/RBF_FEATURE_MATRIX.md`.
+> Nota 2026-06-12: los campos HTF fueron renombrados de `htf_h4_*` a `htf_h1_*`; los scripts DS deben usar `htf_h1_aligned`.
+
 ---
 
 ## Contexto y motivación
@@ -14,7 +17,7 @@ El objetivo de esta implementación fue instrumentar ambas estrategias con los d
 - ¿Los trades con mayor `absorption_score` tienen mejor WR?
 - ¿Los AMD en Kill Zone superan a los fuera de Kill Zone?
 - ¿El `vr_tier` 3 (4×+) tiene mejor follow-through que el tier 1?
-- ¿Los trades alineados con H4 (`htf_h4_aligned=true`) tienen menor MAE?
+- ¿Los trades alineados con H1 (`htf_h1_aligned=true`) tienen menor MAE?
 
 Ninguna de esas preguntas era respondible antes. Ahora cada señal acumula 22 dimensiones de contexto en Supabase.
 
@@ -27,7 +30,7 @@ Bar M1 cierra
     │
     ├─ BarState::on_bar_close()
     │       ├─ Actualiza ema_h4 (EMA-240M1 ≈ 4H)
-    │       ├─ Computa htf_h4_trend ("Bull"/"Bear")
+    │       ├─ Computa htf_h1_trend ("Bull"/"Bear")
     │       ├─ Construye RbfGateContext  ──→ rbf_state.on_bar_close()
     │       └─ Construye AmdContext      ──→ amd_state.on_bar_close()
     │
@@ -210,9 +213,9 @@ Absorción institucional por punto de precio extendido. Alto = mucho CVD acumula
 
 ---
 
-### 2.6 HTF H4 Estructura (ambas)
+### 2.6 HTF H1 Estructura (ambas)
 
-**Campos:** `htf_h4_trend: Option<String>`, `htf_h4_aligned: Option<bool>` en `RbfSignal` y `AmdSignal`
+**Campos actuales:** `htf_h1_trend: Option<String>`, `htf_h1_aligned: Option<bool>` en `RbfSignal` y `AmdSignal`
 
 **Implementación:** EMA exponencial de 240 barras M1 (≈ 4H) añadida a `BarState`:
 
@@ -226,11 +229,11 @@ const H4_ALPHA: f64 = 2.0 / (240.0 + 1.0);  // ≈ 0.00830
 self.ema_h4 = self.ema_h4 * (1.0 - H4_ALPHA) + c * H4_ALPHA;
 
 // Trend
-htf_h4_trend = if c > self.ema_h4 { "Bull" } else { "Bear" }
+htf_h1_trend = if c > self.ema_h1 { "Bull" } else { "Bear" }
 // Disponible solo tras 240 barras de warmup (≈4h desde arranque)
 ```
 
-**`htf_h4_aligned`:** `true` si Long+Bull o Short+Bear.
+**`htf_h1_aligned`:** `true` si Long+Bull o Short+Bear.
 
 **Por qué:** Un RBF Short con H4 alcista tiene una dificultad estructural diferente. Operar contra la tendencia H4 puede tener menor WR o requerir mayor confluencia. Este campo permite segmentar la muestra.
 
@@ -299,8 +302,8 @@ Score experimental que pondera las features más relevantes en el momento del tr
 score = absorption_score × 0.25
       + (vr_tier - 1) / 2 × 0.20
       + min(breakout_extension_pct, 0.10) / 0.10 × 0.15
-      + htf_h4_aligned × 0.15
-      + confluence_score / 9 × 0.25
+      + htf_h1_aligned × 0.15
+      + confluence_score / 6 × 0.25
 ```
 
 **Fórmula AMD:**
@@ -309,7 +312,7 @@ score = quality_score / 10 × 0.30
       + min(|delta_dz_at_spike|, 3) / 3 × 0.20
       + is_kill_zone × 0.15
       + (6 - bars_to_entry) / 5 × 0.15
-      + htf_h4_aligned × 0.20
+      + htf_h1_aligned × 0.20
 ```
 
 **`sizing_multiplier: f64`:**
@@ -369,7 +372,7 @@ Todas en `migrations/`. Usar `ADD COLUMN IF NOT EXISTS` — idempotentes, se pue
 | `cvd_divergence_bars.sql` | `cvd_divergence_bars` | Ambas |
 | `rbf_quality_metrics.sql` | `vr_tier`, `range_touch_symmetry`, `cvd_per_bar`, `breakout_extension_pct` | RBF |
 | `amd_kill_zone_spike_quality.sql` | `is_kill_zone`, `kill_zone_name`, `bars_to_entry`, `spike_extension_pct`, `range_spike_ratio` | AMD |
-| `htf_h4_structure.sql` | `htf_h4_trend`, `htf_h4_aligned` | Ambas |
+| `rename_htf_h4_to_h1.sql` | `htf_h1_trend`, `htf_h1_aligned` | Ambas |
 | `rbf_vp_open_bias.sql` | `vp_open_bias` | RBF |
 | `signal_score_v2.sql` | `signal_score_v2`, `sizing_multiplier` | Ambas |
 

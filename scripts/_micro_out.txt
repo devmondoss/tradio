@@ -1,0 +1,85 @@
+Fetcheando todas las senales RBF (72)...
+  72 senales totales
+
+CSV guardado -> scripts/rbf_microstructure.csv
+
+======================================================================
+  TOTAL SENALES: 72  |  CON DATOS: 57  |  SIN DATOS: 15
+  Shorts con datos: 30 (cerrados: 30, wins: 12, losses: 18)
+
+  ── ENTRY LAG (25 barras pre-entrada) ──
+  Avg % movimiento consumido: 53.9%  (mediana 51.9%)
+  Avg pre-movimiento en R:    +2.63R
+  TARDE (>60%): 8  MEDIO (40-60%): 20  TEMPRANO (<40%): 2
+
+  ── ENTRY LAG vs RESULTADO ──
+  Wins  avg % done: 53.2%   (entradas mas tempranas = mas margen)
+  Losses avg % done: 54.4%
+
+  ── MICROESTRUCTURA PRE-ENTRADA: WINS vs LOSSES ──
+  Metrica                               WINS      LOSSES    Diferencia
+  ------------------------------  ----------  ----------  ------------
+  Delta acumulado 25 barras        -8912.383  -17724.750  +   8812.367
+  Delta ultimas 5 barras           -2351.283   -3435.550  +   1084.267
+  CVD slope promedio                -347.725    -646.748  +    299.023
+  CVD slope ultimas 5               -317.853    -490.370  +    172.517
+  OBI L5 promedio                      0.042      -0.047  +      0.089
+  VPIN promedio                        0.314       0.294  +      0.021
+  Barras con stacked Bearish          14.333      15.000       -0.667
+  Barras con absorcion                 1.750       2.056       -0.306
+  Barras con thin_above               17.750      17.333  +      0.417
+  Barras en regime Expansion           2.917       7.222       -4.306
+  Barras con ask_wall                 14.250      14.944       -0.694
+  Barras con OI momentum               3.167       6.889       -3.722
+
+  ── TOP SENALES PREDICTIVAS (mayor diferencia W vs L) ──
+  Delta acumulado 25 barras: mayor en WINS (+8812.367)
+  Delta ultimas 5 barras: mayor en WINS (+1084.267)
+  CVD slope promedio: mayor en WINS (+299.023)
+  CVD slope ultimas 5: mayor en WINS (+172.517)
+  Barras en regime Expansion: mayor en LOSSES (-4.306)
+  Barras con OI momentum: mayor en LOSSES (-3.722)
+
+  ── CUANDO APARECE LA PRIMERA SENAL BEARISH ──
+  Primer stacked_imb Bearish: avg 24.5 barras antes de entrar
+    -> Esto significa que el breakdown empieza ~24 barras antes del entry
+  Primer delta negativo grande: avg 18.8 barras antes de entrar
+
+  ── ENTRY LAG POR SESION ──
+  London                n=18  avg_pct_done=53.6%  avg_result=-0.05R
+  LondonNyOverlap       n= 9  avg_pct_done=57.0%  avg_result=-0.43R
+  NewYork               n= 3  avg_pct_done=46.1%  avg_result=+1.52R
+
+  ── CORRELACION pct_done vs result_r ──
+  r = -0.123  (negativo = entrar mas tarde -> peor resultado)
+  n = 30 trades cerrados con datos completos
+
+  ======================================================================
+  DIAGNOSTICO Y RECOMENDACIONES
+  ======================================================================
+
+  1. ENTRY LAG CONFIRMADO:
+     Las senales bearish de microestructura aparecen ~24 barras
+     antes de que el detector dispare. La oportunidad lleva 24min
+     de ventaja sobre la entrada actual.
+
+  2. SEÑALES QUE PODRIAN USARSE COMO TRIGGER ANTICIPADO:
+     * Delta acumulado 25 barras: mayor en wins (-8912.38 vs -17724.75)
+     * Delta ultimas 5 barras: mayor en wins (-2351.28 vs -3435.55)
+     * CVD slope promedio: mayor en wins (-347.73 vs -646.75)
+
+  3. DATOS QUE FALTAN O PODRIAN AGREGARSE:
+     * Footprint/volume at price: donde se ejecutan las ordenes grandes
+       (tenemos bar_delta pero no la distribucion por precio)
+     * Velocidad del tape (n trades/min): urgencia de la presion vendedora
+     * Deteccion de sweep de liquidez: cuando price limpia stops del rango
+       antes del breakout real
+     * Range tight bar count: cuantas barras estuvo en rango antes del break
+       (ya tenemos el rango del RBF, pero no como feature en bars)
+     * CVD divergence flag: precio sube pero CVD baja (early signal)
+
+  4. ESTRATEGIA PARA ENTRADA ANTICIPADA:
+     Si stacked_imb=Bearish + cum_delta < 0 + cvd_slope < 0 aparecen
+     ANTES de que el detector confirme el breakout, se podria entrar
+     con orden limitada en el borde del rango (no esperar confirmacion)
+     Ganancia potencial: entrar ~2.6R antes del entry actual.

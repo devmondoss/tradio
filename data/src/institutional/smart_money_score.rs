@@ -1,4 +1,6 @@
-use crate::institutional::types::{FundingContext, FundingRegime, LiquidationSnapshot, LsRatioContext, OiTrend, OiTrendDir};
+use crate::institutional::types::{
+    FundingContext, FundingRegime, LiquidationSnapshot, LsRatioContext, OiTrend, OiTrendDir,
+};
 
 /// Calcula el score institucional unificado en rango −1.0 a +1.0.
 ///
@@ -82,8 +84,14 @@ mod tests {
             retail_long_pct: 0.35,
             divergence_signal: crate::institutional::types::DivergenceSignal::SmartLongRetailShort,
         };
-        let oi = OiTrend { trend: OiTrendDir::AccumulatingFast, ..OiTrend::default() };
-        let funding = FundingContext { regime: FundingRegime::ExtremeShort, ..FundingContext::default() };
+        let oi = OiTrend {
+            trend: OiTrendDir::AccumulatingFast,
+            ..OiTrend::default()
+        };
+        let funding = FundingContext {
+            regime: FundingRegime::ExtremeShort,
+            ..FundingContext::default()
+        };
         let score = compute(&ls, &oi, &funding, &default_liqs());
         assert!(score > 0.5, "debería ser fuertemente positivo, got {score}");
     }
@@ -95,8 +103,14 @@ mod tests {
             retail_long_pct: 0.65,
             divergence_signal: crate::institutional::types::DivergenceSignal::SmartShortRetailLong,
         };
-        let oi = OiTrend { trend: OiTrendDir::Decreasing, ..OiTrend::default() };
-        let funding = FundingContext { regime: FundingRegime::ExtremeLong, ..FundingContext::default() };
+        let oi = OiTrend {
+            trend: OiTrendDir::Decreasing,
+            ..OiTrend::default()
+        };
+        let funding = FundingContext {
+            regime: FundingRegime::ExtremeLong,
+            ..FundingContext::default()
+        };
         let score = compute(&ls, &oi, &funding, &default_liqs());
         assert!(score < -0.3, "debería ser negativo, got {score}");
     }

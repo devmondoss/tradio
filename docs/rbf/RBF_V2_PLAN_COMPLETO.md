@@ -1,5 +1,7 @@
 # RBF v2 — Plan Completo: Implementación, Calibración y Expectativas
 
+> Documento histórico de diseño. No usar como fuente de verdad operativa. Para reglas live usar [RBF_REGLAS_ACTIVAS.md](RBF_REGLAS_ACTIVAS.md); para features usar [RBF_FEATURE_MATRIX.md](RBF_FEATURE_MATRIX.md).
+
 **Fecha:** 2026-06-04  
 **Actualizado:** 2026-06-10 (72 trades live, calibración por activo)  
 **Versión anterior:** RBF v1 (detector base: rango + CVD + VR)  

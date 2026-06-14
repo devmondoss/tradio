@@ -8,7 +8,9 @@ pub struct FundingTracker {
 
 impl FundingTracker {
     pub fn new() -> Self {
-        Self { samples: Vec::new() }
+        Self {
+            samples: Vec::new(),
+        }
     }
 
     pub fn load(&mut self, samples: Vec<FundingRateSample>) {
@@ -67,18 +69,31 @@ impl FundingTracker {
         // Peak confirmed: funding reached an extreme (positive or negative) in the last
         // 6 samples and has since retreated ≥ 10% of that peak value.
         let peak_confirmed = {
-            let window = if n > 6 { &self.samples[n - 6..] } else { &self.samples[..] };
-            let peak_pos = window.iter().map(|s| s.rate).fold(f64::NEG_INFINITY, f64::max);
+            let window = if n > 6 {
+                &self.samples[n - 6..]
+            } else {
+                &self.samples[..]
+            };
+            let peak_pos = window
+                .iter()
+                .map(|s| s.rate)
+                .fold(f64::NEG_INFINITY, f64::max);
             let peak_neg = window.iter().map(|s| s.rate).fold(f64::INFINITY, f64::min);
             let retreat_threshold = 0.10; // 10% retreat from peak
-            let pos_peak_retreated = peak_pos > 0.0
-                && current < peak_pos * (1.0 - retreat_threshold);
-            let neg_peak_retreated = peak_neg < 0.0
-                && current > peak_neg * (1.0 - retreat_threshold);
+            let pos_peak_retreated =
+                peak_pos > 0.0 && current < peak_pos * (1.0 - retreat_threshold);
+            let neg_peak_retreated =
+                peak_neg < 0.0 && current > peak_neg * (1.0 - retreat_threshold);
             pos_peak_retreated || neg_peak_retreated
         };
 
-        FundingContext { current, avg, regime, velocity, peak_confirmed }
+        FundingContext {
+            current,
+            avg,
+            regime,
+            velocity,
+            peak_confirmed,
+        }
     }
 }
 
@@ -87,7 +102,10 @@ mod tests {
     use super::*;
 
     fn sample(rate: f64) -> FundingRateSample {
-        FundingRateSample { timestamp_ms: 0, rate }
+        FundingRateSample {
+            timestamp_ms: 0,
+            rate,
+        }
     }
 
     #[test]
@@ -109,14 +127,18 @@ mod tests {
         // The absolute-vs-avg gate should classify as ElevatedLong.
         let mut t = FundingTracker::new();
         let mut samples: Vec<_> = (0..8).map(|_| sample(0.00010)).collect(); // old high
-        samples.extend((0..10).map(|_| sample(0.00003)));                     // recovery
-        samples.extend((0..2).map(|_| sample(0.00004)));                      // rising
-        samples.push(sample(0.00008));                                         // current
+        samples.extend((0..10).map(|_| sample(0.00003))); // recovery
+        samples.extend((0..2).map(|_| sample(0.00004))); // rising
+        samples.push(sample(0.00008)); // current
         // avg = (8×10e-5 + 10×3e-5 + 2×4e-5 + 8e-5) / 21 = 6e-5
         // current/avg = 8e-5/6e-5 = 1.33 > 1.3 → ElevatedLong despite percentile=57%
         t.load(samples);
         let ctx = t.snapshot();
-        assert_eq!(ctx.regime, FundingRegime::ElevatedLong, "30%+ above avg should be ElevatedLong");
+        assert_eq!(
+            ctx.regime,
+            FundingRegime::ElevatedLong,
+            "30%+ above avg should be ElevatedLong"
+        );
     }
 
     #[test]

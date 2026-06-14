@@ -8,7 +8,7 @@ Uso:
     python scripts/rbf_review_gen.py
 """
 
-import json, os, sys, time, urllib.request, urllib.parse, webbrowser, datetime
+import json, os, sys, time, urllib.request, urllib.parse, webbrowser, datetime, csv
 from pathlib import Path
 from collections import defaultdict
 
@@ -376,12 +376,35 @@ BT_K_JSON    = json.dumps(bt_klines,   ensure_ascii=False)
 ACCOUNT_JSON = json.dumps(ACCOUNT,     ensure_ascii=False)
 POS_JSON     = json.dumps(POSITION,    ensure_ascii=False)
 
+# ── Stats PnL data (from rbf_pnl_450.csv) ─────────────────────────────────────
+stats_trades = []
+pnl_csv = ROOT / 'scripts' / 'rbf_pnl_450.csv'
+if pnl_csv.exists():
+    with open(pnl_csv, newline='', encoding='utf-8') as _f:
+        for _row in csv.DictReader(_f):
+            stats_trades.append({
+                'num':   int(_row['num']),
+                'fecha': _row['fecha'],
+                'sym':   _row['symbol'],
+                'dir':   _row['direction'],
+                'ses':   _row['session'],
+                'r':     float(_row['result_r']),
+                'pnl':   float(_row['pnl_usd']),
+                'bal':   float(_row['balance']),
+                'reason': _row.get('reason', ''),
+            })
+else:
+    print("WARN: rbf_pnl_450.csv no encontrado — Stats tab vacio")
+STATS_JSON = json.dumps(stats_trades, ensure_ascii=False)
+STATS_CAP  = json.dumps(450.0)
+
 HTML = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <title>RBF Trade Review</title>
 <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
 <style>
 *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
 body{{background:#0d1117;color:#e6edf3;font-family:'SF Mono','Fira Code',monospace;font-size:12px;height:100vh;display:flex;flex-direction:column;overflow:hidden}}
@@ -474,6 +497,28 @@ select:hover{{border-color:#388bfd;color:#e6edf3}}
 #sp-interp.bad{{background:rgba(248,81,73,0.07);border-color:rgba(248,81,73,0.2);color:#e09090}}
 #sp-collapsed-pill{{position:absolute;top:10px;left:10px;background:rgba(10,13,20,0.9);border:1px solid #2a3040;border-radius:6px;padding:4px 10px;font-size:10px;color:#8b949e;cursor:pointer;z-index:10;display:none;backdrop-filter:blur(6px);box-shadow:0 2px 12px rgba(0,0,0,0.5);transition:border-color .15s;}}
 #sp-collapsed-pill:hover{{border-color:#388bfd;color:#e6edf3}}
+
+/* ── Stats panel ─────────────────────────────────────────── */
+.tab-btn.stats-active{{background:#8957e5;border-color:#8957e5;color:#fff;font-weight:700}}
+#stats-panel{{flex:1;overflow-y:auto;padding:16px;display:none;flex-direction:column;gap:14px;background:#0d1117}}
+.st-cards{{display:flex;gap:10px;flex-wrap:wrap;flex-shrink:0}}
+.st-card{{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:10px 16px;min-width:130px;flex:1}}
+.st-lbl{{font-size:10px;color:#484f58;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}}
+.st-val{{font-size:18px;font-weight:700;color:#e6edf3;white-space:nowrap}}
+.st-val.green{{color:#3fb950}}.st-val.red{{color:#f85149}}
+.st-sec-title{{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #21262d}}
+.st-eq-wrap{{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px 14px;flex-shrink:0}}
+.st-eq-wrap canvas{{width:100%!important;height:160px!important}}
+.st-breaks{{display:flex;gap:10px;flex-wrap:wrap;flex-shrink:0}}
+.st-break-block{{flex:1;min-width:180px;background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px 14px}}
+.st-tbl-wrap{{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px 14px;flex-shrink:0}}
+.st-tbl{{width:100%;border-collapse:collapse;font-size:11px}}
+.st-tbl th{{text-align:left;color:#484f58;font-size:10px;padding:3px 6px;border-bottom:1px solid #21262d;white-space:nowrap}}
+.st-tbl td{{padding:3px 6px;color:#8b949e;border-bottom:1px solid rgba(33,38,45,0.5)}}
+.st-tbl tr:last-child td{{border-bottom:none}}
+.st-tbl .td-r{{text-align:right}}.st-tbl .td-sym{{color:#e6edf3;font-weight:700}}
+.st-tbl .pos{{color:#3fb950}}.st-tbl .neg{{color:#f85149}}
+.st-tbl tbody tr:hover{{background:rgba(33,38,45,0.4)}}
 </style>
 </head>
 <body>
@@ -483,6 +528,7 @@ select:hover{{border-color:#388bfd;color:#e6edf3}}
   <div class="tab-btns">
     <button class="tab-btn active" id="tab-live" onclick="switchTab('live')">Live</button>
     <button class="tab-btn" id="tab-bt" onclick="switchTab('bt')">Backtest</button>
+    <button class="tab-btn" id="tab-stats" onclick="switchTab('stats')">Stats</button>
   </div>
   <span class="hsep">|</span>
   <span class="hstat">n=<b id="st-n">-</b></span>
@@ -563,6 +609,38 @@ select:hover{{border-color:#388bfd;color:#e6edf3}}
   </div>
 </div>
 
+<div id="stats-panel">
+  <div class="st-cards">
+    <div class="st-card"><div class="st-lbl">Balance</div><div id="stc-bal" class="st-val">-</div></div>
+    <div class="st-card"><div class="st-lbl">PnL ($450)</div><div id="stc-pnl" class="st-val">-</div></div>
+    <div class="st-card"><div class="st-lbl">Win Rate</div><div id="stc-wr" class="st-val">-</div></div>
+    <div class="st-card"><div class="st-lbl">Total R</div><div id="stc-r" class="st-val">-</div></div>
+    <div class="st-card"><div class="st-lbl">Max Drawdown</div><div id="stc-dd" class="st-val red">-</div></div>
+  </div>
+  <div class="st-eq-wrap">
+    <div class="st-sec-title">Equity Curve &middot; $450 capital &middot; riesgo fijo $9/trade</div>
+    <canvas id="st-eq-canvas"></canvas>
+  </div>
+  <div class="st-breaks">
+    <div class="st-break-block">
+      <div class="st-sec-title">Por Sesion</div>
+      <table class="st-tbl" id="st-ses-tbl"></table>
+    </div>
+    <div class="st-break-block">
+      <div class="st-sec-title">Por Simbolo</div>
+      <table class="st-tbl" id="st-sym-tbl"></table>
+    </div>
+    <div class="st-break-block">
+      <div class="st-sec-title">Por Direccion</div>
+      <table class="st-tbl" id="st-dir-tbl"></table>
+    </div>
+  </div>
+  <div class="st-tbl-wrap">
+    <div class="st-sec-title">Todos los Trades</div>
+    <table class="st-tbl" id="st-trade-tbl"></table>
+  </div>
+</div>
+
 <script>
 const LIVE_TRADES = {LIVE_JSON};
 const BT_TRADES   = {BT_JSON};
@@ -570,8 +648,11 @@ const LIVE_KLINES = {LIVE_K_JSON};
 const BT_KLINES   = {BT_K_JSON};
 const INIT_CAP    = {ACCOUNT_JSON};
 const POSITION    = {POS_JSON};
+const STATS_DATA  = {STATS_JSON};
+const STATS_CAP   = {STATS_CAP};
 
 let currentTab = 'live';
+let stChart = null;
 let currentTrades = LIVE_TRADES;
 let currentKlines  = LIVE_KLINES;
 let filtered=[], selTrade=null, chart=null, cSeries=null, ov=null;
@@ -580,8 +661,16 @@ function switchTab(tab) {{
   currentTab = tab;
   currentTrades = tab==='live' ? LIVE_TRADES : BT_TRADES;
   currentKlines  = tab==='live' ? LIVE_KLINES : BT_KLINES;
-  document.getElementById('tab-live').className = 'tab-btn' + (tab==='live'?' active':'');
-  document.getElementById('tab-bt').className   = 'tab-btn' + (tab==='bt'?' bt-active':'');
+  document.getElementById('tab-live').className  = 'tab-btn' + (tab==='live'?' active':'');
+  document.getElementById('tab-bt').className    = 'tab-btn' + (tab==='bt'?' bt-active':'');
+  document.getElementById('tab-stats').className = 'tab-btn' + (tab==='stats'?' stats-active':'');
+
+  const isStats = tab==='stats';
+  document.getElementById('wrap').style.display        = isStats ? 'none' : 'flex';
+  document.getElementById('stats-panel').style.display = isStats ? 'flex' : 'none';
+
+  if(isStats){{ renderStats(); return; }}
+
   // reset filtros
   ['f-sym','f-ses','f-dir','f-res'].forEach(id=>document.getElementById(id).value='');
   selTrade = null;
@@ -882,6 +971,147 @@ function buildSetupPanel(t){{
     ? `Backtest · ${{t.range_bars}}b rango · VR ${{(vr||0).toFixed(1)}}x · ${{reason}}`
     : (good?'Setup valido · resultado confirmado':'Setup con debilidades');
   interp.className=good?'good':'bad';
+}}
+
+function renderStats() {{
+  if (!STATS_DATA || !STATS_DATA.length) {{
+    document.getElementById('stats-panel').innerHTML='<div style="color:#484f58;padding:32px;font-size:13px">Sin datos (rbf_pnl_450.csv no encontrado)</div>';
+    return;
+  }}
+  const n = STATS_DATA.length;
+  const wins = STATS_DATA.filter(t => t.r > 0).length;
+  const bal  = STATS_DATA[n-1].bal;
+  const pnl  = bal - STATS_CAP;
+  const roi  = pnl / STATS_CAP * 100;
+  const wr   = wins / n * 100;
+  const totalR = STATS_DATA.reduce((s,t) => s+t.r, 0);
+
+  let peak=STATS_CAP, maxDD=0;
+  [STATS_CAP, ...STATS_DATA.map(t=>t.bal)].forEach(b=>{{
+    if(b>peak) peak=b;
+    const dd=(peak-b)/peak*100;
+    if(dd>maxDD) maxDD=dd;
+  }});
+
+  const fmtS = (v,d=2)=> (v>=0?'+':'')+v.toFixed(d);
+
+  const elBal = document.getElementById('stc-bal');
+  elBal.textContent = '$'+bal.toFixed(2);
+  elBal.className = 'st-val '+(pnl>=0?'green':'red');
+
+  const elPnl = document.getElementById('stc-pnl');
+  elPnl.textContent = fmtS(pnl)+'$ ('+fmtS(roi,1)+'%)';
+  elPnl.className = 'st-val '+(pnl>=0?'green':'red');
+
+  document.getElementById('stc-wr').textContent = wr.toFixed(1)+'% ('+wins+'/'+n+')';
+
+  const elR = document.getElementById('stc-r');
+  elR.textContent = fmtS(totalR)+'R';
+  elR.className = 'st-val '+(totalR>=0?'green':'red');
+
+  document.getElementById('stc-dd').textContent = '-'+maxDD.toFixed(1)+'%';
+
+  // equity curve
+  const balArr = [STATS_CAP, ...STATS_DATA.map(t=>t.bal)];
+  const lblArr = ['0', ...STATS_DATA.map(t=>'#'+t.num)];
+  const ptColors = ['rgba(56,139,253,0.9)', ...STATS_DATA.map(t=> t.r>0?'rgba(63,185,80,0.8)':'rgba(248,81,73,0.8)')];
+
+  if(stChart){{ stChart.destroy(); stChart=null; }}
+  const ctx = document.getElementById('st-eq-canvas').getContext('2d');
+  stChart = new Chart(ctx, {{
+    type: 'line',
+    data: {{
+      labels: lblArr,
+      datasets: [{{
+        data: balArr,
+        borderColor: '#388bfd',
+        borderWidth: 1.5,
+        fill: true,
+        backgroundColor: (context)=>{{
+          const chart=context.chart;
+          const {{ctx:c,chartArea}}=chart;
+          if(!chartArea) return 'transparent';
+          const grad=c.createLinearGradient(0,chartArea.top,0,chartArea.bottom);
+          grad.addColorStop(0,'rgba(56,139,253,0.22)');
+          grad.addColorStop(1,'rgba(56,139,253,0.01)');
+          return grad;
+        }},
+        pointRadius: 3,
+        pointHoverRadius: 5,
+        pointBackgroundColor: ptColors,
+        pointBorderColor: 'transparent',
+        tension: 0.2,
+      }}]
+    }},
+    options: {{
+      responsive:true, maintainAspectRatio:false,
+      interaction:{{mode:'index',intersect:false}},
+      scales:{{
+        x:{{ticks:{{font:{{size:9}},color:'#484f58',maxTicksLimit:20}},grid:{{color:'rgba(33,38,45,0.7)'}}}},
+        y:{{
+          ticks:{{font:{{size:9}},color:'#8b949e',callback:v=>'$'+v.toFixed(0)}},
+          grid:{{color:'rgba(33,38,45,0.7)'}},
+          suggestedMin: STATS_CAP * 0.85
+        }}
+      }},
+      plugins:{{
+        legend:{{display:false}},
+        tooltip:{{
+          backgroundColor:'rgba(10,13,20,0.95)',
+          borderColor:'#21262d',
+          borderWidth:1,
+          titleColor:'#8b949e',
+          bodyColor:'#e6edf3',
+          bodyFont:{{size:11,family:'monospace'}},
+          callbacks:{{
+            title: items => lblArr[items[0].dataIndex],
+            label: ctx2=>{{
+              const i=ctx2.dataIndex;
+              if(i===0) return ' Capital inicial: $'+STATS_CAP.toFixed(2);
+              const t=STATS_DATA[i-1];
+              const ses=t.ses==='LondonNyOverlap'?'Overlap':t.ses;
+              return ` ${{t.sym.replace('USDT','')}} ${{t.dir}} ${{ses}} · ${{fmtS(t.r,2)}}R · ${{fmtS(t.pnl,2)}}$ · $$${{t.bal.toFixed(2)}}`;
+            }}
+          }}
+        }}
+      }}
+    }}
+  }});
+
+  // breakdown helper
+  function buildBreak(tblId, key, label) {{
+    const grp = {{}};
+    STATS_DATA.forEach(t=>{{
+      const k=t[key]; if(!grp[k]) grp[k]={{n:0,w:0,r:0,pnl:0}};
+      grp[k].n++; if(t.r>0) grp[k].w++; grp[k].r+=t.r; grp[k].pnl+=t.pnl;
+    }});
+    const tbl=document.getElementById(tblId);
+    tbl.innerHTML=`<thead><tr><th>${{label}}</th><th class="td-r">n</th><th class="td-r">WR</th><th class="td-r">R</th><th class="td-r">PnL</th></tr></thead><tbody></tbody>`;
+    const tbody=tbl.querySelector('tbody');
+    Object.entries(grp).sort((a,b)=>b[1].pnl-a[1].pnl).forEach(([k,v])=>{{
+      const wr=(v.w/v.n*100).toFixed(0);
+      const kd=k==='LondonNyOverlap'?'Overlap':k;
+      const rc=v.r>=0?'pos':'neg'; const pc=v.pnl>=0?'pos':'neg';
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td class="td-sym">${{kd}}</td><td class="td-r">${{v.n}}</td><td class="td-r">${{wr}}%</td><td class="td-r ${{rc}}">${{fmtS(v.r)}}R</td><td class="td-r ${{pc}}">${{fmtS(v.pnl)}}$</td>`;
+      tbody.appendChild(tr);
+    }});
+  }}
+  buildBreak('st-ses-tbl','ses','Sesion');
+  buildBreak('st-sym-tbl','sym','Simbolo');
+  buildBreak('st-dir-tbl','dir','Direccion');
+
+  // trade table
+  const ttbl=document.getElementById('st-trade-tbl');
+  ttbl.innerHTML='<thead><tr><th>#</th><th>Fecha</th><th>Sym</th><th>Dir</th><th>Sesion</th><th class="td-r">R</th><th class="td-r">PnL$</th><th class="td-r">Balance</th><th>Razon</th></tr></thead><tbody></tbody>';
+  const tbody2=ttbl.querySelector('tbody');
+  STATS_DATA.forEach(t=>{{
+    const rc=t.r>0?'pos':'neg'; const pc=t.pnl>0?'pos':'neg';
+    const ses=t.ses==='LondonNyOverlap'?'Overlap':t.ses;
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="td-r">${{t.num}}</td><td style="color:#484f58;font-size:10px">${{t.fecha}}</td><td class="td-sym">${{t.sym.replace('USDT','')}}</td><td class="${{t.dir==='Short'?'neg':'pos'}}">${{t.dir}}</td><td>${{ses}}</td><td class="td-r ${{rc}}">${{fmtS(t.r,2)}}R</td><td class="td-r ${{pc}}">${{fmtS(t.pnl,2)}}$</td><td class="td-r" style="color:#e6edf3">${{t.bal.toFixed(2)}}</td><td style="color:#484f58;font-size:10px">${{t.reason}}</td>`;
+    tbody2.appendChild(tr);
+  }});
 }}
 
 applyFilters();

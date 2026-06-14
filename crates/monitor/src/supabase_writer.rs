@@ -1,3 +1,4 @@
+use buyer_exhaustion;
 /// Writes signals, closed trades, regime changes, and lab signals to Supabase via REST API.
 ///
 /// Uses fire-and-forget tokio tasks — never blocks the bar-close path.
@@ -12,36 +13,35 @@ use data::strategy::{
     playbook_reasoning::PlaybookReasoning,
     types::{StrategyAction, StrategyMarketContext, StrategySignal},
 };
-use serde_json::{json, Value};
-use buyer_exhaustion;
+use serde_json::{Value, json};
 
 /// Posición RBF persistida en Supabase, restaurada al reiniciar el proceso.
 pub struct RestoredRbfPosition {
-    pub signal_id:    String,
-    pub direction:    data::strategy::detectors::range_breakout_flow::RbfDirection,
-    pub entry_price:  f64,
-    pub stop_price:   f64,
+    pub signal_id: String,
+    pub direction: data::strategy::detectors::range_breakout_flow::RbfDirection,
+    pub entry_price: f64,
+    pub stop_price: f64,
     pub target_price: f64,
-    pub entry_ms:     i64,
+    pub entry_ms: i64,
 }
 
 /// Posición AMD persistida en Supabase, restaurada al reiniciar el proceso.
 pub struct RestoredAmdPosition {
-    pub signal_id:    String,
-    pub direction:    data::strategy::detectors::amd_detector::AmdDirection,
-    pub entry_price:  f64,
-    pub stop_price:   f64,
+    pub signal_id: String,
+    pub direction: data::strategy::detectors::amd_detector::AmdDirection,
+    pub entry_price: f64,
+    pub stop_price: f64,
     pub target_price: f64,
-    pub entry_ms:     i64,
+    pub entry_ms: i64,
 }
 
 /// Posición BE persistida en Supabase, restaurada al reiniciar el proceso.
 pub struct RestoredBePosition {
-    pub signal_id:    String,
-    pub entry_price:  f64,
-    pub stop_price:   f64,
+    pub signal_id: String,
+    pub entry_price: f64,
+    pub stop_price: f64,
     pub target_price: f64,
-    pub entry_ms:     i64,
+    pub entry_ms: i64,
 }
 
 /// Contexto extra que se pasa junto a una ScalpingSignal para persistencia.
@@ -150,7 +150,9 @@ impl SupabaseWriter {
     /// signal_uuid links this trade to its shadow_signals row (NOT NULL FK).
     pub fn write_trade(&self, trade: &ClosedTrade, signal_uuid: Option<String>) {
         let Some(uuid) = signal_uuid else {
-            eprintln!("[supabase] write_trade skipped — no signal_uuid (trade not linked to a signal)");
+            eprintln!(
+                "[supabase] write_trade skipped — no signal_uuid (trade not linked to a signal)"
+            );
             return;
         };
         let body = build_trade_row(trade, &uuid);
@@ -236,10 +238,7 @@ impl SupabaseWriter {
         let price_field = format!("price_{label}");
         let r_field = format!("r_{label}");
         let body = json!({ &price_field: price, &r_field: r });
-        let url = format!(
-            "{}/rest/v1/signal_outcomes?id=eq.{uuid}",
-            self.url
-        );
+        let url = format!("{}/rest/v1/signal_outcomes?id=eq.{uuid}", self.url);
         let result = self
             .client
             .patch(&url)
@@ -256,7 +255,9 @@ impl SupabaseWriter {
             Ok(r) if !r.status().is_success() => {
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
-                eprintln!("[supabase] PATCH signal_outcomes horizon {label} error {status}: {text}");
+                eprintln!(
+                    "[supabase] PATCH signal_outcomes horizon {label} error {status}: {text}"
+                );
             }
             Ok(_) => {}
         }
@@ -333,7 +334,11 @@ impl SupabaseWriter {
     // ── Scalping ──────────────────────────────────────────────────────────────
 
     /// Inserta una señal de scalping en scalping_signals. Fire-and-forget.
-    pub fn write_scalping_signal(&self, signal: &data::strategy::scalping::ScalpingSignal, ctx: &ScalpingWriteCtx) {
+    pub fn write_scalping_signal(
+        &self,
+        signal: &data::strategy::scalping::ScalpingSignal,
+        ctx: &ScalpingWriteCtx,
+    ) {
         let body = json!({
             "timestamp_ms":      signal.timestamp_ms,
             "strategy":          signal.strategy.to_string(),
@@ -426,7 +431,7 @@ impl SupabaseWriter {
             "bars_held":         trade.bars_held as i64,
             "sizing_multiplier": trade.sizing_multiplier,
         });
-        let url    = format!("{}/rest/v1/rbf_signals?id=eq.{}", self.url, id);
+        let url = format!("{}/rest/v1/rbf_signals?id=eq.{}", self.url, id);
         let writer = self.clone();
         let body_c = body.clone();
         tokio::spawn(async move {
@@ -453,7 +458,7 @@ impl SupabaseWriter {
     /// Permite restaurar el estado tras un reinicio (Railway redeploy).
     pub fn mark_rbf_active(&self, id: &str) {
         let body = serde_json::json!({ "is_active": true });
-        let url    = format!("{}/rest/v1/rbf_signals?id=eq.{}", self.url, id);
+        let url = format!("{}/rest/v1/rbf_signals?id=eq.{}", self.url, id);
         let writer = self.clone();
         tokio::spawn(async move {
             let result = writer
@@ -476,10 +481,7 @@ impl SupabaseWriter {
 
     /// Carga la posición activa del paper trader desde Supabase.
     /// Retorna None si no hay posición activa para este símbolo.
-    pub async fn load_rbf_active(
-        &self,
-        symbol: &str,
-    ) -> Option<RestoredRbfPosition> {
+    pub async fn load_rbf_active(&self, symbol: &str) -> Option<RestoredRbfPosition> {
         let url = format!(
             "{}/rest/v1/rbf_signals?is_active=eq.true&result_r=is.null&symbol=eq.{}&order=id.desc&limit=1",
             self.url, symbol
@@ -506,15 +508,16 @@ impl SupabaseWriter {
         };
 
         let row = rows.as_array()?.first()?;
-        let signal_id    = row.get("id")?.as_i64()?.to_string();
-        let dir_str      = row.get("direction")?.as_str()?;
-        let direction    = serde_json::from_str::<
-            data::strategy::detectors::range_breakout_flow::RbfDirection
-        >(&format!("\"{}\"", dir_str)).ok()?;
-        let entry_price  = row.get("entry_price")?.as_f64()?;
-        let stop_price   = row.get("stop_price")?.as_f64()?;
+        let signal_id = row.get("id")?.as_i64()?.to_string();
+        let dir_str = row.get("direction")?.as_str()?;
+        let direction = serde_json::from_str::<
+            data::strategy::detectors::range_breakout_flow::RbfDirection,
+        >(&format!("\"{}\"", dir_str))
+        .ok()?;
+        let entry_price = row.get("entry_price")?.as_f64()?;
+        let stop_price = row.get("stop_price")?.as_f64()?;
         let target_price = row.get("target_price")?.as_f64()?;
-        let entry_ms     = row.get("timestamp_ms")?.as_i64()?;
+        let entry_ms = row.get("timestamp_ms")?.as_i64()?;
 
         Some(RestoredRbfPosition {
             signal_id,
@@ -613,8 +616,14 @@ impl SupabaseWriter {
                     .and_then(|v| v.as_i64())
                     .map(|id| id.to_string())
             }
-            Ok(r) => { eprintln!("[supabase] write_amd_signal_async HTTP {}", r.status()); None }
-            Err(e) => { eprintln!("[supabase] write_amd_signal_async error: {e}"); None }
+            Ok(r) => {
+                eprintln!("[supabase] write_amd_signal_async HTTP {}", r.status());
+                None
+            }
+            Err(e) => {
+                eprintln!("[supabase] write_amd_signal_async error: {e}");
+                None
+            }
         }
     }
 
@@ -635,7 +644,7 @@ impl SupabaseWriter {
             "is_active":    false,
         });
         let _ = closed_at_iso; // closed_at_ms es bigint en amd_signals
-        let url    = format!("{}/rest/v1/amd_signals?id=eq.{}", self.url, id);
+        let url = format!("{}/rest/v1/amd_signals?id=eq.{}", self.url, id);
         let writer = self.clone();
         let body_c = body.clone();
         tokio::spawn(async move {
@@ -660,7 +669,7 @@ impl SupabaseWriter {
     /// Marca una señal AMD como posición activa del paper trader.
     pub fn mark_amd_active(&self, id: &str) {
         let body = serde_json::json!({ "is_active": true });
-        let url    = format!("{}/rest/v1/amd_signals?id=eq.{}", self.url, id);
+        let url = format!("{}/rest/v1/amd_signals?id=eq.{}", self.url, id);
         let writer = self.clone();
         tokio::spawn(async move {
             let result = writer
@@ -697,20 +706,35 @@ impl SupabaseWriter {
             .await;
         let rows: serde_json::Value = match result {
             Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
-            Ok(r) => { eprintln!("[supabase] load_amd_active HTTP {}", r.status()); return None; }
-            Err(e) => { eprintln!("[supabase] load_amd_active error: {e}"); return None; }
+            Ok(r) => {
+                eprintln!("[supabase] load_amd_active HTTP {}", r.status());
+                return None;
+            }
+            Err(e) => {
+                eprintln!("[supabase] load_amd_active error: {e}");
+                return None;
+            }
         };
         let row = rows.as_array()?.first()?;
-        let signal_id    = row.get("id")?.as_i64()?.to_string();
-        let dir_str      = row.get("direction")?.as_str()?;
-        let direction    = serde_json::from_str::<
-            data::strategy::detectors::amd_detector::AmdDirection
-        >(&format!("\"{}\"", dir_str)).ok()?;
-        let entry_price  = row.get("entry_price")?.as_f64()?;
-        let stop_price   = row.get("stop_price")?.as_f64()?;
+        let signal_id = row.get("id")?.as_i64()?.to_string();
+        let dir_str = row.get("direction")?.as_str()?;
+        let direction =
+            serde_json::from_str::<data::strategy::detectors::amd_detector::AmdDirection>(
+                &format!("\"{}\"", dir_str),
+            )
+            .ok()?;
+        let entry_price = row.get("entry_price")?.as_f64()?;
+        let stop_price = row.get("stop_price")?.as_f64()?;
         let target_price = row.get("target_price")?.as_f64()?;
-        let entry_ms     = row.get("timestamp_ms")?.as_i64()?;
-        Some(RestoredAmdPosition { signal_id, direction, entry_price, stop_price, target_price, entry_ms })
+        let entry_ms = row.get("timestamp_ms")?.as_i64()?;
+        Some(RestoredAmdPosition {
+            signal_id,
+            direction,
+            entry_price,
+            stop_price,
+            target_price,
+            entry_ms,
+        })
     }
 
     fn rbf_signal_body(
@@ -760,12 +784,17 @@ impl SupabaseWriter {
             "signal_score_v2":           sig.signal_score_v2,
             "sizing_multiplier":         sig.sizing_multiplier,
             "is_pre_breakout":           sig.is_pre_breakout,
+            "is_sweep_reclaim":          sig.is_sweep_reclaim,
         })
     }
 
     /// Escribe una señal RBF a Supabase. Fire-and-forget.
-    pub fn write_rbf_signal(&self, sig: &data::strategy::detectors::range_breakout_flow::RbfSignal, symbol: &str) {
-        let body   = self.rbf_signal_body(sig, symbol);
+    pub fn write_rbf_signal(
+        &self,
+        sig: &data::strategy::detectors::range_breakout_flow::RbfSignal,
+        symbol: &str,
+    ) {
+        let body = self.rbf_signal_body(sig, symbol);
         let writer = self.clone();
         tokio::spawn(async move {
             writer.post("rbf_signals", &body).await;
@@ -777,19 +806,45 @@ impl SupabaseWriter {
     pub fn write_rbf_bar(
         &self,
         symbol: &str,
-        ts_ms: i64, session: &str,
-        open: f64, high: f64, low: f64, close: f64, volume: f64, bar_delta: f64,
-        cvd_slope: Option<f64>, obi_l5: f64, obi_l10: f64, obi_l20: f64, obi_fast: f64, obi_slow: f64,
-        dz: f64, vr: f64, liq_ratio: f64, spread_ticks: i32,
-        stacked_imb: &str, absorption: &str,
-        thin_above: bool, thin_below: bool, bid_wall: bool, ask_wall: bool,
-        vpin: Option<f64>, oi_momentum: Option<bool>,
-        vwap: Option<f64>, regime: &str, atr: f64, operative: bool,
+        ts_ms: i64,
+        session: &str,
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
+        volume: f64,
+        bar_delta: f64,
+        cvd_slope: Option<f64>,
+        obi_l5: f64,
+        obi_l10: f64,
+        obi_l20: f64,
+        obi_fast: f64,
+        obi_slow: f64,
+        dz: f64,
+        vr: f64,
+        liq_ratio: f64,
+        spread_ticks: i32,
+        stacked_imb: &str,
+        absorption: &str,
+        thin_above: bool,
+        thin_below: bool,
+        bid_wall: bool,
+        ask_wall: bool,
+        vpin: Option<f64>,
+        oi_momentum: Option<bool>,
+        vwap: Option<f64>,
+        regime: &str,
+        atr: f64,
+        operative: bool,
         // ICT AMD structural levels
-        asian_high: Option<f64>, asian_low: Option<f64>,
-        prev_day_high: Option<f64>, prev_day_low: Option<f64>,
-        swing_high_50: Option<f64>, swing_low_50: Option<f64>,
-        equal_high: bool, equal_low: bool,
+        asian_high: Option<f64>,
+        asian_low: Option<f64>,
+        prev_day_high: Option<f64>,
+        prev_day_low: Option<f64>,
+        swing_high_50: Option<f64>,
+        swing_low_50: Option<f64>,
+        equal_high: bool,
+        equal_low: bool,
         // microestructura adicional
         cvd_divergence: Option<&str>,
         sweep_confirmed: bool,
@@ -842,8 +897,9 @@ impl SupabaseWriter {
             "BNBUSDT" => "bnb_bars",
             "SOLUSDT" => "sol_bars",
             "XRPUSDT" => "xrp_bars",
-            _         => "btc_bars",
-        }.to_string();
+            _ => "btc_bars",
+        }
+        .to_string();
         let writer = self.clone();
         tokio::spawn(async move {
             writer.post(&table, &body).await;
@@ -853,22 +909,28 @@ impl SupabaseWriter {
     /// Escribe un lote de muestras OBI intrabar (sampleo 10s) a la tabla obi_10s.
     /// Usa upsert para evitar duplicados si el monitor reinicia dentro de la misma barra.
     pub fn write_obi_batch(&self, symbol: &str, samples: &[(i64, f32, f32, f32, f32)]) {
-        if samples.is_empty() { return; }
-        let rows: Vec<serde_json::Value> = samples.iter().map(|&(ts, l5, l10, l20, sp)| {
-            json!({
-                "ts_ms":      ts,
-                "symbol":     symbol,
-                "obi_l5":     l5,
-                "obi_l10":    l10,
-                "obi_l20":    l20,
-                "spread_bps": sp,
+        if samples.is_empty() {
+            return;
+        }
+        let rows: Vec<serde_json::Value> = samples
+            .iter()
+            .map(|&(ts, l5, l10, l20, sp)| {
+                json!({
+                    "ts_ms":      ts,
+                    "symbol":     symbol,
+                    "obi_l5":     l5,
+                    "obi_l10":    l10,
+                    "obi_l20":    l20,
+                    "spread_bps": sp,
+                })
             })
-        }).collect();
+            .collect();
         let body = serde_json::Value::Array(rows);
         let url = format!("{}/rest/v1/obi_10s", self.url);
         let writer = self.clone();
         tokio::spawn(async move {
-            let result = writer.client
+            let result = writer
+                .client
                 .post(&url)
                 .header("apikey", &writer.key)
                 .header("Authorization", format!("Bearer {}", writer.key))
@@ -879,7 +941,11 @@ impl SupabaseWriter {
                 .await;
             if let Ok(r) = result {
                 if !r.status().is_success() {
-                    eprintln!("[supabase] write_obi_batch {} HTTP {}", writer.url.len(), r.status());
+                    eprintln!(
+                        "[supabase] write_obi_batch {} HTTP {}",
+                        writer.url.len(),
+                        r.status()
+                    );
                 }
             }
         });
@@ -929,8 +995,12 @@ impl SupabaseWriter {
         tokio::spawn(async move {
             writer.post("scalping_trades", &body_trade).await;
             // Cerrar la señal correspondiente en scalping_signals (match por timestamp_ms)
-            let url = format!("{}/rest/v1/scalping_signals?timestamp_ms=eq.{}", writer.url, entry_ms);
-            let result = writer.client
+            let url = format!(
+                "{}/rest/v1/scalping_signals?timestamp_ms=eq.{}",
+                writer.url, entry_ms
+            );
+            let result = writer
+                .client
                 .patch(&url)
                 .header("apikey", &writer.key)
                 .header("Authorization", format!("Bearer {}", writer.key))
@@ -1042,7 +1112,8 @@ impl SupabaseWriter {
     ) -> Option<String> {
         let body = self.be_signal_body(sig, symbol);
         let url = format!("{}/rest/v1/be_signals", self.url);
-        let result = self.client
+        let result = self
+            .client
             .post(&url)
             .header("apikey", &self.key)
             .header("Authorization", format!("Bearer {}", self.key))
@@ -1060,17 +1131,19 @@ impl SupabaseWriter {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             }
-            Ok(r) => { eprintln!("[supabase] write_be_signal_async HTTP {}", r.status()); None }
-            Err(e) => { eprintln!("[supabase] write_be_signal_async error: {e}"); None }
+            Ok(r) => {
+                eprintln!("[supabase] write_be_signal_async HTTP {}", r.status());
+                None
+            }
+            Err(e) => {
+                eprintln!("[supabase] write_be_signal_async error: {e}");
+                None
+            }
         }
     }
 
     /// Actualiza el outcome de una señal BE (PATCH por UUID).
-    pub fn update_be_outcome(
-        &self,
-        id: &str,
-        trade: &buyer_exhaustion::signal::BeClosedTrade,
-    ) {
+    pub fn update_be_outcome(&self, id: &str, trade: &buyer_exhaustion::signal::BeClosedTrade) {
         let closed_at_iso = chrono::DateTime::from_timestamp_millis(trade.exit_ms)
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_default();
@@ -1082,10 +1155,11 @@ impl SupabaseWriter {
             "result_r":     trade.result_r,
             "bars_held":    trade.bars_held as i64,
         });
-        let url    = format!("{}/rest/v1/be_signals?id=eq.{}", self.url, id);
+        let url = format!("{}/rest/v1/be_signals?id=eq.{}", self.url, id);
         let writer = self.clone();
         tokio::spawn(async move {
-            let result = writer.client
+            let result = writer
+                .client
                 .patch(&url)
                 .header("apikey", &writer.key)
                 .header("Authorization", format!("Bearer {}", writer.key))
@@ -1108,7 +1182,8 @@ impl SupabaseWriter {
             "{}/rest/v1/be_signals?active=eq.true&symbol=eq.{}&order=timestamp_ms.desc&limit=1",
             self.url, symbol
         );
-        let result = self.client
+        let result = self
+            .client
             .get(&url)
             .header("apikey", &self.key)
             .header("Authorization", format!("Bearer {}", self.key))
@@ -1117,16 +1192,28 @@ impl SupabaseWriter {
             .await;
         let rows: serde_json::Value = match result {
             Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
-            Ok(r) => { eprintln!("[supabase] load_be_active HTTP {}", r.status()); return None; }
-            Err(e) => { eprintln!("[supabase] load_be_active error: {e}"); return None; }
+            Ok(r) => {
+                eprintln!("[supabase] load_be_active HTTP {}", r.status());
+                return None;
+            }
+            Err(e) => {
+                eprintln!("[supabase] load_be_active error: {e}");
+                return None;
+            }
         };
-        let row          = rows.as_array()?.first()?;
-        let signal_id    = row.get("id")?.as_str()?.to_string();
-        let entry_price  = row.get("entry_price")?.as_f64()?;
-        let stop_price   = row.get("stop_price")?.as_f64()?;
+        let row = rows.as_array()?.first()?;
+        let signal_id = row.get("id")?.as_str()?.to_string();
+        let entry_price = row.get("entry_price")?.as_f64()?;
+        let stop_price = row.get("stop_price")?.as_f64()?;
         let target_price = row.get("target_price")?.as_f64()?;
-        let entry_ms     = row.get("timestamp_ms")?.as_i64()?;
-        Some(RestoredBePosition { signal_id, entry_price, stop_price, target_price, entry_ms })
+        let entry_ms = row.get("timestamp_ms")?.as_i64()?;
+        Some(RestoredBePosition {
+            signal_id,
+            entry_price,
+            stop_price,
+            target_price,
+            entry_ms,
+        })
     }
 
     fn be_signal_body(
@@ -1164,44 +1251,77 @@ fn build_signal_row(
     let inst = ctx.institutional.as_ref();
 
     let evidence: Vec<String> = signal.evidence.iter().map(|e| format!("{e:?}")).collect();
-    let missing: Vec<String>  = signal.missing.iter().map(|m| format!("{m:?}")).collect();
+    let missing: Vec<String> = signal.missing.iter().map(|m| format!("{m:?}")).collect();
 
     let regime_str = format!("{:?}", ctx.regime);
 
     // Split HVNs by current price for directional analysis in calibration
     let price = ctx.price;
-    let hvn_above: Vec<f64> = ctx.volume_profile.hvn_nearby.iter().copied()
-        .filter(|&h| h > price).collect();
-    let hvn_below: Vec<f64> = ctx.volume_profile.hvn_nearby.iter().copied()
-        .filter(|&h| h < price).collect();
+    let hvn_above: Vec<f64> = ctx
+        .volume_profile
+        .hvn_nearby
+        .iter()
+        .copied()
+        .filter(|&h| h > price)
+        .collect();
+    let hvn_below: Vec<f64> = ctx
+        .volume_profile
+        .hvn_nearby
+        .iter()
+        .copied()
+        .filter(|&h| h < price)
+        .collect();
     let nearest_wall_above = ctx.orderbook.walls_above.first().copied();
     let nearest_wall_below = ctx.orderbook.walls_below.first().copied();
 
     // Subdimi fields — aligned with signal direction
-    let is_long = signal.side.map(|s| matches!(s, data::strategy::types::Side::Long)).unwrap_or(false);
-    let finish_action   = if is_long { ctx.flow.finish_action_bullish  } else { ctx.flow.finish_action_bearish  };
-    let unfinish_action = if is_long { ctx.flow.unfinish_action_bearish } else { ctx.flow.unfinish_action_bullish };
-    let big_trade       = if is_long { ctx.flow.big_trade_bullish       } else { ctx.flow.big_trade_bearish      };
+    let is_long = signal
+        .side
+        .map(|s| matches!(s, data::strategy::types::Side::Long))
+        .unwrap_or(false);
+    let finish_action = if is_long {
+        ctx.flow.finish_action_bullish
+    } else {
+        ctx.flow.finish_action_bearish
+    };
+    let unfinish_action = if is_long {
+        ctx.flow.unfinish_action_bearish
+    } else {
+        ctx.flow.unfinish_action_bullish
+    };
+    let big_trade = if is_long {
+        ctx.flow.big_trade_bullish
+    } else {
+        ctx.flow.big_trade_bearish
+    };
 
-    let htf_weekly_location  = ctx.htf_vp.as_ref().and_then(|h| h.weekly.as_ref())
+    let htf_weekly_location = ctx
+        .htf_vp
+        .as_ref()
+        .and_then(|h| h.weekly.as_ref())
         .map(|w| format!("{:?}", w.location));
-    let htf_monthly_location = ctx.htf_vp.as_ref().and_then(|h| h.monthly.as_ref())
+    let htf_monthly_location = ctx
+        .htf_vp
+        .as_ref()
+        .and_then(|h| h.monthly.as_ref())
         .map(|w| format!("{:?}", w.location));
-    let reasoning_tags = reasoning.map(|r| json!({
-        "market_state": &r.market_state,
-        "location_tags": &r.location_tags,
-        "flow_tags": &r.flow_tags,
-        "liquidity_tags": &r.liquidity_tags,
-        "book_tags": &r.book_tags,
-        "institutional_tags": &r.institutional_tags,
-        "structure_tags": &r.structure_tags,
-        "trigger_tags": &r.trigger_tags,
-        "risk_tags": &r.risk_tags,
-        "confirmation_tags": &r.confirmation_tags,
-        "contradiction_tags": &r.contradiction_tags,
-        "missing_tags": &r.missing_tags,
-        "detector_role_tags": &r.detector_role_tags,
-    }));
+    let reasoning_tags = reasoning.map(|r| {
+        json!({
+            "market_state": &r.market_state,
+            "location_tags": &r.location_tags,
+            "flow_tags": &r.flow_tags,
+            "liquidity_tags": &r.liquidity_tags,
+            "book_tags": &r.book_tags,
+            "institutional_tags": &r.institutional_tags,
+            "structure_tags": &r.structure_tags,
+            "trigger_tags": &r.trigger_tags,
+            "risk_tags": &r.risk_tags,
+            "confirmation_tags": &r.confirmation_tags,
+            "contradiction_tags": &r.contradiction_tags,
+            "missing_tags": &r.missing_tags,
+            "detector_role_tags": &r.detector_role_tags,
+        })
+    });
 
     // Subdomi JSONB — contextual fields not worth individual columns
     // ── Bloque 1: Tiempo y sesión ─────────────────────────────────────────────
@@ -1213,11 +1333,11 @@ fn build_signal_row(
     let minutes_since_session_open: Option<i16> = ctx.session.as_ref().map(|s| {
         use data::session::TradingSession;
         let start = match s.session {
-            TradingSession::Asia             =>  0 * 60,
-            TradingSession::London           =>  7 * 60,
-            TradingSession::LondonNyOverlap  => 12 * 60,
-            TradingSession::NewYork          => 13 * 60 + 30,
-            TradingSession::OffHours              =>  0,
+            TradingSession::Asia => 0 * 60,
+            TradingSession::London => 7 * 60,
+            TradingSession::LondonNyOverlap => 12 * 60,
+            TradingSession::NewYork => 13 * 60 + 30,
+            TradingSession::OffHours => 0,
         };
         let current = hour_utc as i32 * 60 + minute_utc;
         (current - start).max(0) as i16
@@ -1225,84 +1345,171 @@ fn build_signal_row(
 
     // ── Bloque 2: Calidad del rango ────────────────────────────────────────────
     let range_midline_slope = ctx.range.as_ref().map(|r| r.midline_slope);
-    let range_bars_inside   = ctx.range.as_ref().map(|r| r.bars_inside as i32);
+    let range_bars_inside = ctx.range.as_ref().map(|r| r.bars_inside as i32);
     let range_second_test = {
-        let is_long = signal.side.map(|s| matches!(s, data::strategy::types::Side::Long)).unwrap_or(false);
-        ctx.range.as_ref().map(|r| if is_long { r.touches_low >= 2 } else { r.touches_high >= 2 })
+        let is_long = signal
+            .side
+            .map(|s| matches!(s, data::strategy::types::Side::Long))
+            .unwrap_or(false);
+        ctx.range.as_ref().map(|r| {
+            if is_long {
+                r.touches_low >= 2
+            } else {
+                r.touches_high >= 2
+            }
+        })
     };
-    let range_vs_value_area: Option<&str> = match (ctx.volume_profile.vah, ctx.volume_profile.val, ctx.range.as_ref()) {
+    let range_vs_value_area: Option<&str> = match (
+        ctx.volume_profile.vah,
+        ctx.volume_profile.val,
+        ctx.range.as_ref(),
+    ) {
         (Some(vah), Some(val), Some(r)) => {
-            if r.range_low >= val && r.range_high <= vah       { Some("inside_va") }
-            else if r.range_low >= vah                         { Some("above_va") }
-            else if r.range_high <= val                        { Some("below_va") }
-            else                                               { Some("spanning_va") }
+            if r.range_low >= val && r.range_high <= vah {
+                Some("inside_va")
+            } else if r.range_low >= vah {
+                Some("above_va")
+            } else if r.range_high <= val {
+                Some("below_va")
+            } else {
+                Some("spanning_va")
+            }
         }
         _ => None,
     };
 
     // ── Bloque 3: Calidad de absorción ────────────────────────────────────────
-    let is_long_signal = signal.side.map(|s| matches!(s, data::strategy::types::Side::Long)).unwrap_or(false);
+    let is_long_signal = signal
+        .side
+        .map(|s| matches!(s, data::strategy::types::Side::Long))
+        .unwrap_or(false);
     let absorption_count: i16 = if is_long_signal {
         [
             ctx.flow.footprint_absorption == data::strategy::types::AbsorptionSide::Bid,
             ctx.flow.big_trade_bearish,
-            matches!(ctx.flow.cvd_divergence, Some(data::strategy::types::CvdDivergence::BullishAbsorption)),
+            matches!(
+                ctx.flow.cvd_divergence,
+                Some(data::strategy::types::CvdDivergence::BullishAbsorption)
+            ),
             ctx.flow.finish_action_bullish,
-            ctx.range.as_ref().map(|r| r.sweep_range_low).unwrap_or(false),
-        ].iter().filter(|&&b| b).count() as i16
+            ctx.range
+                .as_ref()
+                .map(|r| r.sweep_range_low)
+                .unwrap_or(false),
+        ]
+        .iter()
+        .filter(|&&b| b)
+        .count() as i16
     } else {
         [
             ctx.flow.footprint_absorption == data::strategy::types::AbsorptionSide::Ask,
             ctx.flow.big_trade_bullish,
-            matches!(ctx.flow.cvd_divergence, Some(data::strategy::types::CvdDivergence::BearishAbsorption)),
+            matches!(
+                ctx.flow.cvd_divergence,
+                Some(data::strategy::types::CvdDivergence::BearishAbsorption)
+            ),
             ctx.flow.finish_action_bearish,
-            ctx.range.as_ref().map(|r| r.sweep_range_high).unwrap_or(false),
-        ].iter().filter(|&&b| b).count() as i16
+            ctx.range
+                .as_ref()
+                .map(|r| r.sweep_range_high)
+                .unwrap_or(false),
+        ]
+        .iter()
+        .filter(|&&b| b)
+        .count() as i16
     };
     let entry_type: Option<&str> = ctx.range.as_ref().map(|r| {
-        if is_long_signal { if r.sweep_range_low { "sweep_reclaim" } else { "near_extreme" } }
-        else              { if r.sweep_range_high { "sweep_reclaim" } else { "near_extreme" } }
+        if is_long_signal {
+            if r.sweep_range_low {
+                "sweep_reclaim"
+            } else {
+                "near_extreme"
+            }
+        } else {
+            if r.sweep_range_high {
+                "sweep_reclaim"
+            } else {
+                "near_extreme"
+            }
+        }
     });
     let sweep_depth_atr = ctx.range.as_ref().and_then(|r| {
-        let depth = if is_long_signal { r.sweep_low_depth } else { r.sweep_high_depth };
+        let depth = if is_long_signal {
+            r.sweep_low_depth
+        } else {
+            r.sweep_high_depth
+        };
         depth.zip(ctx.atr).map(|(d, a)| d / a)
     });
     let delta_at_extreme = ctx.flow.delta;
-    let bar_volume = ctx.flow.buy_volume.zip(ctx.flow.sell_volume).map(|(b, s)| b + s);
+    let bar_volume = ctx
+        .flow
+        .buy_volume
+        .zip(ctx.flow.sell_volume)
+        .map(|(b, s)| b + s);
 
     // ── Bloque 4: Contexto de precio y estructura ─────────────────────────────
-    let value_location  = Some(format!("{:?}", ctx.volume_profile.value_location));
-    let price_vs_vwap   = Some(format!("{:?}", ctx.vwap.price_vs_vwap));
+    let value_location = Some(format!("{:?}", ctx.volume_profile.value_location));
+    let price_vs_vwap = Some(format!("{:?}", ctx.vwap.price_vs_vwap));
     let price_vs_avwap_bos = Some(format!("{:?}", ctx.vwap.price_vs_avwap_bos));
     let naked_poc_in_target_path = signal.entry_price.zip(signal.target_price).map(|(e, t)| {
         let (lo, hi) = if t > e { (e, t) } else { (t, e) };
-        ctx.volume_profile.naked_pocs.iter().any(|&p| p > lo && p < hi)
+        ctx.volume_profile
+            .naked_pocs
+            .iter()
+            .any(|&p| p > lo && p < hi)
     });
     let hvn_between_entry_target = signal.entry_price.zip(signal.target_price).map(|(e, t)| {
         let (lo, hi) = if t > e { (e, t) } else { (t, e) };
-        ctx.volume_profile.hvn_nearby.iter().any(|&h| h > lo && h < hi)
+        ctx.volume_profile
+            .hvn_nearby
+            .iter()
+            .any(|&h| h > lo && h < hi)
     });
     let fast_slope_at_entry = ctx.flow.fast_slope;
 
     // ── Bloque 5: Institucional compacto ─────────────────────────────────────
-    let oi_direction = ctx.flow.oi_momentum_aligned.map(|aligned| if aligned { "aligned" } else { "opposed" });
+    let oi_direction = ctx
+        .flow
+        .oi_momentum_aligned
+        .map(|aligned| if aligned { "aligned" } else { "opposed" });
     let cvd_div_persist = ctx.flow.cvd_divergence_persistence;
     let vpin_val = ctx.flow.vpin;
     let funding_velocity_val = inst.map(|i| i.funding.velocity);
 
     // ── Bloque 6: Calidad del trade ───────────────────────────────────────────
-    let rr_actual = signal.entry_price.zip(signal.stop_price).zip(signal.target_price)
-        .map(|((e, s), t)| { let risk = (e - s).abs(); let rew = (t - e).abs(); if risk > 1e-10 { rew / risk } else { 0.0 } });
-    let distance_to_target_atr = signal.entry_price.zip(signal.target_price).zip(ctx.atr)
+    let rr_actual = signal
+        .entry_price
+        .zip(signal.stop_price)
+        .zip(signal.target_price)
+        .map(|((e, s), t)| {
+            let risk = (e - s).abs();
+            let rew = (t - e).abs();
+            if risk > 1e-10 { rew / risk } else { 0.0 }
+        });
+    let distance_to_target_atr = signal
+        .entry_price
+        .zip(signal.target_price)
+        .zip(ctx.atr)
         .map(|((e, t), a)| (t - e).abs() / a);
-    let distance_to_stop_atr = signal.entry_price.zip(signal.stop_price).zip(ctx.atr)
+    let distance_to_stop_atr = signal
+        .entry_price
+        .zip(signal.stop_price)
+        .zip(ctx.atr)
         .map(|((e, s), a)| (e - s).abs() / a);
-    let obstacle_hvn_count: Option<i16> = signal.entry_price.zip(signal.target_price).map(|(e, t)| {
-        let (lo, hi) = if t > e { (e, t) } else { (t, e) };
-        ctx.volume_profile.hvn_nearby.iter().filter(|&&h| h > lo && h < hi).count() as i16
-    });
+    let obstacle_hvn_count: Option<i16> =
+        signal.entry_price.zip(signal.target_price).map(|(e, t)| {
+            let (lo, hi) = if t > e { (e, t) } else { (t, e) };
+            ctx.volume_profile
+                .hvn_nearby
+                .iter()
+                .filter(|&&h| h > lo && h < hi)
+                .count() as i16
+        });
     let nearest_naked_poc_dist_atr = ctx.atr.and_then(|a| {
-        ctx.volume_profile.naked_pocs.iter()
+        ctx.volume_profile
+            .naked_pocs
+            .iter()
             .map(|&p| (p - ctx.price).abs() / a)
             .min_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal))
     });
@@ -1462,11 +1669,15 @@ fn build_signal_row(
 }
 
 fn build_parallel_signal_row(signal: &StrategySignal) -> Value {
-    let rr = signal.entry_price.zip(signal.stop_price).zip(signal.target_price).map(|((e, s), t)| {
-        let risk = (e - s).abs();
-        let rew  = (t - e).abs();
-        if risk > 1e-10 { rew / risk } else { 0.0 }
-    });
+    let rr = signal
+        .entry_price
+        .zip(signal.stop_price)
+        .zip(signal.target_price)
+        .map(|((e, s), t)| {
+            let risk = (e - s).abs();
+            let rew = (t - e).abs();
+            if risk > 1e-10 { rew / risk } else { 0.0 }
+        });
     json!({
         "strategy_id":  signal.strategy_id.map(|id| format!("{id:?}")),
         "status":       "ShadowSignal",
@@ -1487,8 +1698,7 @@ fn build_trade_row(trade: &ClosedTrade, signal_uuid: &str) -> Value {
     let duration_ms = trade.closed_at_ms - trade.opened_at_ms;
     let risk = (trade.entry_price - trade.stop_price.unwrap_or(trade.entry_price)).abs();
     let r_multiple = if risk > 0.0 {
-        (trade.exit_price - trade.entry_price)
-            * if trade.side == "Long" { 1.0 } else { -1.0 }
+        (trade.exit_price - trade.entry_price) * if trade.side == "Long" { 1.0 } else { -1.0 }
             / risk
     } else {
         0.0
@@ -1511,4 +1721,56 @@ fn build_trade_row(trade: &ClosedTrade, signal_uuid: &str) -> Value {
         "is_partial":        trade.is_partial,
         "partial_fraction":  trade.partial_fraction,
     })
+}
+
+impl SupabaseWriter {
+    /// Escribe un evento HTF (apertura o cierre de trade) en la tabla `htf_trades`.
+    /// Llamada async fire-and-forget desde on_bar_close.
+    pub async fn write_htf_trade(
+        &self,
+        event: &data::strategy::detectors::htf_shorts_detector::HtfTrade,
+        symbol: &str,
+    ) {
+        use chrono::DateTime;
+        let sig = &event.signal;
+        let entry_at = DateTime::from_timestamp_millis(sig.ts_ms)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        let closed_at = event.exit_ts_ms
+            .and_then(|ms| DateTime::from_timestamp_millis(ms))
+            .map(|dt| dt.to_rfc3339());
+
+        let body = serde_json::json!({
+            "symbol":        symbol,
+            "sig":           sig.sig,
+            "session":       sig.session,
+            "d1_trend":      sig.d1_trend,
+            "entry":         sig.entry,
+            "stop":          sig.stop,
+            "target":        sig.target,
+            "stop_pct":      sig.stop_pct,
+            "is_open":       event.is_open,
+            "result_r":      event.result_r,
+            "gross_r":       event.gross_r,
+            "fee_r":         event.fee_r,
+            "reason":        event.reason,
+            "exit_price":    event.exit_price,
+            "duration_bars": event.duration_bars,
+            "entry_at":      entry_at,
+            "closed_at":     closed_at,
+        });
+
+        let url = format!("{}/rest/v1/htf_trades", self.url);
+        let result = self.client
+            .post(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await;
+        if let Err(e) = result {
+            eprintln!("[supabase] write_htf_trade error: {e}");
+        }
+    }
 }

@@ -78,9 +78,7 @@ impl IntrabarConfig {
 
     pub fn log_boot(&self) {
         if !self.enabled {
-            println!(
-                "[intrabar] disabled — set TRADIO_INTRABAR_ENABLED=true to activate"
-            );
+            println!("[intrabar] disabled — set TRADIO_INTRABAR_ENABLED=true to activate");
             return;
         }
         let detectors: Vec<&str> = self

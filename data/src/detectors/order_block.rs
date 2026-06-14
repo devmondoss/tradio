@@ -135,7 +135,14 @@ impl OrderBlockDetector {
         if self.bars.len() >= self.max_bars {
             self.bars.pop_front();
         }
-        self.bars.push_back(Bar { open, high, low, close, volume, timestamp_ms });
+        self.bars.push_back(Bar {
+            open,
+            high,
+            low,
+            close,
+            volume,
+            timestamp_ms,
+        });
     }
 
     pub fn snapshot(&self, current_price: f64) -> OrderBlockContext {
@@ -150,7 +157,11 @@ impl OrderBlockDetector {
         let avg_vol = {
             let window = bars.iter().rev().take(20);
             let (sum, count) = window.fold((0.0_f64, 0_usize), |(s, c), b| (s + b.volume, c + 1));
-            if count > 0 && sum > 0.0 { sum / count as f64 } else { 0.0 }
+            if count > 0 && sum > 0.0 {
+                sum / count as f64
+            } else {
+                0.0
+            }
         };
 
         let mut bullish_obs: Vec<OrderBlock> = Vec::new();
@@ -164,8 +175,8 @@ impl OrderBlockDetector {
 
             // Bullish OB: última vela bajista antes de impulso alcista
             if is_bearish {
-                let impulse_up = (1..=self.impulse_bars)
-                    .all(|j| bars[i + j].close > bars[i + j].open);
+                let impulse_up =
+                    (1..=self.impulse_bars).all(|j| bars[i + j].close > bars[i + j].open);
                 let breaks_high = bars[i + self.impulse_bars].high > bar.high;
 
                 if impulse_up && breaks_high {
@@ -178,7 +189,11 @@ impl OrderBlockDetector {
                         .filter(|b| b.high < impulse_top)
                         .count() as u32;
 
-                    let volume_ratio = if avg_vol > 0.0 { bar.volume / avg_vol } else { 1.0 };
+                    let volume_ratio = if avg_vol > 0.0 {
+                        bar.volume / avg_vol
+                    } else {
+                        1.0
+                    };
                     let mid = (bar.high + bar.low) / 2.0;
                     let status = ob_status_bullish(bar.high, bar.low, mid, current_price);
 
@@ -199,8 +214,8 @@ impl OrderBlockDetector {
 
             // Bearish OB: última vela alcista antes de impulso bajista
             if is_bullish {
-                let impulse_down = (1..=self.impulse_bars)
-                    .all(|j| bars[i + j].close < bars[i + j].open);
+                let impulse_down =
+                    (1..=self.impulse_bars).all(|j| bars[i + j].close < bars[i + j].open);
                 let breaks_low = bars[i + self.impulse_bars].low < bar.low;
 
                 if impulse_down && breaks_low {
@@ -212,7 +227,11 @@ impl OrderBlockDetector {
                         .filter(|b| b.low > impulse_bottom)
                         .count() as u32;
 
-                    let volume_ratio = if avg_vol > 0.0 { bar.volume / avg_vol } else { 1.0 };
+                    let volume_ratio = if avg_vol > 0.0 {
+                        bar.volume / avg_vol
+                    } else {
+                        1.0
+                    };
                     let mid = (bar.high + bar.low) / 2.0;
                     let status = ob_status_bearish(bar.high, bar.low, mid, current_price);
 
@@ -239,13 +258,21 @@ impl OrderBlockDetector {
         let nearest_bullish = bullish_obs
             .iter()
             .filter(|ob| ob.high < current_price)
-            .max_by(|a, b| a.high.partial_cmp(&b.high).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| {
+                a.high
+                    .partial_cmp(&b.high)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .cloned();
 
         let nearest_bearish = bearish_obs
             .iter()
             .filter(|ob| ob.low > current_price)
-            .min_by(|a, b| a.low.partial_cmp(&b.low).unwrap_or(std::cmp::Ordering::Equal))
+            .min_by(|a, b| {
+                a.low
+                    .partial_cmp(&b.low)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .cloned();
 
         OrderBlockContext {
@@ -377,7 +404,10 @@ mod tests {
         let ctx = det.snapshot(115.0);
         assert!(ctx.nearest_bullish.is_some(), "should detect a bullish OB");
         let ob = ctx.nearest_bullish.unwrap();
-        assert!(ob.volume_ratio > 1.0, "OB bar should have above-average volume");
+        assert!(
+            ob.volume_ratio > 1.0,
+            "OB bar should have above-average volume"
+        );
         assert!((ob.mid - (ob.high + ob.low) / 2.0).abs() < 1e-9);
     }
 }

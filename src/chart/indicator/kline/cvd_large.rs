@@ -62,7 +62,11 @@ impl CvdLargeIndicator {
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         let tooltip = |p: &CvdLargePoint, _: Option<&CvdLargePoint>| {
-            let side = if p.delta > 0.0 { "▲ Large buy" } else { "▼ Large sell" };
+            let side = if p.delta > 0.0 {
+                "▲ Large buy"
+            } else {
+                "▼ Large sell"
+            };
             PlotTooltip::new(format!("{} {:.2}", side, p.delta.abs()))
         };
 
@@ -73,16 +77,28 @@ impl CvdLargeIndicator {
             .baseline(Baseline::Zero)
             .with_tooltip(tooltip);
 
-        indicator_row(main_chart, &self.cache, plot, self.data.as_plot_series(), visible_range)
+        indicator_row(
+            main_chart,
+            &self.cache,
+            plot,
+            self.data.as_plot_series(),
+            visible_range,
+        )
     }
 }
 
 impl KlineIndicatorImpl for CvdLargeIndicator {
-    fn clear_all_caches(&mut self) { self.cache.clear_all(); }
-    fn clear_crosshair_caches(&mut self) { self.cache.clear_crosshair(); }
+    fn clear_all_caches(&mut self) {
+        self.cache.clear_all();
+    }
+    fn clear_crosshair_caches(&mut self) {
+        self.cache.clear_crosshair();
+    }
 
     fn element<'a>(
-        &'a self, chart: &'a ViewState, visible_range: RangeInclusive<u64>,
+        &'a self,
+        chart: &'a ViewState,
+        visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         self.indicator_elem(chart, visible_range)
     }
@@ -101,7 +117,9 @@ impl KlineIndicatorImpl for CvdLargeIndicator {
         if let Some(k) = klines.last() {
             let point = CvdLargePoint { delta };
             match &mut self.data {
-                BasisSeries::Time(map) => { map.insert(k.time, point); }
+                BasisSeries::Time(map) => {
+                    map.insert(k.time, point);
+                }
                 BasisSeries::Tick(map) => {
                     let idx = map.len() as u64;
                     map.insert(idx, point);
@@ -114,7 +132,10 @@ impl KlineIndicatorImpl for CvdLargeIndicator {
 
     /// Per-trade: update EMA, accumulate large delta.
     fn on_insert_trades(
-        &mut self, trades: &[Trade], _old_dp_len: usize, _source: &PlotData<KlineDataPoint>,
+        &mut self,
+        trades: &[Trade],
+        _old_dp_len: usize,
+        _source: &PlotData<KlineDataPoint>,
     ) {
         let threshold = self.size_ema * LARGE_FACTOR;
         for t in trades {
@@ -129,6 +150,10 @@ impl KlineIndicatorImpl for CvdLargeIndicator {
         }
     }
 
-    fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) { self.rebuild_from_source(source); }
-    fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) { self.rebuild_from_source(source); }
+    fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) {
+        self.rebuild_from_source(source);
+    }
+    fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
+        self.rebuild_from_source(source);
+    }
 }

@@ -46,8 +46,8 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
     if at_low && !range.breakout_down {
         // Agresión vendedora: entraron vendedores takers (delta < 0 o taker_imbalance sell-side)
-        let sell_aggression = flow.delta.unwrap_or(0.0) < 0.0
-            || flow.taker_imbalance.unwrap_or(0.0) < -0.05;
+        let sell_aggression =
+            flow.delta.unwrap_or(0.0) < 0.0 || flow.taker_imbalance.unwrap_or(0.0) < -0.05;
 
         // Absorción: al menos una señal confirma que los vendedores fueron absorbidos
         let absorbed = flow.footprint_absorption == AbsorptionSide::Bid
@@ -68,9 +68,8 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
 
         // Red flags: señales de ruptura real hacia abajo
         let cvd_breaking_down = flow.cvd_slope.unwrap_or(0.0) < -0.25;
-        let accepted_below = px < range.range_low
-            && !flow.failed_acceptance
-            && !range.sweep_range_low;
+        let accepted_below =
+            px < range.range_low && !flow.failed_acceptance && !range.sweep_range_low;
 
         if sell_aggression && absorbed && trigger && !cvd_breaking_down && !accepted_below {
             let entry = px;
@@ -90,10 +89,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 if flow.big_trade_bearish {
                     evidence.push("big_trade_trapped_sellers".into());
                 }
-                if matches!(
-                    flow.cvd_divergence,
-                    Some(CvdDivergence::BullishAbsorption)
-                ) {
+                if matches!(flow.cvd_divergence, Some(CvdDivergence::BullishAbsorption)) {
                     evidence.push("cvd_bullish_divergence".into());
                 }
                 if flow.finish_action_bullish {
@@ -156,8 +152,8 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
     );
 
     if at_high && !range.breakout_up {
-        let buy_aggression = flow.delta.unwrap_or(0.0) > 0.0
-            || flow.taker_imbalance.unwrap_or(0.0) > 0.05;
+        let buy_aggression =
+            flow.delta.unwrap_or(0.0) > 0.0 || flow.taker_imbalance.unwrap_or(0.0) > 0.05;
 
         let absorbed = flow.footprint_absorption == AbsorptionSide::Ask
             || flow.big_trade_bullish // gran compra pero precio no subió → trampa
@@ -175,9 +171,8 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
             || flow.stacked_imbalance == ImbalanceSide::Bearish;
 
         let cvd_breaking_up = flow.cvd_slope.unwrap_or(0.0) > 0.25;
-        let accepted_above = px > range.range_high
-            && !flow.failed_acceptance
-            && !range.sweep_range_high;
+        let accepted_above =
+            px > range.range_high && !flow.failed_acceptance && !range.sweep_range_high;
 
         if buy_aggression && absorbed && trigger && !cvd_breaking_up && !accepted_above {
             let entry = px;
@@ -195,10 +190,7 @@ pub fn detect(ctx: &StrategyMarketContext, cfg: &StrategyConfig) -> Option<Strat
                 if flow.big_trade_bullish {
                     evidence.push("big_trade_trapped_buyers".into());
                 }
-                if matches!(
-                    flow.cvd_divergence,
-                    Some(CvdDivergence::BearishAbsorption)
-                ) {
+                if matches!(flow.cvd_divergence, Some(CvdDivergence::BearishAbsorption)) {
                     evidence.push("cvd_bearish_divergence".into());
                 }
                 if flow.finish_action_bearish {

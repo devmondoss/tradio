@@ -152,7 +152,9 @@ impl ActiveTrade {
                     Side::Short => self.entry_price * (1.0 - BE_OFFSET),
                 };
                 self.stop_price = be_price;
-                self.stop_state = StopState::BreakEven { confirmed_level: close };
+                self.stop_state = StopState::BreakEven {
+                    confirmed_level: close,
+                };
                 self.phase = TradePhase::Level1Confirmed;
             }
             // In loss or already protected: do nothing, stop handles the exit.
@@ -184,7 +186,9 @@ impl ActiveTrade {
                             Side::Short => self.entry_price * (1.0 - BE_OFFSET),
                         };
                         self.stop_price = be_price;
-                        self.stop_state = StopState::BreakEven { confirmed_level: intermediate };
+                        self.stop_state = StopState::BreakEven {
+                            confirmed_level: intermediate,
+                        };
                         self.phase = TradePhase::Level1Confirmed;
                     }
                 } else if self.progress_to_target(close) > 0.60 {
@@ -193,7 +197,9 @@ impl ActiveTrade {
                         Side::Short => self.entry_price * (1.0 - BE_OFFSET),
                     };
                     self.stop_price = be_price;
-                    self.stop_state = StopState::BreakEven { confirmed_level: close };
+                    self.stop_state = StopState::BreakEven {
+                        confirmed_level: close,
+                    };
                 }
             }
             StopState::BreakEven { .. } => {
@@ -207,7 +213,9 @@ impl ActiveTrade {
                         Side::Short => close + atr * 0.5,
                     };
                     self.stop_price = initial_trail;
-                    self.stop_state = StopState::TrailingStructural { last_swing: initial_trail };
+                    self.stop_state = StopState::TrailingStructural {
+                        last_swing: initial_trail,
+                    };
                     self.phase = TradePhase::TargetExceeded;
                 }
             }
@@ -234,7 +242,9 @@ impl ActiveTrade {
                 };
                 if should_update {
                     self.stop_price = new_swing;
-                    self.stop_state = StopState::TrailingStructural { last_swing: new_swing };
+                    self.stop_state = StopState::TrailingStructural {
+                        last_swing: new_swing,
+                    };
                     self.confirmed_swings.push(new_swing);
                 }
             }

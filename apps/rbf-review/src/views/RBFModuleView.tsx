@@ -6,7 +6,7 @@ import StatsView from './StatsView'
 import BacktestView from './BacktestView'
 import FilterBar, { emptyFilters, applyFilters, type Filters } from '../components/FilterBar'
 
-type SubTab = 'live' | 'stats' | 'backtest'
+type SubTab = 'live' | 'stats'
 
 interface Props {
   trades:   Trade[]
@@ -26,10 +26,11 @@ export default function RBFModuleView({ trades, loading, error, onReload }: Prop
   const closed    = trades.filter(t => !t.isOpen)
 
   // Header muestra stats del backtest cuando está en esa pestaña, si no las live
-  const n      = sub === 'backtest' && btStats ? btStats.n      : closed.length
-  const wins   = sub === 'backtest' && btStats ? btStats.wins   : closed.filter(t => (t.resultR ?? 0) > 0).length
-  const totalR = sub === 'backtest' && btStats ? btStats.totalR : closed.reduce((s, t) => s + (t.resultR ?? 0), 0)
-  const avgR   = sub === 'backtest' && btStats ? btStats.avgR   : (n ? totalR / n : 0)
+  const isBt   = false
+  const n      = isBt && btStats ? btStats.n      : closed.length
+  const wins   = isBt && btStats ? btStats.wins   : closed.filter(t => (t.resultR ?? 0) > 0).length
+  const totalR = isBt && btStats ? btStats.totalR : closed.reduce((s, t) => s + (t.resultR ?? 0), 0)
+  const avgR   = isBt && btStats ? btStats.avgR   : (n ? totalR / n : 0)
   const wr     = n ? wins / n * 100 : 0
 
   const openCount = trades.filter(t => t.isOpen).length
@@ -46,8 +47,7 @@ export default function RBFModuleView({ trades, loading, error, onReload }: Prop
         <div className="mod-name-row">
           <span className="mod-name" style={{ color }}>RBF</span>
           <span className="mod-desc">
-            Range Breakout Flow · Short · {sub === 'backtest' ? 'Backtest' : 'Live'}
-            {sub === 'backtest' && btStats ? ` · 2R target · Trailing ATR 1.75R · OI gate ≤3` : ''}
+            Range Breakout Flow · {sub === 'stats' ? 'Short · Stats' : 'Short · Live'}
           </span>
         </div>
 
@@ -69,7 +69,7 @@ export default function RBFModuleView({ trades, loading, error, onReload }: Prop
 
           {/* Sub-tabs */}
           <div className="subtabs">
-            {(['live', 'stats', 'backtest'] as SubTab[]).map(t => (
+            {(['live', 'stats'] as SubTab[]).map(t => (
               <button key={t} className={`subtab${sub === t ? ' active' : ''}`}
                 onClick={() => setSub(t)}
                 style={{ borderBottomColor: sub === t ? color : 'transparent' }}>
@@ -83,10 +83,10 @@ export default function RBFModuleView({ trades, loading, error, onReload }: Prop
             {openCount > 0 && <span className="open-badge" style={{ color }}>{openCount} OPEN</span>}
             {loading && <span style={{ fontSize: 9, color: 'var(--text3)' }}>cargando…</span>}
             {error   && <span style={{ fontSize: 9, color: 'var(--red)'   }}>error</span>}
-            {!loading && trades.length > 0 && sub !== 'backtest' && (
+            {!loading && trades.length > 0 && !isBt && (
               <FilterBar trades={trades} filters={filters} filtered={filtered} onChange={setFilters} />
             )}
-            {sub !== 'backtest' && (
+            {!isBt && (
               <button className="reload-btn" onClick={onReload}>↺</button>
             )}
           </div>
@@ -95,9 +95,7 @@ export default function RBFModuleView({ trades, loading, error, onReload }: Prop
 
       {/* ── Content ─────────────────────────────────────────────────── */}
       <div className="mod-body">
-        {sub === 'backtest' ? (
-          <BacktestView onStats={setBtStats} />
-        ) : loading ? (
+        {loading ? (
           <div className="mod-center">Cargando…</div>
         ) : error ? (
           <div className="mod-center" style={{ color: 'var(--red)' }}>Error: {error}</div>

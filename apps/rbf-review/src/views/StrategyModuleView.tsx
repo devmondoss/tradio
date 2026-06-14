@@ -157,7 +157,7 @@ function BkTable({ trades, groupFn, keys, title }: {
         </thead>
         <tbody>
           {groups.map(g => (
-            <tr key={g.k} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+            <tr key={g.k} style={{ borderBottom: '1px solid var(--border)' }}>
               <td style={{ padding: '5px 0', color: 'var(--text2)' }}>{g.k}</td>
               <td style={{ padding: '5px 0', color: 'var(--text3)', textAlign: 'right' }}>{g.n}</td>
               <td style={{ padding: '5px 0', textAlign: 'right', fontWeight: 600, color: g.wr >= 55 ? 'var(--green)' : g.wr >= 45 ? 'var(--yellow)' : 'var(--red)' }}>{g.wr.toFixed(0)}%</td>

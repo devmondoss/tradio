@@ -16,14 +16,24 @@ function pythonBacktest(): Plugin {
         const qs     = url.includes('?') ? url.slice(url.indexOf('?') + 1) : ''
         const params = new URLSearchParams(qs)
         const days   = params.get('days') ?? '14'
-        const isBe   = url.startsWith('/api/backtest/be')
-        const scriptName = isBe ? 'be_backtest_script.py' : 'backtest_script.py'
+        const isBe         = url.startsWith('/api/backtest/be')
+        const isSweep      = url.startsWith('/api/backtest/sweep')
+        const isAbsorption = url.startsWith('/api/backtest/absorption')
+        const isLongs      = url.startsWith('/api/backtest/longs')
+        const isShorts     = url.startsWith('/api/backtest/shorts')
+        const scriptName   = isBe         ? 'be_backtest_script.py'
+                           : isSweep      ? 'sweep_backtest.py'
+                           : isAbsorption ? 'absorption_backtest.py'
+                           : isLongs      ? 'longs_backtest.py'
+                           : isShorts     ? 'shorts_htf_backtest.py'
+                           : 'backtest_script.py'
         const script = path.join(server.config.root, 'api', scriptName)
 
         // Windows puede tener el ejecutable como 'python' o 'py'
         const pyCmd = process.platform === 'win32' ? 'python' : 'python3'
 
-        console.log(`[backtest${isBe ? '/be' : ''}] corriendo ${pyCmd} ${script} --days ${days}`)
+        const tag = isBe ? '/be' : isSweep ? '/sweep' : isAbsorption ? '/absorption' : isLongs ? '/longs' : isShorts ? '/shorts' : ''
+        console.log(`[backtest${tag}] corriendo ${pyCmd} ${script} --days ${days}`)
 
         const py = spawn(pyCmd, [script, '--days', days])
 

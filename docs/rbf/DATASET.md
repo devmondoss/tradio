@@ -119,8 +119,8 @@ Una fila por señal RBF emitida — tanto las tradeadas como las vetadas.
 | `funding_at_entry` | float4 | Funding rate al momento de la señal |
 | | | |
 | **Confluencia v2** | | |
-| `confluence_score` | smallint | Score 0–7. Cuántos flags v2 se cumplieron. |
-| `confluence_flags` | text[] | Flags activos: ["cvd_slope","obi","vwap_bias",...] |
+| `confluence_score` | smallint | Score 0–6. Cuántos flags live se cumplieron. |
+| `confluence_flags` | text[] | Flags activos: ["stacked_imbalance","absorption","lvn_thin","vwap_bias","oi_momentum","obi_trap"] |
 | `veto_reason` | text | Si fue vetada: hvn_target / vpin_toxic / long_bear_low_score |
 | | | |
 | **Outcome** | | |

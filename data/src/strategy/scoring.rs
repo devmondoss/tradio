@@ -1,8 +1,8 @@
-﻿use crate::session::SessionPhase;
+use crate::session::SessionPhase;
 use crate::structure::{HtfBias, PriceZone};
 
-use super::{adapter, types::*};
 use super::vp_open_bias::DailyVpBias;
+use super::{adapter, types::*};
 
 // VALORES DE ARRANQUE — se tunean en Fase D con datos reales
 
@@ -71,8 +71,8 @@ const FACTOR_VPIN_CLEAN: f64 = 1.20; // amplificador moderado
 const VETO_SCORE_CAP: f64 = 0.25; // techo absoluto cuando vpin es tóxico
 
 // --- CVD macro veto ---
-const CVD_MACRO_VETO_CAP: f64 = 0.35;  // techo cuando CVD contradice dirección sostenidamente
-const CVD_MACRO_VETO_BARS: i32 = 3;    // barras mínimas de divergencia para activar el veto
+const CVD_MACRO_VETO_CAP: f64 = 0.35; // techo cuando CVD contradice dirección sostenidamente
+const CVD_MACRO_VETO_BARS: i32 = 3; // barras mínimas de divergencia para activar el veto
 
 // --- Factor spread ---
 const SPREAD_BAD_BPS: f64 = 1.5;
@@ -88,13 +88,13 @@ const FACTOR_CONFLUENCIA_2: f64 = 1.10;
 const FACTOR_CONFLUENCIA_3: f64 = 1.20;
 
 // --- Factor estructura HTF (MarketStructureContext) ---
-const FACTOR_HTF_WITH: f64 = 1.20;   // sesgo HTF a favor de la señal
+const FACTOR_HTF_WITH: f64 = 1.20; // sesgo HTF a favor de la señal
 const FACTOR_HTF_AGAINST: f64 = 0.70; // sesgo HTF contrario a la señal
-const BONUS_ZONE_DISCOUNT_LONG: f64 = 0.05;  // señal larga en zona Discount
-const BONUS_ZONE_PREMIUM_SHORT: f64 = 0.05;  // señal corta en zona Premium
+const BONUS_ZONE_DISCOUNT_LONG: f64 = 0.05; // señal larga en zona Discount
+const BONUS_ZONE_PREMIUM_SHORT: f64 = 0.05; // señal corta en zona Premium
 
 // --- Factor smart_money_score (institucional) ---
-const SMS_THRESHOLD_WITH: f32 = 0.40;    // score a favor de la señal
+const SMS_THRESHOLD_WITH: f32 = 0.40; // score a favor de la señal
 const SMS_THRESHOLD_AGAINST: f32 = -0.40; // score contra la señal
 const FACTOR_SMS_WITH: f64 = 1.15;
 const FACTOR_SMS_AGAINST: f64 = 0.70;
@@ -103,7 +103,7 @@ const FACTOR_SMS_AGAINST: f64 = 0.70;
 const FACTOR_OPENING_RUSH: f64 = 1.15;
 
 // --- Factor VP Open Bias (Subdimi: day type gates edge) ---
-const FACTOR_VP_BIAS_WITH: f64 = 1.15;    // setup aligned with day type
+const FACTOR_VP_BIAS_WITH: f64 = 1.15; // setup aligned with day type
 const FACTOR_VP_BIAS_AGAINST: f64 = 0.75; // setup misaligned with day type (TrendDay only)
 
 // --- Bonus Stacked Imbalance (FBG zone alineada con la señal) ---
@@ -213,7 +213,8 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
         0.0
     };
 
-    let base_score = w_cvd + w_taker_score + w_delta_score + w_target_dist_score + w_rr_score + w_institutional;
+    let base_score =
+        w_cvd + w_taker_score + w_delta_score + w_target_dist_score + w_rr_score + w_institutional;
 
     // --- Factores moduladores ---
 
@@ -344,12 +345,20 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
             DailyVpBias::TrendDay => {
                 let aligned = (bias_ctx.trend_day_is_up() && is_long)
                     || (bias_ctx.trend_day_is_down() && !is_long);
-                if aligned { FACTOR_VP_BIAS_WITH } else { FACTOR_VP_BIAS_AGAINST }
+                if aligned {
+                    FACTOR_VP_BIAS_WITH
+                } else {
+                    FACTOR_VP_BIAS_AGAINST
+                }
             }
             DailyVpBias::InsideValue => {
-                if is_reversal { FACTOR_VP_BIAS_WITH }
-                else if is_breakout { FACTOR_VP_BIAS_AGAINST }
-                else { 1.0 }
+                if is_reversal {
+                    FACTOR_VP_BIAS_WITH
+                } else if is_breakout {
+                    FACTOR_VP_BIAS_AGAINST
+                } else {
+                    1.0
+                }
             }
             DailyVpBias::OutsideVaInsidePa | DailyVpBias::FadeGap => {
                 let aligned = (is_long && bias_ctx.bias_supports_long())
@@ -363,11 +372,22 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
     };
 
     // HTF VP cascade: weekly + monthly bias top-down multiplier
-    let factor_htf_vp = ctx.htf_vp.as_ref()
+    let factor_htf_vp = ctx
+        .htf_vp
+        .as_ref()
         .map(|htf| htf.bias_factor(is_long))
         .unwrap_or(1.0);
 
-    let mut score = base_score * factor_vpin * factor_spread * factor_regime * factor_confluencia * factor_structure * factor_sms * factor_opening_rush * factor_vp_bias * factor_htf_vp;
+    let mut score = base_score
+        * factor_vpin
+        * factor_spread
+        * factor_regime
+        * factor_confluencia
+        * factor_structure
+        * factor_sms
+        * factor_opening_rush
+        * factor_vp_bias
+        * factor_htf_vp;
 
     // Regla de precedencia del veto: VPIN tóxico clampea sin importar amplificadores
     if vpin_is_toxic {
@@ -402,23 +422,40 @@ pub fn score_signal(ctx: &StrategyMarketContext, mut signal: StrategySignal) -> 
     };
     // Bonus Finish Action (Subdimi): zero opposite-side volume at the bar extreme → exhaustion confirmed
     const BONUS_FINISH_ACTION: f64 = 0.05;
-    if is_long && ctx.flow.finish_action_bullish { score += BONUS_FINISH_ACTION; }
-    if !is_long && ctx.flow.finish_action_bearish { score += BONUS_FINISH_ACTION; }
+    if is_long && ctx.flow.finish_action_bullish {
+        score += BONUS_FINISH_ACTION;
+    }
+    if !is_long && ctx.flow.finish_action_bearish {
+        score += BONUS_FINISH_ACTION;
+    }
     // Unfinish Action penalty: significant remaining volume at extreme → trapped participants → adverse magnet
     const PENALTY_UNFINISH_ACTION: f64 = -0.04;
-    if is_long && ctx.flow.unfinish_action_bearish { score += PENALTY_UNFINISH_ACTION; }
-    if !is_long && ctx.flow.unfinish_action_bullish { score += PENALTY_UNFINISH_ACTION; }
+    if is_long && ctx.flow.unfinish_action_bearish {
+        score += PENALTY_UNFINISH_ACTION;
+    }
+    if !is_long && ctx.flow.unfinish_action_bullish {
+        score += PENALTY_UNFINISH_ACTION;
+    }
     // Big Trade bonus (Subdimi): anomalous institutional-size volume at bar extreme confirms absorption
     const BONUS_BIG_TRADE: f64 = 0.06;
-    if is_long && ctx.flow.big_trade_bullish { score += BONUS_BIG_TRADE; }
-    if !is_long && ctx.flow.big_trade_bearish { score += BONUS_BIG_TRADE; }
+    if is_long && ctx.flow.big_trade_bullish {
+        score += BONUS_BIG_TRADE;
+    }
+    if !is_long && ctx.flow.big_trade_bearish {
+        score += BONUS_BIG_TRADE;
+    }
     // Naked POC magnet: if any naked POC sits between entry and target it acts as a structural pull.
     if let (Some(entry), Some(target)) = (signal.entry_price, signal.target_price) {
         let has_magnet = ctx.volume_profile.naked_pocs.iter().any(|&poc| {
-            if is_long { poc > entry && poc < target }
-            else       { poc < entry && poc > target }
+            if is_long {
+                poc > entry && poc < target
+            } else {
+                poc < entry && poc > target
+            }
         });
-        if has_magnet { score += BONUS_NAKED_POC_MAGNET; }
+        if has_magnet {
+            score += BONUS_NAKED_POC_MAGNET;
+        }
     }
 
     // Re-apply veto caps: additive adjustments must not escape ceilings.

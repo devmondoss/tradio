@@ -25,15 +25,12 @@ where
         column![].spacing(4).into()
     };
 
-    container(
-        scrollable(content_row)
-            .height(Length::Shrink)
-    )
-    .max_width(200)
-    .max_height(520)
-    .padding(16)
-    .style(style::chart_modal)
-    .into()
+    container(scrollable(content_row).height(Length::Shrink))
+        .max_width(200)
+        .max_height(520)
+        .padding(16)
+        .style(style::chart_modal)
+        .into()
 }
 
 fn build_indicator_row<'a, I>(
@@ -136,10 +133,22 @@ fn overlay_section<'a>(
 
     column![
         container(text("Overlays").size(13)).padding(padding::top(8).bottom(4)),
-        btn("Order Blocks", cfg.show_order_blocks, pane::Event::ToggleOrderBlocks),
+        btn(
+            "Order Blocks",
+            cfg.show_order_blocks,
+            pane::Event::ToggleOrderBlocks
+        ),
         btn("Fair Value Gaps", cfg.show_fvgs, pane::Event::ToggleFvgs),
-        btn("Structure", cfg.show_structure, pane::Event::ToggleStructure),
-        btn("Liquidations", cfg.show_liq_events, pane::Event::ToggleLiqEvents),
+        btn(
+            "Structure",
+            cfg.show_structure,
+            pane::Event::ToggleStructure
+        ),
+        btn(
+            "Liquidations",
+            cfg.show_liq_events,
+            pane::Event::ToggleLiqEvents
+        ),
     ]
     .spacing(4)
     .into()

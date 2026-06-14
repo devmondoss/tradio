@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::strategy::types::{ValueLocation, StrategyMarketContext};
+use crate::strategy::types::{StrategyMarketContext, ValueLocation};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuctionState {
@@ -27,7 +27,10 @@ pub struct AuctionStateContext {
 
 impl Default for AuctionStateContext {
     fn default() -> Self {
-        Self { state: AuctionState::Unknown, confidence: 0 }
+        Self {
+            state: AuctionState::Unknown,
+            confidence: 0,
+        }
     }
 }
 
@@ -71,36 +74,80 @@ pub fn classify(ctx: &StrategyMarketContext) -> AuctionStateContext {
     let mut balance_score: u8 = 0;
 
     // UpImbalance: price outside VA upward + flow confirms
-    if above_va { up_imbalance_score += 30; }
-    if cvd_up { up_imbalance_score += 20; }
-    if delta_up { up_imbalance_score += 15; }
-    if taker_up { up_imbalance_score += 15; }
-    if oi_expanding { up_imbalance_score += 20; }
+    if above_va {
+        up_imbalance_score += 30;
+    }
+    if cvd_up {
+        up_imbalance_score += 20;
+    }
+    if delta_up {
+        up_imbalance_score += 15;
+    }
+    if taker_up {
+        up_imbalance_score += 15;
+    }
+    if oi_expanding {
+        up_imbalance_score += 20;
+    }
 
     // DownImbalance: price outside VA downward + flow confirms
-    if below_va { down_imbalance_score += 30; }
-    if cvd_down { down_imbalance_score += 20; }
-    if delta_down { down_imbalance_score += 15; }
-    if taker_down { down_imbalance_score += 15; }
-    if oi_expanding { down_imbalance_score += 20; }
+    if below_va {
+        down_imbalance_score += 30;
+    }
+    if cvd_down {
+        down_imbalance_score += 20;
+    }
+    if delta_down {
+        down_imbalance_score += 15;
+    }
+    if taker_down {
+        down_imbalance_score += 15;
+    }
+    if oi_expanding {
+        down_imbalance_score += 20;
+    }
 
     // Distribution: price lateral in/near VA + CVD falling persistently
-    if in_va || above_va { distribution_score += 10; }
-    if bearish_divergence { distribution_score += 50; }
-    if cvd_down { distribution_score += 20; }
-    if delta_down { distribution_score += 20; }
+    if in_va || above_va {
+        distribution_score += 10;
+    }
+    if bearish_divergence {
+        distribution_score += 50;
+    }
+    if cvd_down {
+        distribution_score += 20;
+    }
+    if delta_down {
+        distribution_score += 20;
+    }
 
     // Accumulation: price lateral in/near VA + CVD rising persistently
-    if in_va || below_va { accumulation_score += 10; }
-    if bullish_divergence { accumulation_score += 50; }
-    if cvd_up { accumulation_score += 20; }
-    if delta_up { accumulation_score += 20; }
+    if in_va || below_va {
+        accumulation_score += 10;
+    }
+    if bullish_divergence {
+        accumulation_score += 50;
+    }
+    if cvd_up {
+        accumulation_score += 20;
+    }
+    if delta_up {
+        accumulation_score += 20;
+    }
 
     // Balance: in VA, low toxicity, no strong flow signal
-    if in_va { balance_score += 30; }
-    if low_toxicity { balance_score += 20; }
-    if !cvd_up && !cvd_down { balance_score += 25; }
-    if !delta_up && !delta_down { balance_score += 25; }
+    if in_va {
+        balance_score += 30;
+    }
+    if low_toxicity {
+        balance_score += 20;
+    }
+    if !cvd_up && !cvd_down {
+        balance_score += 25;
+    }
+    if !delta_up && !delta_down {
+        balance_score += 25;
+    }
 
     // ── Pick winner ───────────────────────────────────────────────────────────
     let scores = [
@@ -119,7 +166,10 @@ pub fn classify(ctx: &StrategyMarketContext) -> AuctionStateContext {
 
     // Require at least 30 points to claim a state; below that is Unknown
     if raw_score < 30 {
-        return AuctionStateContext { state: AuctionState::Unknown, confidence: 0 };
+        return AuctionStateContext {
+            state: AuctionState::Unknown,
+            confidence: 0,
+        };
     }
 
     // Normalize confidence: raw_score capped at 100

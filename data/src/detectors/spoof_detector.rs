@@ -89,8 +89,17 @@ impl SpoofDetector {
 
             if near && !still_present && age < self.spoof_ttl_ms {
                 // Orden grande cercana desapareció rápido → spoof
-                let side = if price < current_price { SpoofSide::Bid } else { SpoofSide::Ask };
-                detected = Some(SpoofEvent { side, price, size, detected_at_ms: now_ms });
+                let side = if price < current_price {
+                    SpoofSide::Bid
+                } else {
+                    SpoofSide::Ask
+                };
+                detected = Some(SpoofEvent {
+                    side,
+                    price,
+                    size,
+                    detected_at_ms: now_ms,
+                });
                 to_remove.push(key);
             } else if age > self.spoof_ttl_ms * 6 {
                 to_remove.push(key);
@@ -106,7 +115,11 @@ impl SpoofDetector {
             if (price - current_price).abs() > proximity {
                 continue;
             }
-            let avg = if price < current_price { self.avg_bid_size } else { self.avg_ask_size };
+            let avg = if price < current_price {
+                self.avg_bid_size
+            } else {
+                self.avg_ask_size
+            };
             if avg > 0.0 && size > avg * self.large_multiplier {
                 let key = price.to_bits();
                 self.tracked.entry(key).or_insert((price, size, now_ms));

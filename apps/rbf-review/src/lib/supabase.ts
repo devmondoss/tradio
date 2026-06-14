@@ -9,6 +9,63 @@ const SUPABASE_KEY =
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
+export interface AmdSignal {
+  id: string
+  timestamp_ms: number
+  symbol: string
+  direction: 'Long' | 'Short'
+  session: string
+  entry_price: number
+  stop_price: number
+  target_price: number
+  rr: number | null
+  result_r: number | null
+  exit_reason: string | null
+  closed_at_ms: number | null
+  is_active: boolean
+}
+
+export interface BeSignal {
+  id: string
+  timestamp_ms: number
+  symbol: string
+  session: string
+  entry_price: number
+  stop_price: number
+  target_price: number
+  rr: number
+  range_pct: number | null
+  range_bars: number | null
+  range_cvd: number | null
+  cvd_flip_ratio: number | null
+  vr_at_breakout: number | null
+  result_r: number | null
+  exit_reason: string | null
+  closed_at: string | null
+  active: boolean
+}
+
+export interface HtfTrade {
+  id: string
+  symbol: string
+  sig: string
+  session: string
+  d1_trend: string
+  entry: number
+  stop: number
+  target: number
+  stop_pct: number
+  is_open: boolean
+  result_r: number | null
+  gross_r: number | null
+  fee_r: number | null
+  reason: string | null
+  exit_price: number | null
+  duration_bars: number | null
+  entry_at: string
+  closed_at: string | null
+}
+
 export interface RbfSignal {
   id: string
   timestamp_ms: number

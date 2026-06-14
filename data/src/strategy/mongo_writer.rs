@@ -25,11 +25,11 @@
 
 use super::paper::ClosedTrade;
 use super::types::{StrategyAction, StrategyMarketContext, StrategySignal};
-use mongodb::bson::{oid::ObjectId, Bson, Document};
+use mongodb::bson::{Bson, Document, oid::ObjectId};
 
+use mongodb::Client;
 /// Re-exportado para que la UI pueda almacenar el oid sin importar `mongodb`.
 pub use mongodb::bson::oid::ObjectId as SignalOid;
-use mongodb::Client;
 use std::sync::mpsc;
 use std::thread;
 
@@ -164,7 +164,11 @@ fn run_writer_thread(uri: String, db_name: String, rx: mpsc::Receiver<MongoMsg>)
 //  mismo contexto).
 // ────────────────────────────────────────────────────────────────────────────
 
-fn build_signal_doc(oid: ObjectId, signal: &StrategySignal, ctx: &StrategyMarketContext) -> Document {
+fn build_signal_doc(
+    oid: ObjectId,
+    signal: &StrategySignal,
+    ctx: &StrategyMarketContext,
+) -> Document {
     let inst = ctx.institutional.as_ref();
     let regime_str = format!("{:?}", ctx.regime);
 
@@ -311,8 +315,7 @@ fn build_trade_doc(trade: &ClosedTrade, signal_oid: ObjectId) -> Document {
     let duration_ms = trade.closed_at_ms - trade.opened_at_ms;
     let risk = (trade.entry_price - trade.stop_price.unwrap_or(trade.entry_price)).abs();
     let r_multiple = if risk > 0.0 {
-        (trade.exit_price - trade.entry_price)
-            * if trade.side == "Long" { 1.0 } else { -1.0 }
+        (trade.exit_price - trade.entry_price) * if trade.side == "Long" { 1.0 } else { -1.0 }
             / risk
     } else {
         0.0

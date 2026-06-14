@@ -42,10 +42,7 @@ impl OiZScoreIndicator {
         for i in 1..entries.len() {
             let (&time, _) = entries[i];
             let window_start = i.saturating_sub(ZSCORE_WINDOW - 1);
-            let window: Vec<f32> = entries[window_start..=i]
-                .iter()
-                .map(|&(_, &v)| v)
-                .collect();
+            let window: Vec<f32> = entries[window_start..=i].iter().map(|&(_, &v)| v).collect();
 
             let n = window.len() as f32;
             let mean = window.iter().sum::<f32>() / n;

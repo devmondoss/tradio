@@ -1,0 +1,90 @@
+Cargando barras M1...
+  BTCUSDT: 129600 barras M1
+  ETHUSDT: 1875 barras M1
+  SOLUSDT: 1721 barras M1
+  BNBUSDT: 1721 barras M1
+  XRPUSDT: 1584 barras M1
+
+Fetcheando Shorts de Supabase...
+  39 shorts cerrados
+
+CSV guardado -> scripts/rbf_backtest_results.csv
+
+  #  Fecha             Sym       Sc  Ses               ORIG_R    SIM_R  Razon            PnL$   Balance
+---------------------------------------------------------------------------------------------------------
+  1  2026-06-02 08:48  BTCUSDT   None  London             +2.00    +2.00  TARGET         +18.00  $ 468.00 
+  2  2026-06-02 12:18  BTCUSDT   None  London             +2.00    -1.00  STOP            -9.00  $ 459.00 
+  3  2026-06-02 16:36  BTCUSDT   None  LondonNyOverlap    +2.00    -1.00  STOP            -9.00  $ 450.00 
+  4  2026-06-03 09:48  BTCUSDT   None  London             -1.00    -1.00  STOP            -9.00  $ 441.00 
+  5  2026-06-03 11:34  BTCUSDT   None  London             +2.00    +2.00  TARGET         +18.00  $ 459.00 
+  6  2026-06-03 13:25  BTCUSDT   None  LondonNyOverlap    +2.00    -1.00  STOP            -9.00  $ 450.00 
+  7  2026-06-03 16:01  BTCUSDT   None  LondonNyOverlap    +2.00    -1.00  STOP            -9.00  $ 441.00 
+  8  2026-06-04 16:30  BTCUSDT   None  LondonNyOverlap    +2.00    -1.00  STOP            -9.00  $ 432.00 
+  9  2026-06-05 08:55  BTCUSDT   0   London             +2.00    -1.00  STOP            -9.00  $ 423.00 
+ 10  2026-06-06 09:47  BTCUSDT   0   London             +1.32    +2.00  TARGET         +18.00  $ 441.00 
+ 11  2026-06-06 16:19  BNBUSDT   0   LondonNyOverlap    +2.00    +2.00  TARGET         +18.00  $ 459.00 
+ 12  2026-06-07 08:05  ETHUSDT   4   London             -1.00    -1.00  STOP            -9.00  $ 450.00 
+ 13  2026-06-07 09:47  BNBUSDT   3   London             -1.00    -0.40  TIME_STOP       -3.58  $ 446.42 
+ 14  2026-06-07 09:47  ETHUSDT   4   London             -1.00    -1.00  STOP            -9.00  $ 437.42 
+ 15  2026-06-07 12:07  BNBUSDT   3   London             +2.00    +2.00  TARGET         +18.00  $ 455.42 
+ 16  2026-06-07 15:45  ETHUSDT   0   LondonNyOverlap    -1.00    -1.00  STOP            -9.00  $ 446.42 
+ 17  2026-06-08 08:00  BNBUSDT   4   London             -1.00    -1.00  ND(NO_DATA)     -9.00  $ 437.42!
+ 18  2026-06-08 08:01  ETHUSDT   3   London             +2.00    +2.00  ND(NO_DATA)    +18.00  $ 455.42!
+ 19  2026-06-08 10:17  BTCUSDT   0   London             -0.01    -0.01  ND(NO_DATA)     -0.11  $ 455.30!
+ 20  2026-06-08 10:27  BNBUSDT   0   London             -1.00    -1.00  ND(NO_DATA)     -9.00  $ 446.30!
+ 21  2026-06-08 12:01  BNBUSDT   4   London             -1.00    -1.00  ND(NO_DATA)     -9.00  $ 437.30!
+ 22  2026-06-08 13:29  BNBUSDT   5   LondonNyOverlap    -1.00    -1.00  ND(NO_DATA)     -9.00  $ 428.30!
+ 23  2026-06-08 16:55  SOLUSDT   3   LondonNyOverlap    +2.00    +2.00  ND(NO_DATA)    +18.00  $ 446.30!
+ 24  2026-06-09 08:06  SOLUSDT   5   London             -0.30    -0.30  ND(NO_DATA)     -2.70  $ 443.60!
+ 25  2026-06-09 08:07  BNBUSDT   3   London             +2.00    +2.00  ND(NO_DATA)    +18.00  $ 461.60!
+ 26  2026-06-09 11:14  BNBUSDT   4   London             -1.00    -1.00  ND(NO_DATA)     -9.00  $ 452.60!
+ 27  2026-06-09 11:14  ETHUSDT   4   London             -1.00    -1.00  ND(NO_DATA)     -9.00  $ 443.60!
+ 28  2026-06-09 13:37  BTCUSDT   4   LondonNyOverlap    -1.00    -1.00  ND(NO_DATA)     -9.00  $ 434.60!
+ 29  2026-06-09 14:04  BNBUSDT   0   LondonNyOverlap    +0.80    +0.80  ND(NO_DATA)     +7.22  $ 441.82!
+ 30  2026-06-09 15:55  BTCUSDT   4   LondonNyOverlap    -2.42    -2.42  ND(NO_DATA)    -21.78  $ 420.04!
+ 31  2026-06-09 16:19  SOLUSDT   4   LondonNyOverlap    -2.26    -2.26  ND(NO_DATA)    -20.34  $ 399.70!
+ 32  2026-06-09 21:18  ETHUSDT   5   NewYork            +1.32    +1.32  ND(NO_DATA)    +11.90  $ 411.60!
+ 33  2026-06-09 21:19  SOLUSDT   4   NewYork            +2.00    +2.00  ND(NO_DATA)    +18.00  $ 429.60!
+ 34  2026-06-09 21:19  BTCUSDT   5   NewYork            +1.25    +1.25  ND(NO_DATA)    +11.25  $ 440.85!
+ 35  2026-06-10 08:03  SOLUSDT   0   London             -1.00    -1.00  ND(NO_DATA)     -9.00  $ 431.85!
+ 36  2026-06-10 09:19  BTCUSDT   5   London             +1.00    +1.00  ND(NO_DATA)     +9.00  $ 440.85!
+ 37  2026-06-10 09:19  BNBUSDT   5   London             +1.00    +1.00  ND(NO_DATA)     +9.00  $ 449.85!
+ 38  2026-06-10 11:25  BNBUSDT   4   London             -1.00    -1.00  ND(NO_DATA)     -9.00  $ 440.85!
+ 39  2026-06-10 15:48  BNBUSDT   3   LondonNyOverlap    -1.00    -1.00  ND(NO_DATA)     -9.00  $ 431.85!
+
+=========================================================================================================
+
+  CAPITAL INICIAL:  $450.00
+  RIESGO/TRADE:     $9.00 (2% fijo)
+  BALANCE FINAL:    $431.85  (-18.15 USD)
+  ROI:              -4.0%
+
+                             n      WR    TotalR     AvgR    PnL USD
+  --                      ----  ------  --------  -------  ---------
+  ORIGINAL (Supabase)       39   51.3%    +14.70R  +0.377R  $ +132.34
+  SIM (trailing 1.5R)       39   35.9%     -2.02R  -0.052R  $  -18.15
+
+  Diferencia: -16.72R  /  $-150.50
+  (23 trades ND -> usa result_r original)
+
+  POR SIMBOLO (simulado):
+  Symbol         n      WR    TotalR     AvgR    PnL USD
+  ----------  ----  ------  --------  -------  ---------
+  BNBUSDT       13   38.5%     +0.40R  +0.031R  $   +3.64
+  BTCUSDT       15   33.3%     -2.18R  -0.146R  $  -19.64
+  ETHUSDT        6   33.3%     -0.68R  -0.113R  $   -6.10
+  SOLUSDT        5   40.0%     +0.44R  +0.088R  $   +3.96
+
+  POR SESION (simulado):
+  Session               n      WR    TotalR     AvgR    PnL USD
+  -----------------  ----  ------  --------  -------  ---------
+  London               23   34.8%     +1.29R  +0.056R  $  +11.61
+  LondonNyOverlap      13   23.1%     -7.88R  -0.606R  $  -70.90
+  NewYork               3  100.0%     +4.57R  +1.524R  $  +41.15
+
+  MAX DRAWDOWN: 14.6%
+
+  EXIT REASONS (trades con datos):
+    STOP             n=10  avg=-1.000R
+    TARGET           n= 5  avg=+2.000R
+    TIME_STOP        n= 1  avg=-0.398R

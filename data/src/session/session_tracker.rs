@@ -32,14 +32,14 @@ pub struct SessionContext {
 }
 
 // Límites en minutos UTC desde medianoche — horarios reales de mercado
-const ASIA_OPEN: i64 = 0;       // 00:00
-const ASIA_CLOSE: i64 = 540;    // 09:00 — Tokyo close
-const LONDON_OPEN: i64 = 480;   // 08:00 — Frankfurt/London open
+const ASIA_OPEN: i64 = 0; // 00:00
+const ASIA_CLOSE: i64 = 540; // 09:00 — Tokyo close
+const LONDON_OPEN: i64 = 480; // 08:00 — Frankfurt/London open
 const LONDON_CLOSE: i64 = 1020; // 17:00 — London close
-const NY_OPEN: i64 = 780;       // 13:00 — US traders active (NYSE opens 13:30)
-const NY_CLOSE: i64 = 1320;     // 22:00 — post-NYSE close activity ends
+const NY_OPEN: i64 = 780; // 13:00 — US traders active (NYSE opens 13:30)
+const NY_CLOSE: i64 = 1320; // 22:00 — post-NYSE close activity ends
 const OVERLAP_START: i64 = 780; // 13:00 — London + NY ambos activos
-const OVERLAP_END: i64 = 1020;  // 17:00 — London close = overlap termina
+const OVERLAP_END: i64 = 1020; // 17:00 — London close = overlap termina
 
 /// Clasifica la sesión activa dado un timestamp UTC en milisegundos.
 pub fn classify_session(timestamp_ms: i64) -> SessionContext {

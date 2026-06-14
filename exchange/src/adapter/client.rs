@@ -2,7 +2,9 @@ use super::{
     AdapterError, Event, Exchange, MarketKind, StreamConfig, Venue,
     hub::{binance, bybit, hyperliquid, mexc, okex},
 };
-use crate::{FundingRate, Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
+use crate::{
+    FundingRate, Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs,
+};
 
 use futures::{StreamExt, stream, stream::BoxStream};
 use std::{collections::HashMap, collections::HashSet, path::PathBuf};
@@ -469,7 +471,11 @@ impl AdapterHandles {
         match config.exchange.venue() {
             Venue::Binance => self.binance.clone().map_or_else(
                 || futures::stream::empty().boxed(),
-                |handle| handle.connect_liquidation_stream(ticker, market_kind).boxed(),
+                |handle| {
+                    handle
+                        .connect_liquidation_stream(ticker, market_kind)
+                        .boxed()
+                },
             ),
             _ => futures::stream::empty().boxed(),
         }

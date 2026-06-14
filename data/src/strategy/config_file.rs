@@ -115,6 +115,9 @@ struct RangeBreakoutSection {
     min_confluence_score_override: Option<u8>,
     obi_max_short: Option<f64>,
     cooldown_bars: Option<usize>,
+    sweep_reclaim_long_enabled: Option<bool>,
+    sweep_max_risk_frac: Option<f64>,
+    sweep_min_risk_usd: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -384,6 +387,15 @@ impl StrategyConfigFile {
         }
         if let Some(v) = rb.cooldown_bars {
             cfg.range_breakout.cooldown_bars = v;
+        }
+        if let Some(v) = rb.sweep_reclaim_long_enabled {
+            cfg.range_breakout.sweep_reclaim_long_enabled = v;
+        }
+        if let Some(v) = rb.sweep_max_risk_frac {
+            cfg.range_breakout.sweep_max_risk_frac = v;
+        }
+        if let Some(v) = rb.sweep_min_risk_usd {
+            cfg.range_breakout.sweep_min_risk_usd = v;
         }
 
         let amd = self.amd_detector;

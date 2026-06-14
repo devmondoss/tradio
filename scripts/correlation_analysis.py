@@ -28,13 +28,14 @@ RBF_FEATURES = [
     "vr_at_breakout", "vr_tier", "range_touch_symmetry", "cvd_per_bar",
     "breakout_extension_pct", "range_pct", "range_bars", "cvd_in_range",
     "obi_at_entry", "dz_at_entry", "liq_ratio_pre", "confluence_score",
+    "htf_h1_aligned", "signal_score_v2", "sizing_multiplier", "is_pre_breakout",
 ]
 AMD_FEATURES = [
     "delta_dz_at_spike", "delta_dz_at_entry", "oi_delta_pct_at_spike",
     "oi_delta_pct_at_entry", "cvd_divergence_bars", "vr_at_spike", "vr_at_entry",
     "bars_to_entry", "spike_extension_pct", "range_spike_ratio",
     "range_pct", "range_bars", "obi_at_entry", "quality_score",
-    "liq_ratio_at_spike",
+    "liq_ratio_at_spike", "htf_h1_aligned", "signal_score_v2", "sizing_multiplier",
 ]
 
 def fetch(table: str) -> list[dict]:
@@ -81,8 +82,12 @@ def run(strategy: str, min_n: int = 10):
     results = []
     for feat in features:
         if feat not in df.columns:
+            print(f"  [warn] feature not in table yet: {feat}")
             continue
         col = pd.to_numeric(df[feat], errors="coerce")
+        null_ratio = col.isna().mean()
+        if null_ratio > 0.50:
+            print(f"  [warn] feature {feat} has {null_ratio:.0%} NULL; split backfill/live before trusting it")
         valid = df[col.notna()].copy()
         valid["_x"] = col[col.notna()]
         if len(valid) < min_n or valid["_x"].std() < 1e-9:

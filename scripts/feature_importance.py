@@ -28,13 +28,13 @@ RBF_FEATURES = [
     "vr_at_breakout", "vr_tier", "range_touch_symmetry", "cvd_per_bar",
     "breakout_extension_pct", "range_pct", "range_bars", "cvd_in_range",
     "obi_at_entry", "dz_at_entry", "liq_ratio_pre", "confluence_score",
-    "htf_h4_aligned",
+    "htf_h1_aligned",
 ]
 AMD_FEATURES = [
     "delta_dz_at_spike", "delta_dz_at_entry", "oi_delta_pct_at_spike",
     "oi_delta_pct_at_entry", "cvd_divergence_bars", "vr_at_spike", "vr_at_entry",
     "is_kill_zone", "bars_to_entry", "spike_extension_pct", "range_spike_ratio",
-    "range_pct", "range_bars", "obi_at_entry", "quality_score", "htf_h4_aligned",
+    "range_pct", "range_bars", "obi_at_entry", "quality_score", "htf_h1_aligned",
     "liq_ratio_at_spike",
 ]
 
@@ -65,6 +65,10 @@ def build_matrix(rows: list[dict], features: list[str]):
     missing = [f for f in features if f not in df.columns]
     if missing:
         print(f"  [warn] features not in table yet: {missing}")
+    for feat in present:
+        null_ratio = df[feat].isna().mean()
+        if null_ratio > 0.50:
+            print(f"  [warn] feature {feat} has {null_ratio:.0%} NULL; split backfill/live before trusting it")
     X = df[present].apply(pd.to_numeric, errors="coerce").fillna(0)
     y_r = pd.to_numeric(df["result_r"], errors="coerce")
     y_bin = (y_r > 0).astype(int)

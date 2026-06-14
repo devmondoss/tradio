@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>RBF Backtest — $450</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f1117; color: #e2e8f0; font-family: 'Segoe UI', monospace; font-size: 13px; }
+  h1   { font-size: 20px; font-weight: 700; color: #f8fafc; }
+  h2   { font-size: 14px; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+  .header { background: #1e2130; padding: 16px 24px; border-bottom: 1px solid #2d3348; display: flex; align-items: center; gap: 20px; }
+  .header span { color: #64748b; font-size: 12px; }
+  .main { padding: 20px 24px; display: flex; flex-direction: column; gap: 20px; }
+  .cards { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+  .card { background: #1e2130; border: 1px solid #2d3348; border-radius: 8px; padding: 14px 16px; }
+  .card .label { color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+  .card .value { font-size: 22px; font-weight: 700; }
+  .pos { color: #22c55e; } .neg { color: #ef4444; } .neu { color: #f8fafc; }
+  .row2 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 16px; }
+  .box { background: #1e2130; border: 1px solid #2d3348; border-radius: 8px; padding: 16px; }
+  .chart-wrap { position: relative; height: 220px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: #0f1117; color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; padding: 8px 10px; text-align: left; position: sticky; top: 0; }
+  td { padding: 6px 10px; border-bottom: 1px solid #1e2130; }
+  tr:hover td { background: #1e2130; }
+  tr.win td { }
+  tr.loss td { }
+  .win { color: #22c55e; } .loss { color: #ef4444; }
+  .long { color: #38bdf8; } .short { color: #f97316; }
+  .table-wrap { max-height: 500px; overflow-y: auto; background: #0f1117; border: 1px solid #2d3348; border-radius: 8px; }
+  .mini-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .mini-table th { background: #0f1117; color: #64748b; font-size: 10px; text-transform: uppercase; padding: 6px 8px; }
+  .mini-table td { padding: 5px 8px; border-bottom: 1px solid #1a1f2e; }
+  .mini-table .pos { color: #22c55e; } .mini-table .neg { color: #ef4444; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>RBF Backtest Dashboard</h1>
+  <span>72 trades | Jun 2 – Jun 10, 2026 | Capital $450 | Riesgo 2% = $9/trade</span>
+</div>
+
+<div class="main">
+
+  <!-- CARDS -->
+  <div class="cards">
+    <div class="card"><div class="label">Capital Inicial</div><div class="value neu">$450</div></div>
+    <div class="card"><div class="label">Balance Final</div><div class="value pos">$537.35</div></div>
+    <div class="card"><div class="label">PnL Total</div><div class="value pos">$+87.35</div></div>
+    <div class="card"><div class="label">ROI</div><div class="value pos">+19.4%</div></div>
+    <div class="card"><div class="label">Win Rate</div><div class="value neu">40.3%</div></div>
+    <div class="card"><div class="label">Max Drawdown</div><div class="value neg">16.4%</div></div>
+  </div>
+  <div class="cards">
+    <div class="card"><div class="label">Trades</div><div class="value neu">72</div></div>
+    <div class="card"><div class="label">Wins</div><div class="value pos">29</div></div>
+    <div class="card"><div class="label">Losses</div><div class="value neg">43</div></div>
+    <div class="card"><div class="label">Total R</div><div class="value pos">+9.70R</div></div>
+    <div class="card"><div class="label">Avg R/trade</div><div class="value pos">+0.135R</div></div>
+    <div class="card"><div class="label">Riesgo/trade</div><div class="value neu">$9</div></div>
+  </div>
+
+  <!-- EQUITY CURVE -->
+  <div class="box">
+    <h2>Equity Curve</h2>
+    <div class="chart-wrap">
+      <canvas id="eqChart"></canvas>
+    </div>
+  </div>
+
+  <!-- PNL POR SESION Y SIMBOLO -->
+  <div class="row2">
+    <div class="box">
+      <h2>PnL por Sesion</h2>
+      <div class="chart-wrap" style="height:180px"><canvas id="sesChart"></canvas></div>
+    </div>
+    <div class="box">
+      <h2>PnL por Simbolo</h2>
+      <div class="chart-wrap" style="height:180px"><canvas id="symChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- WR POR SESION Y SIMBOLO -->
+  <div class="row2">
+    <div class="box">
+      <h2>Win Rate por Sesion</h2>
+      <div class="chart-wrap" style="height:180px"><canvas id="wrSesChart"></canvas></div>
+    </div>
+    <div class="box">
+      <h2>Win Rate por Simbolo</h2>
+      <div class="chart-wrap" style="height:180px"><canvas id="wrSymChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- BREAKDOWNS -->
+  <div class="row3">
+    <div class="box"><h2>Por Sesion</h2><table class="mini-table"><tr><th>Grupo</th><th>n</th><th>WR</th><th>TotalR</th><th>PnL$</th></tr><tr><td>LondonNyOverlap</td><td>22</td><td>50.0%</td><td class="pos">+6.47R</td><td class="pos">$+58.28</td></tr><tr><td>NewYork</td><td>5</td><td>60.0%</td><td class="pos">+2.57R</td><td class="pos">$+23.15</td></tr><tr><td>London</td><td>45</td><td>33.3%</td><td class="pos">+0.66R</td><td class="pos">$+5.92</td></tr></table></div>
+    <div class="box"><h2>Por Simbolo</h2><table class="mini-table"><tr><th>Grupo</th><th>n</th><th>WR</th><th>TotalR</th><th>PnL$</th></tr><tr><td>BTCUSDT</td><td>32</td><td>40.6%</td><td class="pos">+6.38R</td><td class="pos">$+57.40</td></tr><tr><td>SOLUSDT</td><td>11</td><td>54.5%</td><td class="pos">+5.80R</td><td class="pos">$+52.23</td></tr><tr><td>BNBUSDT</td><td>17</td><td>41.2%</td><td class="pos">+1.40R</td><td class="pos">$+12.62</td></tr><tr><td>XRPUSDT</td><td>1</td><td>0.0%</td><td class="neg">-1.00R</td><td class="neg">$-9.00</td></tr><tr><td>ETHUSDT</td><td>11</td><td>27.3%</td><td class="neg">-2.88R</td><td class="neg">$-25.90</td></tr></table></div>
+    <div class="box"><h2>Por Direccion</h2><table class="mini-table"><tr><th>Grupo</th><th>n</th><th>WR</th><th>TotalR</th><th>PnL$</th></tr><tr><td>Short</td><td>39</td><td>51.3%</td><td class="pos">+14.70R</td><td class="pos">$+132.35</td></tr><tr><td>Long</td><td>33</td><td>27.3%</td><td class="neg">-5.00R</td><td class="neg">$-45.00</td></tr></table></div>
+    <div class="box"><h2>Por Score</h2><table class="mini-table"><tr><th>Grupo</th><th>n</th><th>WR</th><th>TotalR</th><th>PnL$</th></tr><tr><td>None</td><td>12</td><td>58.3%</td><td class="pos">+9.00R</td><td class="pos">$+81.00</td></tr><tr><td>3</td><td>8</td><td>50.0%</td><td class="pos">+5.54R</td><td class="pos">$+49.87</td></tr><tr><td>6</td><td>3</td><td>100.0%</td><td class="pos">+5.40R</td><td class="pos">$+48.60</td></tr><tr><td>0</td><td>18</td><td>38.9%</td><td class="pos">+0.89R</td><td class="pos">$+7.99</td></tr><tr><td>5</td><td>13</td><td>38.5%</td><td class="pos">+0.03R</td><td class="pos">$+0.24</td></tr><tr><td>4</td><td>18</td><td>16.7%</td><td class="neg">-11.15R</td><td class="neg">$-100.35</td></tr></table></div>
+  </div>
+
+  <!-- TABLA DE TRADES -->
+  <div class="box">
+    <h2>Trades (72)</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>#</th><th>Fecha</th><th>Symbol</th><th>Dir</th><th>Session</th><th>Score</th><th>R</th><th>PnL $</th><th>Balance</th><th>Razon</th></tr>
+        </thead>
+        <tbody>
+    <tr class="win">
+      <td>1</td>
+      <td>06/02 08:48</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>None</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$468.00</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>2</td>
+      <td>06/02 10:11</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>None</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$459.00</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>3</td>
+      <td>06/02 12:18</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>None</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$477.00</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="win">
+      <td>4</td>
+      <td>06/02 16:36</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>None</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$495.00</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>5</td>
+      <td>06/02 20:51</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>NewYork</td>
+      <td>None</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$486.00</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>6</td>
+      <td>06/03 08:32</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>None</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$477.00</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>7</td>
+      <td>06/03 09:48</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>None</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$468.00</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>8</td>
+      <td>06/03 11:34</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>None</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$486.00</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="win">
+      <td>9</td>
+      <td>06/03 13:25</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>None</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$504.00</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="win">
+      <td>10</td>
+      <td>06/03 16:01</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>None</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$522.00</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>11</td>
+      <td>06/04 12:48</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>None</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$513.00</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>12</td>
+      <td>06/04 16:30</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>None</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$531.00</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="win">
+      <td>13</td>
+      <td>06/05 08:55</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$549.00</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>14</td>
+      <td>06/05 10:44</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$540.00</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>15</td>
+      <td>06/05 13:20</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>LondonNyOverlap</td>
+      <td>0</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$531.00</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>16</td>
+      <td>06/06 08:27</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="win">+1.00R</td>
+      <td class="win">$+8.97</td>
+      <td>$539.97</td>
+      <td>TRAILING_STOP</td>
+    </tr>
+    <tr class="win">
+      <td>17</td>
+      <td>06/06 09:47</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="win">+1.32R</td>
+      <td class="win">$+11.91</td>
+      <td>$551.88</td>
+      <td>TRAILING_STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>18</td>
+      <td>06/06 11:02</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$542.88</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>19</td>
+      <td>06/06 12:03</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="loss">-0.05R</td>
+      <td class="loss">$-0.41</td>
+      <td>$542.47</td>
+      <td>TIME_STOP</td>
+    </tr>
+    <tr class="win">
+      <td>20</td>
+      <td>06/06 16:19</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>0</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$560.47</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>21</td>
+      <td>06/07 08:02</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$551.47</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>22</td>
+      <td>06/07 08:05</td>
+      <td>ETHUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$542.47</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>23</td>
+      <td>06/07 08:36</td>
+      <td>SOLUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>5</td>
+      <td class="win">+1.80R</td>
+      <td class="win">$+16.20</td>
+      <td>$558.67</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>24</td>
+      <td>06/07 09:47</td>
+      <td>ETHUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$549.67</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>25</td>
+      <td>06/07 09:47</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>3</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$540.67</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>26</td>
+      <td>06/07 11:36</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>5</td>
+      <td class="loss">-0.05R</td>
+      <td class="loss">$-0.41</td>
+      <td>$540.26</td>
+      <td>TIME_STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>27</td>
+      <td>06/07 11:38</td>
+      <td>ETHUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>5</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$531.26</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>28</td>
+      <td>06/07 12:07</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>3</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$549.26</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="win">
+      <td>29</td>
+      <td>06/07 14:17</td>
+      <td>SOLUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>LondonNyOverlap</td>
+      <td>0</td>
+      <td class="win">+1.02R</td>
+      <td class="win">$+9.21</td>
+      <td>$558.47</td>
+      <td>TRAILING_STOP</td>
+    </tr>
+    <tr class="win">
+      <td>30</td>
+      <td>06/07 14:18</td>
+      <td>ETHUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>LondonNyOverlap</td>
+      <td>6</td>
+      <td class="win">+1.80R</td>
+      <td class="win">$+16.20</td>
+      <td>$574.67</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="win">
+      <td>31</td>
+      <td>06/07 14:18</td>
+      <td>BNBUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>LondonNyOverlap</td>
+      <td>4</td>
+      <td class="win">+1.80R</td>
+      <td class="win">$+16.20</td>
+      <td>$590.87</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>32</td>
+      <td>06/07 15:30</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>LondonNyOverlap</td>
+      <td>4</td>
+      <td class="loss">-0.07R</td>
+      <td class="loss">$-0.63</td>
+      <td>$590.24</td>
+      <td>TIME_STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>33</td>
+      <td>06/07 15:39</td>
+      <td>BNBUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>LondonNyOverlap</td>
+      <td>0</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$581.24</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>34</td>
+      <td>06/07 15:45</td>
+      <td>ETHUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>0</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$572.24</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>35</td>
+      <td>06/08 08:00</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$563.24</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>36</td>
+      <td>06/08 08:01</td>
+      <td>ETHUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>3</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$581.24</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="win">
+      <td>37</td>
+      <td>06/08 09:03</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>6</td>
+      <td class="win">+1.80R</td>
+      <td class="win">$+16.20</td>
+      <td>$597.44</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>38</td>
+      <td>06/08 10:17</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="loss">-0.01R</td>
+      <td class="loss">$-0.11</td>
+      <td>$597.33</td>
+      <td>TIME_STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>39</td>
+      <td>06/08 10:27</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$588.33</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>40</td>
+      <td>06/08 11:10</td>
+      <td>SOLUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>6</td>
+      <td class="win">+1.80R</td>
+      <td class="win">$+16.20</td>
+      <td>$604.53</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>41</td>
+      <td>06/08 11:36</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$595.53</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>42</td>
+      <td>06/08 12:01</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$586.53</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>43</td>
+      <td>06/08 12:57</td>
+      <td>BNBUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>5</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$577.53</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>44</td>
+      <td>06/08 13:29</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>5</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$568.53</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>45</td>
+      <td>06/08 15:01</td>
+      <td>BNBUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>LondonNyOverlap</td>
+      <td>4</td>
+      <td class="win">+1.80R</td>
+      <td class="win">$+16.20</td>
+      <td>$584.73</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>46</td>
+      <td>06/08 15:12</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>LondonNyOverlap</td>
+      <td>5</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$575.73</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>47</td>
+      <td>06/08 16:21</td>
+      <td>ETHUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>LondonNyOverlap</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$566.73</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>48</td>
+      <td>06/08 16:55</td>
+      <td>SOLUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>3</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$584.73</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>49</td>
+      <td>06/09 08:06</td>
+      <td>SOLUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>5</td>
+      <td class="loss">-0.30R</td>
+      <td class="loss">$-2.70</td>
+      <td>$582.03</td>
+      <td>TIME_STOP</td>
+    </tr>
+    <tr class="win">
+      <td>50</td>
+      <td>06/09 08:07</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>3</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$600.03</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>51</td>
+      <td>06/09 09:16</td>
+      <td>ETHUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>5</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$591.03</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>52</td>
+      <td>06/09 10:56</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$582.03</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>53</td>
+      <td>06/09 10:56</td>
+      <td>SOLUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$573.03</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>54</td>
+      <td>06/09 11:14</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$564.03</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>55</td>
+      <td>06/09 11:14</td>
+      <td>ETHUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$555.03</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>56</td>
+      <td>06/09 11:58</td>
+      <td>SOLUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="win">+1.80R</td>
+      <td class="win">$+16.20</td>
+      <td>$571.23</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="loss">
+      <td>57</td>
+      <td>06/09 12:03</td>
+      <td>BTCUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>3</td>
+      <td class="loss">-0.40R</td>
+      <td class="loss">$-3.59</td>
+      <td>$567.64</td>
+      <td>TIME_STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>58</td>
+      <td>06/09 12:59</td>
+      <td>SOLUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>3</td>
+      <td class="loss">-0.06R</td>
+      <td class="loss">$-0.54</td>
+      <td>$567.10</td>
+      <td>TIME_STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>59</td>
+      <td>06/09 12:59</td>
+      <td>ETHUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>London</td>
+      <td>5</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$558.10</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>60</td>
+      <td>06/09 13:37</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$549.10</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>61</td>
+      <td>06/09 14:04</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>0</td>
+      <td class="win">+0.80R</td>
+      <td class="win">$+7.22</td>
+      <td>$556.32</td>
+      <td>TRAILING_STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>62</td>
+      <td>06/09 15:55</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>4</td>
+      <td class="loss">-2.42R</td>
+      <td class="loss">$-21.78</td>
+      <td>$534.54</td>
+      <td>SESSION_END</td>
+    </tr>
+    <tr class="loss">
+      <td>63</td>
+      <td>06/09 16:19</td>
+      <td>SOLUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>4</td>
+      <td class="loss">-2.26R</td>
+      <td class="loss">$-20.34</td>
+      <td>$514.20</td>
+      <td>SESSION_END</td>
+    </tr>
+    <tr class="loss">
+      <td>64</td>
+      <td>06/09 20:42</td>
+      <td>XRPUSDT</td>
+      <td class="long">▲ Long</td>
+      <td>NewYork</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$505.20</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>65</td>
+      <td>06/09 21:18</td>
+      <td>ETHUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>NewYork</td>
+      <td>5</td>
+      <td class="win">+1.32R</td>
+      <td class="win">$+11.90</td>
+      <td>$517.10</td>
+      <td>SESSION_END</td>
+    </tr>
+    <tr class="win">
+      <td>66</td>
+      <td>06/09 21:19</td>
+      <td>SOLUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>NewYork</td>
+      <td>4</td>
+      <td class="win">+2.00R</td>
+      <td class="win">$+18.00</td>
+      <td>$535.10</td>
+      <td>TARGET</td>
+    </tr>
+    <tr class="win">
+      <td>67</td>
+      <td>06/09 21:19</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>NewYork</td>
+      <td>5</td>
+      <td class="win">+1.25R</td>
+      <td class="win">$+11.25</td>
+      <td>$546.35</td>
+      <td>SESSION_END</td>
+    </tr>
+    <tr class="loss">
+      <td>68</td>
+      <td>06/10 08:03</td>
+      <td>SOLUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>0</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$537.35</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="win">
+      <td>69</td>
+      <td>06/10 09:19</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>5</td>
+      <td class="win">+1.00R</td>
+      <td class="win">$+9.00</td>
+      <td>$546.35</td>
+      <td>TRAILING_STOP</td>
+    </tr>
+    <tr class="win">
+      <td>70</td>
+      <td>06/10 09:19</td>
+      <td>BTCUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>5</td>
+      <td class="win">+1.00R</td>
+      <td class="win">$+9.00</td>
+      <td>$555.35</td>
+      <td>TRAILING_STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>71</td>
+      <td>06/10 11:25</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>London</td>
+      <td>4</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$546.35</td>
+      <td>STOP</td>
+    </tr>
+    <tr class="loss">
+      <td>72</td>
+      <td>06/10 15:48</td>
+      <td>BNBUSDT</td>
+      <td class="short">▼ Short</td>
+      <td>LondonNyOverlap</td>
+      <td>3</td>
+      <td class="loss">-1.00R</td>
+      <td class="loss">$-9.00</td>
+      <td>$537.35</td>
+      <td>STOP</td>
+    </tr></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const chartDefaults = {
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { display: false }, tooltip: { callbacks: {
+    label: ctx => ` ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(2)}`
+  } } },
+  scales: {
+    x: { ticks: { color: '#475569', font: { size: 10 } }, grid: { color: '#1e2130' } },
+    y: { ticks: { color: '#475569', font: { size: 10 } }, grid: { color: '#1e2130' } },
+  }
+};
+
+// Equity curve
+new Chart(document.getElementById('eqChart'), {
+  type: 'line',
+  data: {
+    labels: ["06/02 08:48", "06/02 10:11", "06/02 12:18", "06/02 16:36", "06/02 20:51", "06/03 08:32", "06/03 09:48", "06/03 11:34", "06/03 13:25", "06/03 16:01", "06/04 12:48", "06/04 16:30", "06/05 08:55", "06/05 10:44", "06/05 13:20", "06/06 08:27", "06/06 09:47", "06/06 11:02", "06/06 12:03", "06/06 16:19", "06/07 08:02", "06/07 08:05", "06/07 08:36", "06/07 09:47", "06/07 09:47", "06/07 11:36", "06/07 11:38", "06/07 12:07", "06/07 14:17", "06/07 14:18", "06/07 14:18", "06/07 15:30", "06/07 15:39", "06/07 15:45", "06/08 08:00", "06/08 08:01", "06/08 09:03", "06/08 10:17", "06/08 10:27", "06/08 11:10", "06/08 11:36", "06/08 12:01", "06/08 12:57", "06/08 13:29", "06/08 15:01", "06/08 15:12", "06/08 16:21", "06/08 16:55", "06/09 08:06", "06/09 08:07", "06/09 09:16", "06/09 10:56", "06/09 10:56", "06/09 11:14", "06/09 11:14", "06/09 11:58", "06/09 12:03", "06/09 12:59", "06/09 12:59", "06/09 13:37", "06/09 14:04", "06/09 15:55", "06/09 16:19", "06/09 20:42", "06/09 21:18", "06/09 21:19", "06/09 21:19", "06/10 08:03", "06/10 09:19", "06/10 09:19", "06/10 11:25", "06/10 15:48"],
+    datasets: [{
+      data: [468.0, 459.0, 477.0, 495.0, 486.0, 477.0, 468.0, 486.0, 504.0, 522.0, 513.0, 531.0, 549.0, 540.0, 531.0, 539.97, 551.88, 542.88, 542.47, 560.47, 551.47, 542.47, 558.67, 549.67, 540.67, 540.26, 531.26, 549.26, 558.47, 574.67, 590.87, 590.24, 581.24, 572.24, 563.24, 581.24, 597.44, 597.33, 588.33, 604.53, 595.53, 586.53, 577.53, 568.53, 584.73, 575.73, 566.73, 584.73, 582.03, 600.03, 591.03, 582.03, 573.03, 564.03, 555.03, 571.23, 567.64, 567.1, 558.1, 549.1, 556.32, 534.54, 514.2, 505.2, 517.1, 535.1, 546.35, 537.35, 546.35, 555.35, 546.35, 537.35],
+      borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)',
+      borderWidth: 2, pointRadius: 3,
+      pointBackgroundColor: ["#22c55e", "#ef4444", "#22c55e", "#22c55e", "#ef4444", "#ef4444", "#ef4444", "#22c55e", "#22c55e", "#22c55e", "#ef4444", "#22c55e", "#22c55e", "#ef4444", "#ef4444", "#22c55e", "#22c55e", "#ef4444", "#ef4444", "#22c55e", "#ef4444", "#ef4444", "#22c55e", "#ef4444", "#ef4444", "#ef4444", "#ef4444", "#22c55e", "#22c55e", "#22c55e", "#22c55e", "#ef4444", "#ef4444", "#ef4444", "#ef4444", "#22c55e", "#22c55e", "#ef4444", "#ef4444", "#22c55e", "#ef4444", "#ef4444", "#ef4444", "#ef4444", "#22c55e", "#ef4444", "#ef4444", "#22c55e", "#ef4444", "#22c55e", "#ef4444", "#ef4444", "#ef4444", "#ef4444", "#ef4444", "#22c55e", "#ef4444", "#ef4444", "#ef4444", "#ef4444", "#22c55e", "#ef4444", "#ef4444", "#ef4444", "#22c55e", "#22c55e", "#22c55e", "#ef4444", "#22c55e", "#22c55e", "#ef4444", "#ef4444"],
+      pointBorderColor: 'transparent', fill: true, tension: 0.3,
+    }]
+  },
+  options: { ...chartDefaults,
+    plugins: { ...chartDefaults.plugins,
+      tooltip: { callbacks: { label: ctx => ` Balance: $${ctx.parsed.y.toFixed(2)}` } }
+    },
+    scales: { ...chartDefaults.scales,
+      y: { ...chartDefaults.scales.y, ticks: { ...chartDefaults.scales.y.ticks,
+        callback: v => `$${v.toFixed(0)}`
+      } }
+    }
+  }
+});
+
+function barChart(id, labels, values, colors, prefix='$') {
+  new Chart(document.getElementById(id), {
+    type: 'bar',
+    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 4 }] },
+    options: { ...chartDefaults,
+      plugins: { ...chartDefaults.plugins,
+        tooltip: { callbacks: { label: ctx => ` ${prefix}${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(2)}` } }
+      },
+      scales: { ...chartDefaults.scales,
+        y: { ...chartDefaults.scales.y, ticks: { ...chartDefaults.scales.y.ticks,
+          callback: v => `${prefix}${v}`
+        } }
+      }
+    }
+  });
+}
+
+barChart('sesChart', ["London", "LondonNyOverlap", "NewYork"], [5.92, 58.28, 23.15], ["#22c55e", "#22c55e", "#22c55e"]);
+barChart('symChart', ["BNBUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"], [12.62, 57.4, -25.9, 52.23, -9.0], ["#22c55e", "#22c55e", "#ef4444", "#22c55e", "#ef4444"]);
+
+function wrChart(id, labels, values) {
+  const colors = values.map(v => v >= 50 ? '#22c55e' : v >= 35 ? '#f59e0b' : '#ef4444');
+  new Chart(document.getElementById(id), {
+    type: 'bar',
+    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 4 }] },
+    options: { ...chartDefaults,
+      plugins: { ...chartDefaults.plugins,
+        tooltip: { callbacks: { label: ctx => ` ${ctx.parsed.y.toFixed(1)}%` } }
+      },
+      scales: { ...chartDefaults.scales,
+        y: { ...chartDefaults.scales.y, min: 0, max: 100,
+          ticks: { ...chartDefaults.scales.y.ticks, callback: v => `${v}%` }
+        }
+      }
+    }
+  });
+}
+
+wrChart('wrSesChart',  ["London", "LondonNyOverlap", "NewYork"],     [33.3, 50.0, 60.0]);
+wrChart('wrSymChart',  ["BNBUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"], [41.2, 40.6, 27.3, 54.5, 0.0]);
+</script>
+</body>
+</html>

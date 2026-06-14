@@ -13,12 +13,12 @@ use crate::signal::{BeClosedTrade, BeExitReason, BuyerExhaustionSignal};
 
 #[derive(Debug, Clone)]
 struct BePosition {
-    entry_price:  f64,
-    stop_price:   f64,
+    entry_price: f64,
+    stop_price: f64,
     target_price: f64,
-    entry_ms:     i64,
-    bars_held:    u32,
-    supabase_id:  Option<String>,
+    entry_ms: i64,
+    bars_held: u32,
+    supabase_id: Option<String>,
 }
 
 // ── Paper trader ──────────────────────────────────────────────────────────────
@@ -27,20 +27,20 @@ pub struct BePaperTrader {
     active: Option<BePosition>,
 
     // ── Risk cap diario ─────────────────────────────────────────────────────
-    pub day_r:           f64,
-    pub day_loss_limit:  f64,
-    pub day_profit_cap:  f64,
-    last_bar_day:        u32,
+    pub day_r: f64,
+    pub day_loss_limit: f64,
+    pub day_profit_cap: f64,
+    last_bar_day: u32,
 }
 
 impl BePaperTrader {
     pub fn new() -> Self {
         Self {
-            active:          None,
-            day_r:           0.0,
+            active: None,
+            day_r: 0.0,
             day_loss_limit: -3.0,
-            day_profit_cap:  6.0,
-            last_bar_day:    0,
+            day_profit_cap: 6.0,
+            last_bar_day: 0,
         }
     }
 
@@ -66,30 +66,30 @@ impl BePaperTrader {
     /// Abre una nueva posición Short desde una señal BE.
     pub fn open(&mut self, sig: &BuyerExhaustionSignal) {
         self.active = Some(BePosition {
-            entry_price:  sig.entry_price,
-            stop_price:   sig.stop_price,
+            entry_price: sig.entry_price,
+            stop_price: sig.stop_price,
             target_price: sig.target_price,
-            entry_ms:     sig.timestamp_ms,
-            bars_held:    0,
-            supabase_id:  None,
+            entry_ms: sig.timestamp_ms,
+            bars_held: 0,
+            supabase_id: None,
         });
     }
 
     /// Restaura una posición persistida en Supabase tras reinicio del proceso.
     pub fn restore(
         &mut self,
-        signal_id:    String,
-        entry_price:  f64,
-        stop_price:   f64,
+        signal_id: String,
+        entry_price: f64,
+        stop_price: f64,
         target_price: f64,
-        entry_ms:     i64,
+        entry_ms: i64,
     ) {
         self.active = Some(BePosition {
             entry_price,
             stop_price,
             target_price,
             entry_ms,
-            bars_held:  0,
+            bars_held: 0,
             supabase_id: Some(signal_id),
         });
     }
@@ -97,10 +97,10 @@ impl BePaperTrader {
     /// Llamar en cada cierre de barra M1.
     pub fn on_bar_close(
         &mut self,
-        high:           f64,
-        low:            f64,
-        close:          f64,
-        bar_ms:         i64,
+        high: f64,
+        low: f64,
+        close: f64,
+        bar_ms: i64,
         time_stop_bars: u32,
     ) -> Option<BeClosedTrade> {
         self.maybe_reset_day(bar_ms);
@@ -114,8 +114,8 @@ impl BePaperTrader {
         }
 
         // Short: stop encima de entry, target debajo de entry
-        let stop_hit   = high >= pos.stop_price;
-        let target_hit = low  <= pos.target_price;
+        let stop_hit = high >= pos.stop_price;
+        let target_hit = low <= pos.target_price;
 
         // Si ambos ocurren en la misma barra, asumimos el peor caso (stop)
         let reason = if stop_hit {
@@ -129,7 +129,8 @@ impl BePaperTrader {
                 if pnl < 0.0 {
                     println!(
                         "[be_paper] time_stop bar={} pnl={:.3}R",
-                        pos.bars_held, pnl / risk
+                        pos.bars_held,
+                        pnl / risk
                     );
                     return self.close_at(close, bar_ms, BeExitReason::TimeStop);
                 }
@@ -139,7 +140,7 @@ impl BePaperTrader {
 
         let exit_price = match reason {
             BeExitReason::Target => pos.target_price,
-            _                    => pos.stop_price,
+            _ => pos.stop_price,
         };
 
         self.close_at(exit_price, bar_ms, reason)
@@ -148,12 +149,12 @@ impl BePaperTrader {
     fn close_at(
         &mut self,
         exit_price: f64,
-        bar_ms:     i64,
-        reason:     BeExitReason,
+        bar_ms: i64,
+        reason: BeExitReason,
     ) -> Option<BeClosedTrade> {
         let pos = self.active.as_ref()?;
-        let risk     = (pos.stop_price - pos.entry_price).abs();
-        let pnl      = pos.entry_price - exit_price; // Short
+        let risk = (pos.stop_price - pos.entry_price).abs();
+        let pnl = pos.entry_price - exit_price; // Short
         let result_r = if risk > 1e-10 { pnl / risk } else { 0.0 };
 
         let trade = BeClosedTrade {
@@ -161,14 +162,14 @@ impl BePaperTrader {
             exit_price,
             result_r,
             exit_reason: reason,
-            entry_ms:    pos.entry_ms,
-            exit_ms:     bar_ms,
-            bars_held:   pos.bars_held,
+            entry_ms: pos.entry_ms,
+            exit_ms: bar_ms,
+            bars_held: pos.bars_held,
             supabase_id: pos.supabase_id.clone(),
         };
 
-        self.active  = None;
-        self.day_r  += result_r;
+        self.active = None;
+        self.day_r += result_r;
         Some(trade)
     }
 
@@ -182,7 +183,7 @@ impl BePaperTrader {
     fn maybe_reset_day(&mut self, bar_ms: i64) {
         let day = (bar_ms / 86_400_000) as u32;
         if day != self.last_bar_day {
-            self.day_r        = 0.0;
+            self.day_r = 0.0;
             self.last_bar_day = day;
         }
     }

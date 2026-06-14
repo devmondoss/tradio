@@ -23,7 +23,9 @@ pub enum LiqMapConfidence {
 }
 
 impl Default for LiqMapConfidence {
-    fn default() -> Self { Self::Low }
+    fn default() -> Self {
+        Self::Low
+    }
 }
 
 /// Fuente de los datos de OI usados para construir el mapa.
@@ -36,7 +38,9 @@ pub enum LiqMapSource {
 }
 
 impl Default for LiqMapSource {
-    fn default() -> Self { Self::Estimated }
+    fn default() -> Self {
+        Self::Estimated
+    }
 }
 
 /// Snapshot del mapa de liquidez estimado.
@@ -158,8 +162,7 @@ impl LiqMapTracker {
             .filter(|&&(price, _, _)| price > current_price)
             .map(|&(price, oi_at_time, ts)| {
                 let age_ms = (now_ms - ts).max(0);
-                let time_factor =
-                    (-0.693 * age_ms as f64 / decay_half_life_ms as f64).exp() as f32;
+                let time_factor = (-0.693 * age_ms as f64 / decay_half_life_ms as f64).exp() as f32;
                 let density = (oi_ratio(oi_at_time) * time_factor).clamp(0.0, 1.0);
                 LiqDensityLevel { price, density }
             })
@@ -171,15 +174,22 @@ impl LiqMapTracker {
             .filter(|&&(price, _, _)| price < current_price)
             .map(|&(price, oi_at_time, ts)| {
                 let age_ms = (now_ms - ts).max(0);
-                let time_factor =
-                    (-0.693 * age_ms as f64 / decay_half_life_ms as f64).exp() as f32;
+                let time_factor = (-0.693 * age_ms as f64 / decay_half_life_ms as f64).exp() as f32;
                 let density = (oi_ratio(oi_at_time) * time_factor).clamp(0.0, 1.0);
                 LiqDensityLevel { price, density }
             })
             .collect();
 
-        above.sort_by(|a, b| b.density.partial_cmp(&a.density).unwrap_or(std::cmp::Ordering::Equal));
-        below.sort_by(|a, b| b.density.partial_cmp(&a.density).unwrap_or(std::cmp::Ordering::Equal));
+        above.sort_by(|a, b| {
+            b.density
+                .partial_cmp(&a.density)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        below.sort_by(|a, b| {
+            b.density
+                .partial_cmp(&a.density)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let primary_target_above = above.first().map(|l| l.price);
         let primary_target_below = below.first().map(|l| l.price);

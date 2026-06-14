@@ -204,9 +204,7 @@ pub fn build_flow_context(
 ///   Bearish magnet (unfinish_bearish): highest level has significant buy_volume → buyers trapped above.
 ///
 /// Returns `(finish_bullish, finish_bearish, unfinish_bullish, unfinish_bearish)`.
-pub fn derive_finish_unfinish_action(
-    levels: &[FootprintLevel],
-) -> (bool, bool, bool, bool) {
+pub fn derive_finish_unfinish_action(levels: &[FootprintLevel]) -> (bool, bool, bool, bool) {
     if levels.is_empty() {
         return (false, false, false, false);
     }
@@ -219,12 +217,16 @@ pub fn derive_finish_unfinish_action(
     let zero_threshold = (avg_vol * 0.05).max(1.0);
     let significant_threshold = (avg_vol * 0.30).max(5.0);
 
-    let low_level = levels
-        .iter()
-        .min_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
-    let high_level = levels
-        .iter()
-        .max_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
+    let low_level = levels.iter().min_by(|a, b| {
+        a.price
+            .partial_cmp(&b.price)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let high_level = levels.iter().max_by(|a, b| {
+        a.price
+            .partial_cmp(&b.price)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let (finish_bullish, unfinish_bullish) = if let Some(ll) = low_level {
         (
@@ -244,7 +246,12 @@ pub fn derive_finish_unfinish_action(
         (false, false)
     };
 
-    (finish_bullish, finish_bearish, unfinish_bullish, unfinish_bearish)
+    (
+        finish_bullish,
+        finish_bearish,
+        unfinish_bullish,
+        unfinish_bearish,
+    )
 }
 
 /// Derives Big Trade flags from footprint levels (Subdimi methodology).
@@ -268,7 +275,10 @@ pub fn derive_big_trade(levels: &[FootprintLevel]) -> (bool, bool) {
     let threshold = avg_vol * 2.5;
 
     let min_price = levels.iter().map(|l| l.price).fold(f64::INFINITY, f64::min);
-    let max_price = levels.iter().map(|l| l.price).fold(f64::NEG_INFINITY, f64::max);
+    let max_price = levels
+        .iter()
+        .map(|l| l.price)
+        .fold(f64::NEG_INFINITY, f64::max);
     let mid_price = (min_price + max_price) / 2.0;
 
     let big_trade_bullish = levels
@@ -1037,7 +1047,7 @@ mod tests {
         //  H:   100  102  105  103  101  104  102  100
         //  L:   98   96   95   97   99   97   99  101
         let highs = [100.0, 102.0, 105.0, 103.0, 101.0, 104.0, 102.0, 100.0];
-        let lows  = [98.0,  96.0,  95.0,  97.0,  99.0,  97.0,  99.0, 101.0];
+        let lows = [98.0, 96.0, 95.0, 97.0, 99.0, 97.0, 99.0, 101.0];
 
         let (sh, sl) = derive_confirmed_swings(&highs, &lows, 2);
 
@@ -1053,7 +1063,7 @@ mod tests {
     fn confirmed_swings_returns_none_when_window_too_short() {
         // Need at least 2*2+1 = 5 elements; 4 is not enough.
         let highs = [100.0, 102.0, 101.0, 100.0];
-        let lows  = [98.0,  97.0,  98.0,  99.0];
+        let lows = [98.0, 97.0, 98.0, 99.0];
         let (sh, sl) = derive_confirmed_swings(&highs, &lows, 2);
         assert_eq!(sh, None);
         assert_eq!(sl, None);
@@ -1066,7 +1076,7 @@ mod tests {
         //  idx:  0    1    2    3    4    5    6
         //  H:   100  101  102  108  106  105  104
         let highs = [100.0, 101.0, 102.0, 108.0, 106.0, 105.0, 104.0];
-        let lows  = [98.0,  97.0,  96.0,  97.0,  96.0,  95.0,  94.0];
+        let lows = [98.0, 97.0, 96.0, 97.0, 96.0, 95.0, 94.0];
 
         let (sh, _sl) = derive_confirmed_swings(&highs, &lows, 2);
 
@@ -1084,41 +1094,86 @@ mod tests {
     fn confirmed_swings_flat_bars_not_confirmed() {
         // Two equal highs at indices 2 and 3 — strict inequality means neither qualifies.
         let highs = [100.0, 101.0, 105.0, 105.0, 103.0, 102.0, 101.0];
-        let lows  = [99.0,  98.0,  97.0,  96.0,  97.0,  98.0,  99.0];
+        let lows = [99.0, 98.0, 97.0, 96.0, 97.0, 98.0, 99.0];
         let (sh, _) = derive_confirmed_swings(&highs, &lows, 2);
         // i=2: highs[3..=4]=[105,103], 105 NOT < 105 → not confirmed
         // i=3: highs[1..3]=[101,105], 105 NOT < 105 → not confirmed
         // i=4: highs[2..4]=[105,105], 105 NOT < 103 → not confirmed
-        assert_eq!(sh, None, "flat double-top should not produce a confirmed pivot");
+        assert_eq!(
+            sh, None,
+            "flat double-top should not produce a confirmed pivot"
+        );
     }
 
     #[test]
     fn finish_action_bullish_no_sellers_at_bottom() {
         // Lowest level: sell=0 → finish_bullish. Highest: buy=40, sig_thresh≈17.5 → unfinish_bearish.
         let levels = vec![
-            FootprintLevel { price: 100.0, buy_volume: 50.0, sell_volume: 0.0, delta: 50.0 },
-            FootprintLevel { price: 101.0, buy_volume: 30.0, sell_volume: 20.0, delta: 10.0 },
-            FootprintLevel { price: 102.0, buy_volume: 40.0, sell_volume: 35.0, delta: 5.0 },
+            FootprintLevel {
+                price: 100.0,
+                buy_volume: 50.0,
+                sell_volume: 0.0,
+                delta: 50.0,
+            },
+            FootprintLevel {
+                price: 101.0,
+                buy_volume: 30.0,
+                sell_volume: 20.0,
+                delta: 10.0,
+            },
+            FootprintLevel {
+                price: 102.0,
+                buy_volume: 40.0,
+                sell_volume: 35.0,
+                delta: 5.0,
+            },
         ];
         let (fb, fbe, ub, ube) = derive_finish_unfinish_action(&levels);
         assert!(fb, "lowest level sell_volume=0 → finish_action_bullish");
-        assert!(!fbe, "highest level buy_volume=40, not zero → no finish_bearish");
+        assert!(
+            !fbe,
+            "highest level buy_volume=40, not zero → no finish_bearish"
+        );
         assert!(!ub, "lowest level sell_volume=0 → no unfinish_bullish");
-        assert!(ube, "highest level buy_volume=40 > sig_thresh → unfinish_bearish (buyers trapped above)");
+        assert!(
+            ube,
+            "highest level buy_volume=40 > sig_thresh → unfinish_bearish (buyers trapped above)"
+        );
     }
 
     #[test]
     fn finish_action_bearish_no_buyers_at_top() {
         // Highest level: buy=0 → finish_bearish. Lowest: sell=20, sig_thresh≈16 → unfinish_bullish.
         let levels = vec![
-            FootprintLevel { price: 100.0, buy_volume: 30.0, sell_volume: 20.0, delta: 10.0 },
-            FootprintLevel { price: 101.0, buy_volume: 25.0, sell_volume: 30.0, delta: -5.0 },
-            FootprintLevel { price: 102.0, buy_volume: 0.0, sell_volume: 55.0, delta: -55.0 },
+            FootprintLevel {
+                price: 100.0,
+                buy_volume: 30.0,
+                sell_volume: 20.0,
+                delta: 10.0,
+            },
+            FootprintLevel {
+                price: 101.0,
+                buy_volume: 25.0,
+                sell_volume: 30.0,
+                delta: -5.0,
+            },
+            FootprintLevel {
+                price: 102.0,
+                buy_volume: 0.0,
+                sell_volume: 55.0,
+                delta: -55.0,
+            },
         ];
         let (fb, fbe, ub, ube) = derive_finish_unfinish_action(&levels);
-        assert!(!fb, "lowest level has sell_volume=20, not zero → no finish_bullish");
+        assert!(
+            !fb,
+            "lowest level has sell_volume=20, not zero → no finish_bullish"
+        );
         assert!(fbe, "highest level buy_volume=0 → finish_action_bearish");
-        assert!(ub, "lowest level sell_volume=20 > sig_thresh → unfinish_bullish (sellers trapped below)");
+        assert!(
+            ub,
+            "lowest level sell_volume=20 > sig_thresh → unfinish_bullish (sellers trapped below)"
+        );
         assert!(!ube, "highest level buy_volume=0 → no unfinish_bearish");
     }
 
@@ -1126,13 +1181,34 @@ mod tests {
     fn unfinish_action_detected_when_significant_opposite_volume() {
         // Lowest level has large sell_volume → sellers trapped below → bullish magnet (unfinish_bullish)
         let levels = vec![
-            FootprintLevel { price: 100.0, buy_volume: 10.0, sell_volume: 80.0, delta: -70.0 },
-            FootprintLevel { price: 101.0, buy_volume: 50.0, sell_volume: 40.0, delta: 10.0 },
-            FootprintLevel { price: 102.0, buy_volume: 60.0, sell_volume: 50.0, delta: 10.0 },
+            FootprintLevel {
+                price: 100.0,
+                buy_volume: 10.0,
+                sell_volume: 80.0,
+                delta: -70.0,
+            },
+            FootprintLevel {
+                price: 101.0,
+                buy_volume: 50.0,
+                sell_volume: 40.0,
+                delta: 10.0,
+            },
+            FootprintLevel {
+                price: 102.0,
+                buy_volume: 60.0,
+                sell_volume: 50.0,
+                delta: 10.0,
+            },
         ];
         let (fb, _fbe, ub, _ube) = derive_finish_unfinish_action(&levels);
-        assert!(!fb, "sell_volume is large, not near zero → no finish action");
-        assert!(ub, "lowest level has significant sell_volume → unfinish_bullish magnet");
+        assert!(
+            !fb,
+            "sell_volume is large, not near zero → no finish action"
+        );
+        assert!(
+            ub,
+            "lowest level has significant sell_volume → unfinish_bullish magnet"
+        );
     }
 
     #[test]

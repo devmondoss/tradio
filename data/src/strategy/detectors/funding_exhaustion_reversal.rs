@@ -1,4 +1,4 @@
-﻿use crate::institutional::{FundingRegime, InstitutionalContext, OiTrendDir};
+use crate::institutional::{FundingRegime, InstitutionalContext, OiTrendDir};
 use crate::strategy::types::*;
 
 // Note: toxic_flow_gate is evaluated once in the router before calling any detector.
@@ -16,8 +16,8 @@ pub fn detect(
     let funding_extreme_long = matches!(inst.funding.regime, FundingRegime::ExtremeLong)
         && inst.funding.current > cfg.funding_extreme_threshold;
 
-    let institutional_diverging_short = inst.ls_ratio.top_traders_long_pct < 0.52
-        && inst.ls_ratio.retail_long_pct > 0.62;
+    let institutional_diverging_short =
+        inst.ls_ratio.top_traders_long_pct < 0.52 && inst.ls_ratio.retail_long_pct > 0.62;
 
     let oi_weakening = matches!(
         inst.oi_trend.trend,
@@ -41,10 +41,7 @@ pub fn detect(
         && no_long_cascade_gate
     {
         let entry = px;
-        let stop = f64::max(
-            vp.vah.unwrap_or(px + atr),
-            entry + 0.75 * atr,
-        );
+        let stop = f64::max(vp.vah.unwrap_or(px + atr), entry + 0.75 * atr);
         let target = vp.val.unwrap_or(entry - 2.0 * atr);
 
         if target < entry && stop > entry {
@@ -57,7 +54,9 @@ pub fn detect(
             ];
             let mut missing = vec![];
             // Sprint 2 — funding velocity and peak confirmation
-            if inst.funding.velocity < 0.0 { evidence.push("funding_velocity_retreating".into()); }
+            if inst.funding.velocity < 0.0 {
+                evidence.push("funding_velocity_retreating".into());
+            }
             if inst.funding.peak_confirmed {
                 evidence.push("funding_peak_confirmed".into());
             } else {
@@ -65,7 +64,9 @@ pub fn detect(
             }
             // Book thin side: ask thinner than bid = no sellers left (confirms exhaustion)
             let ask_thin = ctx.orderbook.thin_zone_above;
-            if ask_thin { evidence.push("ask_side_thin".into()); }
+            if ask_thin {
+                evidence.push("ask_side_thin".into());
+            }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::FundingExhaustionReversal),
@@ -111,10 +112,7 @@ pub fn detect(
         && no_short_cascade_gate
     {
         let entry = px;
-        let stop = f64::min(
-            vp.val.unwrap_or(px - atr),
-            entry - 0.75 * atr,
-        );
+        let stop = f64::min(vp.val.unwrap_or(px - atr), entry - 0.75 * atr);
         let target = vp.vah.unwrap_or(entry + 2.0 * atr);
 
         if target > entry && stop < entry {
@@ -126,14 +124,18 @@ pub fn detect(
                 "cvd_recovering".into(),
             ];
             let mut missing = vec![];
-            if inst.funding.velocity > 0.0 { evidence.push("funding_velocity_rising".into()); }
+            if inst.funding.velocity > 0.0 {
+                evidence.push("funding_velocity_rising".into());
+            }
             if inst.funding.peak_confirmed {
                 evidence.push("funding_peak_confirmed".into());
             } else {
                 missing.push("FUNDING_PEAK_NOT_CONFIRMED".into());
             }
             let bid_thin = ctx.orderbook.thin_zone_below;
-            if bid_thin { evidence.push("bid_side_thin".into()); }
+            if bid_thin {
+                evidence.push("bid_side_thin".into());
+            }
             return Some(StrategySignal {
                 action: StrategyAction::ShadowSignal,
                 strategy_id: Some(StrategyId::FundingExhaustionReversal),
@@ -267,7 +269,7 @@ mod tests {
                 dominant_side: LiqSide::Longs,
                 cascade_detected: false,
                 last_event_ms: None,
-            total_zscore: None,
+                total_zscore: None,
             },
             ls_ratio: LsRatioContext {
                 top_traders_long_pct: 0.45, // smart money exiting

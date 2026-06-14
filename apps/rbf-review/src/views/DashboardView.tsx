@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { supabase, type AmdSignal, type BeSignal } from '../lib/supabase'
+import { supabase, type AmdSignal, type HtfTrade } from '../lib/supabase'
 import type { Trade } from '../lib/types'
 import { ACCOUNT, RISK_USD } from '../lib/types'
 import { fmtR, sesLabel } from '../lib/utils'
@@ -39,11 +39,10 @@ const AMD_META: DatasetMeta = {
   micro:  ['VR ≥ 1.5× en spike', 'CVD diverge del precio', 'liq_ratio ≤ 1.5', '|dz| ≥ 1.0'],
 }
 
-const BE_META: DatasetMeta = {
-  source: 'be_backtest_script.py · Binance FAPI',
-  period: '180d · Ene – Jun',
-  macro:  ['BTC · ETH · BNB · SOL', 'London · Overlap', 'Solo Shorts'],
-  micro:  ['CVD+ en rango ≥ 8b', 'flip ratio ≥ 0.40', 'VR ≥ 2.5×', 'close_loc ≤ 0.35', 'bear_body ≥ 0.35', 'upper_wick ≤ 0.30'],
+const HTF_META: DatasetMeta = {
+  source: 'htf_trades · Supabase live (Rust detector)',
+  macro:  ['D1 EMA20 bear/neutral', 'stop H1 < 0.75%', 'London + NY', 'BTC · ETH · SOL'],
+  micro:  ['shoot_star M1', 'CVD slope neg', 'OBI fast', 'VPIN > 0.6', 'equal_high', 'VR > 4×'],
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -99,7 +98,7 @@ function DatasetInfo({ meta, period }: { meta: DatasetMeta; period: string }) {
   const p = meta.period ?? period
 
   return (
-    <div style={{ padding: '6px 10px 7px', background: 'rgba(0,0,0,0.18)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+    <div style={{ padding: '6px 10px 7px', background: 'var(--bg3)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
         <span style={{ fontSize: 9, color: 'var(--text2)', fontWeight: 500 }}>{meta.source}</span>
         {p && <span style={{ fontSize: 8, color: 'var(--text3)' }}>{p}</span>}
@@ -278,7 +277,7 @@ function BreakdownTable({ trades, groupFn, keys, title }: {
         </thead>
         <tbody>
           {groups.map((g, i) => (
-            <tr key={g.k} style={{ background: i % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent' }}>
+            <tr key={g.k} style={{ background: i % 2 === 1 ? 'var(--bg3)' : 'transparent' }}>
               <td style={{ padding: '3px 6px', color: 'var(--text2)' }}>{g.k}</td>
               <td style={{ padding: '3px 6px', color: 'var(--text3)', textAlign: 'right' }}>{g.n}</td>
               <td style={{ padding: '3px 6px', textAlign: 'right', color: g.wr >= 55 ? 'var(--green)' : g.wr >= 45 ? 'var(--yellow)' : 'var(--red)', fontWeight: 600 }}>{g.wr.toFixed(0)}%</td>
@@ -352,47 +351,45 @@ function StrategyCol({ live, bt, btLoading, btError, meta, capital, color, label
 
 export default function DashboardView({ rbfTrades }: { rbfTrades: Trade[] }) {
   const [amdSignals, setAmdSignals] = useState<AmdSignal[]>([])
-  const [beSignals,  setBeSignals]  = useState<BeSignal[]>([])
+  const [htfTrades,  setHtfTrades]  = useState<HtfTrade[]>([])
   const [loading,    setLoading]    = useState(true)
 
   // BT data — fetched lazily from Python API in the background
-  const [rbfBtTrades, setRbfBtTrades] = useState<Trade[]>([])
-  const [beBtTrades,  setBeBtTrades]  = useState<Trade[]>([])
+  const [rbfBtTrades,  setRbfBtTrades]  = useState<Trade[]>([])
+  const [htfBtTrades,  setHtfBtTrades]  = useState<Trade[]>([])
   const [rbfBtLoading, setRbfBtLoading] = useState(true)
-  const [beBtLoading,  setBeBtLoading]  = useState(true)
+  const [htfBtLoading, setHtfBtLoading] = useState(true)
   const [rbfBtError,   setRbfBtError]   = useState(false)
-  const [beBtError,    setBeBtError]    = useState(false)
+  const [htfBtError,   setHtfBtError]   = useState(false)
 
   useEffect(() => {
     // ── Live signals (Supabase, fast) ────────────────────────────────────────
     const since = Date.now() - 90 * 86400000
     Promise.all([
       supabase.from('amd_signals').select('id,timestamp_ms,symbol,direction,session,entry_price,stop_price,target_price,rr,result_r,exit_reason,closed_at_ms,is_active').gte('timestamp_ms', since).order('timestamp_ms', { ascending: true }),
-      supabase.from('be_signals').select('id,timestamp_ms,symbol,session,entry_price,stop_price,target_price,rr,range_pct,range_bars,range_cvd,cvd_flip_ratio,vr_at_breakout,result_r,exit_reason,closed_at,active').gte('timestamp_ms', since).order('timestamp_ms', { ascending: true }),
-    ]).then(([amdRes, beRes]) => {
+      supabase.from('htf_trades').select('id,symbol,sig,session,d1_trend,entry,stop,target,stop_pct,is_open,result_r,reason,exit_price,duration_bars,entry_at,closed_at').gte('entry_at', new Date(since).toISOString()).order('entry_at', { ascending: true }),
+    ]).then(([amdRes, htfRes]) => {
       if (amdRes.data) setAmdSignals(amdRes.data as AmdSignal[])
-      if (beRes.data)  setBeSignals(beRes.data  as BeSignal[])
+      if (htfRes.data) setHtfTrades(htfRes.data  as HtfTrade[])
       setLoading(false)
     })
 
-    // ── Python backtests (subprocess, lento 1ª vez / cache rápido después) ──
-    // RBF: usa todos los días con microestructura disponibles
+    // ── Python backtests ──────────────────────────────────────────────────────
     fetch('/api/backtest?days=90')
       .then(r => r.json())
       .then(d => { setRbfBtTrades((d.trades ?? []) as Trade[]); setRbfBtLoading(false) })
       .catch(() => { setRbfBtLoading(false); setRbfBtError(true) })
 
-    // BE: 180d desde Binance FAPI con caché en disco
-    fetch('/api/backtest/be?days=180')
+    fetch('/api/backtest/shorts?days=14')
       .then(r => r.json())
-      .then(d => { setBeBtTrades((d.trades ?? []) as Trade[]); setBeBtLoading(false) })
-      .catch(() => { setBeBtLoading(false); setBeBtError(true) })
+      .then(d => { setHtfBtTrades((d.trades ?? []) as Trade[]); setHtfBtLoading(false) })
+      .catch(() => { setHtfBtLoading(false); setHtfBtError(true) })
 
     // ── Realtime ─────────────────────────────────────────────────────────────
-    const beCh = supabase.channel('be-live-dash')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'be_signals' }, p => {
-        if (p.eventType === 'INSERT') setBeSignals(prev => [...prev, p.new as BeSignal])
-        else if (p.eventType === 'UPDATE') setBeSignals(prev => prev.map(s => s.id === (p.new as BeSignal).id ? p.new as BeSignal : s))
+    const htfCh = supabase.channel('htf-live-dash')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'htf_trades' }, p => {
+        if (p.eventType === 'INSERT') setHtfTrades(prev => [...prev, p.new as HtfTrade])
+        else if (p.eventType === 'UPDATE') setHtfTrades(prev => prev.map(s => s.id === (p.new as HtfTrade).id ? p.new as HtfTrade : s))
       }).subscribe()
 
     const amdCh = supabase.channel('amd-live-dash')
@@ -401,7 +398,7 @@ export default function DashboardView({ rbfTrades }: { rbfTrades: Trade[] }) {
         else if (p.eventType === 'UPDATE') setAmdSignals(prev => prev.map(s => s.id === (p.new as AmdSignal).id ? p.new as AmdSignal : s))
       }).subscribe()
 
-    return () => { supabase.removeChannel(beCh); supabase.removeChannel(amdCh) }
+    return () => { supabase.removeChannel(htfCh); supabase.removeChannel(amdCh) }
   }, [])
 
   const rbfLive = fromRbfTrades(rbfTrades)
@@ -409,16 +406,21 @@ export default function DashboardView({ rbfTrades }: { rbfTrades: Trade[] }) {
     amdSignals.map(s => ({ result_r: s.result_r, session: s.session, symbol: s.symbol, direction: s.direction, exit_reason: s.exit_reason, timestamp_ms: s.timestamp_ms })),
     ACCOUNT, RISK_USD,
   )
-  const beLive = fromLiveTrades(
-    beSignals.map(s => ({ result_r: s.result_r, session: s.session, symbol: s.symbol, direction: 'Short', exit_reason: s.exit_reason, timestamp_ms: s.timestamp_ms })),
+  const htfLive = fromLiveTrades(
+    htfTrades.map(t => ({
+      result_r:     t.result_r,
+      session:      t.session,
+      symbol:       t.symbol,
+      direction:    'Short',
+      exit_reason:  t.reason,
+      timestamp_ms: new Date(t.entry_at).getTime(),
+    })),
     ACCOUNT, RISK_USD,
   )
 
-  // BT: RBF y BE desde Python API (Trade[] → StratTrade[])
-  // AMD: sin backtest histórico propio → usa live cerrados
-  const rbfBt = fromRbfTrades(rbfBtTrades)
-  const amdBt = amdLive.filter(t => !t.isOpen)
-  const beBt  = fromRbfTrades(beBtTrades)
+  const rbfBt  = fromRbfTrades(rbfBtTrades)
+  const amdBt  = amdLive.filter(t => !t.isOpen)
+  const htfBt  = fromRbfTrades(htfBtTrades)
 
   if (loading) return (
     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text2)', fontSize: 11 }}>cargando…</div>
@@ -434,10 +436,10 @@ export default function DashboardView({ rbfTrades }: { rbfTrades: Trade[] }) {
         meta={AMD_META} capital={ACCOUNT} color="var(--green)"
         label="AMD" note="Long + Short · Acum · Manip · Dist"
         sessions={['London', 'LondonNyOverlap', 'NewYork']} symbols={['BTC', 'ETH', 'BNB', 'SOL']} />
-      <StrategyCol live={beLive} bt={beBt} btLoading={beBtLoading} btError={beBtError}
-        meta={BE_META} capital={ACCOUNT} color="var(--yellow)"
-        label="BE" note="Short · BTC / ETH / BNB / SOL · London + Overlap"
-        sessions={['London', 'LondonNyOverlap']} symbols={['BTC', 'ETH', 'BNB', 'SOL']} />
+      <StrategyCol live={htfLive} bt={htfBt} btLoading={htfBtLoading} btError={htfBtError}
+        meta={HTF_META} capital={ACCOUNT} color="var(--red)"
+        label="HTF" note="Short · BTC / ETH / SOL · stop H1 &lt; 0.75%"
+        sessions={['London', 'LondonNyOverlap', 'NewYork']} symbols={['BTC', 'ETH', 'SOL']} />
     </div>
   )
 }

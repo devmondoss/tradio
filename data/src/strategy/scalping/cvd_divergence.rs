@@ -5,9 +5,9 @@
 //!
 //! Puede operar tanto en rango como en tendencia (con cautela).
 
-use crate::strategy::types::Side;
 use super::{ScalpingContext, ScalpingSignal, ScalpingStrategyId, is_scalping_session};
 use crate::strategy::types::ScalpingConfig;
+use crate::strategy::types::Side;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DivergenceType {
@@ -40,7 +40,10 @@ pub fn detect_divergence(
     lookback: usize,
     min_strength: f64,
 ) -> Option<DivergenceResult> {
-    let n = price_highs.len().min(price_lows.len()).min(cvd_history.len());
+    let n = price_highs
+        .len()
+        .min(price_lows.len())
+        .min(cvd_history.len());
     if n < lookback {
         return None;
     }
@@ -105,7 +108,11 @@ pub fn detect_divergence(
     // Retorna la divergencia más fuerte si hay conflicto
     match (bearish, bullish) {
         (Some(b), Some(u)) => {
-            if b.strength >= u.strength { Some(b) } else { Some(u) }
+            if b.strength >= u.strength {
+                Some(b)
+            } else {
+                Some(u)
+            }
         }
         (Some(b), None) => Some(b),
         (None, Some(u)) => Some(u),
@@ -131,7 +138,11 @@ pub fn detect(ctx: &ScalpingContext, cfg: &ScalpingConfig) -> Option<ScalpingSig
     }
 
     // Gate 4: necesitamos suficiente historial
-    let n = ctx.price_highs.len().min(ctx.price_lows.len()).min(ctx.cvd_history.len());
+    let n = ctx
+        .price_highs
+        .len()
+        .min(ctx.price_lows.len())
+        .min(ctx.cvd_history.len());
     if n < cfg.s3_lookback_bars {
         return None;
     }
@@ -204,11 +215,7 @@ struct SlTpResult {
     rr: f64,
 }
 
-fn build_sl_tp(
-    ctx: &ScalpingContext,
-    side: Side,
-    div: &DivergenceResult,
-) -> Option<SlTpResult> {
+fn build_sl_tp(ctx: &ScalpingContext, side: Side, div: &DivergenceResult) -> Option<SlTpResult> {
     let tick = 0.10_f64;
     let atr = ctx.atr.max(10.0);
 
@@ -218,7 +225,11 @@ fn build_sl_tp(
             let entry = ctx.bar_close - tick;
             let sl = div.price_level + atr * 0.3;
             // TP1: swing low previo más cercano
-            let tp1 = ctx.price_lows.iter().rev().skip(1)
+            let tp1 = ctx
+                .price_lows
+                .iter()
+                .rev()
+                .skip(1)
                 .find(|&&v| v < ctx.bar_close)
                 .copied()
                 .unwrap_or(ctx.bar_close - atr * 0.8);
@@ -228,7 +239,11 @@ fn build_sl_tp(
         Side::Long => {
             let entry = ctx.bar_close + tick;
             let sl = div.price_level - atr * 0.3;
-            let tp1 = ctx.price_highs.iter().rev().skip(1)
+            let tp1 = ctx
+                .price_highs
+                .iter()
+                .rev()
+                .skip(1)
                 .find(|&&v| v > ctx.bar_close)
                 .copied()
                 .unwrap_or(ctx.bar_close + atr * 0.8);
@@ -241,7 +256,13 @@ fn build_sl_tp(
     let reward = (tp1 - entry).abs();
     let rr = reward / risk;
 
-    Some(SlTpResult { entry, sl, tp1, tp2, rr })
+    Some(SlTpResult {
+        entry,
+        sl,
+        tp1,
+        tp2,
+        rr,
+    })
 }
 
 fn build_evidence(ctx: &ScalpingContext, side: Side, div: &DivergenceResult) -> Vec<String> {
