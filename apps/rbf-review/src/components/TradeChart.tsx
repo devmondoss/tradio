@@ -201,10 +201,15 @@ export default function TradeChart({ trade }: Props) {
     // Retroceder suficiente para mostrar la formación del rango + contexto previo
     const rangeBars   = trade.rangeBars ?? 15
     const extraBars   = rangeBars + 220
-    const closedAtSec = trade.closedAt
-      ? Math.floor(new Date(trade.closedAt).getTime() / 1000)
-      : trade.ts + (trade.durationMin ?? 90) * 60
-    const durationBars = Math.ceil((closedAtSec - trade.ts) / 60) + 30
+    const nowSec      = Math.floor(Date.now() / 1000)
+    const closedAtSec = trade.isOpen
+      ? nowSec
+      : trade.closedAt
+        ? Math.floor(new Date(trade.closedAt).getTime() / 1000)
+        : trade.ts + (trade.durationMin ?? 90) * 60
+    // Para trades abiertos traemos hasta ahora + 200 barras de contexto post-cierre
+    const rightPad    = trade.isOpen ? 0 : 200
+    const durationBars = Math.ceil((closedAtSec - trade.ts) / 60) + rightPad
     const totalLimit = Math.min(extraBars + durationBars, 1500)
     fetchKlines(trade.sym, trade.tsMs, totalLimit, extraBars).then(cs => {
       if (tradeRef.current?.id !== trade.id) return
@@ -213,9 +218,12 @@ export default function TradeChart({ trade }: Props) {
 
       requestAnimationFrame(() => {
         if (tradeRef.current?.id !== trade.id) return
+        const visTo = trade.isOpen
+          ? (nowSec + 10 * 60) as Time          // pequeño margen a la derecha para trades abiertos
+          : (closedAtSec + 200 * 60) as Time    // 200 min post-cierre para ver qué pasó después
         chart.timeScale().setVisibleRange({
           from: (trade.ts - (rangeBars + 100) * 60) as Time,
-          to:   (closedAtSec + 120 * 60) as Time,
+          to:   visTo,
         })
         draw()
       })
