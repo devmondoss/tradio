@@ -1750,23 +1750,29 @@ impl SupabaseWriter {
             .map(|dt| dt.to_rfc3339());
 
         let body = serde_json::json!({
-            "symbol":        symbol,
-            "sig":           sig.sig,
-            "session":       sig.session,
-            "d1_trend":      sig.d1_trend,
-            "entry":         sig.entry,
-            "stop":          sig.stop,
-            "target":        sig.target,
-            "stop_pct":      sig.stop_pct,
-            "is_open":       event.is_open,
-            "result_r":      event.result_r,
-            "gross_r":       event.gross_r,
-            "fee_r":         event.fee_r,
-            "reason":        event.reason,
-            "exit_price":    event.exit_price,
-            "duration_bars": event.duration_bars,
-            "entry_at":      entry_at,
-            "closed_at":     closed_at,
+            "symbol":           symbol,
+            "sig":              sig.sig,
+            "session":          sig.session,
+            "direction":        "Short",
+            "d1_trend":         sig.d1_trend,
+            "entry":            sig.entry,
+            "stop":             sig.stop,
+            "target":           sig.target,
+            "stop_pct":         sig.stop_pct,
+            "is_open":          event.is_open,
+            "result_r":         event.result_r,
+            "gross_r":          event.gross_r,
+            "fee_r":            event.fee_r,
+            "reason":           event.reason,
+            "exit_price":       event.exit_price,
+            "duration_bars":    event.duration_bars,
+            "entry_at":         entry_at,
+            "closed_at":        closed_at,
+            "obi_entry":        sig.obi_entry,
+            "cvd_slope_entry":  sig.cvd_slope_entry,
+            "dz_score":         sig.dz_score,
+            "stacked_imb":      sig.stacked_imb,
+            "equal_low":        sig.equal_low,
         });
 
         if event.is_open {
@@ -1803,7 +1809,7 @@ impl SupabaseWriter {
         }
     }
 
-    /// Escribe un evento HTF Long en la tabla `htf_long_trades`.
+    /// Escribe un evento HTF Long en `htf_trades` con direction='Long'.
     pub async fn write_htf_long_trade(
         &self,
         event: &data::strategy::detectors::htf_longs_detector::HtfLongTrade,
@@ -1819,27 +1825,33 @@ impl SupabaseWriter {
             .map(|dt| dt.to_rfc3339());
 
         let body = serde_json::json!({
-            "symbol":        symbol,
-            "sig":           sig.sig,
-            "session":       sig.session,
-            "h4_trend":      sig.h4_trend,
-            "entry":         sig.entry,
-            "stop":          sig.stop,
-            "target":        sig.target,
-            "stop_pct":      sig.stop_pct,
-            "is_open":       event.is_open,
-            "result_r":      event.result_r,
-            "gross_r":       event.gross_r,
-            "fee_r":         event.fee_r,
-            "reason":        event.reason,
-            "exit_price":    event.exit_price,
-            "duration_bars": event.duration_bars,
-            "entry_at":      entry_at,
-            "closed_at":     closed_at,
+            "symbol":           symbol,
+            "sig":              sig.sig,
+            "session":          sig.session,
+            "direction":        "Long",
+            "d1_trend":         sig.h4_trend,  // reuse column — shorts=D1, longs=H4
+            "entry":            sig.entry,
+            "stop":             sig.stop,
+            "target":           sig.target,
+            "stop_pct":         sig.stop_pct,
+            "is_open":          event.is_open,
+            "result_r":         event.result_r,
+            "gross_r":          event.gross_r,
+            "fee_r":            event.fee_r,
+            "reason":           event.reason,
+            "exit_price":       event.exit_price,
+            "duration_bars":    event.duration_bars,
+            "entry_at":         entry_at,
+            "closed_at":        closed_at,
+            "obi_entry":        sig.obi_entry,
+            "cvd_slope_entry":  sig.cvd_slope_entry,
+            "dz_score":         sig.dz_score,
+            "stacked_imb":      sig.stacked_imb,
+            "equal_low":        sig.equal_low,
         });
 
         if event.is_open {
-            let url = format!("{}/rest/v1/htf_long_trades", self.url);
+            let url = format!("{}/rest/v1/htf_trades", self.url);
             let result = self.client
                 .post(&url)
                 .header("apikey", &self.key)
@@ -1852,12 +1864,13 @@ impl SupabaseWriter {
                 eprintln!("[supabase] write_htf_long_trade INSERT error: {e}");
             }
         } else {
-            let url = format!("{}/rest/v1/htf_long_trades", self.url);
+            let url = format!("{}/rest/v1/htf_trades", self.url);
             let result = self.client
                 .patch(&url)
-                .query(&[("symbol", format!("eq.{symbol}")),
-                         ("entry_at", format!("eq.{entry_at}")),
-                         ("is_open", "eq.true".to_string())])
+                .query(&[("symbol",    format!("eq.{symbol}")),
+                         ("entry_at",  format!("eq.{entry_at}")),
+                         ("direction", "eq.Long".to_string()),
+                         ("is_open",   "eq.true".to_string())])
                 .header("apikey", &self.key)
                 .header("Authorization", format!("Bearer {}", self.key))
                 .header("Content-Type", "application/json")

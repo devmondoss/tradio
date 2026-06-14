@@ -40,6 +40,12 @@ pub struct HtfLongSignal {
     pub stop_pct: f64,
     pub session: String,
     pub h4_trend: String,
+    // microestructura snapshot en entrada
+    pub obi_entry: f64,
+    pub cvd_slope_entry: Option<f64>,
+    pub dz_score: f64,
+    pub stacked_imb: String,
+    pub equal_low: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,6 +277,11 @@ impl HtfLongsState {
             stop_pct: (stop_pct * 1000.0).round() / 1000.0,
             session: ctx.session.clone(),
             h4_trend: h4t,
+            obi_entry: ctx.obi_fast,
+            cvd_slope_entry: ctx.cvd_slope,
+            dz_score: ctx.dz,
+            stacked_imb: ctx.stacked_imb.clone(),
+            equal_low: ctx.equal_low,
         };
 
         let htf_trade = HtfLongTrade {
