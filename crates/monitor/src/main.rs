@@ -1974,12 +1974,14 @@ impl BarState {
         self.obi_ema_slow = self.obi_ema_slow * (1.0 - 0.095) + bar_obi_l5 * 0.095;
 
         // ── Flush buffer OBI intrabar → Supabase obi_10s ──────────────────────
-        let obi_mean_intrabar: Option<f64> = if self.obi_intrabar.is_empty() {
-            None
+        let (obi_mean_intrabar, obi_min_intrabar, obi_max_intrabar) = if self.obi_intrabar.is_empty() {
+            (None, None, None)
         } else {
             let mean_l5 = self.obi_intrabar.iter().map(|s| s.1 as f64).sum::<f64>()
                 / self.obi_intrabar.len() as f64;
-            Some(mean_l5)
+            let min_l5 = self.obi_intrabar.iter().map(|s| s.1).fold(f32::MAX, f32::min) as f64;
+            let max_l5 = self.obi_intrabar.iter().map(|s| s.1).fold(f32::MIN, f32::max) as f64;
+            (Some(mean_l5), Some(min_l5), Some(max_l5))
         };
         let bar_spread_bps = ctx.orderbook.spread_bps.unwrap_or(0.0);
         if let Some(sb) = self.supabase.clone() {
@@ -3126,6 +3128,8 @@ impl BarState {
                 lvn_nearby.iter().copied().filter(|&p| p < c).reduce(f64::max),
                 ctx.flow.big_trade_bearish,
                 ctx.flow.big_trade_bullish,
+                obi_min_intrabar,
+                obi_max_intrabar,
             );
         }
 

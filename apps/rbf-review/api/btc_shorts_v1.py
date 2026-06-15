@@ -54,7 +54,8 @@ BAR_COLS = ('ts_ms,open,high,low,close,volume,atr,session,cvd_slope,obi_l5,'
             'stacked_imb,equal_high,obi_fast,sweep_confirmed,'
             'asian_high,asian_low,prev_day_high,prev_day_low,'
             'thin_above,ask_wall,vp_poc,vp_vah,'
-            'big_trade_bearish,big_trade_bullish')
+            'big_trade_bearish,big_trade_bullish,'
+            'obi_min_intrabar,obi_max_intrabar')
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 

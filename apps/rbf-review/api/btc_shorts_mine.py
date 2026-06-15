@@ -45,7 +45,8 @@ COLS = ('ts_ms,open,high,low,close,volume,atr,session,cvd_slope,obi_l5,'
         'swing_high_50,swing_low_50,prev_day_high,prev_day_low,'
         'asian_high,asian_low,thin_above,thin_below,ask_wall,bid_wall,'
         'liq_ratio,sweep_confirmed,vp_poc,vp_vah,vp_val,vp_lvn_below,'
-        'big_trade_bearish,big_trade_bullish')
+        'big_trade_bearish,big_trade_bullish,'
+        'obi_min_intrabar,obi_max_intrabar')
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 
@@ -217,6 +218,14 @@ def extract_features(b):
         # Big Trade (footprint: volumen >2.5x media de la barra)
         'big_trade_bearish': b.get('big_trade_bearish') is True or str(b.get('big_trade_bearish')).lower() == 'true',
         'big_trade_bullish': b.get('big_trade_bullish') is True or str(b.get('big_trade_bullish')).lower() == 'true',
+
+        # OBI intrabar (min/max de 6 muestras cada 10s — contexto dentro de la vela)
+        # Captura presión vendedora real durante el wick, no solo al cierre
+        'obi_min_neg20':  (b.get('obi_min_intrabar') or 0) < -0.20,
+        'obi_min_neg30':  (b.get('obi_min_intrabar') or 0) < -0.30,
+        'obi_min_neg40':  (b.get('obi_min_intrabar') or 0) < -0.40,
+        'obi_max_pos20':  (b.get('obi_max_intrabar') or 0) > 0.20,
+        'obi_range_wide': ((b.get('obi_max_intrabar') or 0) - (b.get('obi_min_intrabar') or 0)) > 0.30,
     }
 
 # ── Mining ────────────────────────────────────────────────────────────────────
