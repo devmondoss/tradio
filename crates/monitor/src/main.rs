@@ -641,6 +641,11 @@ struct BarState {
     vpin_history: VecDeque<f64>,
     // Consecutive bars of CVD-vs-price divergence (positive=bearish, negative=bullish, 0=aligned)
     cvd_divergence_bars: i32,
+    // Multi-bar context — features de narrativa para minería
+    cvd_consec_neg: i32,    // barras consecutivas con cvd_slope < 0 (momentum vendedor)
+    cvd_consec_pos: i32,    // barras consecutivas con cvd_slope > 0 (momentum comprador)
+    prev_bar_delta: f64,    // bar_delta de la barra anterior
+    bars_since_low_vr: i32, // barras desde la última barra de compresión (vr < 0.7)
     // VP open bias tracker — classifies daily session open vs previous day's value area
     vp_bias_tracker: data::strategy::vp_open_bias::DailyVpTracker,
     // Naked POC tracker — tracks previous-session POCs not yet revisited by price
@@ -788,6 +793,10 @@ impl BarState {
             daily_day: -1,
             vpin_history: VecDeque::with_capacity(51),
             cvd_divergence_bars: 0,
+            cvd_consec_neg: 0,
+            cvd_consec_pos: 0,
+            prev_bar_delta: 0.0,
+            bars_since_low_vr: 0,
             vp_bias_tracker: data::strategy::vp_open_bias::DailyVpTracker::new(),
             naked_poc_tracker: data::strategy::vp_open_bias::NakedPocTracker::new(10),
             htf_weekly_tracker: data::strategy::vp_open_bias::HtfVpTracker::new_weekly(),
@@ -1479,6 +1488,13 @@ impl BarState {
 
         let cvd_slope = compute_cvd_slope(&self.cvd_history);
         let cvd_divergence = derive_cvd_divergence(&highs, &lows, cvd_slope);
+
+        // Multi-bar CVD momentum: barras consecutivas en la misma dirección
+        match cvd_slope {
+            Some(s) if s < 0.0 => { self.cvd_consec_neg += 1; self.cvd_consec_pos = 0; }
+            Some(s) if s > 0.0 => { self.cvd_consec_pos += 1; self.cvd_consec_neg = 0; }
+            _ => { self.cvd_consec_neg = 0; self.cvd_consec_pos = 0; }
+        }
 
         let (poc, vah, val, hvn_nearby, lvn_nearby) =
             compute_volume_profile(&self.bars, VP_BINS, c);
@@ -2994,6 +3010,13 @@ impl BarState {
                     0.0
                 }
             };
+            // bars_since_low_vr: compresión de volumen — 0 = esta barra ES compresión
+            if rbf_vr < 0.7 {
+                self.bars_since_low_vr = 0;
+            } else {
+                self.bars_since_low_vr = self.bars_since_low_vr.saturating_add(1);
+            }
+
             let stacked_str = match stacked_imbalance {
                 ImbalanceSide::Bullish => "Bullish",
                 ImbalanceSide::Bearish => "Bearish",
@@ -3131,8 +3154,15 @@ impl BarState {
                 ctx.flow.big_trade_bullish,
                 obi_min_intrabar,
                 obi_max_intrabar,
+                self.cvd_consec_neg,
+                self.cvd_consec_pos,
+                self.prev_bar_delta,
+                self.bars_since_low_vr,
             );
         }
+
+        // prev_bar_delta: guardar el delta de esta barra para la siguiente
+        self.prev_bar_delta = bar_delta;
 
         // Reset micro buffer (legacy DRR system — writes removed, kept for state compat)
         let next_open_ms = bar_ms + 300_000;
