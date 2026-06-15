@@ -1,9 +1,12 @@
 # MTF System — Documentación Completa
 
-**Última actualización:** 2026-06-14 (v2)  
+**Última actualización:** 2026-06-15 (v3 — acumulación de datos extendida)  
 **Estado:** Baseline v3 activo — Shorts (5 símbolos) + Longs (ETH/SOL) — reglas congeladas, pendiente walk-forward  
 **Shorts v3 (14 días, 5 símbolos):** n=133+, WR≈58%, AvgR≈+0.55R, $500→$2,012 (+302%)  
-**Longs baseline (8 días, ETH/SOL):** n=125, WR=56.0%, AvgR=+0.526R, $500→$1,748 (+250%)
+**Longs baseline (8 días, ETH/SOL):** n=125, WR=56.0%, AvgR=+0.526R, $500→$1,748 (+250%)  
+**Campos live acumulando:**
+- Desde 2026-06-15: `big_trade_bearish/bullish`, `obi_min/max_intrabar` — re-mining BTC ~Jun 20
+- Desde 2026-06-15 (hoy): `vp_poc/vah/val/lvn_below`, `cvd_consec_neg/pos`, `prev_bar_delta`, `bars_since_low_vr` — minar ~Jun 20-25
 
 ---
 
@@ -93,9 +96,14 @@ Filtro D1: precio < EMA20×0.995
 
 ### BTC (London + NY)
 ```python
+if bt_bear and oi:                       → 'btc:bt_bear+oi'        # (2026-06-15, prioridad A0)
 if is_shoot and abs_ask and obif < 0:    → 'btc:shoot+ask+obi'
 if is_shoot and is_london:               → 'btc:shoot+london'
 ```
+
+- `bt_bear`: `big_trade_bearish == True` — footprint con volumen >2.5× media de la barra, dominado por sellers en la mitad superior (institucional vendiendo en la mecha)
+- `oi`: `oi_momentum == True` (OI expandiéndose en dirección bajista)
+- Patrón en fase de acumulación de datos (activo desde 2026-06-15). Sin resultados aún — pendiente re-mining en ~5 días.
 
 ### ETH (London + NY)
 ```python
@@ -329,7 +337,10 @@ pub struct RestoredHtfTrade {
 ### Migraciones Supabase
 - [x] `migrations/mtf_microstructure_cols.sql` — **EJECUTADA** 2026-06-14: añadió `direction`, `obi_entry`, `cvd_slope_entry`, `dz_score`, `stacked_imb`, `equal_low` a `mtf_trades` + dropó tabla antigua
 - [x] `migrations/htf_to_mtf_rename.sql` — **EJECUTADA** 2026-06-14: `htf_trades` → `mtf_trades`
-- [ ] `migrations/vp_levels_bars.sql` — columnas VP (vp_poc, vp_vah, vp_val, vp_lvn_below) en tablas de barras
+- [x] `migrations/big_trade_bars.sql` — **EJECUTADA** 2026-06-15: añadió `big_trade_bearish BOOLEAN DEFAULT FALSE` y `big_trade_bullish BOOLEAN DEFAULT FALSE` a `btc_bars`, `eth_bars`, `bnb_bars`, `sol_bars`, `xrp_bars`
+- [x] `migrations/obi_intrabar_bars.sql` — **EJECUTADA** 2026-06-15: añadió `obi_min_intrabar FLOAT8` y `obi_max_intrabar FLOAT8` a todas las tablas de barras
+- [x] `migrations/vp_levels_bars.sql` — **EJECUTADA** 2026-06-15: añadió `vp_poc`, `vp_vah`, `vp_val`, `vp_lvn_below FLOAT8` a todas las tablas de barras (el Rust ya escribía estos valores; las columnas faltaban y los datos se perdían silenciosamente)
+- [x] `migrations/multibar_context_bars.sql` — **EJECUTADA** 2026-06-15: añadió `cvd_consec_neg INT2`, `cvd_consec_pos INT2`, `prev_bar_delta FLOAT8`, `bars_since_low_vr INT2` a todas las tablas de barras
 
 ### Walk-forward (~2026-07-05)
 - [ ] `shorts_mtf_backtest.py --days 30` sobre datos post-2026-06-13 (shorts baseline frozen)
@@ -337,12 +348,26 @@ pub struct RestoredHtfTrade {
 - [ ] Criterio pass: WR ≥ 55% y AvgR ≥ +0.30R (ambas direcciones por separado)
 - [ ] Si falla: recalibrar patrones (no agregar filtros ad-hoc)
 
+### Re-mining BTC (~2026-06-20)
+- [ ] `btc_shorts_mine.py` con 5+ días de `big_trade_bearish` + `obi_min/max_intrabar` acumulados
+- [ ] Evaluar WR/AvgR del patrón `btc:bt_bear+oi` con datos reales
+- [ ] Evaluar si `obi_min_neg30` o `obi_range_wide` discriminan winners de losers
+- [ ] Evaluar `cvd_consec_neg` (≥3 barras consecutivas) como feature adicional al patrón
+- [ ] Evaluar `prev_bar_delta < 0` como pre-condición (barra anterior ya vendedora)
+- [ ] Evaluar `bars_since_low_vr` 1-5 (breakout de compresión) vs >10 (momentum establecido)
+
+### Mining VP (~2026-06-25, 7+ días de datos)
+- [ ] `mtf_vp_target.py` con datos reales de `vp_poc/vah/val/lvn_below` en `btc_bars`
+- [ ] Evaluar VAL como target dinámico cuando VAL está en zona 1.0–2.5R
+- [ ] Evaluar LVN como target (zona de vacío — precio vuela sin resistencia)
+- [ ] Comparar equity VAL-target vs baseline 2.5R fijo
+
 ### Con 200+ trades (30+ días)
 - [ ] VWAP como filtro de entry (WR=68-75% bajo VWAP vs 57% sobre)
 - [ ] Score≥3 como mínimo si n≥30 en ese bucket
-- [ ] VP floor exit usando VAL como target (WR=81-87% cuando VAL en zona 1-2.5R)
 - [ ] Más patrones ETH longs (WR=78.6% en shorts — ¿igual potencial en longs?)
 - [ ] BNB/XRP longs con más datos (actualmente sin edge)
+- [ ] VWAP rastro para **longs** (ver §22 — descartado para shorts; aplica mejor en tendencia alcista)
 
 ### Investigación
 - [ ] **LondonNyOverlap**: 50% de big winners — ¿qué la diferencia de London pura?
@@ -351,16 +376,22 @@ pub struct RestoredHtfTrade {
 - [ ] Longs BTC: revisar si con más datos emerge edge (n<10 en todos los patrones actuales)
 - [ ] **H4 filter en shorts** — validar en walk-forward (ver §17)
 
+### Descartado (no re-explorar sin nuevos datos)
+- [x] VWAP rastro como target en shorts — descartado 2026-06-15 (ver §22)
+
 ---
 
 ## 14. Archivos
 
 | Archivo | Descripción |
 |---------|-------------|
-| `data/src/strategy/detectors/mtf_shorts_detector.rs` | Detector shorts + `restore_active_trade()` |
+| `data/src/strategy/detectors/mtf_shorts_detector.rs` | Detector shorts + `restore_active_trade()` + `MtfBarContext` |
 | `data/src/strategy/detectors/mtf_longs_detector.rs` | Detector longs ETH/SOL + `restore_active_trade()` |
-| `crates/monitor/src/supabase_writer.rs` | `load_mtf_active()` + `RestoredHtfTrade` + `write_mtf_long_trade()` → `mtf_trades` |
-| `crates/monitor/src/main.rs` | Bloque de recovery en startup por símbolo (Short + Long) |
+| `crates/monitor/src/supabase_writer.rs` | `load_mtf_active()` + `RestoredHtfTrade` + `write_rbf_bar()` con big_trade + obi_intrabar |
+| `crates/monitor/src/main.rs` | Recovery startup + obi_min/max_intrabar cálculo + warmup 1500-cap fix |
+| `apps/rbf-review/api/btc_shorts_v1.py` | Backtest live BTC shorts + patrón `btc:bt_bear+oi` |
+| `apps/rbf-review/api/btc_shorts_mine.py` | Minería MFE/MAE BTC shorts + features big_trade/obi_intrabar |
+| `apps/rbf-review/api/btc_vwap_rastro.py` | Backtest VWAP rastro como target — **descartado** (ver §22) |
 | `apps/rbf-review/api/shorts_mtf_backtest.py` | Backtest shorts — 5 símbolos |
 | `apps/rbf-review/api/mtf_longs_backtest.py` | Backtest longs — ETH/SOL |
 | `apps/rbf-review/api/mtf_longs_mine.py` | Minería MFE/MAE longs |
@@ -377,8 +408,10 @@ pub struct RestoredHtfTrade {
 | `apps/rbf-review/src/views/MTFModuleView.tsx` | UI del módulo — métricas Short/Long separadas + selector backtest |
 | `apps/rbf-review/vite.config.ts` | Middleware `/api/backtest/mtf_combined` (corre ambos scripts en paralelo) |
 | `migrations/mtf_microstructure_cols.sql` | **EJECUTADA** 2026-06-14 — microestructura + consolidación tabla |
+| `migrations/big_trade_bars.sql` | **EJECUTADA** 2026-06-15 — big_trade_bearish/bullish en todas las tablas de barras |
+| `migrations/obi_intrabar_bars.sql` | **EJECUTADA** 2026-06-15 — obi_min/max_intrabar en todas las tablas de barras |
 | `migrations/vp_levels_bars.sql` | **PENDIENTE** — VP en tablas de barras |
-| `docs/mtf/MTF_SHORTS_SISTEMA.md` | Este documento |
+| `docs/mtf/MTF_SISTEMA.md` | Este documento |
 | `docs/MTF_STRATEGY_RULES.md` | Reglas exactas congeladas — referencia para walk-forward |
 
 ---
@@ -435,6 +468,198 @@ Tres opciones: **Combined / Shorts / Longs**
 15. **Funding regime filter (shorts)**: bloquea entrada en `ExtremeLong` y `ElevatedShort` — +$375 PnL en 14d in-sample (ver §18)
 16. **Warmup recovery completo**: warm_up_history ahora pasa barras históricas por `mtf_state`/`mtf_longs_state` post-restart; cierra TP/SL perdidos durante downtime (ver §19)
 17. **Chart fix TradeChart**: trades OPEN proyectan box hasta `entry + 20h`; visible range sincronizado con el box para que `timeToCoordinate` funcione correctamente
+18. **big_trade_bearish/bullish en btc_bars** (2026-06-15): footprint institucional — seller dominante en mitad superior de la barra (>2.5× vol medio). `derive_big_trade()` ya existía en `adapter.rs`; ahora también se persiste en la tabla y se usa en minería BTC shorts
+19. **obi_min/max_intrabar en btc_bars** (2026-06-15): 6 muestras de OBI-L5 cada 10s durante la vela M1. Captura el pico de presión vendedora durante la mecha, no solo al cierre. Resuelve la brecha de granularidad ms→M1 (ver §21)
+20. **Warmup klines cap 1500** (2026-06-15): Binance FAPI max 1500 barras. `(limit + 1).min(1500)` — si la posición tiene >1500 barras de vida, el warmup carga hasta 1500 sin error de respuesta inesperada
+21. **VWAP rastro investigado y descartado** (2026-06-15): London VWAP previo como target dinámico. Backtest 15d, n=52: solo 4 trades con rastro aplicable (7.7%), WR=25%, AvgR=-0.651R. Sin edge (ver §22)
+22. **Expansión de campos acumulados en *_bars** (2026-06-15): se identificaron datos capturados pero no persistidos (VP levels) y datos faltantes (multi-bar context). Ejecutadas 2 migraciones + deploy:
+    - `vp_poc/vah/val/lvn_below`: ya los calculaba el Rust, las columnas no existían → datos perdidos. Ahora persisten.
+    - `cvd_consec_neg/pos`: barras consecutivas con CVD en la misma dirección — narrativa de momentum previo
+    - `prev_bar_delta`: delta de la barra anterior al cierre actual — ¿la presión vendedora venía de antes?
+    - `bars_since_low_vr`: barras desde la última compresión de volumen (vr < 0.7) — contexto de coil/spring
+
+---
+
+## 21. Granularidad — Big Trade + OBI Intrabar (2026-06-15)
+
+### El problema
+
+Los sistemas de orderflow como Flowsurface operan en milisegundos y muestran presión institucional a nivel de tick. Nuestro sistema trabaja con barras M1 — una barra de 60 segundos aplana toda la actividad intrabar en un único snapshot al cierre. Esto significa que un seller institucional que entra en los primeros 5 segundos de la vela y genera una mecha de -0.4% puede estar completamente invisible en el `obi_l5` al cierre de la barra.
+
+### Solución implementada
+
+**1. `big_trade_bearish` / `big_trade_bullish`** — footprint institucional al nivel de footprint de barra
+
+| Campo | Definición |
+|-------|-----------|
+| `big_trade_bearish` | Vol de trades ask (sell-side) > 2.5× vol medio de la barra **Y** concentrado en la mitad superior del rango de la vela |
+| `big_trade_bullish` | Vol de trades bid (buy-side) > 2.5× vol medio de la barra **Y** concentrado en la mitad inferior del rango |
+
+`derive_big_trade()` ya existía en `data/src/strategy/adapter.rs:266`. A partir de 2026-06-15 se persiste en `btc_bars` (y otras tablas de barras) y se usa como feature en `btc_shorts_mine.py`.
+
+**2. `obi_min_intrabar` / `obi_max_intrabar`** — pico de presión DOM durante la vela
+
+El monitor captura OBI-L5 cada 10 segundos durante la vela M1 (`self.obi_intrabar: Vec<(i64, f32, f32, f32, f32)>` — 6 muestras/barra). Al cerrar la vela:
+
+```rust
+let min_l5 = self.obi_intrabar.iter().map(|s| s.1).fold(f32::MAX, f32::min) as f64;
+let max_l5 = self.obi_intrabar.iter().map(|s| s.1).fold(f32::MIN, f32::max) as f64;
+```
+
+- `obi_min_intrabar`: pico de presión vendedora durante la barra (puede ser -0.40 cuando `obi_l5` al cierre es -0.10)
+- `obi_max_intrabar`: pico de presión compradora durante la barra
+- `obi_range = obi_max - obi_min`: amplitud total de la lucha DOM durante la vela
+
+### Features derivados en minería
+
+```python
+'obi_min_neg20':  obi_min_intrabar < -0.20,  # presión vendedora moderada
+'obi_min_neg30':  obi_min_intrabar < -0.30,  # presión vendedora fuerte
+'obi_min_neg40':  obi_min_intrabar < -0.40,  # presión vendedora extrema
+'obi_max_pos20':  obi_max_intrabar > +0.20,  # rebote comprador intrabar
+'obi_range_wide': (obi_max - obi_min) > 0.30, # lucha DOM intensa
+```
+
+### Estado
+
+Datos acumulándose desde 2026-06-15. Re-mining planificado en ~5 días (~2026-06-20) cuando haya suficientes barras con estos campos. El patrón `btc:bt_bear+oi` ya está activo en `btc_shorts_v1.py` como señal A0 (primera prioridad).
+
+---
+
+## 22. Investigación: VWAP Rastro como Target — Descartado (2026-06-15)
+
+### Concepto explorado
+
+El VWAP de cierre de la sesión London (07:00–12:00 UTC) del día anterior como nivel de "fair value institucional" que actúa como imán de precio para el día siguiente. Hipótesis: si el precio de entrada short está por encima del London VWAP previo, ese nivel sería un target más natural que el fijo 2.5R.
+
+**Por qué tiene sentido teórico:**
+- El VWAP es el precio promedio ponderado por volumen — donde realmente transaccionaron los institucionales
+- Si el precio sube por encima del VWAP del día anterior, eventualmente vuelve a ese nivel (mean reversion)
+- Usar el VWAP previo como target daría un target dinámico alineado con estructura institucional
+
+### Metodología de backtest
+
+Script: `apps/rbf-review/api/btc_vwap_rastro.py`
+
+```python
+# Reconstrucción del London VWAP desde btc_bars histórico
+def build_london_vwap_map(m1):
+    for bar in m1:
+        utc_h = datetime.fromtimestamp(ts/1000, tz=utc).hour
+        if 7 <= utc_h < 12:  # London: 07:00–12:00 UTC
+            typical = (h + l + c) / 3
+            sum_tv += typical * vol
+            sum_vol += vol
+    london_vwap_close = sum_tv / sum_vol  # valor al cerrar las 12:00 UTC
+```
+
+Comparación: mismo signal detector, mismos stops H1, mismo capital — solo el target varía.
+
+**Condición de aplicación del rastro:**
+```python
+use_rastro = rastro is not None and fixed_tp < rastro < entry
+# aplica si el VWAP previo está entre el entry y el target 2.5R
+# (es decir, más cercano → más fácil de alcanzar)
+```
+
+### Resultados (15 días, n=52 BTC shorts)
+
+| Escenario | n | WR% | AvgR | TotalR | Equity |
+|-----------|---|-----|------|--------|--------|
+| BASE (fijo 2.5R) | 52 | 63.5% | +0.771R | +40.10R | $901 |
+| RASTRO (London VWAP previo) | 52 | 63.5% | +0.763R | +39.69R | $897 |
+
+**Trades con rastro disponible:** 4/52 (7.7%)
+- WR de esos 4: 25.0%
+- AvgR de esos 4: -0.651R
+
+**Trade-by-trade donde el rastro aplicó:**
+
+| Fecha | Entry | Rastro | Gap | BASE | RASTRO |
+|-------|-------|--------|-----|------|--------|
+| 06-07 13:22 | 61,671 | 60,836 | 1.35% | -1.115R | -1.115R (=) |
+| 06-08 09:31 | 63,348 | 62,472 | 1.38% | -1.116R | -1.116R (=) |
+| 06-08 17:48 | 63,403 | 62,472 | 1.47% | -1.111R | -1.111R (=) |
+| 06-14 16:03 | 64,023 | 63,806 | 0.34% | +1.149R | +0.738R (-) |
+
+En los 3 primeros, el SL golpeó antes de que el precio llegara al rastro — sin diferencia. En el cuarto, el rastro cerró el trade prematuramente (+0.738R) cuando el fijo hubiera dado +1.149R.
+
+### Por qué no funciona
+
+En tendencia bajista (condición para short): el London VWAP del día anterior queda **por encima** del precio actual (el mercado ya bajó). Eso significa `rastro > entry` → condición `rastro < entry` no se cumple → no aplica. El rastro solo aplica en rangos laterales donde el VWAP previo está cerca del precio actual. Y en esos rangos, las señales de short ya tienden a fallar más.
+
+### Decisión
+
+**Descartado.** El concepto es teóricamente válido pero en la práctica BTC trending hace que el rastro sea inaplicable el 92.3% del tiempo. No se incorporará como filtro ni como target.
+
+Para longs podría valer más la pena explorar (el VWAP previo quedaría por debajo del precio en tendencia alcista, actuando como soporte). Pendiente para cuando haya datos de longs suficientes (~2026-07-05).
+
+---
+
+## 23. Campos Acumulados en *_bars — Mapa Completo (2026-06-15)
+
+### Qué está en DB y para qué sirve en minería
+
+| Campo | Tipo | Desde | Qué captura | Feature en minería |
+|-------|------|-------|-------------|-------------------|
+| `obi_l5` | FLOAT8 | siempre | Order Book Imbalance 5 niveles al cierre | Presión DOM en entry |
+| `obi_fast` | FLOAT8 | siempre | OBI EMA rápida (alpha=0.333) | Momentum DOM suavizado |
+| `cvd_slope` | FLOAT8 | siempre | Pendiente del CVD M1 | Dirección del flujo neto |
+| `bar_delta` | FLOAT8 | siempre | Delta neto de la barra (buy vol - sell vol) | Agresión neta en el bar |
+| `dz` | FLOAT8 | siempre | Delta Z-score (delta vs su media) | ¿Es este delta anómalo? |
+| `vr` | FLOAT8 | siempre | Volume ratio vs media 50 barras | ¿Expansión o compresión? |
+| `oi_momentum` | BOOLEAN | siempre | OI expandiéndose en dirección bajista/alcista | Dinero nuevo entrando |
+| `stacked_imb` | TEXT | siempre | Imbalances apilados Bullish/Bearish/None | Estructura de FVGs |
+| `absorption` | TEXT | siempre | Absorción en Ask/Bid (footprint) | Institucional absorbiendo |
+| `cvd_divergence` | TEXT | siempre | BearishAbsorption / BullishAbsorption | Divergencia CVD-precio |
+| `regime` | TEXT | siempre | TrendDown/TrendUp/Ranging/etc | Contexto de mercado |
+| `vwap` | FLOAT8 | siempre | VWAP de sesión diaria | Precio sobre/bajo fair value |
+| `vpin` | FLOAT8 | siempre | Volume-synchronized PIN (toxicidad de flujo) | Flujo informado vs noise |
+| `equal_high` | BOOLEAN | siempre | Equal high en ventana 50 barras | Pool de liquidez H1 |
+| `equal_low` | BOOLEAN | siempre | Equal low en ventana 50 barras | Pool de liquidez H1 |
+| `big_trade_bearish` | BOOLEAN | 2026-06-15 | Vol ask >2.5× media en mitad superior de rango | Seller institucional en mecha |
+| `big_trade_bullish` | BOOLEAN | 2026-06-15 | Vol bid >2.5× media en mitad inferior de rango | Buyer institucional en mecha |
+| `obi_min_intrabar` | FLOAT8 | 2026-06-15 | Pico mínimo de OBI-L5 durante la vela (6 muestras/min) | Presión vendedora máxima intrabar |
+| `obi_max_intrabar` | FLOAT8 | 2026-06-15 | Pico máximo de OBI-L5 durante la vela | Presión compradora máxima intrabar |
+| `vp_poc` | FLOAT8 | 2026-06-15 | Point of Control del VP 300 barras | Target dinámico / nivel de mayor volumen |
+| `vp_vah` | FLOAT8 | 2026-06-15 | Value Area High (70% del volumen por encima) | Resistencia estructural de VP |
+| `vp_val` | FLOAT8 | 2026-06-15 | Value Area Low (70% del volumen por debajo) | Soporte estructural / target natural shorts |
+| `vp_lvn_below` | FLOAT8 | 2026-06-15 | LVN más cercano por debajo del precio | Zona de vacío — precio vuela sin resistencia |
+| `cvd_consec_neg` | INT2 | 2026-06-15 | Barras consecutivas con cvd_slope < 0 | ¿Momentum vendedor sostenido o puntual? |
+| `cvd_consec_pos` | INT2 | 2026-06-15 | Barras consecutivas con cvd_slope > 0 | Contexto comprador previo a señal short |
+| `prev_bar_delta` | FLOAT8 | 2026-06-15 | bar_delta de la barra anterior | ¿La barra previa ya tenía presión vendedora? |
+| `bars_since_low_vr` | INT2 | 2026-06-15 | Barras desde última barra de compresión (vr < 0.7) | Breakout de coil (1-5) vs momentum establecido (>10) |
+
+### Features derivados en minería (calculados en Python, no en DB)
+
+```python
+# De obi_min/max_intrabar
+'obi_min_neg20':    obi_min_intrabar < -0.20
+'obi_min_neg30':    obi_min_intrabar < -0.30
+'obi_range_wide':   (obi_max - obi_min) > 0.30
+
+# De cvd_consec_neg
+'cvd_momentum_3':   cvd_consec_neg >= 3   # momentum establecido
+'cvd_momentum_5':   cvd_consec_neg >= 5   # momentum fuerte
+
+# De prev_bar_delta
+'prev_bear_delta':  prev_bar_delta < -50  # barra anterior bajista
+
+# De bars_since_low_vr
+'post_compression': 1 <= bars_since_low_vr <= 5   # breakout de coil
+'open_momentum':    bars_since_low_vr > 10          # momentum establecido
+
+# De vp_val
+'val_in_range':     entry - vp_val < entry * 0.025  # VAL a <2.5% = target natural
+```
+
+### Calendario de mining
+
+| Fecha | Qué minar | Campos nuevos disponibles |
+|-------|-----------|--------------------------|
+| ~2026-06-20 | Re-mining BTC shorts | `big_trade`, `obi_intrabar`, `cvd_consec`, `prev_bar_delta`, `bars_since_low_vr` |
+| ~2026-06-25 | VP como target | `vp_poc`, `vp_val`, `vp_lvn_below` (7+ días para perfiles significativos) |
+| ~2026-07-05 | Walk-forward completo | Todos los campos — validación out-of-sample |
 
 ---
 
