@@ -12,3 +12,5 @@ calibration/.env
 # SQL — solo local, no va al repo
 /supabase/
 /strategies/
+# Large datasets
+dataset/*.parquet
