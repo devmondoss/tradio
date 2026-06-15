@@ -325,6 +325,14 @@ impl MtfShortsState {
             return None;
         }
 
+        // ── 3c. Regime filter (EXP8) ─────────────────────────────────────────
+        // TrendDown: WR=44.4% AvgR=+0.029R — shorts que persiguen una caída ya establecida.
+        // TrendUp es el mejor regime (WR=71.4%): liquidez acumulada arriba lista para barrer.
+        // Backtest 14d: -12 trades, equity $1,237 → $1,432 (+$195).
+        if ctx.regime == "TrendDown" {
+            return None;
+        }
+
         // ── 4. Detectar señal M1 ─────────────────────────────────────────────
         let sig = detect_signal(&self.symbol, ctx)?;
 

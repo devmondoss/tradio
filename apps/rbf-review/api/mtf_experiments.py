@@ -20,26 +20,31 @@ from collections import defaultdict
 SCRIPT = Path(__file__).parent / 'mtf_shorts_backtest.py'
 
 EXPERIMENTS = ['none', 'obi_strict', 'cvd_session', 'delta_div',
-               'vwap_bias', 'secondary_str', 'three_layer', 'vwap_weak']
+               'vwap_bias', 'secondary_str', 'three_layer', 'vwap_weak',
+               'regime_filter', 'regime_vwap_combined']
 LABELS = {
-    'none':           'Baseline v2',
-    'obi_strict':     'EXP1: OBI < -0.15',
-    'cvd_session':    'EXP2: CVD/sesión',
-    'delta_div':      'EXP3: Delta Div',
-    'vwap_bias':      'EXP4: VWAP Macro',
-    'secondary_str':  'EXP5: Secundario',
-    'three_layer':    'EXP6: 3 Capas',
-    'vwap_weak':      'EXP7: VWAP Selectivo',
+    'none':                  'Baseline v2',
+    'obi_strict':            'EXP1: OBI < -0.15',
+    'cvd_session':           'EXP2: CVD/sesión',
+    'delta_div':             'EXP3: Delta Div',
+    'vwap_bias':             'EXP4: VWAP Macro',
+    'secondary_str':         'EXP5: Secundario',
+    'three_layer':           'EXP6: 3 Capas',
+    'vwap_weak':             'EXP7: VWAP Selectivo',
+    'regime_filter':         'EXP8: Regime Filter',
+    'regime_vwap_combined':  'EXP9: Regime+VWAP',
 }
 DESCRIPTIONS = {
-    'none':           'Patrones mineados v2, sin filtros adicionales',
-    'obi_strict':     'Requiere obi_fast < -0.15 en TODOS los patrones',
-    'cvd_session':    'London: cvd_slope < -0.20 / NY: cvd_slope < -0.15',
-    'delta_div':      'Requiere cvd_divergence == BearishAbsorption',
-    'vwap_bias':      'Macro sesión: entrar short solo si close < VWAP (equilibrio bajista)',
-    'secondary_str':  'Secundario: requiere stacked_imb == Bearish (estructura H1 débil)',
-    'three_layer':    '3 capas: Macro(D1+VWAP) + Secundario(stacked/exp+delta<0) + Micro(M1)',
-    'vwap_weak':      'VWAP solo en patrones WR<55%: btc:shoot+london, bnb:oi+ny, sol:eq+london+exp, xrp:oi+ny',
+    'none':                  'Patrones mineados v2, sin filtros adicionales',
+    'obi_strict':            'Requiere obi_fast < -0.15 en TODOS los patrones',
+    'cvd_session':           'London: cvd_slope < -0.20 / NY: cvd_slope < -0.15',
+    'delta_div':             'Requiere cvd_divergence == BearishAbsorption',
+    'vwap_bias':             'Macro sesión: entrar short solo si close < VWAP (equilibrio bajista)',
+    'secondary_str':         'Secundario: requiere stacked_imb == Bearish (estructura H1 débil)',
+    'three_layer':           '3 capas: Macro(D1+VWAP) + Secundario(stacked/exp+delta<0) + Micro(M1)',
+    'vwap_weak':             'VWAP solo en patrones WR<55%: btc:shoot+london, bnb:oi+ny, sol:eq+london+exp, xrp:oi+ny',
+    'regime_filter':         'Bloquear TrendDown (WR=44.4% worst regime); mantener TrendUp+Exp+Chop',
+    'regime_vwap_combined':  'Regime filter + EXP7 VWAP selectivo: dos capas combinadas',
 }
 
 def run_experiment(exp, days):
@@ -182,7 +187,8 @@ def main():
         dwr   = d['wr_pct'] - base['wr_pct']
         davgr = d['avg_r']  - base['avg_r']
         n_ret = d['n'] / base['n']
-        is_layer = exp in ('vwap_bias', 'secondary_str', 'three_layer', 'vwap_weak')
+        is_layer = exp in ('vwap_bias', 'secondary_str', 'three_layer', 'vwap_weak',
+                           'regime_filter', 'regime_vwap_combined')
         if is_layer:
             if dwr >= 5 and davgr >= 0.10 and n_ret >= 0.30:
                 verdict = '[OK] CANDIDATO 3-capas'

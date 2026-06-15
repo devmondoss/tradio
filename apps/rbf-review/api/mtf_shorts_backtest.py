@@ -201,6 +201,11 @@ def detect_m1_signal(sym, m1, i, experiment='none', horizon_back=5):  # noqa: C9
     if experiment == 'delta_div' and cvd_div != 'BearishAbsorption':
         return False, ''
 
+    # EXP8: regime_filter — bloquear TrendDown (WR=44.4%, peor regime para shorts)
+    # EXP9: regime_vwap_combined — mismo gate + VWAP selectivo (EXP7) combinados
+    if experiment in ('regime_filter', 'regime_vwap_combined') and reg == 'TrendDown':
+        return False, ''
+
     # EXP4: vwap_bias — Capa Macro sesión: solo entrar short si close < VWAP
     if experiment == 'vwap_bias':
         vwap_val = b.get('vwap') or 0
@@ -236,7 +241,7 @@ def detect_m1_signal(sym, m1, i, experiment='none', horizon_back=5):  # noqa: C9
     if sym == 'BTCUSDT':
         if not (is_london or is_ny): return False, ''
         if is_shoot and abs_ask and obif < 0:                                    return True, 'btc:shoot+ask+obi'
-        if is_shoot and is_london and (experiment != 'vwap_weak' or _vwap_pass): return True, 'btc:shoot+london'
+        if is_shoot and is_london and (experiment not in ('vwap_weak', 'regime_vwap_combined') or _vwap_pass): return True, 'btc:shoot+london'
 
     elif sym == 'ETHUSDT':
         if is_ny and (oi is True) and eq_true:              return True, 'eth:ny+oi+eq'
@@ -246,20 +251,20 @@ def detect_m1_signal(sym, m1, i, experiment='none', horizon_back=5):  # noqa: C9
     elif sym == 'SOLUSDT':
         if is_ny and vr > 4.0 and (oi is True):            return True, 'sol:ny+vr4+oi'
         if is_ny and vr > 4.0 and eq_true:                 return True, 'sol:ny+vr4+eq'
-        if eq_true and is_london and is_exp and (experiment != 'vwap_weak' or _vwap_pass): return True, 'sol:eq+london+exp'
+        if eq_true and is_london and is_exp and (experiment not in ('vwap_weak', 'regime_vwap_combined') or _vwap_pass): return True, 'sol:eq+london+exp'
 
     elif sym == 'BNBUSDT':
         # Solo NY — London no tiene edge en BNB (WR 30-42% en todos los patrones)
         if not is_ny: return False, ''
         if eq_true and (oi is True):                        return True, 'bnb:eq+ny+oi'
-        if oi is True and (experiment != 'vwap_weak' or _vwap_pass):            return True, 'bnb:oi+ny'
+        if oi is True and (experiment not in ('vwap_weak', 'regime_vwap_combined') or _vwap_pass): return True, 'bnb:oi+ny'
 
     elif sym == 'XRPUSDT':
         # Solo NY — London no tiene edge en XRP
         if not is_ny: return False, ''
         if eq_true and (oi is True):                        return True, 'xrp:eq+ny+oi'
         if abs_ask:                                         return True, 'xrp:ask+ny'
-        if oi is True and (experiment != 'vwap_weak' or _vwap_pass): return True, 'xrp:oi+ny'
+        if oi is True and (experiment not in ('vwap_weak', 'regime_vwap_combined') or _vwap_pass): return True, 'xrp:oi+ny'
 
     return False, ''
 
@@ -487,7 +492,8 @@ def main():
     parser.add_argument('--days', type=int, default=14)
     parser.add_argument('--experiment', default='none',
                         choices=['none', 'obi_strict', 'cvd_session', 'delta_div',
-                                 'vwap_bias', 'secondary_str', 'three_layer', 'vwap_weak'])
+                                 'vwap_bias', 'secondary_str', 'three_layer', 'vwap_weak',
+                                 'regime_filter', 'regime_vwap_combined'])
     parser.add_argument('--dynamic-target', action='store_true')
     parser.add_argument('--swing-target', action='store_true')
     parser.add_argument('--vp-target', action='store_true',
