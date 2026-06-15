@@ -3920,11 +3920,12 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         60 => "1h",
         _ => "5m",
     };
+    let capped = (limit + 1).min(1500); // Binance FAPI max limit = 1500
     let url = format!(
         "https://fapi.binance.com/fapi/v1/klines?symbol={}&interval={}&limit={}",
         symbol,
         interval_str,
-        limit + 1 // +1 so we skip the current (open) bar
+        capped
     );
     let resp = match reqwest::get(&url).await {
         Ok(r) => r,
@@ -3943,7 +3944,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
     let arr = match json.as_array() {
         Some(a) if a.len() > 1 => a,
         _ => {
-            eprintln!("[warmup] klines response unexpected shape");
+            eprintln!("[warmup] klines response unexpected shape: {}", &json.to_string()[..json.to_string().len().min(200)]);
             return;
         }
     };
