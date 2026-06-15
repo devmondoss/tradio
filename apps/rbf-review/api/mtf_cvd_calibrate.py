@@ -9,7 +9,7 @@ import json, subprocess, sys, importlib, types
 from pathlib import Path
 from collections import defaultdict
 
-SCRIPT = Path(__file__).parent / 'shorts_mtf_backtest.py'
+SCRIPT = Path(__file__).parent / 'mtf_shorts_backtest.py'
 DAYS   = 14
 
 def run_with_params(cvd_bars, min_profit):

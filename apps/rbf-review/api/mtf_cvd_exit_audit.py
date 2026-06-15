@@ -17,7 +17,7 @@ for line in (ROOT / '.env').read_text(encoding='utf-8').splitlines():
 SUPABASE_URL = _env['SUPABASE_URL']
 SUPABASE_KEY = _env['SUPABASE_KEY']
 
-SCRIPT = Path(__file__).parent / 'shorts_mtf_backtest.py'
+SCRIPT = Path(__file__).parent / 'mtf_shorts_backtest.py'
 TABLES = {'BTCUSDT':'btc_bars','ETHUSDT':'eth_bars','SOLUSDT':'sol_bars'}
 STARTS = {'BTCUSDT':1780676700000,'ETHUSDT':1780756260000,'SOLUSDT':1780756260000}
 DAYS   = 14

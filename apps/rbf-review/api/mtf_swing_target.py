@@ -6,7 +6,7 @@ import json, subprocess, sys
 from pathlib import Path
 from collections import defaultdict
 
-SCRIPT = Path(__file__).parent / 'shorts_mtf_backtest.py'
+SCRIPT = Path(__file__).parent / 'mtf_shorts_backtest.py'
 
 def run(days, flag=None):
     cmd = [sys.executable, str(SCRIPT), '--days', str(days)]
