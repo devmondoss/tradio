@@ -2896,6 +2896,7 @@ impl BarState {
                 session: format!("{:?}", session.session),
                 atr,
                 funding_regime: htf_funding_regime,
+                vwap_session: ctx.vwap.vwap_session,
             };
 
             if let Some(event) = self.mtf_state.on_bar_close(&htf_ctx) {
@@ -3123,6 +3124,8 @@ impl BarState {
                 vah,
                 val,
                 lvn_nearby.iter().copied().filter(|&p| p < c).reduce(f64::max),
+                ctx.flow.big_trade_bearish,
+                ctx.flow.big_trade_bullish,
             );
         }
 
@@ -4170,6 +4173,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                         regime: "Neutral".into(), session: "warmup".into(),
                         atr: 0.0, stacked_imb: "None".into(),
                         funding_regime: "Neutral".into(),
+                        vwap_session: None,
                     };
                     if let Some(closed) = state.mtf_state.on_bar_close(&warmup_ctx) {
                         if !closed.is_open {
@@ -4204,6 +4208,7 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
                         regime: "Neutral".into(), session: "warmup".into(),
                         atr: 0.0, stacked_imb: "None".into(),
                         funding_regime: "Neutral".into(),
+                        vwap_session: None,
                     };
                     if let Some(closed) = state.mtf_longs_state.on_bar_close(&warmup_ctx) {
                         if !closed.is_open {

@@ -853,6 +853,8 @@ impl SupabaseWriter {
         vp_vah: Option<f64>,
         vp_val: Option<f64>,
         vp_lvn_below: Option<f64>,
+        big_trade_bearish: bool,
+        big_trade_bullish: bool,
     ) {
         let body = json!({
             "symbol":          symbol,
@@ -896,10 +898,12 @@ impl SupabaseWriter {
             "equal_low":       equal_low,
             "cvd_divergence":  cvd_divergence,
             "sweep_confirmed": sweep_confirmed,
-            "vp_poc":          vp_poc,
-            "vp_vah":          vp_vah,
-            "vp_val":          vp_val,
-            "vp_lvn_below":    vp_lvn_below,
+            "vp_poc":              vp_poc,
+            "vp_vah":              vp_vah,
+            "vp_val":              vp_val,
+            "vp_lvn_below":        vp_lvn_below,
+            "big_trade_bearish":   big_trade_bearish,
+            "big_trade_bullish":   big_trade_bullish,
         });
         let table = match symbol {
             "ETHUSDT" => "eth_bars",
