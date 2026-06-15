@@ -100,6 +100,8 @@ pub struct MtfBarContext {
     /// Régimen de funding — "ExtremeLong"|"ElevatedLong"|"Neutral"|"ElevatedShort"|"ExtremeShort"
     /// "" o "Neutral" = sin dato (no bloquea).
     pub funding_regime: String,
+    /// VWAP de sesión — None si no disponible (primeras barras del día)
+    pub vwap_session: Option<f64>,
 }
 
 // ── Estado del detector ───────────────────────────────────────────────────────

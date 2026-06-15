@@ -164,8 +164,8 @@ def stats(trades):
 
 def sep(t): print(f'\n{"="*68}\n  {t}\n{"="*68}')
 
-def get_long_patterns(b, lows_50):
-    """Patrones candidatos para LONGS — espejo de los shorts."""
+def get_long_patterns(b, prev_b, lows_50):
+    """Patrones candidatos para LONGS — espejo de shorts + VWAP-centric para BTC."""
     ses   = b.get('session','')
     oi    = b.get('oi_momentum')
     obi   = float(b.get('obi_l5') or 0)
@@ -176,10 +176,9 @@ def get_long_patterns(b, lows_50):
     cvd   = float(b.get('cvd_slope') or 0)
     abso  = b.get('absorption','')
     stk   = b.get('stacked_imb','')
-    vpin  = float(b.get('vpin') or 0)
     rng   = (b['high']-b['low']) or 1
     body  = abs(b['close']-b['open'])
-    wick_lo = min(b['close'],b['open']) - b['low']   # mecha abajo = potencial compra
+    wick_lo = min(b['close'],b['open']) - b['low']
     bull    = b['close'] > b['open']
 
     # equal_low: low actual dentro de 0.03% del minimo de las 50 barras previas
@@ -188,33 +187,52 @@ def get_long_patterns(b, lows_50):
         min50 = min(lows_50)
         eq_low = abs(b['low'] - min50) / min50 <= 0.0003 if min50 > 0 else False
 
-    is_hammer   = wick_lo/rng > 0.45 and body/rng < 0.40   # espejo del shooting star
+    # VWAP reclaim: barra anterior bajo VWAP, barra actual sobre VWAP
+    vwap_curr  = float(b.get('vwap') or 0)
+    vwap_prev  = float(prev_b.get('vwap') or 0) if prev_b else 0
+    prev_close = prev_b['close'] if prev_b else 0
+    vwap_reclaim = (vwap_curr > 0 and vwap_prev > 0
+                    and prev_close < vwap_prev
+                    and b['close'] > vwap_curr)
+    above_vwap   = vwap_curr > 0 and b['close'] > vwap_curr
+
+    is_hammer   = wick_lo/rng > 0.45 and body/rng < 0.40
     is_london   = ses in ('London','LondonNyOverlap')
     is_ny       = ses == 'NewYork'
     is_exp      = reg == 'Expansion'
-    abs_bid     = abso == 'Bid'                              # espejo de Ask
-    stk_bull    = stk == 'Bullish'                           # espejo de Bearish
+    abs_bid     = abso == 'Bid'
+    stk_bull    = stk == 'Bullish'
     oi_true     = oi is True or str(oi).lower() == 'true'
 
     return [
-        ('hammer+london',       is_hammer and is_london),
-        ('hammer+ny',           is_hammer and is_ny),
-        ('hammer+bid+obi',      is_hammer and abs_bid and obif > 0),
-        ('hammer+stacked',      is_hammer and stk_bull),
-        ('bid+london+exp',      abs_bid and is_london and is_exp),
-        ('bid+ny',              abs_bid and is_ny),
-        ('eq_low+london+exp',   eq_low and is_london and is_exp),
-        ('eq_low+ny+oi',        eq_low and is_ny and oi_true),
-        ('eq_low+london',       eq_low and is_london),
-        ('stacked_bull+london', stk_bull and is_london),
-        ('stacked_bull+ny',     stk_bull and is_ny),
-        ('stacked_bull+oi',     stk_bull and oi_true),
-        ('oi+london',           oi_true and is_london),
-        ('oi+ny',               oi_true and is_ny),
-        ('hammer+dz_buy',       is_hammer and dz > 0.3),
-        ('hammer+obi_pos',      is_hammer and obi > 0.15),
-        ('vr_high+london',      vr > 3.0 and is_london),
-        ('vr_high+ny+oi',       vr > 3.0 and is_ny and oi_true),
+        # Patrones espejo (todos los símbolos)
+        ('hammer+london',           is_hammer and is_london),
+        ('hammer+ny',               is_hammer and is_ny),
+        ('hammer+bid+obi',          is_hammer and abs_bid and obif > 0),
+        ('hammer+stacked',          is_hammer and stk_bull),
+        ('bid+london+exp',          abs_bid and is_london and is_exp),
+        ('bid+ny',                  abs_bid and is_ny),
+        ('eq_low+london+exp',       eq_low and is_london and is_exp),
+        ('eq_low+ny+oi',            eq_low and is_ny and oi_true),
+        ('eq_low+london',           eq_low and is_london),
+        ('stacked_bull+london',     stk_bull and is_london),
+        ('stacked_bull+ny',         stk_bull and is_ny),
+        ('stacked_bull+oi',         stk_bull and oi_true),
+        ('oi+london',               oi_true and is_london),
+        ('oi+ny',                   oi_true and is_ny),
+        ('hammer+dz_buy',           is_hammer and dz > 0.3),
+        ('hammer+obi_pos',          is_hammer and obi > 0.15),
+        ('vr_high+london',          vr > 3.0 and is_london),
+        ('vr_high+ny+oi',           vr > 3.0 and is_ny and oi_true),
+        # Patrones VWAP-centric (BTC principal, pero se testean en todos)
+        ('vwap_reclaim+oi+ny',      vwap_reclaim and oi_true and is_ny),
+        ('vwap_reclaim+stk+london', vwap_reclaim and stk_bull and is_london),
+        ('vwap_reclaim+oi+london',  vwap_reclaim and oi_true and is_london),
+        ('vwap_reclaim+oi',         vwap_reclaim and oi_true),
+        ('eq_low+vwap+oi',          eq_low and above_vwap and oi_true),
+        ('above_vwap+oi+ny',        above_vwap and oi_true and is_ny),
+        ('above_vwap+stk+london',   above_vwap and stk_bull and is_london),
+        ('above_vwap+stk+oi',       above_vwap and stk_bull and oi_true),
     ]
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -273,7 +291,8 @@ for sym, cfg in SYMS.items():
         # Últimos 50 lows para equal_low
         lows_50 = [m1[j]['low'] for j in range(max(0,i-50), i)]
 
-        for pat_name, matched in get_long_patterns(b, lows_50):
+        prev_b = m1[i-1] if i > 0 else None
+        for pat_name, matched in get_long_patterns(b, prev_b, lows_50):
             if not matched: continue
             if i - last_sig.get(pat_name, -COOLDOWN) < COOLDOWN: continue
             last_sig[pat_name] = i

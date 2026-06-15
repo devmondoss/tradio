@@ -17,20 +17,29 @@ import json, subprocess, sys, time
 from pathlib import Path
 from collections import defaultdict
 
-SCRIPT = Path(__file__).parent / 'shorts_mtf_backtest.py'
+SCRIPT = Path(__file__).parent / 'mtf_shorts_backtest.py'
 
-EXPERIMENTS = ['none', 'obi_strict', 'cvd_session', 'delta_div']
+EXPERIMENTS = ['none', 'obi_strict', 'cvd_session', 'delta_div',
+               'vwap_bias', 'secondary_str', 'three_layer', 'vwap_weak']
 LABELS = {
-    'none':        'Baseline v2',
-    'obi_strict':  'EXP1: OBI < -0.15',
-    'cvd_session': 'EXP2: CVD/sesión',
-    'delta_div':   'EXP3: Delta Div',
+    'none':           'Baseline v2',
+    'obi_strict':     'EXP1: OBI < -0.15',
+    'cvd_session':    'EXP2: CVD/sesión',
+    'delta_div':      'EXP3: Delta Div',
+    'vwap_bias':      'EXP4: VWAP Macro',
+    'secondary_str':  'EXP5: Secundario',
+    'three_layer':    'EXP6: 3 Capas',
+    'vwap_weak':      'EXP7: VWAP Selectivo',
 }
 DESCRIPTIONS = {
-    'none':        'Patrones mineados v2, sin filtros adicionales',
-    'obi_strict':  'Requiere obi_fast < -0.15 en TODOS los patrones',
-    'cvd_session': 'London: cvd_slope < -0.20 / NY: cvd_slope < -0.15',
-    'delta_div':   'Requiere cvd_divergence == BearishAbsorption',
+    'none':           'Patrones mineados v2, sin filtros adicionales',
+    'obi_strict':     'Requiere obi_fast < -0.15 en TODOS los patrones',
+    'cvd_session':    'London: cvd_slope < -0.20 / NY: cvd_slope < -0.15',
+    'delta_div':      'Requiere cvd_divergence == BearishAbsorption',
+    'vwap_bias':      'Macro sesión: entrar short solo si close < VWAP (equilibrio bajista)',
+    'secondary_str':  'Secundario: requiere stacked_imb == Bearish (estructura H1 débil)',
+    'three_layer':    '3 capas: Macro(D1+VWAP) + Secundario(stacked/exp+delta<0) + Micro(M1)',
+    'vwap_weak':      'VWAP solo en patrones WR<55%: btc:shoot+london, bnb:oi+ny, sol:eq+london+exp, xrp:oi+ny',
 }
 
 def run_experiment(exp, days):
@@ -164,7 +173,8 @@ def main():
 
     # ── Veredicto ────────────────────────────────────────────────────────────
     sep('VEREDICTO')
-    print('  Criterio: mejora WR >= +3pp Y no reduce n más del 40% del baseline')
+    print('  Criterio A (filtros EXP1-3): WR >=+3pp Y n>=60% del baseline')
+    print('  Criterio B (3 capas EXP4-6): WR >=+5pp Y AvgR >=+0.10R (menor n aceptable)')
     print()
     for exp in EXPERIMENTS[1:]:
         d = results[exp]
@@ -172,13 +182,24 @@ def main():
         dwr   = d['wr_pct'] - base['wr_pct']
         davgr = d['avg_r']  - base['avg_r']
         n_ret = d['n'] / base['n']
-        if dwr >= 3 and n_ret >= 0.60:
-            verdict = '[OK] CANDIDATO para walk-forward'
-        elif dwr >= 0 and davgr >= 0.05:
-            verdict = '[~] NEUTRAL/LEVE mejora'
+        is_layer = exp in ('vwap_bias', 'secondary_str', 'three_layer', 'vwap_weak')
+        if is_layer:
+            if dwr >= 5 and davgr >= 0.10 and n_ret >= 0.30:
+                verdict = '[OK] CANDIDATO 3-capas'
+            elif dwr >= 3 and davgr >= 0.05:
+                verdict = '[~] MEJORA LEVE — explorar combinaciones'
+            elif dwr >= 0 and n_ret >= 0.50:
+                verdict = '[~] NEUTRAL — no suma ni resta'
+            else:
+                verdict = '[X] No mejora o n demasiado bajo'
         else:
-            verdict = '[X] No mejora o reduce n excesivamente'
-        print(f'  {LABELS[exp]:<22}: WR {dwr:>+.1f}pp  AvgR {davgr:>+.3f}R  n={d["n"]}({n_ret:.0%})  → {verdict}')
+            if dwr >= 3 and n_ret >= 0.60:
+                verdict = '[OK] CANDIDATO para walk-forward'
+            elif dwr >= 0 and davgr >= 0.05:
+                verdict = '[~] NEUTRAL/LEVE mejora'
+            else:
+                verdict = '[X] No mejora o reduce n excesivamente'
+        print(f'  {LABELS[exp]:<24}: WR {dwr:>+.1f}pp  AvgR {davgr:>+.3f}R  n={d["n"]}({n_ret:.0%})  -> {verdict}')
 
     print()
 

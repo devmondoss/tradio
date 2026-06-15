@@ -201,10 +201,42 @@ def detect_m1_signal(sym, m1, i, experiment='none', horizon_back=5):  # noqa: C9
     if experiment == 'delta_div' and cvd_div != 'BearishAbsorption':
         return False, ''
 
+    # EXP4: vwap_bias — Capa Macro sesión: solo entrar short si close < VWAP
+    if experiment == 'vwap_bias':
+        vwap_val = b.get('vwap') or 0
+        if vwap_val > 0 and b['close'] >= vwap_val:
+            return False, ''
+
+    # EXP5: secondary_str — Capa Secundaria: stacked imbalance bajista confirma estructura H1 débil
+    if experiment == 'secondary_str':
+        if b.get('stacked_imb', '') != 'Bearish':
+            return False, ''
+
+    # EXP6: three_layer — 3 capas de Abraham: Macro(D1+VWAP) + Secundario(stacked/expansion) + Micro(M1)
+    if experiment == 'three_layer':
+        # Capa 1 Macro: price < VWAP (equilibrio de sesión bearish)
+        vwap_val = b.get('vwap') or 0
+        if vwap_val > 0 and b['close'] >= vwap_val:
+            return False, ''
+        # Capa 2 Secundario: estructura bajista confirmada (stacked bear O expansion con delta neg)
+        stk = b.get('stacked_imb', '')
+        try:
+            delta = float(b.get('bar_delta') or 0)
+        except (ValueError, TypeError):
+            delta = 0.0
+        if stk != 'Bearish' and not (reg == 'Expansion' and delta < 0):
+            return False, ''
+        # Capa 3 Micro: los patrones M1 actuales son el trigger (no filtro adicional)
+
+    # EXP7: vwap_weak — VWAP solo en patrones con WR<55% en baseline (no tocar los ya buenos)
+    # Patrones débiles: btc:shoot+london(50%), bnb:oi+ny(50%), sol:eq+london+exp(42%), xrp:oi+ny(33%)
+    _vwap_val  = b.get('vwap') or 0
+    _vwap_pass = _vwap_val <= 0 or b['close'] < _vwap_val  # True = precio bajo VWAP
+
     if sym == 'BTCUSDT':
         if not (is_london or is_ny): return False, ''
-        if is_shoot and abs_ask and obif < 0:               return True, 'btc:shoot+ask+obi'
-        if is_shoot and is_london:                          return True, 'btc:shoot+london'
+        if is_shoot and abs_ask and obif < 0:                                    return True, 'btc:shoot+ask+obi'
+        if is_shoot and is_london and (experiment != 'vwap_weak' or _vwap_pass): return True, 'btc:shoot+london'
 
     elif sym == 'ETHUSDT':
         if is_ny and (oi is True) and eq_true:              return True, 'eth:ny+oi+eq'
@@ -214,20 +246,20 @@ def detect_m1_signal(sym, m1, i, experiment='none', horizon_back=5):  # noqa: C9
     elif sym == 'SOLUSDT':
         if is_ny and vr > 4.0 and (oi is True):            return True, 'sol:ny+vr4+oi'
         if is_ny and vr > 4.0 and eq_true:                 return True, 'sol:ny+vr4+eq'
-        if eq_true and is_london and is_exp:               return True, 'sol:eq+london+exp'
+        if eq_true and is_london and is_exp and (experiment != 'vwap_weak' or _vwap_pass): return True, 'sol:eq+london+exp'
 
     elif sym == 'BNBUSDT':
         # Solo NY — London no tiene edge en BNB (WR 30-42% en todos los patrones)
         if not is_ny: return False, ''
         if eq_true and (oi is True):                        return True, 'bnb:eq+ny+oi'
-        if oi is True:                                      return True, 'bnb:oi+ny'
+        if oi is True and (experiment != 'vwap_weak' or _vwap_pass):            return True, 'bnb:oi+ny'
 
     elif sym == 'XRPUSDT':
         # Solo NY — London no tiene edge en XRP
         if not is_ny: return False, ''
         if eq_true and (oi is True):                        return True, 'xrp:eq+ny+oi'
         if abs_ask:                                         return True, 'xrp:ask+ny'
-        if oi is True:                                      return True, 'xrp:oi+ny'
+        if oi is True and (experiment != 'vwap_weak' or _vwap_pass): return True, 'xrp:oi+ny'
 
     return False, ''
 
@@ -454,7 +486,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--days', type=int, default=14)
     parser.add_argument('--experiment', default='none',
-                        choices=['none', 'obi_strict', 'cvd_session', 'delta_div'])
+                        choices=['none', 'obi_strict', 'cvd_session', 'delta_div',
+                                 'vwap_bias', 'secondary_str', 'three_layer', 'vwap_weak'])
     parser.add_argument('--dynamic-target', action='store_true')
     parser.add_argument('--swing-target', action='store_true')
     parser.add_argument('--vp-target', action='store_true',

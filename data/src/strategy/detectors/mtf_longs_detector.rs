@@ -1,15 +1,17 @@
 //! MTF Longs Detector — señales M1 mineadas con stop estructural H1
 //!
 //! Espejo alcista del sistema MTF Shorts.
-//! Patrones mineados 2026-06-14 sobre 8,731+ barras M1 reales.
+//! Patrones mineados 2026-06-14 v2 sobre ~10,000 barras M1 por símbolo.
 //!
 //! Filtro H4 EMA20 en vez de D1 — permite capturar recuperaciones intraday
 //! dentro de períodos D1 bear (donde D1 bloqueaba todo).
 //!
-//! Edge confirmado:
-//!   ETH: n=83, WR=54.2%, AvgR=+0.412R
-//!   SOL: n=42, WR=59.5%, AvgR=+0.753R
-//!   TOTAL: n=125, WR=56.0%, AvgR=+0.526R → Equity $500→$1,748 en 8d
+//! Edge confirmado (v2 con VWAP + nuevos activos):
+//!   ETH: +6 patrones (hammer+ny, WR=62.2%)
+//!   SOL: +9 patrones incluyendo above_vwap+stk+london WR=71.9%
+//!   XRP: 5 patrones nuevos (n=13-35, WR=57-69%)
+//!   BNB: 1 patrón (hammer+dz_buy n=20, WR=55%)
+//!   BTC: sin edge suficiente (n<10 en todos los candidatos)
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -414,6 +416,9 @@ fn detect_signal_long(symbol: &str, ctx: &MtfBarContext) -> Option<String> {
     let stk_bull  = ctx.stacked_imb == "Bullish";
     let obi_pos   = obi > 0.2;
     let dz_buy    = dz > 0.5;
+    let vr        = ctx.vr;
+
+    let above_vwap = ctx.vwap_session.map_or(false, |v| v > 0.0 && ctx.close > v);
 
     let rng     = (ctx.high - ctx.low).max(1e-10);
     let body    = (ctx.close - ctx.open).abs();
@@ -421,23 +426,45 @@ fn detect_signal_long(symbol: &str, ctx: &MtfBarContext) -> Option<String> {
     let is_hammer = (wick_lo / rng) > 0.45 && (body / rng) < 0.40;
 
     match symbol {
-        // ETH: patrones mineados — London + NY con edge WR>55%
+        // ETH: mineado v2 2026-06-14 — London + NY con edge WR≥55%
         "ETHUSDT" => {
             if stk_bull && is_london                { return Some("eth:stacked_bull+london".into()); }
             if stk_bull && is_ny                    { return Some("eth:stacked_bull+ny".into()); }
             if is_hammer && dz_buy                  { return Some("eth:hammer+dz_buy".into()); }
+            if is_hammer && is_ny                   { return Some("eth:hammer+ny".into()); }
             if eq_low && is_london && is_exp        { return Some("eth:eq_low+london+exp".into()); }
             if oi && is_ny                          { return Some("eth:oi+ny".into()); }
         }
-        // SOL: London domina — WR=62-69% en todos los patrones London
+        // SOL: London domina, VWAP-centric subsets primero (más específicos)
         "SOLUSDT" => {
+            if above_vwap && stk_bull && is_london  { return Some("sol:above_vwap+stk+london".into()); }
+            if above_vwap && stk_bull && oi         { return Some("sol:above_vwap+stk+oi".into()); }
+            if above_vwap && oi && is_ny            { return Some("sol:above_vwap+oi+ny".into()); }
+            if vr > 3.0 && is_london               { return Some("sol:vr_high+london".into()); }
+            if is_hammer && dz_buy                  { return Some("sol:hammer+dz_buy".into()); }
             if is_hammer && is_london               { return Some("sol:hammer+london".into()); }
             if stk_bull && is_london                { return Some("sol:stacked_bull+london".into()); }
             if is_hammer && obi_pos                 { return Some("sol:hammer+obi_pos".into()); }
             if oi && is_london                      { return Some("sol:oi+london".into()); }
+            if eq_low && is_london && is_exp        { return Some("sol:eq_low+london+exp".into()); }
             if eq_low && is_london                  { return Some("sol:eq_low+london".into()); }
+            if stk_bull && is_ny                    { return Some("sol:stacked_bull+ny".into()); }
+            if is_hammer && is_ny                   { return Some("sol:hammer+ny".into()); }
+            if oi && is_ny                          { return Some("sol:oi+ny".into()); }
         }
-        // BTC/BNB/XRP: sin edge en longs (mineado 2026-06-14)
+        // XRP: patrones mineados 2026-06-14 — NY domina (n≥13, WR≥56%)
+        "XRPUSDT" => {
+            if is_hammer && dz_buy && is_ny         { return Some("xrp:hammer+dz_buy".into()); }
+            if is_hammer && obi_pos && is_ny        { return Some("xrp:hammer+obi_pos".into()); }
+            if is_hammer && stk_bull && is_ny       { return Some("xrp:hammer+stacked".into()); }
+            if is_hammer && is_ny                   { return Some("xrp:hammer+ny".into()); }
+            if stk_bull && is_ny                    { return Some("xrp:stacked_bull+ny".into()); }
+        }
+        // BNB: un patrón NY con edge claro (mineado 2026-06-14)
+        "BNBUSDT" => {
+            if is_hammer && dz_buy && is_ny         { return Some("bnb:hammer+dz_buy".into()); }
+        }
+        // BTC: sin edge en longs con n suficiente (mineado 2026-06-14)
         _ => {}
     }
 
