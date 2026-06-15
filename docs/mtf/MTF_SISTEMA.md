@@ -1,12 +1,13 @@
 # MTF System — Documentación Completa
 
-**Última actualización:** 2026-06-15 (v3 — acumulación de datos extendida)  
-**Estado:** Baseline v3 activo — Shorts (5 símbolos) + Longs (ETH/SOL) — reglas congeladas, pendiente walk-forward  
-**Shorts v3 (14 días, 5 símbolos):** n=133+, WR≈58%, AvgR≈+0.55R, $500→$2,012 (+302%)  
+**Última actualización:** 2026-06-15 (v3 + EXP8 — regime filter activado en live)  
+**Estado:** Baseline v3 activo + EXP8 Regime Filter — Shorts (5 símbolos) + Longs (ETH/SOL)  
+**Shorts baseline (14 días, 5 símbolos):** n=180, WR=50.6%, AvgR=+0.274R, Equity=$1,237  
+**Shorts + EXP8 (14 días, backtest):** n=168, WR=52.4%, AvgR=+0.336R, Equity=$1,432 ← activo en live  
 **Longs baseline (8 días, ETH/SOL):** n=125, WR=56.0%, AvgR=+0.526R, $500→$1,748 (+250%)  
 **Campos live acumulando:**
 - Desde 2026-06-15: `big_trade_bearish/bullish`, `obi_min/max_intrabar` — re-mining BTC ~Jun 20
-- Desde 2026-06-15 (hoy): `vp_poc/vah/val/lvn_below`, `cvd_consec_neg/pos`, `prev_bar_delta`, `bars_since_low_vr` — minar ~Jun 20-25
+- Desde 2026-06-15: `vp_poc/vah/val/lvn_below`, `cvd_consec_neg/pos`, `prev_bar_delta`, `bars_since_low_vr` — minar ~Jun 20-25
 
 ---
 
@@ -36,6 +37,13 @@ Filtro macro
 Sesión filter (ambas direcciones)
     OffHours / Asia → BLOQUEADO
     London / LondonNyOverlap / NewYork → PERMITIDO
+
+Funding regime filter (shorts)
+    ExtremeLong / ElevatedShort → BLOQUEADO (ver §18)
+
+EXP8: Regime filter (shorts, activo 2026-06-15)
+    TrendDown → BLOQUEADO (WR=44.4%, shorts persiguen caída establecida)
+    TrendUp / Expansion / Chop → PERMITIDO (ver §24)
 
 M1 signal detector (ver §5 / §6)
 
@@ -291,6 +299,9 @@ stop > 1.50%    WR=12.5%  AvgR=-0.650R  ← destruye capital
 | Score como info, no filtro | Filtrar score≥2 → n=41, menos PnL total |
 | Longs filtro H4 (no D1) | H4 captura recuperaciones intraday; D1 demasiado lento |
 | Una sola tabla `mtf_trades` con `direction` | Simplifica queries, longs y shorts comparten estructura |
+| **EXP8 TrendDown bloqueado (activo)** | WR=44.4% peor regime; TrendUp WR=71.4% mejor (liquidity hunt). Backtest: -12 trades, +$195 equity |
+| EXP7 VWAP Selectivo — no activado aún | Mejor WR/AvgR pero equity $1,214 < EXP8 $1,432; EXP8 retiene 93% de trades vs 59% de EXP7 |
+| EXP9 Regime+VWAP — no activado | Mejor calidad (WR=57.4%) pero equity $1,158 < baseline; poda excesiva |
 
 ---
 
@@ -392,7 +403,7 @@ pub struct RestoredHtfTrade {
 | `apps/rbf-review/api/btc_shorts_v1.py` | Backtest live BTC shorts + patrón `btc:bt_bear+oi` |
 | `apps/rbf-review/api/btc_shorts_mine.py` | Minería MFE/MAE BTC shorts + features big_trade/obi_intrabar |
 | `apps/rbf-review/api/btc_vwap_rastro.py` | Backtest VWAP rastro como target — **descartado** (ver §22) |
-| `apps/rbf-review/api/shorts_mtf_backtest.py` | Backtest shorts — 5 símbolos |
+| `apps/rbf-review/api/mtf_shorts_backtest.py` | Backtest shorts — 5 símbolos (flag `--experiment`) |
 | `apps/rbf-review/api/mtf_longs_backtest.py` | Backtest longs — ETH/SOL |
 | `apps/rbf-review/api/mtf_longs_mine.py` | Minería MFE/MAE longs |
 | `apps/rbf-review/api/mtf_bnb_xrp_calibrate.py` | Calibración BNB/XRP |
@@ -403,7 +414,7 @@ pub struct RestoredHtfTrade {
 | `apps/rbf-review/api/mtf_confluence.py` | Análisis confluence score |
 | `apps/rbf-review/api/mtf_analysis.py` | Análisis stop_pct/distribución |
 | `apps/rbf-review/api/mtf_vp_target.py` | VP como target (POC/VAL/LVN) |
-| `apps/rbf-review/api/mtf_experiments.py` | Experimentos OBI/CVD/Delta |
+| `apps/rbf-review/api/mtf_experiments.py` | EXP1-EXP9 comparativo (--experiment flag) |
 | `scripts/mtf_audit.py` | Breakdown por dirección×sesión, símbolo, patrón, hora UTC, exit reason |
 | `apps/rbf-review/src/views/MTFModuleView.tsx` | UI del módulo — métricas Short/Long separadas + selector backtest |
 | `apps/rbf-review/vite.config.ts` | Middleware `/api/backtest/mtf_combined` (corre ambos scripts en paralelo) |
@@ -472,7 +483,10 @@ Tres opciones: **Combined / Shorts / Longs**
 19. **obi_min/max_intrabar en btc_bars** (2026-06-15): 6 muestras de OBI-L5 cada 10s durante la vela M1. Captura el pico de presión vendedora durante la mecha, no solo al cierre. Resuelve la brecha de granularidad ms→M1 (ver §21)
 20. **Warmup klines cap 1500** (2026-06-15): Binance FAPI max 1500 barras. `(limit + 1).min(1500)` — si la posición tiene >1500 barras de vida, el warmup carga hasta 1500 sin error de respuesta inesperada
 21. **VWAP rastro investigado y descartado** (2026-06-15): London VWAP previo como target dinámico. Backtest 15d, n=52: solo 4 trades con rastro aplicable (7.7%), WR=25%, AvgR=-0.651R. Sin edge (ver §22)
-22. **Expansión de campos acumulados en *_bars** (2026-06-15): se identificaron datos capturados pero no persistidos (VP levels) y datos faltantes (multi-bar context). Ejecutadas 2 migraciones + deploy:
+23. **Análisis completo EXP1-EXP7** (2026-06-15): `mtf_winner_dna.py` + `mtf_loss_autopsy.py` + `mtf_experiments.py` sobre 14d/180 trades. Hallazgos: TrendDown WR=44.4%, TrendUp WR=71.4%, VWAP below WR=72%, LondonNyOverlap WR=60.9%. Solo EXP7 VWAP Selectivo pasa criterio (WR=57.9% +7.3pp, AvgR=+0.437R). Ver §24.
+24. **EXP8 Regime Filter activado en live** (2026-06-15): bloquear TrendDown en `mtf_shorts_detector.rs` paso 3c. Backtest: -12 trades, equity $1,237→$1,432 (+$195, +15.8%). Commit `9721f98`. Railway redeploy automático.
+25. **Arquitectura paralela confirmada** (2026-06-15): 5 símbolos corren en `tokio::spawn` independientes (paralelo). Filtros dentro de cada símbolo son lineales y fail-fast (D1→Funding→TrendDown→detect_signal). Diseño correcto.
+26. **Expansión de campos acumulados en *_bars** (2026-06-15): se identificaron datos capturados pero no persistidos (VP levels) y datos faltantes (multi-bar context). Ejecutadas 2 migraciones + deploy:
     - `vp_poc/vah/val/lvn_below`: ya los calculaba el Rust, las columnas no existían → datos perdidos. Ahora persisten.
     - `cvd_consec_neg/pos`: barras consecutivas con CVD en la misma dirección — narrativa de momentum previo
     - `prev_bar_delta`: delta de la barra anterior al cierre actual — ¿la presión vendedora venía de antes?
@@ -660,6 +674,74 @@ Para longs podría valer más la pena explorar (el VWAP previo quedaría por deb
 | ~2026-06-20 | Re-mining BTC shorts | `big_trade`, `obi_intrabar`, `cvd_consec`, `prev_bar_delta`, `bars_since_low_vr` |
 | ~2026-06-25 | VP como target | `vp_poc`, `vp_val`, `vp_lvn_below` (7+ días para perfiles significativos) |
 | ~2026-07-05 | Walk-forward completo | Todos los campos — validación out-of-sample |
+
+---
+
+## 24. Análisis Experimental EXP1–EXP9 (2026-06-15)
+
+### Contexto
+
+Con 9+ días de datos live acumulados (14d backtest window, n=180 shorts) se corrieron tres análisis para entender el edge:
+
+1. **`mtf_winner_dna.py`** — ADN de big winners (≥2R) vs losers
+2. **`mtf_loss_autopsy.py`** — autopsia hora-por-hora, símbolo, DZ score, OBI de los 87 SL hits
+3. **`mtf_experiments.py`** — 9 experimentos de filtros adicionales comparados vs baseline
+
+### Hallazgos clave del winner DNA
+
+| Feature | Big Winners | Losers | Edge |
+|---------|-------------|--------|------|
+| `oi_momentum=True` | 42% | 20% | **+21pp** |
+| `obi_l5 < -0.15` | 8% | 25% | -16pp (OBI negativo = más losers) |
+| `regime=TrendDown` | 6% | 11% | -5.7pp |
+| `vwap_dev < -0.1%` (bajo VWAP) | — | — | **WR=72%** en entry |
+
+| Regime | n | WR | AvgR |
+|--------|---|-----|------|
+| TrendUp | 21 | **71.4%** | **+0.763R** |
+| Chop | 11 | 63.6% | +0.708R |
+| LondonNyOverlap | 46 | 60.9% | +0.648R |
+| Expansion | 73 | 49.3% | +0.320R |
+| **TrendDown** | **18** | **44.4%** | **+0.029R** |
+
+**Insight ICT**: TrendUp es el mejor regime para shorts porque el precio subió rápido → equal highs + stops de compradores acumulados arriba → el short barre esa liquidez (liquidity hunt).
+
+### Hallazgos de la autopsia de pérdidas
+
+- XRP: 24 trades, 16 SL hits (66%) — el activo más débil del sistema
+- `dz < -1.0` (venta muy fuerte en entry): WR=0% — entrar cuando los sellers ya dominan = perseguir
+- `dz ≥ 0.5` (compradores activos en entry): WR=58.7% — el short entra justo cuando los buyers están subiendo precio (ICT liquidity hunt confirmado)
+- Horas malas: 10h, 12-13h, 19-20h UTC — peor WR; hora pico: 15-16h UTC WR=73%
+
+### Tabla completa de experimentos
+
+| # | Experimento | n | WR | AvgR | Equity | Δn | ΔWR | ΔAvgR | Veredicto |
+|---|-------------|---|-----|------|--------|-----|------|--------|-----------|
+| — | Baseline | 180 | 50.6% | +0.274R | $1,237 | — | — | — | Base |
+| 1 | OBI < -0.15 (global) | 53 | 52.8% | +0.209R | $612 | -127 | +2.2pp | -0.065R | ✗ excluye demasiado |
+| 2 | CVD/sesión | 115 | 49.6% | +0.193R | $744 | -65 | -1.0pp | -0.081R | ✗ empeora |
+| 3 | Delta Div | 22 | 36.4% | -0.426R | $412 | -158 | -14.2pp | -0.700R | ✗ destruye |
+| 4 | VWAP Macro | 60 | 53.3% | +0.350R | $740 | -120 | +2.7pp | +0.076R | ✗ n muy bajo |
+| 5 | Secundario | 138 | 50.7% | +0.285R | $1,032 | -42 | +0.1pp | +0.011R | ~ neutral |
+| 6 | 3 Capas | 48 | 50.0% | +0.198R | $593 | -132 | -0.6pp | -0.076R | ✗ n muy bajo |
+| **7** | **VWAP Selectivo** | **107** | **57.9%** | **+0.437R** | **$1,214** | -73 | **+7.3pp** | **+0.163R** | **✓ CANDIDATO** |
+| **8** | **Regime Filter** | **168** | **52.4%** | **+0.336R** | **$1,432** | -12 | **+1.8pp** | **+0.062R** | **✓ ACTIVO** |
+| 9 | Regime+VWAP | 101 | 57.4% | +0.439R | $1,158 | -79 | +6.8pp | +0.165R | ~ sobre-poda |
+
+### Por qué EXP8 > EXP7 en práctica
+
+EXP7 tiene mejor WR/AvgR pero produce menos equity porque descarta 73 trades (40%). EXP8 descarta solo 12 trades con alto impacto porque el filtro TrendDown es quirúrgico. La métrica objetivo es equity total, no WR máximo.
+
+EXP7 queda pendiente para cuando haya más datos (n≥200) — puede ser que con más n el trade-off cambie.
+
+### Scripts
+
+```
+apps/rbf-review/api/mtf_winner_dna.py      — ADN big winners
+apps/rbf-review/api/mtf_loss_autopsy.py    — autopsia SL hits
+apps/rbf-review/api/mtf_experiments.py     — EXP1-EXP9 comparativo
+apps/rbf-review/api/mtf_shorts_backtest.py — backtest base (--experiment flag)
+```
 
 ---
 
