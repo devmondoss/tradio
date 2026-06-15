@@ -1359,6 +1359,7 @@ impl BarState {
     }
 
     async fn on_bar_close(&mut self, bar: Kline, bar_close_ms: u64, symbol: &str) {
+        // obi_min/max_intrabar added 2026-06-15
         // Resolve Supabase UUID from the previous bar's write_signal (should be ready by now).
         if let Some(mut rx) = self.pending_supabase_uuid_rx.take() {
             self.pending_supabase_uuid = rx.try_recv().unwrap_or(None);
