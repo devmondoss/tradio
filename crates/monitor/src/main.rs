@@ -3913,7 +3913,7 @@ async fn fetch_ls_history(symbol: &str, ex: ExchangeTarget) -> Vec<LongShortSnap
                     long_ratio,
                     short_ratio,
                     ls_ratio,
-                    source: *source,
+                    source,
                 });
             }
         }
