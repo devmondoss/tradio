@@ -11,9 +11,12 @@
 //!   PAPER_INITIAL_CAPITAL, PAPER_LEVERAGE, PAPER_MAX_POSITIONS,
 //!   PAPER_RISK_PCT, PAPER_SLIPPAGE_BPS, PAPER_TAKER_FEE, PAPER_FUNDING_RATE
 
+mod exchange_config;
 mod intrabar;
 mod supabase_writer;
 mod ws_server;
+
+use exchange_config::ExchangeTarget;
 
 use std::collections::VecDeque;
 use std::sync::{
@@ -3499,13 +3502,11 @@ fn compute_cvd_slope(history: &VecDeque<f64>) -> Option<f64> {
 
 // ── REST fetch helpers ────────────────────────────────────────────────────────
 
-/// Fetches funding rate and mark price from Binance FAPI premiumIndex.
-/// Returns (funding_rate, mark_price). Both are None on failure.
-async fn fetch_premium_index(symbol: &str) -> (Option<f64>, Option<f64>) {
-    let url = format!(
-        "https://fapi.binance.com/fapi/v1/premiumIndex?symbol={}",
-        symbol
-    );
+/// Fetches funding rate and mark price (futures only; returns (None, None) for spot).
+async fn fetch_premium_index(symbol: &str, ex: ExchangeTarget) -> (Option<f64>, Option<f64>) {
+    let Some(url) = ex.premium_index_url(symbol) else {
+        return (None, None);
+    };
     let resp = match reqwest::get(&url).await {
         Ok(r) => r,
         Err(e) => {
@@ -3531,34 +3532,25 @@ async fn fetch_premium_index(symbol: &str) -> (Option<f64>, Option<f64>) {
     (funding, mark)
 }
 
-/// Fetches spot price from Binance REST API.
-async fn fetch_spot_price(symbol: &str) -> Option<f64> {
-    let url = format!(
-        "https://api.binance.com/api/v3/ticker/price?symbol={}",
-        symbol
-    );
+/// Fetches last traded price from the configured exchange.
+async fn fetch_spot_price(symbol: &str, ex: ExchangeTarget) -> Option<f64> {
+    let url = ex.spot_price_url(symbol);
     let resp = reqwest::get(&url).await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
-    json.get("price")?.as_str()?.parse::<f64>().ok()
+    ex.parse_spot_price(&json)
 }
 
-/// Fetches open interest (in contracts) from Binance FAPI.
-async fn fetch_open_interest(symbol: &str) -> Option<f64> {
-    let url = format!(
-        "https://fapi.binance.com/fapi/v1/openInterest?symbol={}",
-        symbol
-    );
+/// Fetches open interest (futures only; returns None for spot).
+async fn fetch_open_interest(symbol: &str, ex: ExchangeTarget) -> Option<f64> {
+    let url = ex.open_interest_url(symbol)?;
     let resp = reqwest::get(&url).await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
     json.get("openInterest")?.as_str()?.parse::<f64>().ok()
 }
 
-/// Fetches top-trader long/short position ratio from Binance FAPI.
-async fn fetch_top_trader_ls(symbol: &str) -> Option<LongShortSnapshot> {
-    let url = format!(
-        "https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol={}&period=5m&limit=1",
-        symbol
-    );
+/// Fetches top-trader long/short position ratio (futures only; returns None for spot).
+async fn fetch_top_trader_ls(symbol: &str, ex: ExchangeTarget) -> Option<LongShortSnapshot> {
+    let url = ex.top_trader_ls_url(symbol)?;
     let resp = reqwest::get(&url).await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
     let entry = json.as_array()?.first()?;
@@ -3575,12 +3567,9 @@ async fn fetch_top_trader_ls(symbol: &str) -> Option<LongShortSnapshot> {
     })
 }
 
-/// Fetches global account long/short ratio from Binance FAPI (retail proxy).
-async fn fetch_global_ls(symbol: &str) -> Option<LongShortSnapshot> {
-    let url = format!(
-        "https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol={}&period=5m&limit=1",
-        symbol
-    );
+/// Fetches global account long/short ratio (futures only; returns None for spot).
+async fn fetch_global_ls(symbol: &str, ex: ExchangeTarget) -> Option<LongShortSnapshot> {
+    let url = ex.global_ls_url(symbol)?;
     let resp = reqwest::get(&url).await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
     let entry = json.as_array()?.first()?;
@@ -3597,12 +3586,9 @@ async fn fetch_global_ls(symbol: &str) -> Option<LongShortSnapshot> {
     })
 }
 
-/// Fetches taker buy/sell volume ratio from Binance FAPI.
-async fn fetch_taker_ratio(symbol: &str) -> Option<TakerRatioSnapshot> {
-    let url = format!(
-        "https://fapi.binance.com/futures/data/takerlongshortRatio?symbol={}&period=5m&limit=1",
-        symbol
-    );
+/// Fetches taker buy/sell volume ratio (futures only; returns None for spot).
+async fn fetch_taker_ratio(symbol: &str, ex: ExchangeTarget) -> Option<TakerRatioSnapshot> {
+    let url = ex.taker_ratio_url(symbol)?;
     let resp = reqwest::get(&url).await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
     let entry = json.as_array()?.first()?;
@@ -3810,12 +3796,11 @@ fn spawn_global_liq_counter(raw_counter: Arc<AtomicU64>) {
     });
 }
 
-/// Fetches recent funding rate history for the FundingTracker (last 21 samples).
-async fn fetch_funding_history(symbol: &str) -> Vec<FundingRateSample> {
-    let url = format!(
-        "https://fapi.binance.com/fapi/v1/fundingRate?symbol={}&limit=21",
-        symbol
-    );
+/// Fetches recent funding rate history (futures only; returns empty for spot).
+async fn fetch_funding_history(symbol: &str, ex: ExchangeTarget) -> Vec<FundingRateSample> {
+    let Some(url) = ex.funding_history_url(symbol) else {
+        return vec![];
+    };
     let resp = match reqwest::get(&url).await {
         Ok(r) => r,
         Err(e) => {
@@ -3846,13 +3831,11 @@ async fn fetch_funding_history(symbol: &str) -> Vec<FundingRateSample> {
         .unwrap_or_default()
 }
 
-/// Fetches historical open interest snapshots to pre-seed the OiTracker,
-/// eliminating the 15-min cold-start window for oi_delta_zscore.
-async fn fetch_oi_history(symbol: &str) -> Vec<OiHistSnapshot> {
-    let url = format!(
-        "https://fapi.binance.com/futures/data/openInterestHist?symbol={}&period=5m&limit=30",
-        symbol
-    );
+/// Fetches historical open interest snapshots (futures only; returns empty for spot).
+async fn fetch_oi_history(symbol: &str, ex: ExchangeTarget) -> Vec<OiHistSnapshot> {
+    let Some(url) = ex.oi_history_url(symbol) else {
+        return vec![];
+    };
     let resp = match reqwest::get(&url).await {
         Ok(r) => r,
         Err(e) => {
@@ -3883,23 +3866,24 @@ async fn fetch_oi_history(symbol: &str) -> Vec<OiHistSnapshot> {
         .unwrap_or_default()
 }
 
-/// Fetches historical top-trader and global L/S snapshots to pre-seed LsRatioTracker,
-/// eliminating the 5-min cold-start window with fallback 0.50/0.50 defaults.
-async fn fetch_ls_history(symbol: &str) -> Vec<LongShortSnapshot> {
+/// Fetches historical top-trader and global L/S snapshots (futures only; empty for spot).
+async fn fetch_ls_history(symbol: &str, ex: ExchangeTarget) -> Vec<LongShortSnapshot> {
     let mut result = Vec::new();
-    let endpoints: &[(&str, LsSource)] = &[
+    let endpoint_urls = ex.ls_history_endpoint_urls(symbol);
+    let source_map: &[(&str, LsSource)] = &[
         ("topLongShortPositionRatio", LsSource::TopTraderPosition),
         ("globalLongShortAccountRatio", LsSource::GlobalAccount),
     ];
-    for (endpoint, source) in endpoints {
-        let url = format!(
-            "https://fapi.binance.com/futures/data/{}?symbol={}&period=5m&limit=6",
-            endpoint, symbol
-        );
-        let resp = match reqwest::get(&url).await {
+    for (url, endpoint_name) in &endpoint_urls {
+        let source = source_map
+            .iter()
+            .find(|(n, _)| *n == *endpoint_name)
+            .map(|(_, s)| *s)
+            .unwrap_or(LsSource::GlobalAccount);
+        let resp = match reqwest::get(url).await {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("[fetch] LS history ({endpoint}) failed: {e}");
+                eprintln!("[fetch] LS history ({endpoint_name}) failed: {e}");
                 continue;
             }
         };
@@ -3937,10 +3921,15 @@ async fn fetch_ls_history(symbol: &str) -> Vec<LongShortSnapshot> {
     result
 }
 
-/// Fetches `limit` historical closed klines from Binance FAPI REST and seeds BarState
-/// with them so ATR, VWAP, VP, and regime are warm before the first live bar is processed.
-/// Signals are NOT emitted for historical bars — Supabase writes are suppressed.
-async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit: usize) {
+/// Fetches `limit` historical closed klines and seeds BarState so ATR, VWAP, VP,
+/// and regime are warm before the first live bar. Signals are suppressed for history.
+async fn warm_up_history(
+    state: &mut BarState,
+    symbol: &str,
+    tf_min: u64,
+    limit: usize,
+    ex: ExchangeTarget,
+) {
     let interval_str = match tf_min {
         1 => "1m",
         3 => "3m",
@@ -3950,13 +3939,8 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
         60 => "1h",
         _ => "5m",
     };
-    let capped = (limit + 1).min(1500); // Binance FAPI max limit = 1500
-    let url = format!(
-        "https://fapi.binance.com/fapi/v1/klines?symbol={}&interval={}&limit={}",
-        symbol,
-        interval_str,
-        capped
-    );
+    let capped = (limit + 1).min(1500);
+    let url = ex.klines_url(symbol, interval_str, capped);
     let resp = match reqwest::get(&url).await {
         Ok(r) => r,
         Err(e) => {
@@ -3971,16 +3955,15 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
             return;
         }
     };
-    let arr = match json.as_array() {
-        Some(a) if a.len() > 1 => a,
-        _ => {
-            eprintln!("[warmup] klines response unexpected shape: {}", &json.to_string()[..json.to_string().len().min(200)]);
-            return;
-        }
-    };
+    let rows = ex.extract_kline_rows(&json);
+    if rows.len() <= 1 {
+        eprintln!("[warmup] klines response unexpected shape (got {} rows)", rows.len());
+        return;
+    }
 
     // Skip last entry — it's the still-open current bar
-    let closed = &arr[..arr.len() - 1];
+    let closed = &rows[..rows.len() - 1];
+    let min_fields = ex.kline_min_fields();
     println!(
         "[warmup] seeding {} historical bars ({})",
         closed.len(),
@@ -3989,18 +3972,15 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
 
     let rbf_warm_cfg =
         data::strategy::detectors::range_breakout_flow::RangeBreakoutConfig::default();
-    for entry in closed {
-        let arr = match entry.as_array() {
-            Some(a) if a.len() >= 10 => a,
-            _ => continue,
-        };
-        let open_ms: i64 = arr[0].as_i64().unwrap_or(0);
+    for row in closed {
+        let arr = if row.len() >= min_fields { row } else { continue };
+        let open_ms: i64 = ExchangeTarget::open_ms_from_row(arr);
         let open: f64 = arr[1].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
         let high: f64 = arr[2].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
         let low: f64 = arr[3].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
         let close: f64 = arr[4].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
         let volume: f64 = arr[5].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        let taker_buy_vol: f64 = arr[9].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let taker_buy_vol: f64 = ex.taker_buy_from_row(arr);
 
         if close <= 0.0 || volume <= 0.0 {
             continue;
@@ -4286,72 +4266,58 @@ async fn warm_up_history(state: &mut BarState, symbol: &str, tf_min: u64, limit:
     // ── HTF seed: D1 EMA20 real + H1 buckets reales ──────────────────────────
     // Fetch 30 velas D1 para que EMA20 sea precisa desde el arranque
     {
-        let d1_url = format!(
-            "https://fapi.binance.com/fapi/v1/klines?symbol={}&interval=1d&limit=31",
-            symbol
-        );
+        let d1_url = ex.klines_url(symbol, "1d", 31);
         if let Ok(resp) = reqwest::get(&d1_url).await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(arr) = json.as_array() {
-                    // excluir la vela D1 aún abierta (la última)
-                    let closes: Vec<f64> = arr[..arr.len().saturating_sub(1)]
-                        .iter()
-                        .filter_map(|e| e.as_array())
-                        .filter_map(|a| a.get(4)?.as_str()?.parse::<f64>().ok())
-                        .collect();
-                    state.mtf_state.seed_d1(&closes);
-                }
+                let rows = ex.extract_kline_rows(&json);
+                // excluir la vela D1 aún abierta (la última)
+                let closes: Vec<f64> = rows[..rows.len().saturating_sub(1)]
+                    .iter()
+                    .filter_map(|a| a.get(4)?.as_str()?.parse::<f64>().ok())
+                    .collect();
+                state.mtf_state.seed_d1(&closes);
             }
         }
     }
     // Fetch 14 velas H1 para que ATR H1 sea preciso
     {
-        let h1_url = format!(
-            "https://fapi.binance.com/fapi/v1/klines?symbol={}&interval=1h&limit=15",
-            symbol
-        );
+        let h1_url = ex.klines_url(symbol, "1h", 15);
         if let Ok(resp) = reqwest::get(&h1_url).await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(arr) = json.as_array() {
-                    let candles: Vec<(i64, f64, f64, f64)> = arr[..arr.len().saturating_sub(1)]
-                        .iter()
-                        .filter_map(|e| e.as_array())
-                        .filter_map(|a| {
-                            let ts   = a.get(0)?.as_i64()?;
-                            let high = a.get(2)?.as_str()?.parse::<f64>().ok()?;
-                            let low  = a.get(3)?.as_str()?.parse::<f64>().ok()?;
-                            let cls  = a.get(4)?.as_str()?.parse::<f64>().ok()?;
-                            Some((ts, high, low, cls))
-                        })
-                        .collect();
-                    state.mtf_state.seed_h1(&candles);
-                    state.mtf_longs_state.seed_h1(&candles);
+                let rows = ex.extract_kline_rows(&json);
+                let candles: Vec<(i64, f64, f64, f64)> = rows[..rows.len().saturating_sub(1)]
+                    .iter()
+                    .filter_map(|a| {
+                        let ts   = a.get(0).and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))?;
+                        let high = a.get(2)?.as_str()?.parse::<f64>().ok()?;
+                        let low  = a.get(3)?.as_str()?.parse::<f64>().ok()?;
+                        let cls  = a.get(4)?.as_str()?.parse::<f64>().ok()?;
+                        Some((ts, high, low, cls))
+                    })
+                    .collect();
+                state.mtf_state.seed_h1(&candles);
+                state.mtf_longs_state.seed_h1(&candles);
                 }
             }
         }
     }
     // Seed H4 EMA20 para el detector de longs (solo ETH/SOL)
     if matches!(symbol, "ETHUSDT" | "SOLUSDT") {
-        let h4_url = format!(
-            "https://fapi.binance.com/fapi/v1/klines?symbol={}&interval=4h&limit=25",
-            symbol
-        );
+        let h4_url = ex.klines_url(symbol, "4h", 25);
         if let Ok(resp) = reqwest::get(&h4_url).await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(arr) = json.as_array() {
-                    let candles: Vec<(i64, f64, f64, f64)> = arr[..arr.len().saturating_sub(1)]
-                        .iter()
-                        .filter_map(|e| e.as_array())
-                        .filter_map(|a| {
-                            let ts   = a.get(0)?.as_i64()?;
-                            let high = a.get(2)?.as_str()?.parse::<f64>().ok()?;
-                            let low  = a.get(3)?.as_str()?.parse::<f64>().ok()?;
-                            let cls  = a.get(4)?.as_str()?.parse::<f64>().ok()?;
-                            Some((ts, high, low, cls))
-                        })
-                        .collect();
-                    state.mtf_longs_state.seed_h4(&candles);
-                }
+                let rows = ex.extract_kline_rows(&json);
+                let candles: Vec<(i64, f64, f64, f64)> = rows[..rows.len().saturating_sub(1)]
+                    .iter()
+                    .filter_map(|a| {
+                        let ts   = a.get(0).and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))?;
+                        let high = a.get(2)?.as_str()?.parse::<f64>().ok()?;
+                        let low  = a.get(3)?.as_str()?.parse::<f64>().ok()?;
+                        let cls  = a.get(4)?.as_str()?.parse::<f64>().ok()?;
+                        Some((ts, high, low, cls))
+                    })
+                    .collect();
+                state.mtf_longs_state.seed_h4(&candles);
             }
         }
     }
@@ -4414,12 +4380,16 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         }
     };
 
-    let handles = AdapterHandles::spawn_selected(AdapterNetworkConfig::default(), [Venue::Binance])
-        .expect("monitor: failed to spawn Binance adapter");
+    let ex = ExchangeTarget::from_env();
+    println!("monitor: exchange = {:?}", ex);
 
-    println!("monitor: fetching {symbol_str} LinearPerps metadata…");
+    let handles =
+        AdapterHandles::spawn_selected(AdapterNetworkConfig::default(), [ex.venue()])
+            .expect("monitor: failed to spawn adapter");
+
+    println!("monitor: fetching {symbol_str} {:?} metadata…", ex.market_kind());
     let metadata = handles
-        .fetch_ticker_metadata(Venue::Binance, &[MarketKind::LinearPerps])
+        .fetch_ticker_metadata(ex.venue(), &[ex.market_kind()])
         .await
         .expect("monitor: metadata fetch failed");
 
@@ -4434,7 +4404,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         })
         .unwrap_or_else(|| {
             eprintln!("monitor: {symbol_str} not found in metadata, using fallback TickerInfo");
-            let ticker = Ticker::new(&symbol_str, Exchange::BinanceLinear);
+            let ticker = Ticker::new(&symbol_str, ex.exchange());
             TickerInfo::new(ticker, 0.1, 0.001, None)
         });
 
@@ -4442,21 +4412,21 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
 
     let kline_stream = handles.kline_stream(&StreamConfig::new(
         vec![(ticker_info, timeframe)],
-        Exchange::BinanceLinear,
+        ex.exchange(),
         None,
         PushFrequency::ServerDefault,
     ));
 
     let depth_stream = handles.depth_stream(&StreamConfig::new(
         ticker_info,
-        Exchange::BinanceLinear,
+        ex.exchange(),
         None,
         PushFrequency::ServerDefault,
     ));
 
     let trade_stream = handles.trade_stream(&StreamConfig::new(
         vec![ticker_info],
-        Exchange::BinanceLinear,
+        ex.exchange(),
         None,
         PushFrequency::ServerDefault,
     ));
@@ -4608,7 +4578,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
 
     // Seed bar history from REST — si hay posición restaurada, warm_up_history también
     // la alimenta al paper trader para cerrar cualquier SL/TP ocurrido durante downtime.
-    warm_up_history(&mut state, &symbol_str, tf_min, warmup_limit).await;
+    warm_up_history(&mut state, &symbol_str, tf_min, warmup_limit, ex).await;
     state.rbf_state.reset_signal_cooldown();
     state.amd_state.reset_signal_cooldown();
     state.be_state.reset_signal_cooldown();
@@ -4628,7 +4598,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            let result = fetch_premium_index(&funding_symbol).await;
+            let result = fetch_premium_index(&funding_symbol, ex).await;
             let _ = funding_tx.send(result).await;
         }
     });
@@ -4640,7 +4610,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
-            let price = fetch_spot_price(&spot_symbol).await;
+            let price = fetch_spot_price(&spot_symbol, ex).await;
             let _ = spot_tx.send(price).await;
         }
     });
@@ -4652,26 +4622,27 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         let mut interval = tokio::time::interval(Duration::from_secs(300));
         loop {
             interval.tick().await;
-            let oi = fetch_open_interest(&oi_symbol).await;
+            let oi = fetch_open_interest(&oi_symbol, ex).await;
             let _ = oi_tx.send(oi).await;
         }
     });
 
     // ── Institutional REST fetch tasks ────────────────────────────────────────
 
-    // Liquidations: real-time via @forceOrder WebSocket (public stream, no auth needed)
+    // Liquidations: real-time via @forceOrder WebSocket (futures only — no liquidations on spot)
     let (liq_tx, mut liq_rx) = tokio::sync::mpsc::channel::<Vec<LiquidationEvent>>(16);
     let (liq_health_tx, mut liq_health_rx) = tokio::sync::mpsc::channel::<bool>(4);
-    spawn_force_order_stream(
-        symbol_str.clone(),
-        liq_tx,
-        liq_health_tx,
-        Arc::clone(&liq_raw_counter),
-    );
-    // Diagnostic: all-market liquidations — proves the /market/ws/ endpoint works even when BTC is quiet
-    spawn_global_liq_counter(Arc::clone(&liq_global_raw_counter));
+    if ex.is_futures() {
+        spawn_force_order_stream(
+            symbol_str.clone(),
+            liq_tx,
+            liq_health_tx,
+            Arc::clone(&liq_raw_counter),
+        );
+        spawn_global_liq_counter(Arc::clone(&liq_global_raw_counter));
+    }
 
-    // L/S ratios (top traders + global): every 5 min
+    // L/S ratios (top traders + global): every 5 min (futures only)
     type LsPayload = (Option<LongShortSnapshot>, Option<LongShortSnapshot>);
     let (ls_tx, mut ls_rx) = tokio::sync::mpsc::channel::<LsPayload>(4);
     let ls_symbol = symbol_str.clone();
@@ -4679,46 +4650,46 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         let mut interval = tokio::time::interval(Duration::from_secs(300));
         loop {
             interval.tick().await;
-            let top = fetch_top_trader_ls(&ls_symbol).await;
-            let global = fetch_global_ls(&ls_symbol).await;
+            let top = fetch_top_trader_ls(&ls_symbol, ex).await;
+            let global = fetch_global_ls(&ls_symbol, ex).await;
             let _ = ls_tx.send((top, global)).await;
         }
     });
 
-    // Taker buy/sell ratio: every 5 min
+    // Taker buy/sell ratio: every 5 min (futures only)
     let (taker_tx, mut taker_rx) = tokio::sync::mpsc::channel::<Option<TakerRatioSnapshot>>(4);
     let taker_symbol = symbol_str.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(300));
         loop {
             interval.tick().await;
-            let snap = fetch_taker_ratio(&taker_symbol).await;
+            let snap = fetch_taker_ratio(&taker_symbol, ex).await;
             let _ = taker_tx.send(snap).await;
         }
     });
 
-    // Funding rate history: once at startup to seed the FundingTracker percentile
+    // Funding rate history: once at startup (futures only)
     let (funding_hist_tx, mut funding_hist_rx) =
         tokio::sync::mpsc::channel::<Vec<FundingRateSample>>(2);
     let fh_symbol = symbol_str.clone();
     tokio::spawn(async move {
-        let samples = fetch_funding_history(&fh_symbol).await;
+        let samples = fetch_funding_history(&fh_symbol, ex).await;
         let _ = funding_hist_tx.send(samples).await;
     });
 
-    // OI history: once at startup to pre-seed OiTracker (eliminates 15-min cold-start for z-score)
+    // OI history: once at startup (futures only)
     let (oi_hist_tx, mut oi_hist_rx) = tokio::sync::mpsc::channel::<Vec<OiHistSnapshot>>(2);
     let oi_hist_symbol = symbol_str.clone();
     tokio::spawn(async move {
-        let snaps = fetch_oi_history(&oi_hist_symbol).await;
+        let snaps = fetch_oi_history(&oi_hist_symbol, ex).await;
         let _ = oi_hist_tx.send(snaps).await;
     });
 
-    // L/S history: once at startup to pre-seed LsRatioTracker (eliminates 5-min fallback window)
+    // L/S history: once at startup (futures only)
     let (ls_hist_tx, mut ls_hist_rx) = tokio::sync::mpsc::channel::<Vec<LongShortSnapshot>>(2);
     let ls_hist_symbol = symbol_str.clone();
     tokio::spawn(async move {
-        let snaps = fetch_ls_history(&ls_hist_symbol).await;
+        let snaps = fetch_ls_history(&ls_hist_symbol, ex).await;
         let _ = ls_hist_tx.send(snaps).await;
     });
 
