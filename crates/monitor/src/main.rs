@@ -4297,7 +4297,6 @@ async fn warm_up_history(
                     .collect();
                 state.mtf_state.seed_h1(&candles);
                 state.mtf_longs_state.seed_h1(&candles);
-                }
             }
         }
     }
