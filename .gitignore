@@ -14,3 +14,4 @@ calibration/.env
 /strategies/
 # Large datasets
 dataset/*.parquet
+data/bybit-spot/
