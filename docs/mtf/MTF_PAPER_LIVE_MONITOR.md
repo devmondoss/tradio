@@ -178,7 +178,7 @@ Respuesta actual: todavia no se debe asumir. Falta construir y correr un harness
 - misma data M1
 - mismos VAH/VAL
 - mismos stops
-- mismas salidas target/CVD/stop/timeout
+- mismas salidas target/CVD/stop; MTF Spot no usa timeout
 
 Criterio de aceptacion:
 

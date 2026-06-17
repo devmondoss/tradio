@@ -145,7 +145,7 @@ Implementado:
 - Warm-up historico
 - Restauracion de trade abierto
 - Un trade activo a la vez
-- TP/SL/CVD/timeout
+- TP/SL/CVD. Timeout retirado: MTF Spot debe mantener trades abiertos hasta target, stop o CVD exit.
 - Calculo de estado H1, ATR, PDH/PDL, Asia high/low y weekly high/low
 
 El detector vive separado del MTF Futures detector para evitar mezclar reglas de mercado.

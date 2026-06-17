@@ -83,7 +83,6 @@ Parametros:
 - `MIN_STOP_PCT = 0.0030`
 - `MAX_STOP_PCT = 0.0075`
 - `TARGET_R = 2.0`
-- `FORWARD = 1200` barras M1
 - `FEE_RT = 0.0007`
 
 Salidas:
@@ -93,7 +92,8 @@ Salidas:
 | Target | `high >= entry + 2.0 * dist` | +2.0R |
 | CVD exit | 5 barras con CVD negativo + OBI < -0.15 y profit >= 1R | variable |
 | Stop | `low <= H1_low - 0.40 * ATR14_H1` | -1.0R |
-| Timeout | 1200 barras sin resolucion | variable |
+
+No hay salida por timeout. Un trade MTF Spot queda abierto hasta `target`, `stop` o `cvd_exit`.
 
 ---
 

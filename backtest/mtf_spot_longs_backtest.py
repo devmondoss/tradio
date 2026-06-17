@@ -37,7 +37,6 @@ CAPITAL_INIT = 500.0
 RISK_PCT = 0.02
 FEE_RT = 0.0007
 TARGET_R = 2.0
-FORWARD_M1 = 1200
 MIN_STOP = 0.0030
 MAX_STOP = 0.0075
 LEVEL_TOL = 0.007
@@ -224,8 +223,6 @@ def simulate(df: pd.DataFrame) -> tuple[list[dict], float]:
                 reason, exit_price = "stop", stop
             elif high >= target:
                 reason, exit_price = "target", target
-            elif bars >= FORWARD_M1:
-                reason, exit_price = "timeout", close
             elif cvd_neg_streak >= 5 and obi_now < -0.15 and cur_r >= 1.0:
                 reason, exit_price = "cvd_exit", close
 

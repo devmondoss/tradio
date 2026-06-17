@@ -7,7 +7,6 @@ const TARGET_R: f64 = 2.0;
 const CVD_FLIP_BARS: usize = 5;
 const OBI_FLIP_THR: f64 = 0.15;
 const MIN_PROFIT_CVD: f64 = 1.0;
-const FORWARD_MAX: usize = 1200;
 const FEE_RT: f64 = 0.0007;
 const LEVEL_TOL: f64 = 0.007;
 const ATR_MULT: f64 = 0.40;
@@ -563,12 +562,6 @@ impl MtfSpotState {
                     self.cvd_streak = 0;
                 }
                 let curr_r = (trade.entry - ctx.close) / trade.risk;
-                if trade.bars_in_trade >= FORWARD_MAX {
-                    let gross = (trade.entry - ctx.close) / trade.risk;
-                    return TradeUpdate::Closed(
-                        self.close_trade(trade, gross, "timeout", ctx.close, ctx.ts_ms),
-                    );
-                }
                 if self.cvd_streak >= CVD_FLIP_BARS
                     && ctx.obi10_mean > OBI_FLIP_THR
                     && curr_r >= MIN_PROFIT_CVD
@@ -601,12 +594,6 @@ impl MtfSpotState {
                     self.cvd_streak = 0;
                 }
                 let curr_r = (ctx.close - trade.entry) / trade.risk;
-                if trade.bars_in_trade >= FORWARD_MAX {
-                    let gross = (ctx.close - trade.entry) / trade.risk;
-                    return TradeUpdate::Closed(
-                        self.close_trade(trade, gross, "timeout", ctx.close, ctx.ts_ms),
-                    );
-                }
                 if self.cvd_streak >= CVD_FLIP_BARS
                     && ctx.obi10_mean < -OBI_FLIP_THR
                     && curr_r >= MIN_PROFIT_CVD

@@ -165,7 +165,8 @@ El stop ×0.40 da espacio para que el trade respire sin que el ruido M1 lo saque
 | **Target** | `low <= entry - 2.0 × dist` | +2.0R |
 | **CVD exit** | 5 barras consecutivas CVD positivo + OBI > 0.15, con profit ≥ 1R | Variable (~1.3R promedio) |
 | **Stop** | `high >= H1_high + 0.40×ATR` | -1.0R |
-| **Timeout** | 1200 barras M1 (~20h) sin resolución | Variable |
+
+No hay salida por timeout. Un trade MTF Spot queda abierto hasta `target`, `stop` o `cvd_exit`.
 
 **Evidencia target sweep:**
 | Target | WR OOS | AvgR OOS | Capital |
