@@ -3,7 +3,6 @@ import type { Trade } from '../lib/types'
 import { fmtR } from '../lib/utils'
 import LiveView from './LiveView'
 import StatsView from './StatsView'
-import BacktestView from './BacktestView'
 import FilterBar, { emptyFilters, applyFilters, type Filters } from '../components/FilterBar'
 
 type SubTab = 'live' | 'stats'
@@ -15,22 +14,17 @@ interface Props {
   onReload: () => void
 }
 
-interface BtStats { n: number; wins: number; totalR: number; avgR: number; equity: number }
-
 export default function RBFModuleView({ trades, loading, error, onReload }: Props) {
   const [sub,     setSub]     = useState<SubTab>('live')
   const [filters, setFilters] = useState<Filters>(emptyFilters())
-  const [btStats, setBtStats] = useState<BtStats | null>(null)
 
   const filtered  = applyFilters(trades, filters)
   const closed    = trades.filter(t => !t.isOpen)
 
-  // Header muestra stats del backtest cuando está en esa pestaña, si no las live
-  const isBt   = false
-  const n      = isBt && btStats ? btStats.n      : closed.length
-  const wins   = isBt && btStats ? btStats.wins   : closed.filter(t => (t.resultR ?? 0) > 0).length
-  const totalR = isBt && btStats ? btStats.totalR : closed.reduce((s, t) => s + (t.resultR ?? 0), 0)
-  const avgR   = isBt && btStats ? btStats.avgR   : (n ? totalR / n : 0)
+  const n      = closed.length
+  const wins   = closed.filter(t => (t.resultR ?? 0) > 0).length
+  const totalR = closed.reduce((s, t) => s + (t.resultR ?? 0), 0)
+  const avgR   = n ? totalR / n : 0
   const wr     = n ? wins / n * 100 : 0
 
   const openCount = trades.filter(t => t.isOpen).length
@@ -83,12 +77,10 @@ export default function RBFModuleView({ trades, loading, error, onReload }: Prop
             {openCount > 0 && <span className="open-badge" style={{ color }}>{openCount} OPEN</span>}
             {loading && <span style={{ fontSize: 9, color: 'var(--text3)' }}>cargando…</span>}
             {error   && <span style={{ fontSize: 9, color: 'var(--red)'   }}>error</span>}
-            {!loading && trades.length > 0 && !isBt && (
+            {!loading && trades.length > 0 && (
               <FilterBar trades={trades} filters={filters} filtered={filtered} onChange={setFilters} />
             )}
-            {!isBt && (
-              <button className="reload-btn" onClick={onReload}>↺</button>
-            )}
+            <button className="reload-btn" onClick={onReload}>↺</button>
           </div>
         </div>
       </div>

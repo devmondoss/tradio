@@ -207,9 +207,8 @@ export default function TradeChart({ trade }: Props) {
 
     const barSec         = TF_SECONDS[interval] ?? 60
     const nowSec         = Math.floor(Date.now() / 1000)
-    const FORWARD_MAX_S  = 20 * 3600  // 20h = FORWARD_MAX del detector
     const closedAtSec    = trade.isOpen
-      ? trade.ts + FORWARD_MAX_S  // proyectar el horizonte completo para carga + visRange
+      ? nowSec
       : trade.closedAt
         ? Math.floor(new Date(trade.closedAt).getTime() / 1000)
         : trade.ts + (trade.durationMin ?? 90) * 60
@@ -234,10 +233,10 @@ export default function TradeChart({ trade }: Props) {
 
       const applyRange = () => {
         if (tradeRef.current?.id !== trade.id) return
-        // Trades abiertos: el visTo es entry+20h para que timeToCoordinate(exitTs) tenga
-        // un punto válido en el eje de tiempo y el box se dibuje hasta el horizonte completo.
+        // Trades abiertos: mantener la vista hasta la ultima vela cargada mas padding.
+        const lastCandleSec = cs.length > 0 ? cs[cs.length - 1].time : nowSec
         const visTo = trade.isOpen
-          ? (trade.ts + FORWARD_MAX_S + rightPadBars * barSec) as Time
+          ? (Math.max(nowSec, lastCandleSec) + rightPadBars * barSec) as Time
           : (closedAtSec + rightPadBars * barSec) as Time
         chart.timeScale().setVisibleRange({
           from: (trade.ts - visContextBars * barSec) as Time,
@@ -396,7 +395,7 @@ export default function TradeChart({ trade }: Props) {
       const snap = s as Extract<Drawing, { type: 'vline' }>
       d.time = snap.time + dT
     } else if (d.type === 'trendline'||d.type==='ray'||d.type==='extline'||d.type==='arrow') {
-      const snap = s as Extract<Drawing, { type: 'trendline' }>
+      const snap = s as Extract<Drawing, { type: 'trendline' | 'ray' | 'extline' | 'arrow' }>
       if (op.handle === 'p1')        { d.t1 = snap.t1 + dT; d.p1 = snap.p1 + dP }
       else if (op.handle === 'p2')   { d.t2 = snap.t2 + dT; d.p2 = snap.p2 + dP }
       else { d.t1=snap.t1+dT; d.p1=snap.p1+dP; d.t2=snap.t2+dT; d.p2=snap.p2+dP }
@@ -434,11 +433,16 @@ export default function TradeChart({ trade }: Props) {
     const tY=cv(series.priceToCoordinate(t.target))
     if (eX==null||eY==null||sY==null||tY==null) return
     const isShort = t.dir === 'Short'
-    // Para trades ABIERTOS: proyectar hasta el máximo forward window (20h = 1200 barras M1)
-    // durationMin en trades abiertos = barras transcurridas, no la duración total → no usarlo para exitTs
-    const FORWARD_MAX_SEC = 20 * 3600
+    // Trades abiertos: dibujar el rango hasta la ultima vela cargada/precio actual.
+    const lastCandle = candlesRef.current.length > 0
+      ? candlesRef.current[candlesRef.current.length - 1]
+      : undefined
+    const openEndTs = Math.max(
+      Math.floor(Date.now() / 1000),
+      lastCandle ? lastCandle.time + (TF_SECONDS[intervalRef.current] ?? 60) : t.ts + 90 * 60,
+    )
     let exitTs = t.isOpen
-      ? t.ts + FORWARD_MAX_SEC
+      ? openEndTs
       : t.ts + 90 * 60
     if (!t.isOpen) {
       if (t.closedAt) { const ex=Math.floor(new Date(t.closedAt).getTime()/1000); if(ex>t.ts) exitTs=ex }
@@ -555,7 +559,7 @@ export default function TradeChart({ trade }: Props) {
             const tarY2=cv(series.priceToCoordinate(tgt))
             // preview: right edge = entry + 30 bars (30 min for M1 preview)
             const previewTx2=pd.x1+Math.max(canvas.width*0.3,120)
-            drawPos(ctx,canvas,series,pd.tool,pd.x1,previewTx2,pd.y1,ey,tarY2??ey-(ey-pd.y1)*2,ep,cp,tgt,prec)
+            drawPos(ctx,canvas,pd.x1,previewTx2,pd.y1,ey,tarY2??ey-(ey-pd.y1)*2,ep,cp,tgt,prec)
           }
         }
       } else if (pd.tool==='rect') {
@@ -575,8 +579,8 @@ export default function TradeChart({ trade }: Props) {
   }
 
   // ─── Position box renderer ───────────────────────────────────────────────────
-  function drawPos(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, series: CandleSeries,
-    type: 'shortpos'|'longpos', tx: number, tx2: number, entY: number, stoY: number, tarY: number,
+  function drawPos(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement,
+    tx: number, tx2: number, entY: number, stoY: number, tarY: number,
     entry: number, stop: number, target: number, prec: number,
     hovHandle?: string
   ) {
@@ -648,7 +652,7 @@ export default function TradeChart({ trade }: Props) {
       // if t2 is off-screen to the right, clamp to canvas width - 40 (still shows right handle)
       const tx2 = tx2raw ?? canvas.width - 40
       if(entY==null||stoY==null||tarY==null||tx==null) return
-      drawPos(ctx,canvas,series,d.type,tx,tx2,entY,stoY,tarY,d.entry,d.stop,d.target,prec,hov?hovHandle:undefined)
+      drawPos(ctx,canvas,tx,tx2,entY,stoY,tarY,d.entry,d.stop,d.target,prec,hov?hovHandle:undefined)
       return
     }
 

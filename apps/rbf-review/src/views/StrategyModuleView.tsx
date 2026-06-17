@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase, type AmdSignal, type BeSignal } from '../lib/supabase'
 import { buildAmdTrades, buildBeTrades, fmtR } from '../lib/utils'
-import { ACCOUNT, RISK_USD } from '../lib/types'
+import { ACCOUNT } from '../lib/types'
 import type { Trade } from '../lib/types'
 import LiveView from './LiveView'
 import StatsView from './StatsView'
@@ -29,39 +29,6 @@ const CONFIGS = {
     btJsonKey: null as string | null,
     dynamicBt: true,
   },
-}
-
-// ─── Backtest JSON → Trade converter ─────────────────────────────────────────
-
-interface BtRow {
-  fecha: string; symbol: string; direction?: string
-  session: string; result_r: number; reason?: string
-  [k: string]: unknown
-}
-
-function buildJsonTrades(rows: BtRow[]): Trade[] {
-  let equity = ACCOUNT
-  return rows.map((r, i) => {
-    const pnl = r.result_r * RISK_USD
-    equity = Math.round((equity + pnl) * 100) / 100
-    const tsMs = r.fecha ? new Date(r.fecha.replace(' ', 'T') + 'Z').getTime() : i
-    return {
-      idx: i + 1, id: String(i), sym: r.symbol ?? '',
-      dir: (r.direction ?? 'Short') as 'Short' | 'Long',
-      session: r.session ?? '', score: null,
-      entry: 0, stop: 0, target: 0, exit: 0,
-      resultR: r.result_r,
-      pnlUsd: Math.round(pnl * 100) / 100,
-      riskUsd: RISK_USD, stopPct: 0, equity,
-      reason: r.reason ?? '', tsMs, ts: Math.floor(tsMs / 1000),
-      closedAt: null, regime: '', sessionPhase: '',
-      evidence: [], confluenceFlags: [], vetoReason: '',
-      cvdInRange: null, vr: null, priceVsVwap: null,
-      funding: null, cvdSlope: null, obi: null, dz: null,
-      rangePct: null, rangeBars: null, rangeTouch: null,
-      durationMin: null, isOpen: false,
-    }
-  })
 }
 
 // ─── Backtest panel (equity curve + breakdown tables) ─────────────────────────

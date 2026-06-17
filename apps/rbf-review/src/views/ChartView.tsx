@@ -48,10 +48,10 @@ export default function ChartView({ theme }: { theme: 'light' | 'dark' }) {
     const grid      = cssVar('--chart-grid')
     const border    = cssVar('--chart-border')
     const textColor = cssVar('--chart-text')
-    const upColor   = cssVar('--candle-up')
-    const downColor = cssVar('--candle-down')
-    const upBorder  = cssVar('--candle-up-b')
-    const dnBorder  = cssVar('--candle-down-b')
+    const upColor   = cssVar('--candle-up')   || (isDark ? '#e8e8f0' : '#0a0a0f')
+    const downColor = cssVar('--candle-down') || (isDark ? '#3a3a48' : '#d0d0d8')
+    const upBorder  = cssVar('--candle-up-b') || (isDark ? '#e8e8f0' : '#0a0a0f')
+    const dnBorder  = cssVar('--candle-down-b') || (isDark ? '#5a5a6e' : '#b0b0b8')
 
     new window.TradingView.widget({
       container_id:        'tv-chart-container',
@@ -103,14 +103,10 @@ export default function ChartView({ theme }: { theme: 'light' | 'dark' }) {
 
         // dark: relleno sólido — blanco up, gris oscuro down
         // light: monocromático — negro up, gris claro down
-        'mainSeriesProperties.candleStyle.upColor':
-          isDark ? '#e8e8f0'  : '#0a0a0f',
-        'mainSeriesProperties.candleStyle.downColor':
-          isDark ? '#3a3a48'  : '#d0d0d8',
-        'mainSeriesProperties.candleStyle.borderUpColor':
-          isDark ? '#e8e8f0'  : '#0a0a0f',
-        'mainSeriesProperties.candleStyle.borderDownColor':
-          isDark ? '#5a5a6e'  : '#b0b0b8',
+        'mainSeriesProperties.candleStyle.upColor': upColor,
+        'mainSeriesProperties.candleStyle.downColor': downColor,
+        'mainSeriesProperties.candleStyle.borderUpColor': upBorder,
+        'mainSeriesProperties.candleStyle.borderDownColor': dnBorder,
         'mainSeriesProperties.candleStyle.wickUpColor':
           isDark ? '#e8e8f0'  : '#0a0a0f',
         'mainSeriesProperties.candleStyle.wickDownColor':
