@@ -174,6 +174,10 @@ impl MtfSpotState {
         self.active_trade.is_some()
     }
 
+    pub fn active_entry_ms(&self) -> Option<i64> {
+        self.active_trade.as_ref().map(|trade| trade.signal.ts_ms)
+    }
+
     pub fn restore_active_trade(
         &mut self,
         direction: MtfSpotDirection,

@@ -4287,22 +4287,30 @@ async fn warm_up_history(
                 weekly_low: None,
             };
             if state.mtf_spot_state.has_active_trade() {
-                if let Some(closed) = state.mtf_spot_state.on_bar_close(&warm_ctx, false, false) {
-                    if !closed.is_open {
-                        println!(
-                            "[mtf_spot] warm-up close {} {} reason={} R={:.3}",
-                            symbol,
-                            closed.signal.direction.as_str(),
-                            closed.reason.as_deref().unwrap_or("?"),
-                            closed.result_r.unwrap_or(0.0)
-                        );
-                        if let Some(sb) = &state.supabase {
-                            let ev = closed;
-                            let sym_s = symbol.to_string();
-                            let sb2 = sb.clone();
-                            tokio::spawn(async move {
-                                sb2.write_mtf_spot_trade(&ev, &sym_s).await;
-                            });
+                if state
+                    .mtf_spot_state
+                    .active_entry_ms()
+                    .map(|entry_ms| open_ms > entry_ms)
+                    .unwrap_or(false)
+                {
+                    if let Some(closed) = state.mtf_spot_state.on_bar_close(&warm_ctx, false, false)
+                    {
+                        if !closed.is_open {
+                            println!(
+                                "[mtf_spot] warm-up close {} {} reason={} R={:.3}",
+                                symbol,
+                                closed.signal.direction.as_str(),
+                                closed.reason.as_deref().unwrap_or("?"),
+                                closed.result_r.unwrap_or(0.0)
+                            );
+                            if let Some(sb) = &state.supabase {
+                                let ev = closed;
+                                let sym_s = symbol.to_string();
+                                let sb2 = sb.clone();
+                                tokio::spawn(async move {
+                                    sb2.write_mtf_spot_trade(&ev, &sym_s).await;
+                                });
+                            }
                         }
                     }
                 }
