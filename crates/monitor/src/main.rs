@@ -434,7 +434,7 @@ struct FrozenBarCtx {
 }
 
 impl PipelineMetrics {
-    fn report(&mut self, freshness: &DataFreshness, streams: &StreamStates) {
+    fn report(&mut self, freshness: &DataFreshness, streams: &StreamStates, futures_mode: bool) {
         let avg_lat = if self.latencies_ms.is_empty() {
             0.0
         } else {
@@ -450,6 +450,34 @@ impl PipelineMetrics {
             .last_trade_at
             .map(|t| t.elapsed().as_millis())
             .unwrap_or(999_999);
+
+        if !futures_mode {
+            println!(
+                "[metrics] bars={} signals={} ws_reconnects={} | \
+                 kline_ticks={} trades={} depth_updates={} | \
+                 bar_latency_avg={:.0}ms max={max_lat}ms | \
+                 depth_age={depth_age_ms}ms trade_age={trade_age_ms}ms | \
+                 inst=spot-mode ws=[kline:{} depth:{} trades:ok]",
+                self.bars_processed,
+                self.signals_today,
+                self.ws_reconnects,
+                self.kline_ticks,
+                self.trade_count,
+                self.depth_updates,
+                avg_lat,
+                streams.klines,
+                streams.depth,
+            );
+
+            if depth_age_ms > 5_000 {
+                eprintln!("[WARN] depth stream stale â€” last update {depth_age_ms}ms ago");
+            }
+            if trade_age_ms > 5_000 {
+                eprintln!("[WARN] trade stream stale â€” last update {trade_age_ms}ms ago");
+            }
+            self.report_processing_metrics();
+            return;
+        }
 
         let (inst_ok, inst_total) = freshness.quality(self.liq_raw_messages);
         println!(
@@ -533,6 +561,10 @@ impl PipelineMetrics {
         warn_age("OI fetch", freshness.oi_fetched_at, 600);
         warn_age("funding stream", freshness.funding_tick_at, 120);
 
+        self.report_processing_metrics();
+    }
+
+    fn report_processing_metrics(&self) {
         let avg_proc = if self.processing_ms.is_empty() {
             0.0
         } else {
@@ -709,6 +741,7 @@ struct BarState {
     mtf_spot_state: data::strategy::detectors::mtf_spot_detector::MtfSpotState,
     // Runtime profile — separates futures MTF, spot MTF, and future venue profiles.
     runtime_cfg: MonitorRuntimeConfig,
+    futures_market: bool,
     // WebSocket broadcast — envía barras y señales al dashboard web
     ws_tx: ws_server::Sender,
 }
@@ -724,6 +757,7 @@ impl BarState {
         ws_tx: ws_server::Sender,
         symbol: &str,
         runtime_cfg: MonitorRuntimeConfig,
+        futures_market: bool,
     ) -> Self {
         Self {
             bars: VecDeque::with_capacity(VP_WINDOW + 1),
@@ -840,6 +874,7 @@ impl BarState {
             ),
             mtf_spot_state: data::strategy::detectors::mtf_spot_detector::MtfSpotState::new(symbol),
             runtime_cfg,
+            futures_market,
             ws_tx,
         }
     }
@@ -3362,7 +3397,10 @@ impl BarState {
         let inst_ref = ctx.institutional.as_ref();
         let (inst_ok, inst_total) = self.freshness.quality(self.metrics.liq_raw_messages);
         let liq_silent = self.freshness.liq_stream_ok && self.metrics.liq_raw_messages == 0;
-        let inst_label = if inst_ref.is_none() {
+        let futures_mode = self.futures_market;
+        let inst_label = if !futures_mode {
+            "spot-mode".to_string()
+        } else if inst_ref.is_none() {
             "null".to_string()
         } else if inst_ok == inst_total {
             format!("Live({inst_ok}/{inst_total})")
@@ -3375,10 +3413,17 @@ impl BarState {
         } else {
             format!("Stale(0/{inst_total})")
         };
-        let ws_label = format!(
-            "kline:{} depth:{} trades:ok liq:{}",
-            self.streams.klines, self.streams.depth, self.streams.liq
-        );
+        let ws_label = if futures_mode {
+            format!(
+                "kline:{} depth:{} trades:ok liq:{}",
+                self.streams.klines, self.streams.depth, self.streams.liq
+            )
+        } else {
+            format!(
+                "kline:{} depth:{} trades:ok",
+                self.streams.klines, self.streams.depth
+            )
+        };
         let liq_age = self.freshness.liq_age_str();
         let rbf_pos = if self.rbf_paper.has_position() {
             "open"
@@ -3467,7 +3512,7 @@ impl BarState {
                 self.liq_global_raw_counter.load(Ordering::Relaxed);
             let freshness = &self.freshness;
             let streams = &self.streams;
-            self.metrics.report(freshness, streams);
+            self.metrics.report(freshness, streams, self.futures_market);
         }
     }
 }
@@ -4728,6 +4773,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         ws_tx,
         &symbol_str,
         runtime_cfg.clone(),
+        ex.is_futures(),
     );
     state.intrabar_cfg.log_boot();
 
@@ -4903,14 +4949,16 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     // funding + spot: every 60s
     let (funding_tx, mut funding_rx) = tokio::sync::mpsc::channel::<(Option<f64>, Option<f64>)>(4);
     let funding_symbol = symbol_str.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
-        loop {
-            interval.tick().await;
-            let result = fetch_premium_index(&funding_symbol, ex).await;
-            let _ = funding_tx.send(result).await;
-        }
-    });
+    if ex.is_futures() {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let result = fetch_premium_index(&funding_symbol, ex).await;
+                let _ = funding_tx.send(result).await;
+            }
+        });
+    }
 
     // spot price: every 30s
     let (spot_tx, mut spot_rx) = tokio::sync::mpsc::channel::<Option<f64>>(4);
@@ -4927,14 +4975,16 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     // open interest: every 5 min
     let (oi_tx, mut oi_rx) = tokio::sync::mpsc::channel::<Option<f64>>(4);
     let oi_symbol = symbol_str.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(300));
-        loop {
-            interval.tick().await;
-            let oi = fetch_open_interest(&oi_symbol, ex).await;
-            let _ = oi_tx.send(oi).await;
-        }
-    });
+    if ex.is_futures() {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                let oi = fetch_open_interest(&oi_symbol, ex).await;
+                let _ = oi_tx.send(oi).await;
+            }
+        });
+    }
 
     // ── Institutional REST fetch tasks ────────────────────────────────────────
 
@@ -4955,52 +5005,62 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
     type LsPayload = (Option<LongShortSnapshot>, Option<LongShortSnapshot>);
     let (ls_tx, mut ls_rx) = tokio::sync::mpsc::channel::<LsPayload>(4);
     let ls_symbol = symbol_str.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(300));
-        loop {
-            interval.tick().await;
-            let top = fetch_top_trader_ls(&ls_symbol, ex).await;
-            let global = fetch_global_ls(&ls_symbol, ex).await;
-            let _ = ls_tx.send((top, global)).await;
-        }
-    });
+    if ex.is_futures() {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                let top = fetch_top_trader_ls(&ls_symbol, ex).await;
+                let global = fetch_global_ls(&ls_symbol, ex).await;
+                let _ = ls_tx.send((top, global)).await;
+            }
+        });
+    }
 
     // Taker buy/sell ratio: every 5 min (futures only)
     let (taker_tx, mut taker_rx) = tokio::sync::mpsc::channel::<Option<TakerRatioSnapshot>>(4);
     let taker_symbol = symbol_str.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(300));
-        loop {
-            interval.tick().await;
-            let snap = fetch_taker_ratio(&taker_symbol, ex).await;
-            let _ = taker_tx.send(snap).await;
-        }
-    });
+    if ex.is_futures() {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                let snap = fetch_taker_ratio(&taker_symbol, ex).await;
+                let _ = taker_tx.send(snap).await;
+            }
+        });
+    }
 
     // Funding rate history: once at startup (futures only)
     let (funding_hist_tx, mut funding_hist_rx) =
         tokio::sync::mpsc::channel::<Vec<FundingRateSample>>(2);
     let fh_symbol = symbol_str.clone();
-    tokio::spawn(async move {
-        let samples = fetch_funding_history(&fh_symbol, ex).await;
-        let _ = funding_hist_tx.send(samples).await;
-    });
+    if ex.is_futures() {
+        tokio::spawn(async move {
+            let samples = fetch_funding_history(&fh_symbol, ex).await;
+            let _ = funding_hist_tx.send(samples).await;
+        });
+    }
 
     // OI history: once at startup (futures only)
     let (oi_hist_tx, mut oi_hist_rx) = tokio::sync::mpsc::channel::<Vec<OiHistSnapshot>>(2);
     let oi_hist_symbol = symbol_str.clone();
-    tokio::spawn(async move {
-        let snaps = fetch_oi_history(&oi_hist_symbol, ex).await;
-        let _ = oi_hist_tx.send(snaps).await;
-    });
+    if ex.is_futures() {
+        tokio::spawn(async move {
+            let snaps = fetch_oi_history(&oi_hist_symbol, ex).await;
+            let _ = oi_hist_tx.send(snaps).await;
+        });
+    }
 
     // L/S history: once at startup (futures only)
     let (ls_hist_tx, mut ls_hist_rx) = tokio::sync::mpsc::channel::<Vec<LongShortSnapshot>>(2);
     let ls_hist_symbol = symbol_str.clone();
-    tokio::spawn(async move {
-        let snaps = fetch_ls_history(&ls_hist_symbol, ex).await;
-        let _ = ls_hist_tx.send(snaps).await;
-    });
+    if ex.is_futures() {
+        tokio::spawn(async move {
+            let snaps = fetch_ls_history(&ls_hist_symbol, ex).await;
+            let _ = ls_hist_tx.send(snaps).await;
+        });
+    }
 
     loop {
         tokio::select! {
@@ -5195,7 +5255,9 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         if last_metrics_print.elapsed() >= metrics_interval {
             state.metrics.liq_raw_messages = liq_raw_counter.load(Ordering::Relaxed);
             state.metrics.liq_global_raw_messages = liq_global_raw_counter.load(Ordering::Relaxed); // already cloned into state
-            state.metrics.report(&state.freshness, &state.streams);
+            state
+                .metrics
+                .report(&state.freshness, &state.streams, ex.is_futures());
             last_metrics_print = Instant::now();
         }
     }
