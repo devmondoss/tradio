@@ -21,7 +21,9 @@ COPY --from=builder /app/config /app/config
 RUN mkdir -p /app/logs
 
 ENV SYMBOL=BTCUSDT
-ENV TIMEFRAME_MIN=5
+ENV TIMEFRAME_MIN=1
+ENV MONITOR_EXCHANGE=binance_linear
+ENV MONITOR_PROFILE=mtf_futures_paper
 
 # Fail fast if critical Railway env vars are missing instead of silently running disabled.
 CMD ["sh", "-c", "\

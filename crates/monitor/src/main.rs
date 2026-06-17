@@ -8,15 +8,20 @@
 //! Environment variables (all optional):
 //!   SYMBOL           — ticker to monitor (default: BTCUSDT)
 //!   TIMEFRAME_MIN    — kline timeframe in minutes (default: 5)
+//!   MONITOR_EXCHANGE — binance_linear, bybit_spot, bybit_linear, okx_linear, hyperliquid_linear
+//!   MONITOR_PROFILE  — mtf_futures_paper, mtf_spot_paper, mtf_all_paper, off
+//!   MONITOR_STRATEGIES — comma list overriding profile strategy switches
 //!   PAPER_INITIAL_CAPITAL, PAPER_LEVERAGE, PAPER_MAX_POSITIONS,
 //!   PAPER_RISK_PCT, PAPER_SLIPPAGE_BPS, PAPER_TAKER_FEE, PAPER_FUNDING_RATE
 
 mod exchange_config;
 mod intrabar;
+mod monitor_config;
 mod supabase_writer;
 mod ws_server;
 
 use exchange_config::ExchangeTarget;
+use monitor_config::MonitorRuntimeConfig;
 
 use std::collections::VecDeque;
 use std::sync::{
@@ -645,9 +650,9 @@ struct BarState {
     // Consecutive bars of CVD-vs-price divergence (positive=bearish, negative=bullish, 0=aligned)
     cvd_divergence_bars: i32,
     // Multi-bar context — features de narrativa para minería
-    cvd_consec_neg: i32,    // barras consecutivas con cvd_slope < 0 (momentum vendedor)
-    cvd_consec_pos: i32,    // barras consecutivas con cvd_slope > 0 (momentum comprador)
-    prev_bar_delta: f64,    // bar_delta de la barra anterior
+    cvd_consec_neg: i32, // barras consecutivas con cvd_slope < 0 (momentum vendedor)
+    cvd_consec_pos: i32, // barras consecutivas con cvd_slope > 0 (momentum comprador)
+    prev_bar_delta: f64, // bar_delta de la barra anterior
     bars_since_low_vr: i32, // barras desde la última barra de compresión (vr < 0.7)
     // VP open bias tracker — classifies daily session open vs previous day's value area
     vp_bias_tracker: data::strategy::vp_open_bias::DailyVpTracker,
@@ -701,6 +706,9 @@ struct BarState {
     mtf_state: data::strategy::detectors::mtf_shorts_detector::MtfShortsState,
     // HTF Longs detector — H4 EMA20 + H1 low-stop + patrones London/NY alcistas
     mtf_longs_state: data::strategy::detectors::mtf_longs_detector::MtfLongsState,
+    mtf_spot_state: data::strategy::detectors::mtf_spot_detector::MtfSpotState,
+    // Runtime profile — separates futures MTF, spot MTF, and future venue profiles.
+    runtime_cfg: MonitorRuntimeConfig,
     // WebSocket broadcast — envía barras y señales al dashboard web
     ws_tx: ws_server::Sender,
 }
@@ -715,6 +723,7 @@ impl BarState {
         liq_global_raw_counter: Arc<AtomicU64>,
         ws_tx: ws_server::Sender,
         symbol: &str,
+        runtime_cfg: MonitorRuntimeConfig,
     ) -> Self {
         Self {
             bars: VecDeque::with_capacity(VP_WINDOW + 1),
@@ -826,7 +835,11 @@ impl BarState {
             ema_h1: 0.0,
             ema_h1_bars: 0,
             mtf_state: data::strategy::detectors::mtf_shorts_detector::MtfShortsState::new(symbol),
-            mtf_longs_state: data::strategy::detectors::mtf_longs_detector::MtfLongsState::new(symbol),
+            mtf_longs_state: data::strategy::detectors::mtf_longs_detector::MtfLongsState::new(
+                symbol,
+            ),
+            mtf_spot_state: data::strategy::detectors::mtf_spot_detector::MtfSpotState::new(symbol),
+            runtime_cfg,
             ws_tx,
         }
     }
@@ -1494,9 +1507,18 @@ impl BarState {
 
         // Multi-bar CVD momentum: barras consecutivas en la misma dirección
         match cvd_slope {
-            Some(s) if s < 0.0 => { self.cvd_consec_neg += 1; self.cvd_consec_pos = 0; }
-            Some(s) if s > 0.0 => { self.cvd_consec_pos += 1; self.cvd_consec_neg = 0; }
-            _ => { self.cvd_consec_neg = 0; self.cvd_consec_pos = 0; }
+            Some(s) if s < 0.0 => {
+                self.cvd_consec_neg += 1;
+                self.cvd_consec_pos = 0;
+            }
+            Some(s) if s > 0.0 => {
+                self.cvd_consec_pos += 1;
+                self.cvd_consec_neg = 0;
+            }
+            _ => {
+                self.cvd_consec_neg = 0;
+                self.cvd_consec_pos = 0;
+            }
         }
 
         let (poc, vah, val, hvn_nearby, lvn_nearby) =
@@ -1994,15 +2016,26 @@ impl BarState {
         self.obi_ema_slow = self.obi_ema_slow * (1.0 - 0.095) + bar_obi_l5 * 0.095;
 
         // ── Flush buffer OBI intrabar → Supabase obi_10s ──────────────────────
-        let (obi_mean_intrabar, obi_min_intrabar, obi_max_intrabar) = if self.obi_intrabar.is_empty() {
-            (None, None, None)
-        } else {
-            let mean_l5 = self.obi_intrabar.iter().map(|s| s.1 as f64).sum::<f64>()
-                / self.obi_intrabar.len() as f64;
-            let min_l5 = self.obi_intrabar.iter().map(|s| s.1).fold(f32::MAX, f32::min) as f64;
-            let max_l5 = self.obi_intrabar.iter().map(|s| s.1).fold(f32::MIN, f32::max) as f64;
-            (Some(mean_l5), Some(min_l5), Some(max_l5))
-        };
+        let (obi_mean_intrabar, obi_min_intrabar, obi_max_intrabar, obi10_mean_intrabar) =
+            if self.obi_intrabar.is_empty() {
+                (None, None, None, None)
+            } else {
+                let mean_l5 = self.obi_intrabar.iter().map(|s| s.1 as f64).sum::<f64>()
+                    / self.obi_intrabar.len() as f64;
+                let mean_l10 = self.obi_intrabar.iter().map(|s| s.2 as f64).sum::<f64>()
+                    / self.obi_intrabar.len() as f64;
+                let min_l5 = self
+                    .obi_intrabar
+                    .iter()
+                    .map(|s| s.1)
+                    .fold(f32::MAX, f32::min) as f64;
+                let max_l5 = self
+                    .obi_intrabar
+                    .iter()
+                    .map(|s| s.1)
+                    .fold(f32::MIN, f32::max) as f64;
+                (Some(mean_l5), Some(min_l5), Some(max_l5), Some(mean_l10))
+            };
         let bar_spread_bps = ctx.orderbook.spread_bps.unwrap_or(0.0);
         if let Some(sb) = self.supabase.clone() {
             let samples = std::mem::take(&mut self.obi_intrabar);
@@ -2036,6 +2069,67 @@ impl BarState {
         };
 
         // ── Scalping engine (S1/OBI, S2/Absorption, S3/CVD Divergence) ────────
+        if self.runtime_cfg.mtf_spot_shorts || self.runtime_cfg.mtf_spot_longs {
+            let spot_ctx = data::strategy::detectors::mtf_spot_detector::MtfSpotBarContext {
+                ts_ms: bar_ms,
+                open: o,
+                high: h,
+                low: l,
+                close: c,
+                cvd_slope,
+                obi10_mean: obi10_mean_intrabar.unwrap_or(bar_obi_l10),
+                delta: bar_delta,
+                vp_vah: vah,
+                vp_val: val,
+                h1_high: None,
+                h1_low: None,
+                h1_atr: None,
+                prev_day_high: None,
+                prev_day_low: None,
+                asian_high: None,
+                asian_low: None,
+                weekly_high: None,
+                weekly_low: None,
+            };
+            if let Some(event) = self.mtf_spot_state.on_bar_close(
+                &spot_ctx,
+                self.runtime_cfg.mtf_spot_shorts,
+                self.runtime_cfg.mtf_spot_longs,
+            ) {
+                if let Some(sb) = self.supabase.clone() {
+                    let ev = event.clone();
+                    let sym = symbol.to_string();
+                    tokio::spawn(async move {
+                        sb.write_mtf_spot_trade(&ev, &sym).await;
+                    });
+                }
+                if event.is_open {
+                    println!(
+                        "[mtf_spot] SIGNAL {} {} sig={} entry={:.2} stop={:.3}% session={} level={}",
+                        symbol,
+                        event.signal.direction.as_str(),
+                        event.signal.sig,
+                        event.signal.entry,
+                        event.signal.stop_pct,
+                        event.signal.session,
+                        event.signal.level
+                    );
+                } else {
+                    println!(
+                        "[mtf_spot] CLOSED {} {} sig={} net={:+.4}R gross={:+.4}R fee={:.4}R reason={} dur={}bars",
+                        symbol,
+                        event.signal.direction.as_str(),
+                        event.signal.sig,
+                        event.result_r.unwrap_or(0.0),
+                        event.gross_r.unwrap_or(0.0),
+                        event.fee_r.unwrap_or(0.0),
+                        event.reason.as_deref().unwrap_or("?"),
+                        event.duration_bars.unwrap_or(0)
+                    );
+                }
+            }
+        }
+
         if cfg.scalping.enabled {
             let scalping_regime = match effective_regime {
                 Regime::TrendUp | Regime::TrendDown => ScalpingRegime::Trend,
@@ -2405,7 +2499,7 @@ impl BarState {
                     }
                     "BNBUSDT" => {
                         rbf_cfg.cum_delta_min_short = Some(-500.0);
-                        rbf_cfg.sweep_min_risk_usd = 0.5;  // filtro anti-ruido: wick < $0.50 = spread
+                        rbf_cfg.sweep_min_risk_usd = 0.5; // filtro anti-ruido: wick < $0.50 = spread
                     }
                     "SOLUSDT" => {
                         rbf_cfg.sweep_min_risk_usd = 0.08; // filtro anti-ruido: wick < $0.08 = spread
@@ -2854,24 +2948,46 @@ impl BarState {
             use data::strategy::detectors::mtf_shorts_detector::MtfBarContext;
 
             let htf_vr = {
-                let vols: Vec<f64> = self.bars.iter().map(|b| b.volume.total().to_f32_lossy() as f64).collect();
+                let vols: Vec<f64> = self
+                    .bars
+                    .iter()
+                    .map(|b| b.volume.total().to_f32_lossy() as f64)
+                    .collect();
                 let n = vols.len().min(50);
                 if n > 0 {
-                    let mean = vols[vols.len()-n..].iter().sum::<f64>() / n as f64;
+                    let mean = vols[vols.len() - n..].iter().sum::<f64>() / n as f64;
                     if mean > 0.0 { vol / mean } else { 0.0 }
-                } else { 0.0 }
+                } else {
+                    0.0
+                }
             };
             let htf_dz = {
                 let n = self.bar_delta_history.len();
                 if n >= 5 {
                     let mean = self.bar_delta_history.iter().sum::<f64>() / n as f64;
-                    let std = (self.bar_delta_history.iter().map(|d| (d-mean).powi(2)).sum::<f64>() / n as f64).sqrt();
-                    if std > 1e-8 { (bar_delta - mean) / std } else { 0.0 }
-                } else { 0.0 }
+                    let std = (self
+                        .bar_delta_history
+                        .iter()
+                        .map(|d| (d - mean).powi(2))
+                        .sum::<f64>()
+                        / n as f64)
+                        .sqrt();
+                    if std > 1e-8 {
+                        (bar_delta - mean) / std
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                }
             };
             let htf_eq_high = {
                 let eq_tol = 0.0003;
-                let highs50 = self.bars.iter().rev().take(50)
+                let highs50 = self
+                    .bars
+                    .iter()
+                    .rev()
+                    .take(50)
                     .map(|b| b.high.to_f32() as f64)
                     .fold(f64::NEG_INFINITY, f64::max);
                 highs50 > f64::NEG_INFINITY && (h - highs50).abs() / highs50 <= eq_tol
@@ -2879,31 +2995,36 @@ impl BarState {
 
             let htf_eq_low = {
                 let eq_tol = 0.0003;
-                let lows50 = self.bars.iter().rev().take(50)
+                let lows50 = self
+                    .bars
+                    .iter()
+                    .rev()
+                    .take(50)
                     .map(|b| b.low.to_f32() as f64)
                     .fold(f64::INFINITY, f64::min);
                 lows50 < f64::INFINITY && (l - lows50).abs() / lows50 <= eq_tol
             };
-            let htf_funding_regime = ctx.institutional
+            let htf_funding_regime = ctx
+                .institutional
                 .as_ref()
                 .map(|inst| format!("{:?}", inst.funding.regime))
                 .unwrap_or_else(|| "Neutral".into());
 
             let htf_ctx = MtfBarContext {
-                ts_ms:       bar_ms,
-                open:        o,
-                high:        h,
-                low:         l,
-                close:       c,
+                ts_ms: bar_ms,
+                open: o,
+                high: h,
+                low: l,
+                close: c,
                 cvd_slope,
-                obi_l5:      ctx.orderbook.obi_l5.unwrap_or(0.0),
-                obi_fast:    self.obi_ema_fast,
-                vr:          htf_vr,
+                obi_l5: ctx.orderbook.obi_l5.unwrap_or(0.0),
+                obi_fast: self.obi_ema_fast,
+                vr: htf_vr,
                 oi_momentum: oi_momentum_aligned,
-                equal_high:  htf_eq_high,
-                equal_low:   htf_eq_low,
-                dz:          htf_dz,
-                absorption:  match footprint_absorption {
+                equal_high: htf_eq_high,
+                equal_low: htf_eq_low,
+                dz: htf_dz,
+                absorption: match footprint_absorption {
                     AbsorptionSide::Ask => "Ask".into(),
                     AbsorptionSide::Bid => "Bid".into(),
                     _ => "None".into(),
@@ -2913,57 +3034,73 @@ impl BarState {
                     ImbalanceSide::Bearish => "Bearish".into(),
                     _ => "None".into(),
                 },
-                vpin:    bar_vpin.unwrap_or(0.0),
-                regime:  format!("{:?}", effective_regime),
+                vpin: bar_vpin.unwrap_or(0.0),
+                regime: format!("{:?}", effective_regime),
                 session: format!("{:?}", session.session),
                 atr,
                 funding_regime: htf_funding_regime,
                 vwap_session: ctx.vwap.vwap_session,
             };
 
-            if let Some(event) = self.mtf_state.on_bar_close(&htf_ctx) {
-                if let Some(sb) = self.supabase.clone() {
-                    let ev = event.clone();
-                    let sym = symbol.to_string();
-                    tokio::spawn(async move { sb.write_mtf_trade(&ev, &sym).await; });
-                }
-                if event.is_open {
-                    println!(
-                        "[mtf] SIGNAL {} sig={} entry={:.2} stop={:.3}% d1={} session={}",
-                        symbol, event.signal.sig, event.signal.entry,
-                        event.signal.stop_pct, event.signal.d1_trend, event.signal.session
-                    );
-                } else {
-                    println!(
-                        "[mtf] CLOSED {} sig={} net={:+.4}R gross={:+.4}R fee={:.4}R reason={} dur={}bars",
-                        symbol, event.signal.sig,
-                        event.result_r.unwrap_or(0.0),
-                        event.gross_r.unwrap_or(0.0),
-                        event.fee_r.unwrap_or(0.0),
-                        event.reason.as_deref().unwrap_or("?"),
-                        event.duration_bars.unwrap_or(0)
-                    );
+            if self.runtime_cfg.mtf_futures_shorts {
+                if let Some(event) = self.mtf_state.on_bar_close(&htf_ctx) {
+                    if let Some(sb) = self.supabase.clone() {
+                        let ev = event.clone();
+                        let sym = symbol.to_string();
+                        tokio::spawn(async move {
+                            sb.write_mtf_trade(&ev, &sym).await;
+                        });
+                    }
+                    if event.is_open {
+                        println!(
+                            "[mtf] SIGNAL {} sig={} entry={:.2} stop={:.3}% d1={} session={}",
+                            symbol,
+                            event.signal.sig,
+                            event.signal.entry,
+                            event.signal.stop_pct,
+                            event.signal.d1_trend,
+                            event.signal.session
+                        );
+                    } else {
+                        println!(
+                            "[mtf] CLOSED {} sig={} net={:+.4}R gross={:+.4}R fee={:.4}R reason={} dur={}bars",
+                            symbol,
+                            event.signal.sig,
+                            event.result_r.unwrap_or(0.0),
+                            event.gross_r.unwrap_or(0.0),
+                            event.fee_r.unwrap_or(0.0),
+                            event.reason.as_deref().unwrap_or("?"),
+                            event.duration_bars.unwrap_or(0)
+                        );
+                    }
                 }
             }
 
             // ── HTF Longs (ETH/SOL únicamente) ──────────────────────────────
-            if matches!(symbol, "ETHUSDT" | "SOLUSDT") {
+            if self.runtime_cfg.mtf_futures_longs && matches!(symbol, "ETHUSDT" | "SOLUSDT") {
                 if let Some(event) = self.mtf_longs_state.on_bar_close(&htf_ctx) {
                     if let Some(sb) = self.supabase.clone() {
                         let ev = event.clone();
                         let sym = symbol.to_string();
-                        tokio::spawn(async move { sb.write_mtf_long_trade(&ev, &sym).await; });
+                        tokio::spawn(async move {
+                            sb.write_mtf_long_trade(&ev, &sym).await;
+                        });
                     }
                     if event.is_open {
                         println!(
                             "[mtf_long] SIGNAL {} sig={} entry={:.2} stop={:.3}% h4={} session={}",
-                            symbol, event.signal.sig, event.signal.entry,
-                            event.signal.stop_pct, event.signal.h4_trend, event.signal.session
+                            symbol,
+                            event.signal.sig,
+                            event.signal.entry,
+                            event.signal.stop_pct,
+                            event.signal.h4_trend,
+                            event.signal.session
                         );
                     } else {
                         println!(
                             "[mtf_long] CLOSED {} sig={} net={:+.4}R gross={:+.4}R fee={:.4}R reason={} dur={}bars",
-                            symbol, event.signal.sig,
+                            symbol,
+                            event.signal.sig,
                             event.result_r.unwrap_or(0.0),
                             event.gross_r.unwrap_or(0.0),
                             event.fee_r.unwrap_or(0.0),
@@ -3152,7 +3289,11 @@ impl BarState {
                 poc,
                 vah,
                 val,
-                lvn_nearby.iter().copied().filter(|&p| p < c).reduce(f64::max),
+                lvn_nearby
+                    .iter()
+                    .copied()
+                    .filter(|&p| p < c)
+                    .reduce(f64::max),
                 ctx.flow.big_trade_bearish,
                 ctx.flow.big_trade_bullish,
                 obi_min_intrabar,
@@ -3534,7 +3675,7 @@ async fn fetch_premium_index(symbol: &str, ex: ExchangeTarget) -> (Option<f64>, 
 
 /// Fetches last traded price from the configured exchange.
 async fn fetch_spot_price(symbol: &str, ex: ExchangeTarget) -> Option<f64> {
-    let url = ex.spot_price_url(symbol);
+    let url = ex.spot_price_url(symbol)?;
     let resp = reqwest::get(&url).await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
     ex.parse_spot_price(&json)
@@ -3940,7 +4081,10 @@ async fn warm_up_history(
         _ => "5m",
     };
     let capped = (limit + 1).min(1500);
-    let url = ex.klines_url(symbol, interval_str, capped);
+    let Some(url) = ex.klines_url(symbol, interval_str, capped) else {
+        eprintln!("[warmup] historical klines not configured for {:?}", ex);
+        return;
+    };
     let resp = match reqwest::get(&url).await {
         Ok(r) => r,
         Err(e) => {
@@ -3957,7 +4101,10 @@ async fn warm_up_history(
     };
     let rows = ex.extract_kline_rows(&json);
     if rows.len() <= 1 {
-        eprintln!("[warmup] klines response unexpected shape (got {} rows)", rows.len());
+        eprintln!(
+            "[warmup] klines response unexpected shape (got {} rows)",
+            rows.len()
+        );
         return;
     }
 
@@ -3973,7 +4120,11 @@ async fn warm_up_history(
     let rbf_warm_cfg =
         data::strategy::detectors::range_breakout_flow::RangeBreakoutConfig::default();
     for row in closed {
-        let arr = if row.len() >= min_fields { row } else { continue };
+        let arr = if row.len() >= min_fields {
+            row
+        } else {
+            continue;
+        };
         let open_ms: i64 = ExchangeTarget::open_ms_from_row(arr);
         let open: f64 = arr[1].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
         let high: f64 = arr[2].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
@@ -4051,6 +4202,53 @@ async fn warm_up_history(
         state.bars.push_back(bar);
         if state.bars.len() > VP_WINDOW {
             state.bars.pop_front();
+        }
+        if state.runtime_cfg.mtf_spot_shorts || state.runtime_cfg.mtf_spot_longs {
+            let (_, warm_vah, warm_val, _, _) = compute_volume_profile(&state.bars, VP_BINS, close);
+            let warm_ctx = data::strategy::detectors::mtf_spot_detector::MtfSpotBarContext {
+                ts_ms: open_ms,
+                open,
+                high,
+                low,
+                close,
+                cvd_slope: compute_cvd_slope(&state.cvd_history),
+                obi10_mean: 0.0,
+                delta: bar_delta,
+                vp_vah: warm_vah,
+                vp_val: warm_val,
+                h1_high: None,
+                h1_low: None,
+                h1_atr: None,
+                prev_day_high: None,
+                prev_day_low: None,
+                asian_high: None,
+                asian_low: None,
+                weekly_high: None,
+                weekly_low: None,
+            };
+            if state.mtf_spot_state.has_active_trade() {
+                if let Some(closed) = state.mtf_spot_state.on_bar_close(&warm_ctx, false, false) {
+                    if !closed.is_open {
+                        println!(
+                            "[mtf_spot] warm-up close {} {} reason={} R={:.3}",
+                            symbol,
+                            closed.signal.direction.as_str(),
+                            closed.reason.as_deref().unwrap_or("?"),
+                            closed.result_r.unwrap_or(0.0)
+                        );
+                        if let Some(sb) = &state.supabase {
+                            let ev = closed;
+                            let sym_s = symbol.to_string();
+                            let sb2 = sb.clone();
+                            tokio::spawn(async move {
+                                sb2.write_mtf_spot_trade(&ev, &sym_s).await;
+                            });
+                        }
+                    }
+                }
+            } else {
+                state.mtf_spot_state.warm_up_bar(&warm_ctx);
+            }
         }
         // Feed amd_state so VR/history buffers warm al arrancar.
         {
@@ -4182,12 +4380,25 @@ async fn warm_up_history(
                 if open_ms > entry_ms {
                     use data::strategy::detectors::mtf_shorts_detector::MtfBarContext;
                     let warmup_ctx = MtfBarContext {
-                        ts_ms: open_ms, open, high, low, close,
-                        cvd_slope: None, obi_l5: 0.0, obi_fast: 0.0, vr: 0.0,
-                        oi_momentum: None, equal_high: false, equal_low: false,
-                        dz: 0.0, absorption: "None".into(), vpin: 0.0,
-                        regime: "Neutral".into(), session: "warmup".into(),
-                        atr: 0.0, stacked_imb: "None".into(),
+                        ts_ms: open_ms,
+                        open,
+                        high,
+                        low,
+                        close,
+                        cvd_slope: None,
+                        obi_l5: 0.0,
+                        obi_fast: 0.0,
+                        vr: 0.0,
+                        oi_momentum: None,
+                        equal_high: false,
+                        equal_low: false,
+                        dz: 0.0,
+                        absorption: "None".into(),
+                        vpin: 0.0,
+                        regime: "Neutral".into(),
+                        session: "warmup".into(),
+                        atr: 0.0,
+                        stacked_imb: "None".into(),
                         funding_regime: "Neutral".into(),
                         vwap_session: None,
                     };
@@ -4203,7 +4414,9 @@ async fn warm_up_history(
                                 let ev = closed;
                                 let sym_s = symbol.to_string();
                                 let sb2 = sb.clone();
-                                tokio::spawn(async move { sb2.write_mtf_trade(&ev, &sym_s).await; });
+                                tokio::spawn(async move {
+                                    sb2.write_mtf_trade(&ev, &sym_s).await;
+                                });
                             }
                         }
                     }
@@ -4217,12 +4430,25 @@ async fn warm_up_history(
                 if open_ms > entry_ms {
                     use data::strategy::detectors::mtf_shorts_detector::MtfBarContext;
                     let warmup_ctx = MtfBarContext {
-                        ts_ms: open_ms, open, high, low, close,
-                        cvd_slope: None, obi_l5: 0.0, obi_fast: 0.0, vr: 0.0,
-                        oi_momentum: None, equal_high: false, equal_low: false,
-                        dz: 0.0, absorption: "None".into(), vpin: 0.0,
-                        regime: "Neutral".into(), session: "warmup".into(),
-                        atr: 0.0, stacked_imb: "None".into(),
+                        ts_ms: open_ms,
+                        open,
+                        high,
+                        low,
+                        close,
+                        cvd_slope: None,
+                        obi_l5: 0.0,
+                        obi_fast: 0.0,
+                        vr: 0.0,
+                        oi_momentum: None,
+                        equal_high: false,
+                        equal_low: false,
+                        dz: 0.0,
+                        absorption: "None".into(),
+                        vpin: 0.0,
+                        regime: "Neutral".into(),
+                        session: "warmup".into(),
+                        atr: 0.0,
+                        stacked_imb: "None".into(),
                         funding_regime: "Neutral".into(),
                         vwap_session: None,
                     };
@@ -4238,7 +4464,9 @@ async fn warm_up_history(
                                 let ev = closed;
                                 let sym_s = symbol.to_string();
                                 let sb2 = sb.clone();
-                                tokio::spawn(async move { sb2.write_mtf_long_trade(&ev, &sym_s).await; });
+                                tokio::spawn(async move {
+                                    sb2.write_mtf_long_trade(&ev, &sym_s).await;
+                                });
                             }
                         }
                     }
@@ -4265,8 +4493,11 @@ async fn warm_up_history(
     }
     // ── HTF seed: D1 EMA20 real + H1 buckets reales ──────────────────────────
     // Fetch 30 velas D1 para que EMA20 sea precisa desde el arranque
-    {
-        let d1_url = ex.klines_url(symbol, "1d", 31);
+    if state.runtime_cfg.mtf_futures_shorts {
+        let Some(d1_url) = ex.klines_url(symbol, "1d", 31) else {
+            eprintln!("[warmup] D1 seed skipped for {:?}", ex);
+            return;
+        };
         if let Ok(resp) = reqwest::get(&d1_url).await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 let rows = ex.extract_kline_rows(&json);
@@ -4280,18 +4511,24 @@ async fn warm_up_history(
         }
     }
     // Fetch 14 velas H1 para que ATR H1 sea preciso
-    {
-        let h1_url = ex.klines_url(symbol, "1h", 15);
+    if state.runtime_cfg.mtf_futures_shorts || state.runtime_cfg.mtf_futures_longs {
+        let Some(h1_url) = ex.klines_url(symbol, "1h", 15) else {
+            eprintln!("[warmup] H1 seed skipped for {:?}", ex);
+            return;
+        };
         if let Ok(resp) = reqwest::get(&h1_url).await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 let rows = ex.extract_kline_rows(&json);
                 let candles: Vec<(i64, f64, f64, f64)> = rows[..rows.len().saturating_sub(1)]
                     .iter()
                     .filter_map(|a| {
-                        let ts   = a.get(0).and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))?;
+                        let ts = a.get(0).and_then(|v| {
+                            v.as_i64()
+                                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                        })?;
                         let high = a.get(2)?.as_str()?.parse::<f64>().ok()?;
-                        let low  = a.get(3)?.as_str()?.parse::<f64>().ok()?;
-                        let cls  = a.get(4)?.as_str()?.parse::<f64>().ok()?;
+                        let low = a.get(3)?.as_str()?.parse::<f64>().ok()?;
+                        let cls = a.get(4)?.as_str()?.parse::<f64>().ok()?;
                         Some((ts, high, low, cls))
                     })
                     .collect();
@@ -4301,18 +4538,24 @@ async fn warm_up_history(
         }
     }
     // Seed H4 EMA20 para el detector de longs (solo ETH/SOL)
-    if matches!(symbol, "ETHUSDT" | "SOLUSDT") {
-        let h4_url = ex.klines_url(symbol, "4h", 25);
+    if state.runtime_cfg.mtf_futures_longs && matches!(symbol, "ETHUSDT" | "SOLUSDT") {
+        let Some(h4_url) = ex.klines_url(symbol, "4h", 25) else {
+            eprintln!("[warmup] H4 seed skipped for {:?}", ex);
+            return;
+        };
         if let Ok(resp) = reqwest::get(&h4_url).await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 let rows = ex.extract_kline_rows(&json);
                 let candles: Vec<(i64, f64, f64, f64)> = rows[..rows.len().saturating_sub(1)]
                     .iter()
                     .filter_map(|a| {
-                        let ts   = a.get(0).and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))?;
+                        let ts = a.get(0).and_then(|v| {
+                            v.as_i64()
+                                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                        })?;
                         let high = a.get(2)?.as_str()?.parse::<f64>().ok()?;
-                        let low  = a.get(3)?.as_str()?.parse::<f64>().ok()?;
-                        let cls  = a.get(4)?.as_str()?.parse::<f64>().ok()?;
+                        let low = a.get(3)?.as_str()?.parse::<f64>().ok()?;
+                        let cls = a.get(4)?.as_str()?.parse::<f64>().ok()?;
                         Some((ts, high, low, cls))
                     })
                     .collect();
@@ -4338,11 +4581,20 @@ async fn main() {
     let symbols_raw = std::env::var("SYMBOLS")
         .or_else(|_| std::env::var("SYMBOL"))
         .unwrap_or_else(|_| "BTCUSDT".to_string());
-    let symbols: Vec<String> = symbols_raw
+    let mut symbols: Vec<String> = symbols_raw
         .split(',')
         .map(|s| s.trim().to_uppercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let ex = ExchangeTarget::from_env();
+    let runtime_cfg = MonitorRuntimeConfig::from_env(ex);
+    if runtime_cfg.uses_spot_mtf() && symbols.iter().any(|s| s != "BTCUSDT") {
+        eprintln!(
+            "[monitor_config] MTF Spot is calibrated only for BTCUSDT; filtering SYMBOLS {:?} -> [\"BTCUSDT\"]",
+            symbols
+        );
+        symbols = vec!["BTCUSDT".to_string()];
+    }
 
     let tf_min: u64 = std::env::var("TIMEFRAME_MIN")
         .ok()
@@ -4381,12 +4633,16 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
 
     let ex = ExchangeTarget::from_env();
     println!("monitor: exchange = {:?}", ex);
+    let runtime_cfg = MonitorRuntimeConfig::from_env(ex);
+    runtime_cfg.log_boot(ex);
 
-    let handles =
-        AdapterHandles::spawn_selected(AdapterNetworkConfig::default(), [ex.venue()])
-            .expect("monitor: failed to spawn adapter");
+    let handles = AdapterHandles::spawn_selected(AdapterNetworkConfig::default(), [ex.venue()])
+        .expect("monitor: failed to spawn adapter");
 
-    println!("monitor: fetching {symbol_str} {:?} metadata…", ex.market_kind());
+    println!(
+        "monitor: fetching {symbol_str} {:?} metadata…",
+        ex.market_kind()
+    );
     let metadata = handles
         .fetch_ticker_metadata(ex.venue(), &[ex.market_kind()])
         .await
@@ -4471,6 +4727,7 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         Arc::clone(&liq_global_raw_counter),
         ws_tx,
         &symbol_str,
+        runtime_cfg.clone(),
     );
     state.intrabar_cfg.log_boot();
 
@@ -4527,22 +4784,33 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
         }
 
         // ── Restaurar trade HTF Short abierto ────────────────────────────────
-        if let Some(pos) = sb.load_mtf_active(&symbol_str, "Short").await {
-            println!(
-                "[mtf] RESTORED Short {} sig={} entry={:.4} stop={:.4} target={:.4}",
-                symbol_str, pos.sig, pos.entry, pos.stop, pos.target
-            );
-            earliest_entry_ms = earliest_entry_ms.min(pos.ts_ms);
-            state.mtf_state.restore_active_trade(
-                pos.entry, pos.stop, pos.target,
-                pos.ts_ms, pos.sig, pos.session, pos.trend,
-                pos.stop_pct, pos.obi_entry, pos.cvd_slope_entry,
-                pos.dz_score, pos.stacked_imb, pos.equal_low,
-            );
+        if runtime_cfg.mtf_futures_shorts {
+            if let Some(pos) = sb.load_mtf_active(&symbol_str, "Short").await {
+                println!(
+                    "[mtf] RESTORED Short {} sig={} entry={:.4} stop={:.4} target={:.4}",
+                    symbol_str, pos.sig, pos.entry, pos.stop, pos.target
+                );
+                earliest_entry_ms = earliest_entry_ms.min(pos.ts_ms);
+                state.mtf_state.restore_active_trade(
+                    pos.entry,
+                    pos.stop,
+                    pos.target,
+                    pos.ts_ms,
+                    pos.sig,
+                    pos.session,
+                    pos.trend,
+                    pos.stop_pct,
+                    pos.obi_entry,
+                    pos.cvd_slope_entry,
+                    pos.dz_score,
+                    pos.stacked_imb,
+                    pos.equal_low,
+                );
+            }
         }
 
         // ── Restaurar trade HTF Long abierto (solo ETH/SOL) ──────────────────
-        if matches!(symbol_str.as_str(), "ETHUSDT" | "SOLUSDT") {
+        if runtime_cfg.mtf_futures_longs && matches!(symbol_str.as_str(), "ETHUSDT" | "SOLUSDT") {
             if let Some(pos) = sb.load_mtf_active(&symbol_str, "Long").await {
                 println!(
                     "[mtf_long] RESTORED Long {} sig={} entry={:.4} stop={:.4} target={:.4}",
@@ -4550,10 +4818,50 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
                 );
                 earliest_entry_ms = earliest_entry_ms.min(pos.ts_ms);
                 state.mtf_longs_state.restore_active_trade(
-                    pos.entry, pos.stop, pos.target,
-                    pos.ts_ms, pos.sig, pos.session, pos.trend,
-                    pos.stop_pct, pos.obi_entry, pos.cvd_slope_entry,
-                    pos.dz_score, pos.stacked_imb, pos.equal_low,
+                    pos.entry,
+                    pos.stop,
+                    pos.target,
+                    pos.ts_ms,
+                    pos.sig,
+                    pos.session,
+                    pos.trend,
+                    pos.stop_pct,
+                    pos.obi_entry,
+                    pos.cvd_slope_entry,
+                    pos.dz_score,
+                    pos.stacked_imb,
+                    pos.equal_low,
+                );
+            }
+        }
+
+        if runtime_cfg.mtf_spot_shorts || runtime_cfg.mtf_spot_longs {
+            if let Some(pos) = sb.load_mtf_spot_active(&symbol_str).await {
+                println!(
+                    "[mtf_spot] RESTORED {} {} sig={} entry={:.4} stop={:.4} target={:.4}",
+                    symbol_str,
+                    pos.direction.as_str(),
+                    pos.sig,
+                    pos.entry,
+                    pos.stop,
+                    pos.target
+                );
+                earliest_entry_ms = earliest_entry_ms.min(pos.ts_ms);
+                state.mtf_spot_state.restore_active_trade(
+                    pos.direction,
+                    pos.strategy,
+                    pos.sig,
+                    pos.entry,
+                    pos.stop,
+                    pos.target,
+                    pos.ts_ms,
+                    pos.session,
+                    pos.level,
+                    pos.stop_pct,
+                    pos.wick_pct,
+                    pos.obi_entry,
+                    pos.delta_entry,
+                    pos.cvd_slope_entry,
                 );
             }
         }
@@ -4569,7 +4877,9 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
             .as_millis() as i64;
         let bars_since_entry = ((now_ms - earliest_entry_ms) / (tf_min as i64 * 60_000)) as usize;
         let needed = bars_since_entry + 20; // +20 buffer
-        println!("[warmup] posición restaurada hace ~{bars_since_entry} barras → cargando {needed} barras");
+        println!(
+            "[warmup] posición restaurada hace ~{bars_since_entry} barras → cargando {needed} barras"
+        );
         needed.clamp(150, 1500)
     } else {
         150

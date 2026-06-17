@@ -1,6 +1,4 @@
 pub mod amd_detector;
-pub mod mtf_shorts_detector;
-pub mod mtf_longs_detector;
 pub mod amd_paper;
 pub mod cvd_divergence_reversal;
 pub mod delta_range_reversal;
@@ -9,6 +7,9 @@ pub mod footprint_absorption_reversal;
 pub mod funding_exhaustion_reversal;
 pub mod liquidation_hunt;
 pub mod lvn_liquidity_vacuum_breakout;
+pub mod mtf_longs_detector;
+pub mod mtf_shorts_detector;
+pub mod mtf_spot_detector;
 pub mod order_block_retest;
 pub mod range_breakout_flow;
 pub mod rbf_paper;

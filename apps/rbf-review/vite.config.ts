@@ -22,10 +22,114 @@ function pythonBacktest(): Plugin {
         const isMtfLongs   = url.startsWith('/api/backtest/mtf_longs')
         const isMtfShorts  = url.startsWith('/api/backtest/mtf_shorts')
         const isMtfCombined = url.startsWith('/api/backtest/mtf_combined')
+        const isMtfLocalLongs = url.startsWith('/api/backtest/mtf_local_longs')
+        const isMtfLocal   = url.startsWith('/api/backtest/mtf_local')
         const isLongs      = url.startsWith('/api/backtest/longs')
         const isShorts     = url.startsWith('/api/backtest/shorts')
 
         const pyCmd = process.platform === 'win32' ? 'python' : 'python3'
+
+        // ── MTF Local Info: metadatos del parquet (días disponibles) ─────────
+        const isMtfLocalInfo = url.startsWith('/api/backtest/mtf_local_info')
+        if (isMtfLocalInfo) {
+          const symbol = params.get('symbol') ?? 'BTCUSDT'
+          const wsRoot = path.join(server.config.root, '..', '..')
+          const script = path.join(wsRoot, 'backtest', 'mtf_spot_backtest.py')
+          const py = spawn(pyCmd, [script, '--symbol', symbol, '--info'])
+          let out = ''; let err = ''
+          py.stdout.on('data', (d: Buffer) => { out += d.toString() })
+          py.stderr.on('data', (d: Buffer) => { err += d.toString() })
+          py.on('error', (e: Error) => {
+            res.writeHead(500, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: e.message }))
+          })
+          py.on('close', (code: number) => {
+            if (code !== 0 || !out.trim()) {
+              res.writeHead(500, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: err.trim() || `exit ${code}` }))
+              return
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+            res.end(out.trim())
+          })
+          return
+        }
+
+        // ── MTF Local: corre backtest desde parquet local (no Supabase) ──────
+        const isMtfLocalLongsInfo = url.startsWith('/api/backtest/mtf_local_longs_info')
+        if (isMtfLocalLongsInfo) {
+          const symbol = params.get('symbol') ?? 'BTCUSDT'
+          const wsRoot = path.join(server.config.root, '..', '..')
+          const script = path.join(wsRoot, 'backtest', 'mtf_spot_longs_backtest.py')
+          const py = spawn(pyCmd, [script, '--symbol', symbol, '--info'])
+          let out = ''; let err = ''
+          py.stdout.on('data', (d: Buffer) => { out += d.toString() })
+          py.stderr.on('data', (d: Buffer) => { err += d.toString() })
+          py.on('error', (e: Error) => {
+            res.writeHead(500, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: e.message }))
+          })
+          py.on('close', (code: number) => {
+            if (code !== 0 || !out.trim()) {
+              res.writeHead(500, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: err.trim() || `exit ${code}` }))
+              return
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+            res.end(out.trim())
+          })
+          return
+        }
+
+        if (isMtfLocalLongs) {
+          const symbol = params.get('symbol') ?? 'BTCUSDT'
+          const wsRoot = path.join(server.config.root, '..', '..')
+          const script = path.join(wsRoot, 'backtest', 'mtf_spot_longs_backtest.py')
+          console.log(`[backtest/mtf_local_longs] ${symbol} --days ${days}`)
+          const py = spawn(pyCmd, [script, '--symbol', symbol, '--days', days, '--json'])
+          let out = ''; let err = ''
+          py.stdout.on('data', (d: Buffer) => { out += d.toString() })
+          py.stderr.on('data', (d: Buffer) => { err += d.toString() })
+          py.on('error', (e: Error) => {
+            res.writeHead(500, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: `spawn error: ${e.message}` }))
+          })
+          py.on('close', (code: number) => {
+            if (code !== 0 || !out.trim()) {
+              res.writeHead(500, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: err.trim() || `exit code ${code}` }))
+              return
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+            res.end(out.trim())
+          })
+          return
+        }
+
+        if (isMtfLocal) {
+          const symbol = params.get('symbol') ?? 'BTCUSDT'
+          const wsRoot = path.join(server.config.root, '..', '..')
+          const script = path.join(wsRoot, 'backtest', 'mtf_spot_backtest.py')
+          console.log(`[backtest/mtf_local] ${symbol} --days ${days}`)
+          const py = spawn(pyCmd, [script, '--symbol', symbol, '--days', days, '--json'])
+          let out = ''; let err = ''
+          py.stdout.on('data', (d: Buffer) => { out += d.toString() })
+          py.stderr.on('data', (d: Buffer) => { err += d.toString() })
+          py.on('error', (e: Error) => {
+            res.writeHead(500, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: `spawn error: ${e.message}` }))
+          })
+          py.on('close', (code: number) => {
+            if (code !== 0 || !out.trim()) {
+              res.writeHead(500, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: err.trim() || `exit code ${code}` }))
+              return
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+            res.end(out.trim())
+          })
+          return
+        }
 
         // ── HTF Combined: corre ambos scripts en paralelo y fusiona resultados ──
         if (isMtfCombined) {

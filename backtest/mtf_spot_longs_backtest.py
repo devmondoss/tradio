@@ -1,30 +1,20 @@
 """
-mtf_spot_backtest.py
---------------------
-MTF Spot Shorts v4 - Bybit BTCUSDT local parquet.
+mtf_spot_longs_backtest.py
+--------------------------
+MTF Spot Longs v1 - Bybit BTCUSDT local parquet.
 
-Implements docs/MTF_SPOT_SHORTS_SPEC.md:
-  SIGNAL = LEVEL + REJECTION + FLOW
-
-Active rules:
+First validated long candidate:
   - BTCUSDT spot only.
-  - Sessions: Overlap and New York. London is excluded.
-  - Level: high near VAH/PDH/AH/WH within 0.70%; VAH is required.
-  - Block PDH+AH+VAH confluence and PDH+VAH false confluence.
-  - Block WH confluence trades during 15:00-15:59 UTC.
-  - Block AH+VAH trades when OBI < -0.15.
-  - Rejection: upper wick 30%-85% and bearish close.
-  - Flow: obi10_mean < -0.05 OR delta < 0.
-  - Stop: current H1 high + 0.40 * ATR14_H1.
+  - Sessions: 14:00-19:59 UTC only.
+  - Level: low near VAL/PDL/AL/WL within 0.70%; VAL is required.
+  - Block PDL+AL+VAL contested confluence.
+  - Rejection: lower wick 30%-85% and bullish close.
+  - Flow: obi10_mean > 0.05 OR delta > 0.
+  - Stop: current H1 low - 0.40 * ATR14_H1.
   - Stop range: 0.30%-0.75%.
   - Target: 2.0R.
-  - CVD exit: 5 positive CVD-slope bars + OBI > 0.15 and profit >= 1R.
+  - CVD exit: 5 negative CVD-slope bars + OBI < -0.15 and profit >= 1R.
   - One open trade at a time, no cooldown.
-
-Usage:
-    python backtest/mtf_spot_backtest.py --json
-    python backtest/mtf_spot_backtest.py --days 90 --json
-    python backtest/mtf_spot_backtest.py --info
 """
 
 from __future__ import annotations
@@ -76,22 +66,15 @@ def resample_ohlc(df: pd.DataFrame, freq_ms: int) -> pd.DataFrame:
     df["tf"] = (df["ts_ms"] // freq_ms) * freq_ms
     return (
         df.groupby("tf", sort=True)
-        .agg(
-            open=("open", "first"),
-            high=("high", "max"),
-            low=("low", "min"),
-            close=("close", "last"),
-        )
+        .agg(open=("open", "first"), high=("high", "max"), low=("low", "min"), close=("close", "last"))
         .reset_index()
         .rename(columns={"tf": "ts_ms"})
     )
 
 
-def session_of(ts_ms: int) -> str:
+def active_session(ts_ms: int) -> str:
     hm = (ts_ms // 60_000) % 1440
-    if 7 * 60 <= hm < 12 * 60:
-        return "london"
-    if 12 * 60 <= hm < 16 * 60:
+    if 14 * 60 <= hm < 16 * 60:
         return "overlap"
     if 16 * 60 <= hm < 20 * 60:
         return "ny"
@@ -99,20 +82,18 @@ def session_of(ts_ms: int) -> str:
 
 
 def active_level(row: dict) -> tuple[bool, str]:
-    high = float(row["high"])
+    low = float(row["low"])
     levels: list[str] = []
-
     checks = (
-        ("PDH", row.get("prev_day_high")),
-        ("AH", row.get("asian_high")),
-        ("WH", row.get("weekly_high")),
-        ("VAH", row.get("vp_vah")),
+        ("PDL", row.get("prev_day_low")),
+        ("AL", row.get("asian_low")),
+        ("WL", row.get("weekly_low")),
+        ("VAL", row.get("vp_val")),
     )
     for name, level in checks:
         level = float(level or 0.0)
-        if level > 0 and abs(high - level) / level <= LEVEL_TOL:
+        if level > 0 and abs(low - level) / level <= LEVEL_TOL:
             levels.append(name)
-
     if not levels:
         return False, ""
     return True, "+".join(levels)
@@ -126,15 +107,15 @@ def rejection(row: dict) -> tuple[bool, float]:
     rng = high - low
     if rng <= 0:
         return False, 0.0
-    wick_up = high - max(close, open_)
-    wick_pct = wick_up / rng
-    return (0.30 < wick_pct < 0.85 and close <= open_), wick_pct
+    wick_down = min(close, open_) - low
+    wick_pct = wick_down / rng
+    return (0.30 < wick_pct < 0.85 and close >= open_), wick_pct
 
 
-def flow_bearish(row: dict) -> bool:
+def flow_bullish(row: dict) -> bool:
     obi = float(row.get("obi10_mean") or 0.0)
     delta = float(row.get("delta") or 0.0)
-    return obi < -0.05 or delta < 0
+    return obi > 0.05 or delta > 0
 
 
 def build_trade(
@@ -157,23 +138,17 @@ def build_trade(
     mae_r: float,
     capital_before: float,
 ) -> dict:
-    risk = stop - entry
-    gross_r = (entry - exit_price) / risk if risk > 0 else 0.0
+    risk = entry - stop
+    gross_r = (exit_price - entry) / risk if risk > 0 else 0.0
     risk_usd = capital_before * RISK_PCT
     pnl_usd = risk_usd * gross_r - risk_usd * FEE_RT
     equity = capital_before + pnl_usd
     stop_pct = risk / entry * 100
-    evidence = [
-        f"level:{level}",
-        f"wick:{wick_pct:.2f}",
-        f"obi:{obi:.3f}",
-        f"delta:{delta:.1f}",
-    ]
     return {
         "idx": idx,
         "id": str(entry_ts),
         "sym": SYMBOL,
-        "dir": "Short",
+        "dir": "Long",
         "session": session,
         "score": None,
         "entry": round(entry, 2),
@@ -189,9 +164,9 @@ def build_trade(
         "tsMs": entry_ts,
         "ts": entry_ts // 1000,
         "closedAt": pd.Timestamp(exit_ts, unit="ms", tz="UTC").isoformat(),
-        "regime": "spot-v1",
+        "regime": "spot-longs-v1",
         "sessionPhase": session,
-        "evidence": evidence,
+        "evidence": [f"level:{level}", f"wick:{wick_pct:.2f}", f"obi:{obi:.3f}", f"delta:{delta:.1f}"],
         "confluenceFlags": [level],
         "vetoReason": "",
         "cvdInRange": None,
@@ -206,19 +181,14 @@ def build_trade(
         "rangeTouch": None,
         "durationMin": bars,
         "isOpen": False,
-        "htf": {
-            "level": level,
-            "wickPct": round(wick_pct, 3),
-            "mfeR": round(mfe_r, 3),
-            "maeR": round(mae_r, 3),
-        },
+        "htf": {"level": level, "wickPct": round(wick_pct, 3), "mfeR": round(mfe_r, 3), "maeR": round(mae_r, 3)},
     }
 
 
 def simulate(df: pd.DataFrame) -> tuple[list[dict], float]:
     h1 = resample_ohlc(df, H1_MS)
     h1["atr"] = atr14(h1["high"].values, h1["low"].values, h1["close"].values)
-    h1_ctx = {int(r.ts_ms): (float(r.high), float(r.atr)) for r in h1.itertuples()}
+    h1_ctx = {int(r.ts_ms): (float(r.low), float(r.atr)) for r in h1.itertuples()}
 
     rows = df.to_dict("records")
     trades: list[dict] = []
@@ -230,7 +200,7 @@ def simulate(df: pd.DataFrame) -> tuple[list[dict], float]:
     trade_session = trade_level = ""
     trade_wick = trade_obi = trade_delta = trade_cvd = 0.0
     mfe_r = mae_r = 0.0
-    cvd_pos_streak = 0
+    cvd_neg_streak = 0
 
     for i, row in enumerate(rows):
         ts = int(row["ts_ms"])
@@ -239,24 +209,24 @@ def simulate(df: pd.DataFrame) -> tuple[list[dict], float]:
             high = float(row["high"])
             low = float(row["low"])
             close = float(row["close"])
-            mfe_r = max(mfe_r, (entry - low) / risk)
-            mae_r = max(mae_r, (high - entry) / risk)
+            mfe_r = max(mfe_r, (high - entry) / risk)
+            mae_r = max(mae_r, (entry - low) / risk)
             bars = i - start_i
 
             cvd_now = float(row.get("cvd_slope") or 0.0)
             obi_now = float(row.get("obi10_mean") or 0.0)
-            cvd_pos_streak = cvd_pos_streak + 1 if cvd_now > 0 else 0
-            cur_r = (entry - close) / risk
+            cvd_neg_streak = cvd_neg_streak + 1 if cvd_now < 0 else 0
+            cur_r = (close - entry) / risk
 
             reason = ""
             exit_price = 0.0
-            if high >= stop:
+            if low <= stop:
                 reason, exit_price = "stop", stop
-            elif low <= target:
+            elif high >= target:
                 reason, exit_price = "target", target
             elif bars >= FORWARD_M1:
                 reason, exit_price = "timeout", close
-            elif cvd_pos_streak >= 5 and obi_now > 0.15 and cur_r >= 1.0:
+            elif cvd_neg_streak >= 5 and obi_now < -0.15 and cur_r >= 1.0:
                 reason, exit_price = "cvd_exit", close
 
             if reason:
@@ -283,39 +253,31 @@ def simulate(df: pd.DataFrame) -> tuple[list[dict], float]:
                 capital += trade["pnlUsd"]
                 trades.append(trade)
                 in_trade = False
-                cvd_pos_streak = 0
+                cvd_neg_streak = 0
             continue
 
-        session = session_of(ts)
-        if session not in ("overlap", "ny"):
+        session = active_session(ts)
+        if not session:
             continue
 
         ok_level, level = active_level(row)
-        if not ok_level or "VAH" not in level:
+        if not ok_level or "VAL" not in level:
             continue
         parts = level.split("+")
-        if len(parts) >= 3 and "PDH" in parts and "AH" in parts:
-            continue
-        if "PDH" in parts and "VAH" in parts and len(parts) == 2:
-            continue
-        if "WH" in parts and (ts // H1_MS) % 24 == 15:
-            continue
-        if level == "AH+VAH" and float(row.get("obi10_mean") or 0.0) < -0.15:
+        if len(parts) >= 3 and "PDL" in parts and "AL" in parts:
             continue
 
         ok_rejection, wick_pct = rejection(row)
-        if not ok_rejection:
-            continue
-        if not flow_bearish(row):
+        if not ok_rejection or not flow_bullish(row):
             continue
 
         h1_data = h1_ctx.get((ts // H1_MS) * H1_MS)
         if h1_data is None:
             continue
-        h1_high, h1_atr = h1_data
+        h1_low, h1_atr = h1_data
         entry_ = float(row["close"])
-        stop_ = h1_high + ATR_MULT * h1_atr
-        risk_ = stop_ - entry_
+        stop_ = h1_low - ATR_MULT * h1_atr
+        risk_ = entry_ - stop_
         if risk_ <= 0:
             continue
         stop_frac = risk_ / entry_
@@ -326,7 +288,7 @@ def simulate(df: pd.DataFrame) -> tuple[list[dict], float]:
         entry = entry_
         stop = stop_
         risk = risk_
-        target = entry - TARGET_R * risk
+        target = entry + TARGET_R * risk
         start_i = i
         entry_ts = ts
         trade_session = session
@@ -336,7 +298,7 @@ def simulate(df: pd.DataFrame) -> tuple[list[dict], float]:
         trade_delta = float(row.get("delta") or 0.0)
         trade_cvd = float(row.get("cvd_slope") or 0.0)
         mfe_r = mae_r = 0.0
-        cvd_pos_streak = 0
+        cvd_neg_streak = 0
 
     return trades, capital
 
@@ -349,7 +311,6 @@ def summarize(trades: list[dict], df: pd.DataFrame, capital_final: float) -> dic
     start_ms = int(df["ts_ms"].min())
     end_ms = int(df["ts_ms"].max())
     actual_days = round((end_ms - start_ms) / D1_MS)
-
     oos = [t for t in closed if t["tsMs"] >= OOS_MS]
     oos_wins = sum(1 for t in oos if (t["resultR"] or 0) > 0)
     oos_total_r = sum(t["resultR"] or 0 for t in oos)
@@ -372,10 +333,10 @@ def summarize(trades: list[dict], df: pd.DataFrame, capital_final: float) -> dic
         "equity": round(capital_final, 2),
         "actual_days": actual_days,
         "symbol": SYMBOL,
-        "n_shorts": n,
-        "n_longs": 0,
-        "longs_enabled": False,
-        "strategy": "mtf_spot_shorts_v4",
+        "n_shorts": 0,
+        "n_longs": n,
+        "longs_enabled": True,
+        "strategy": "mtf_spot_longs_v1",
         "oos": {
             "n": len(oos),
             "wins": oos_wins,
@@ -383,11 +344,7 @@ def summarize(trades: list[dict], df: pd.DataFrame, capital_final: float) -> dic
             "total_r": round(oos_total_r, 2),
             "avg_r": round(oos_total_r / len(oos), 3) if oos else 0.0,
         },
-        "breakdown": {
-            "reason": dict(sorted(by_reason.items())),
-            "session": dict(sorted(by_session.items())),
-            "level": dict(sorted(by_level.items())),
-        },
+        "breakdown": {"reason": dict(sorted(by_reason.items())), "session": dict(sorted(by_session.items())), "level": dict(sorted(by_level.items()))},
     }
 
 
@@ -398,7 +355,7 @@ def load_data(days: int) -> pd.DataFrame:
             df[col] = df[col].fillna("")
         elif pd.api.types.is_numeric_dtype(df[col]):
             df[col] = df[col].fillna(0.0)
-    for col in ("obi10_mean", "delta", "cvd_slope", "vp_vah", "prev_day_high", "asian_high", "weekly_high"):
+    for col in ("obi10_mean", "delta", "cvd_slope", "vp_val", "prev_day_low", "asian_low", "weekly_low"):
         if col not in df.columns:
             df[col] = 0.0
     if days > 0:
@@ -407,26 +364,16 @@ def load_data(days: int) -> pd.DataFrame:
     return df
 
 
-def print_report(result: dict) -> None:
-    print("MTF Spot Shorts v4 - BTCUSDT")
-    print(f"n={result['n']} WR={result['wr_pct']}% AvgR={result['avg_r']} TotalR={result['total_r']}R")
-    print(f"Equity: ${CAPITAL_INIT:.0f} -> ${result['equity']:.0f}")
-    oos = result["oos"]
-    print(f"OOS: n={oos['n']} WR={oos['wr_pct']}% AvgR={oos['avg_r']} TotalR={oos['total_r']}R")
-    print("Breakdown:", json.dumps(result["breakdown"], ensure_ascii=False))
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", default=SYMBOL)
     parser.add_argument("--days", type=int, default=0, help="0 = all available data")
-    parser.add_argument("--report", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--info", action="store_true")
     args = parser.parse_args()
 
     if args.symbol != SYMBOL:
-        msg = "MTF Spot Shorts v4 is calibrated only for BTCUSDT."
+        msg = "MTF Spot Longs v1 is calibrated only for BTCUSDT."
         if args.json or args.info:
             print(json.dumps({"error": msg}))
             return
@@ -445,18 +392,7 @@ def main() -> None:
         end_ms = int(df_meta["ts_ms"].max())
         avail_days = round((end_ms - start_ms) / D1_MS)
         start_lbl = pd.Timestamp(start_ms, unit="ms", tz="UTC").strftime("%d %b %Y")
-        print(
-            json.dumps(
-                {
-                    "available_days": avail_days,
-                    "start_ms": start_ms,
-                    "end_ms": end_ms,
-                    "start_label": start_lbl,
-                    "symbol": SYMBOL,
-                    "strategy": "mtf_spot_shorts_v4",
-                }
-            )
-        )
+        print(json.dumps({"available_days": avail_days, "start_ms": start_ms, "end_ms": end_ms, "start_label": start_lbl, "symbol": SYMBOL, "strategy": "mtf_spot_longs_v1"}))
         return
 
     df = load_data(args.days)
@@ -464,15 +400,11 @@ def main() -> None:
     result = summarize(trades, df, capital_final)
 
     EXPORTS_DIR.mkdir(exist_ok=True)
-    out_file = EXPORTS_DIR / "mtf_btcusdt_backtest.json"
-    with open(out_file, "w", encoding="utf-8") as f:
+    with open(EXPORTS_DIR / "mtf_btcusdt_longs_backtest.json", "w", encoding="utf-8") as f:
         json.dump(result, f)
-    pd.DataFrame(trades).to_csv(EXPORTS_DIR / "mtf_spot_v4_trades.csv", index=False)
+    pd.DataFrame(trades).to_csv(EXPORTS_DIR / "mtf_spot_longs_v1_trades.csv", index=False)
 
-    if args.json:
-        print(json.dumps(result))
-    else:
-        print_report(result)
+    print(json.dumps(result) if args.json else f"MTF Spot Longs v1 n={result['n']} WR={result['wr_pct']}% AvgR={result['avg_r']} Equity=${result['equity']}")
 
 
 if __name__ == "__main__":

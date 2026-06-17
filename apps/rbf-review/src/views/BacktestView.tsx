@@ -4,9 +4,20 @@ import StatsView from './StatsView'
 import type { Trade } from '../lib/types'
 import { supabase } from '../lib/supabase'
 
-type Panel = 'trades' | 'stats'
+type Panel = 'trades' | 'stats' | 'diagnostics'
 
-const STRATEGY_META = {
+type StrategyMeta = {
+  apiPath: string
+  infoPath?: string          // si está presente, se consulta en vez de Supabase
+  label: string
+  detail: string
+  detail2: string
+  presets: number[]
+  maxDays: number | null
+  defaultDays: number | null
+}
+
+const STRATEGY_META: Record<string, StrategyMeta> = {
   rbf: {
     apiPath:    '/api/backtest',
     label:      'Backtest RBF — Short post+pre · $500 capital · $10/trade',
@@ -88,6 +99,36 @@ const STRATEGY_META = {
     maxDays:    null as number | null,
     defaultDays: null as number | null,
   },
+  mtf_local_btc: {
+    apiPath:    '/api/backtest/mtf_local?symbol=BTCUSDT',
+    infoPath:   '/api/backtest/mtf_local_info?symbol=BTCUSDT',
+    label:      'Backtest MTF Spot v4 · BTCUSDT Bybit SPOT · $500 · riesgo 2% compounding',
+    detail:     'Shorts: NIVEL + RECHAZO + FLUJO · LEVEL_TOL 0.70% · VAH requerido\nBloquea PDH+AH+VAH, PDH+VAH falso, WH @ 15h UTC y AH+VAH con OBI<-0.15',
+    detail2:    'Stop H1_high + 0.40×ATR14 · stop 0.30%-0.75% · Target 2.0R\nCVD exit: 5 barras CVD+ + OBI>0.15 + profit≥1R · exports/mtf_btcusdt_backtest.json',
+    presets:    [30, 90, 180] as number[],
+    maxDays:    null as number | null,
+    defaultDays: null as number | null,
+  },
+  mtf_spot_longs_btc: {
+    apiPath:    '/api/backtest/mtf_local_longs?symbol=BTCUSDT',
+    infoPath:   '/api/backtest/mtf_local_longs_info?symbol=BTCUSDT',
+    label:      'Backtest MTF Spot Longs v1 · BTCUSDT Bybit SPOT · $500 · riesgo 2% compounding',
+    detail:     'Longs: VAL + RECHAZO + FLUJO · LEVEL_TOL 0.70% · VAL requerido\nSesiones: 14:00-20:00 UTC · bloquea PDL+AL+VAL · una posición abierta',
+    detail2:    'Stop H1_low - 0.40×ATR14 · stop 0.30%-0.75% · Target 2.0R\nCVD exit: 5 barras CVD- + OBI<-0.15 + profit≥1R · exports/mtf_btcusdt_longs_backtest.json',
+    presets:    [30, 90, 180] as number[],
+    maxDays:    null as number | null,
+    defaultDays: null as number | null,
+  },
+  mtf_local_eth: {
+    apiPath:    '/api/backtest/mtf_local?symbol=ETHUSDT',
+    infoPath:   '/api/backtest/mtf_local_info?symbol=ETHUSDT',
+    label:      'Backtest MTF Local · ETHUSDT · datos Bybit SPOT parquet · $500 · 2% riesgo',
+    detail:     'Shorts: D1 EMA20 bear/neutral · H1 shoot_star / equal_high / sell_climax · M1 shoot+OBI\nLongs:  H4 EMA20 bull/neutral · H1 hammer / equal_low / buy_climax · M1 hammer+OBI\nStop H1 estructural + 0.25×ATR | Target 2.5R · Sesiones: London · Overlap · NY',
+    detail2:    'Cooldown 30 barras por dirección · Forward 1200 barras (20h) · CVD exhaustion exit\nResultados guardados en exports/mtf_ethusdt_backtest.json',
+    presets:    [30, 90, 180] as number[],
+    maxDays:    null as number | null,
+    defaultDays: null as number | null,
+  },
   be: {
     apiPath:    '/api/backtest/be',
     label:      'Backtest BE — Python backend · $500 capital · $10/trade',
@@ -101,12 +142,158 @@ const STRATEGY_META = {
 
 interface BtStats { n: number; wins: number; totalR: number; avgR: number; equity: number }
 
+type DiagnosticRow = {
+  label: string
+  n: number
+  wr: number
+  avgR: number
+  totalR: number
+  stops: number
+}
+
+function htfNum(t: Trade, key: string): number | null {
+  const htf = t.htf as Record<string, unknown> | undefined
+  const raw = htf?.[key]
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null
+}
+
+function htfText(t: Trade, key: string): string {
+  const htf = t.htf as Record<string, unknown> | undefined
+  const raw = htf?.[key]
+  return typeof raw === 'string' ? raw : ''
+}
+
+function tradeHour(t: Trade): number {
+  return new Date(t.tsMs).getUTCHours()
+}
+
+function diagMetrics(label: string, rows: Trade[]): DiagnosticRow {
+  const closed = rows.filter(t => !t.isOpen && t.resultR != null)
+  const wins = closed.filter(t => (t.resultR ?? 0) > 0).length
+  const totalR = closed.reduce((s, t) => s + (t.resultR ?? 0), 0)
+  return {
+    label,
+    n: closed.length,
+    wr: closed.length ? wins / closed.length * 100 : 0,
+    avgR: closed.length ? totalR / closed.length : 0,
+    totalR,
+    stops: closed.filter(t => String(t.reason).toLowerCase() === 'stop').length,
+  }
+}
+
+function DiagTable({ title, rows }: { title: string; rows: DiagnosticRow[] }) {
+  const usable = rows.filter(r => r.n > 0)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, border: '1px solid var(--border)', background: 'var(--bg)', overflow: 'hidden' }}>
+      <div style={{ padding: '6px 10px', fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.2, color: 'var(--text3)', borderBottom: '1px solid var(--border)', background: 'var(--bg2)' }}>
+        {title}
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+        <colgroup>
+          <col style={{ width: '36%' }} />
+          <col style={{ width: '12%' }} />
+          <col style={{ width: '16%' }} />
+          <col style={{ width: '18%' }} />
+          <col style={{ width: '18%' }} />
+        </colgroup>
+        <thead>
+          <tr>
+            {['Corte', 'N', 'WR', 'AvgR', 'Stops'].map((h, i) => (
+              <th key={h} style={{ padding: '5px 8px', fontSize: 8, color: 'var(--text3)', textAlign: i === 0 ? 'left' : 'right', borderBottom: '1px solid var(--border)' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {usable.map(r => {
+            const wrCol = r.wr >= 52 ? 'var(--green)' : r.wr >= 45 ? 'var(--yellow)' : 'var(--red)'
+            const avgCol = r.avgR > 0.3 ? 'var(--green)' : r.avgR > 0 ? 'var(--yellow)' : 'var(--red)'
+            return (
+              <tr key={r.label} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ padding: '5px 8px', fontSize: 10, color: 'var(--text2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.label}</td>
+                <td style={{ padding: '5px 8px', fontSize: 10, color: 'var(--text3)', textAlign: 'right', fontFamily: 'var(--mono)' }}>{r.n}</td>
+                <td style={{ padding: '5px 8px', fontSize: 10, color: wrCol, textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700 }}>{r.wr.toFixed(1)}%</td>
+                <td style={{ padding: '5px 8px', fontSize: 10, color: avgCol, textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 700 }}>{r.avgR > 0 ? '+' : ''}{r.avgR.toFixed(3)}</td>
+                <td style={{ padding: '5px 8px', fontSize: 10, color: 'var(--text3)', textAlign: 'right', fontFamily: 'var(--mono)' }}>{r.stops}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function LossDiagnostics({ trades }: { trades: Trade[] }) {
+  const closed = trades.filter(t => !t.isOpen && t.resultR != null)
+  const losses = closed.filter(t => (t.resultR ?? 0) < 0)
+  const oosStart = Date.UTC(2026, 2, 1)
+  const metric = (label: string, pred: (t: Trade) => boolean) => diagMetrics(label, closed.filter(pred))
+  const oosMetric = (label: string, pred: (t: Trade) => boolean) => diagMetrics(label, closed.filter(t => t.tsMs >= oosStart && pred(t)))
+  const base = diagMetrics('Base', closed)
+  const oosBase = diagMetrics('Base OOS', closed.filter(t => t.tsMs >= oosStart))
+  const lossShare = (pred: (t: Trade) => boolean) => losses.length ? losses.filter(pred).length / losses.length * 100 : 0
+
+  const flowRows = [
+    metric('OBI <= 0.10', t => (t.obi ?? 0) <= 0.10),
+    metric('OBI > 0.10', t => (t.obi ?? 0) > 0.10),
+    metric('CVD -10 a -3', t => (t.cvdSlope ?? 0) >= -10 && (t.cvdSlope ?? 0) < -3),
+    metric('CVD fuera zona mala', t => !((t.cvdSlope ?? 0) >= -10 && (t.cvdSlope ?? 0) < -3)),
+    metric('OBI bearish real', t => (t.obi ?? 0) < -0.05),
+  ]
+  const contextRows = [
+    metric('VAH solo', t => htfText(t, 'level') === 'VAH'),
+    metric('AH+VAH', t => htfText(t, 'level') === 'AH+VAH'),
+    metric('PDH+VAH bloqueado', t => htfText(t, 'level') === 'PDH+VAH'),
+    metric('Stop <= 0.70%', t => t.stopPct <= 0.70),
+    metric('Wick <.35 o >=.55', t => {
+      const w = htfNum(t, 'wickPct') ?? 0
+      return w < 0.35 || w >= 0.55
+    }),
+  ]
+  const timeRows = [12, 13, 14, 15, 16, 17, 18, 19].map(h => metric(`${String(h).padStart(2, '0')}:00 UTC`, t => tradeHour(t) === h))
+  const filterRows = [
+    metric('OBI<=.10 + no CVD mala', t => (t.obi ?? 0) <= 0.10 && !((t.cvdSlope ?? 0) >= -10 && (t.cvdSlope ?? 0) < -3)),
+    oosMetric('OOS: mismo filtro', t => (t.obi ?? 0) <= 0.10 && !((t.cvdSlope ?? 0) >= -10 && (t.cvdSlope ?? 0) < -3)),
+    metric('OBI<=.05 + no CVD mala', t => (t.obi ?? 0) <= 0.05 && !((t.cvdSlope ?? 0) >= -10 && (t.cvdSlope ?? 0) < -3)),
+    oosMetric('OOS: filtro estricto', t => (t.obi ?? 0) <= 0.05 && !((t.cvdSlope ?? 0) >= -10 && (t.cvdSlope ?? 0) < -3)),
+  ]
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg)', padding: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8, marginBottom: 10 }}>
+        {[
+          { k: 'Base', v: `${base.n} trades`, s: `${base.wr.toFixed(1)}% WR · ${base.avgR.toFixed(3)}R`, c: 'var(--text)' },
+          { k: 'OOS', v: `${oosBase.n} trades`, s: `${oosBase.wr.toFixed(1)}% WR · ${oosBase.avgR.toFixed(3)}R`, c: 'var(--green)' },
+          { k: 'Losses', v: `${losses.length}`, s: `${lossShare(t => (t.obi ?? 0) > 0.10).toFixed(1)}% con OBI>0.10`, c: 'var(--red)' },
+          { k: 'Hipotesis', v: 'Book + nivel', s: 'evitar OBI alto y CVD zona mala; PDH+VAH ya bloqueado', c: 'var(--blue)' },
+        ].map(x => (
+          <div key={x.k} style={{ border: '1px solid var(--border)', background: 'var(--bg2)', padding: '9px 11px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 8, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: 700 }}>{x.k}</span>
+            <span style={{ fontSize: 18, color: x.c, fontFamily: 'var(--mono)', fontWeight: 800, lineHeight: 1 }}>{x.v}</span>
+            <span style={{ fontSize: 10, color: 'var(--text3)' }}>{x.s}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+        <DiagTable title="Flujo en entrada" rows={flowRows} />
+        <DiagTable title="Nivel / stop / vela" rows={contextRows} />
+        <DiagTable title="Hora UTC" rows={timeRows} />
+        <DiagTable title="Filtros candidatos" rows={filterRows} />
+      </div>
+      <div style={{ marginTop: 10, padding: '8px 10px', border: '1px solid var(--border)', background: 'var(--bg2)', color: 'var(--text3)', fontSize: 10, lineHeight: 1.55 }}>
+        Lectura: los perdedores no se explican por sesion; se concentran mas en entradas donde el book ya no esta claramente vendedor.
+        Los cortes mas utiles son OBI alto y CVD slope en zona intermedia negativa. PDH+VAH queda bloqueado por la spec v2; AH+VAH se mantiene como nivel debil, no como veto base.
+      </div>
+    </div>
+  )
+}
+
 export default function BacktestView({
   strategy = 'rbf',
   onStats,
   onTrades,
 }: {
-  strategy?: 'rbf' | 'sweep' | 'be' | 'combined' | 'absorption' | 'longs' | 'shorts' | 'mtf_shorts' | 'mtf_longs' | 'mtf_combined'
+  strategy?: 'rbf' | 'sweep' | 'be' | 'combined' | 'absorption' | 'longs' | 'shorts' | 'mtf_shorts' | 'mtf_longs' | 'mtf_combined' | 'mtf_local_btc' | 'mtf_spot_longs_btc' | 'mtf_local_eth'
   onStats?: (s: BtStats | null) => void
   onTrades?: (trades: Trade[]) => void
 }) {
@@ -117,20 +304,37 @@ export default function BacktestView({
   const [error,    setError]   = useState<string | null>(null)
   const [days,     setDays]    = useState(meta_cfg.defaultDays ?? 14)
   const [ran,      setRan]     = useState(false)
-  const [meta,     setMeta]    = useState<{ n: number; wins: number; equity: number; actualDays: number; microStart: string | null } | null>(null)
+  const [meta,     setMeta]    = useState<{ n: number; wins: number; equity: number; actualDays: number; microStart: string | null; longsEnabled?: boolean; nShorts?: number; nLongs?: number } | null>(null)
   const [dataFrom,     setDataFrom]     = useState<string | null>(null)
   const [availableDays, setAvailableDays] = useState<number | null>(meta_cfg.maxDays)
 
   useEffect(() => {
     if (meta_cfg.maxDays !== null) {
-      // BE y otras estrategias con fuente histórica (Binance): no necesitamos
-      // consultar Supabase para saber cuántos días hay disponibles.
+      // Estrategias con rango fijo conocido (BE, Binance histórico)
       const d = meta_cfg.defaultDays ?? meta_cfg.maxDays
       setDays(d)
       triggerRun(d)
       return
     }
-    // RBF: limitado por datos de microestructura en Supabase (cvd_slope/vwap)
+
+    if (meta_cfg.infoPath) {
+      // Estrategias locales: consultar el parquet para saber días disponibles
+      fetch(meta_cfg.infoPath)
+        .then(r => r.json())
+        .then((info: any) => {
+          if (info.error) return
+          const nDays = info.available_days as number
+          const label = info.start_label as string
+          setDataFrom(`${label} (~${nDays}d)`)
+          setAvailableDays(nDays)
+          setDays(nDays)
+          triggerRun(nDays)
+        })
+        .catch(() => { /* parquet no disponible — usuario verá el botón manual */ })
+      return
+    }
+
+    // Supabase: detectar cuántos días de microestructura hay disponibles
     supabase
       .from('btc_bars')
       .select('ts_ms')
@@ -145,7 +349,6 @@ export default function BacktestView({
         setDataFrom(`${label} (~${nDays}d)`)
         setAvailableDays(nDays)
         setDays(nDays)
-        // Auto-run con todos los datos disponibles — crece 1 día automáticamente cada día
         triggerRun(nDays)
       })
   }, [])
@@ -156,7 +359,8 @@ export default function BacktestView({
     setTrades([])
     setMeta(null)
     try {
-      const res  = await fetch(`${meta_cfg.apiPath}?days=${d}`)
+      const sep  = meta_cfg.apiPath.includes('?') ? '&' : '?'
+      const res  = await fetch(`${meta_cfg.apiPath}${sep}days=${d}`)
       const text = await res.text()
       let data: any
       try { data = JSON.parse(text) } catch {
@@ -167,7 +371,7 @@ export default function BacktestView({
       const totalR = ts.reduce((s: number, t: Trade) => s + (t.resultR ?? 0), 0)
       const avgR   = data.n > 0 ? totalR / data.n : 0
       setTrades(ts)
-      setMeta({ n: data.n, wins: data.wins, equity: data.equity, actualDays: data.actual_days ?? d, microStart: data.micro_start ?? null })
+      setMeta({ n: data.n, wins: data.wins, equity: data.equity, actualDays: data.actual_days ?? d, microStart: data.micro_start ?? null, longsEnabled: data.longs_enabled ?? true, nShorts: data.n_shorts, nLongs: data.n_longs })
       onStats?.({ n: data.n, wins: data.wins, totalR, avgR, equity: data.equity })
       onTrades?.(ts)
       setRan(true)
@@ -233,7 +437,9 @@ export default function BacktestView({
         </button>
 
         <div style={{ color: 'var(--text3)', fontSize: 9 }}>
-          Python corre como subprocess dentro de Vite — solo necesitas <code>npm run dev</code>
+          {meta_cfg.infoPath
+            ? 'Datos locales parquet · resultados en exports/'
+            : <>Python corre como subprocess dentro de Vite — solo necesitas <code>npm run dev</code></>}
         </div>
 
         {error && (
@@ -256,7 +462,11 @@ export default function BacktestView({
         <div style={{ width: 200, height: 3, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
           <div style={{ height: '100%', background: 'var(--blue)', borderRadius: 2, width: '60%', animation: 'pulse 1s ease-in-out infinite alternate' }} />
         </div>
-        <div style={{ color: 'var(--text3)', fontSize: 9 }}>Descargando ~{days * 7.2}k bars × 5 símbolos…</div>
+        <div style={{ color: 'var(--text3)', fontSize: 9 }}>
+          {meta_cfg.infoPath
+            ? `Leyendo parquet local · ${days}d de datos…`
+            : `Descargando ~${(days * 7.2).toFixed(0)}k bars × 5 símbolos…`}
+        </div>
       </div>
     )
   }
@@ -301,10 +511,21 @@ export default function BacktestView({
           border: `1px solid ${panel === 'stats' ? 'var(--border2)' : 'transparent'}`,
           color: panel === 'stats' ? 'var(--text)' : 'var(--text3)',
         }}>Stats</button>
+        <button onClick={() => setPanel('diagnostics')} style={{
+          padding: '2px 10px', borderRadius: 3, fontSize: 10, cursor: 'pointer', fontFamily: 'inherit',
+          background: panel === 'diagnostics' ? 'var(--bg3)' : 'none',
+          border: `1px solid ${panel === 'diagnostics' ? 'var(--border2)' : 'transparent'}`,
+          color: panel === 'diagnostics' ? 'var(--text)' : 'var(--text3)',
+        }}>Diagnóstico</button>
 
         {meta && (
           <span style={{ color: 'var(--text2)' }}>
-            {meta.n} trades ·{' '}
+            {meta.longsEnabled === false && (
+              <span style={{ color: 'var(--yellow)', fontSize: 9, marginRight: 6 }}>
+                sin longs ·{' '}
+              </span>
+            )}
+            {meta.nShorts != null ? `S:${meta.nShorts} L:${meta.nLongs ?? 0}` : meta.n} trades ·{' '}
             <span title={`Pedido: ${days}d · Datos reales: ${meta.actualDays}d${meta.microStart ? ` · Micro desde: ${meta.microStart}` : ''}`}>
               {meta.actualDays}d datos
               {meta.actualDays < days * 0.9 && (
@@ -360,6 +581,7 @@ export default function BacktestView({
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
         {panel === 'trades' && <LiveView trades={trades} />}
         {panel === 'stats'  && <StatsView trades={trades} />}
+        {panel === 'diagnostics' && <LossDiagnostics trades={trades} />}
       </div>
     </div>
   )

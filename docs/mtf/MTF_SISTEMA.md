@@ -1,13 +1,58 @@
 # MTF System — Documentación Completa
 
-**Última actualización:** 2026-06-15 (v3 + EXP8 — regime filter activado en live)  
-**Estado:** Baseline v3 activo + EXP8 Regime Filter — Shorts (5 símbolos) + Longs (ETH/SOL)  
+**Última actualización:** 2026-06-17 (MTF Futures + MTF Spot paper live preparado)
+**Estado:** Futures baseline v3 + EXP8 activo; Spot Shorts v4 y Spot Longs v1 listos para paper live con paridad pendiente
 **Shorts baseline (14 días, 5 símbolos):** n=180, WR=50.6%, AvgR=+0.274R, Equity=$1,237  
 **Shorts + EXP8 (14 días, backtest):** n=168, WR=52.4%, AvgR=+0.336R, Equity=$1,432 ← activo en live  
 **Longs baseline (8 días, ETH/SOL):** n=125, WR=56.0%, AvgR=+0.526R, $500→$1,748 (+250%)  
 **Campos live acumulando:**
 - Desde 2026-06-15: `big_trade_bearish/bullish`, `obi_min/max_intrabar` — re-mining BTC ~Jun 20
 - Desde 2026-06-15: `vp_poc/vah/val/lvn_below`, `cvd_consec_neg/pos`, `prev_bar_delta`, `bars_since_low_vr` — minar ~Jun 20-25
+
+---
+
+## 0. Estado al 2026-06-17 - MTF Spot Paper Live
+
+Ademas del monitor MTF Futures existente, hoy dejamos preparada la base para correr MTF Spot en paper live sin mezclar reglas de mercado.
+
+### Que hicimos
+
+- **Backtest/UI local:** el modulo MTF local ya permite revisar `MTF Spot Shorts v4` y `MTF Spot Longs v1` con selector Shorts/Longs y graficos de trades.
+- **Monitor adaptativo:** se agrego configuracion por venue, market kind y perfil usando `MONITOR_EXCHANGE`, `MONITOR_PROFILE` y `MONITOR_STRATEGIES`.
+- **Separacion Spot/Futures:** si el exchange es spot, el runtime bloquea detectores futures; si el exchange es futures, bloquea detectores spot. Esto evita hardcodear una estrategia unica dentro del monitor.
+- **Detector Rust para Spot:** `data/src/strategy/detectors/mtf_spot_detector.rs` implementa Shorts v4 y Longs v1 separados del detector MTF Futures.
+- **Persistencia separada:** Spot escribe en `mtf_spot_trades`, no en `mtf_trades`, para no contaminar los resultados futures.
+- **Recovery post-redeploy:** el monitor puede restaurar un trade spot abierto desde Supabase y resolver TP/SL durante el warm-up si el deploy ocurrio con una posicion abierta.
+- **Railway:** `railway.toml` ya no sobreescribe el `CMD` del Dockerfile, asi los checks fail-fast del contenedor se respetan.
+
+### Preset Spot paper live
+
+```bash
+MONITOR_EXCHANGE=bybit_spot
+MONITOR_PROFILE=mtf_spot_paper
+SYMBOLS=BTCUSDT
+TIMEFRAME_MIN=1
+```
+
+### Preset Futures paper live
+
+```bash
+MONITOR_EXCHANGE=binance_linear
+MONITOR_PROFILE=mtf_futures_paper
+SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT
+TIMEFRAME_MIN=1
+```
+
+### Importante antes de confiar dinero real
+
+El backtest Python es la fuente canonica de investigacion, pero el live corre en Rust. Antes de asumir que live actuara igual al backtest, falta correr un **parity harness** que compare senal por senal:
+
+- Python Shorts v4 vs Rust `MtfSpotState`
+- Python Longs v1 vs Rust `MtfSpotState`
+- misma data M1, mismos VAH/VAL, mismos stops, mismas salidas
+- diferencias permitidas: cero o explicadas con log exacto
+
+Hasta que esa paridad pase, el estado correcto es **paper live / observacion**, no trading real.
 
 ---
 

@@ -1761,7 +1761,8 @@ impl SupabaseWriter {
         let entry_at = DateTime::from_timestamp_millis(sig.ts_ms)
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_default();
-        let closed_at = event.exit_ts_ms
+        let closed_at = event
+            .exit_ts_ms
             .and_then(|ms| DateTime::from_timestamp_millis(ms))
             .map(|dt| dt.to_rfc3339());
 
@@ -1794,7 +1795,8 @@ impl SupabaseWriter {
         if event.is_open {
             // Apertura: INSERT de fila nueva
             let url = format!("{}/rest/v1/mtf_trades", self.url);
-            let result = self.client
+            let result = self
+                .client
                 .post(&url)
                 .header("apikey", &self.key)
                 .header("Authorization", format!("Bearer {}", self.key))
@@ -1808,11 +1810,14 @@ impl SupabaseWriter {
         } else {
             // Cierre: PATCH sobre la fila abierta (match por symbol + entry_at)
             let url = format!("{}/rest/v1/mtf_trades", self.url);
-            let result = self.client
+            let result = self
+                .client
                 .patch(&url)
-                .query(&[("symbol", format!("eq.{symbol}")),
-                         ("entry_at", format!("eq.{entry_at}")),
-                         ("is_open", "eq.true".to_string())])
+                .query(&[
+                    ("symbol", format!("eq.{symbol}")),
+                    ("entry_at", format!("eq.{entry_at}")),
+                    ("is_open", "eq.true".to_string()),
+                ])
                 .header("apikey", &self.key)
                 .header("Authorization", format!("Bearer {}", self.key))
                 .header("Content-Type", "application/json")
@@ -1836,7 +1841,8 @@ impl SupabaseWriter {
         let entry_at = DateTime::from_timestamp_millis(sig.ts_ms)
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_default();
-        let closed_at = event.exit_ts_ms
+        let closed_at = event
+            .exit_ts_ms
             .and_then(|ms| DateTime::from_timestamp_millis(ms))
             .map(|dt| dt.to_rfc3339());
 
@@ -1868,7 +1874,8 @@ impl SupabaseWriter {
 
         if event.is_open {
             let url = format!("{}/rest/v1/mtf_trades", self.url);
-            let result = self.client
+            let result = self
+                .client
                 .post(&url)
                 .header("apikey", &self.key)
                 .header("Authorization", format!("Bearer {}", self.key))
@@ -1881,12 +1888,15 @@ impl SupabaseWriter {
             }
         } else {
             let url = format!("{}/rest/v1/mtf_trades", self.url);
-            let result = self.client
+            let result = self
+                .client
                 .patch(&url)
-                .query(&[("symbol",    format!("eq.{symbol}")),
-                         ("entry_at",  format!("eq.{entry_at}")),
-                         ("direction", "eq.Long".to_string()),
-                         ("is_open",   "eq.true".to_string())])
+                .query(&[
+                    ("symbol", format!("eq.{symbol}")),
+                    ("entry_at", format!("eq.{entry_at}")),
+                    ("direction", "eq.Long".to_string()),
+                    ("is_open", "eq.true".to_string()),
+                ])
                 .header("apikey", &self.key)
                 .header("Authorization", format!("Bearer {}", self.key))
                 .header("Content-Type", "application/json")
@@ -1901,12 +1911,96 @@ impl SupabaseWriter {
 
     /// Carga el trade HTF abierto más reciente para un símbolo y dirección.
     /// Devuelve los campos necesarios para restaurar el ActiveTrade en memoria.
-    pub async fn load_mtf_active(&self, symbol: &str, direction: &str) -> Option<RestoredMtfTrade> {
+    /// Escribe eventos MTF Spot en tabla separada para no mezclar spot con futures.
+    pub async fn write_mtf_spot_trade(
+        &self,
+        event: &data::strategy::detectors::mtf_spot_detector::MtfSpotTrade,
+        symbol: &str,
+    ) {
+        use chrono::DateTime;
+        let sig = &event.signal;
+        let entry_at = DateTime::from_timestamp_millis(sig.ts_ms)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        let closed_at = event
+            .exit_ts_ms
+            .and_then(DateTime::from_timestamp_millis)
+            .map(|dt| dt.to_rfc3339());
+
+        let body = serde_json::json!({
+            "symbol":           symbol,
+            "venue":            "bybit",
+            "market_type":      "spot",
+            "strategy":         sig.strategy,
+            "sig":              sig.sig,
+            "session":          sig.session,
+            "direction":        sig.direction.as_str(),
+            "level":            sig.level,
+            "entry":            sig.entry,
+            "stop":             sig.stop,
+            "target":           sig.target,
+            "stop_pct":         sig.stop_pct,
+            "is_open":          event.is_open,
+            "result_r":         event.result_r,
+            "gross_r":          event.gross_r,
+            "fee_r":            event.fee_r,
+            "reason":           event.reason,
+            "exit_price":       event.exit_price,
+            "duration_bars":    event.duration_bars,
+            "mfe_r":            event.mfe_r,
+            "mae_r":            event.mae_r,
+            "entry_at":         entry_at,
+            "closed_at":        closed_at,
+            "wick_pct":         sig.wick_pct,
+            "obi_entry":        sig.obi_entry,
+            "delta_entry":      sig.delta_entry,
+            "cvd_slope_entry":  sig.cvd_slope_entry,
+        });
+
+        if event.is_open {
+            let url = format!("{}/rest/v1/mtf_spot_trades", self.url);
+            let result = self
+                .client
+                .post(&url)
+                .header("apikey", &self.key)
+                .header("Authorization", format!("Bearer {}", self.key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await;
+            if let Err(e) = result {
+                eprintln!("[supabase] write_mtf_spot_trade INSERT error: {e}");
+            }
+        } else {
+            let url = format!("{}/rest/v1/mtf_spot_trades", self.url);
+            let result = self
+                .client
+                .patch(&url)
+                .query(&[
+                    ("symbol", format!("eq.{symbol}")),
+                    ("entry_at", format!("eq.{entry_at}")),
+                    ("strategy", format!("eq.{}", sig.strategy)),
+                    ("is_open", "eq.true".to_string()),
+                ])
+                .header("apikey", &self.key)
+                .header("Authorization", format!("Bearer {}", self.key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await;
+            if let Err(e) = result {
+                eprintln!("[supabase] write_mtf_spot_trade PATCH error: {e}");
+            }
+        }
+    }
+
+    pub async fn load_mtf_spot_active(&self, symbol: &str) -> Option<RestoredMtfSpotTrade> {
         let url = format!(
-            "{}/rest/v1/mtf_trades?is_open=eq.true&symbol=eq.{}&direction=eq.{}&order=entry_at.desc&limit=1",
-            self.url, symbol, direction
+            "{}/rest/v1/mtf_spot_trades?is_open=eq.true&symbol=eq.{}&order=entry_at.desc&limit=1",
+            self.url, symbol
         );
-        let result = self.client
+        let result = self
+            .client
             .get(&url)
             .header("apikey", &self.key)
             .header("Authorization", format!("Bearer {}", self.key))
@@ -1916,8 +2010,78 @@ impl SupabaseWriter {
 
         let rows: serde_json::Value = match result {
             Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
-            Ok(r) => { eprintln!("[supabase] load_mtf_active HTTP {}", r.status()); return None; }
-            Err(e) => { eprintln!("[supabase] load_mtf_active error: {e}"); return None; }
+            Ok(r) => {
+                eprintln!("[supabase] load_mtf_spot_active HTTP {}", r.status());
+                return None;
+            }
+            Err(e) => {
+                eprintln!("[supabase] load_mtf_spot_active error: {e}");
+                return None;
+            }
+        };
+
+        let row = rows.as_array()?.first()?;
+        let entry_at_str = row.get("entry_at")?.as_str()?;
+        let ts_ms = chrono::DateTime::parse_from_rfc3339(entry_at_str)
+            .ok()
+            .map(|dt| dt.timestamp_millis())?;
+        let direction = data::strategy::detectors::mtf_spot_detector::MtfSpotDirection::parse(
+            row.get("direction")?.as_str()?,
+        )?;
+
+        Some(RestoredMtfSpotTrade {
+            ts_ms,
+            direction,
+            strategy: row.get("strategy")?.as_str()?.to_string(),
+            sig: row.get("sig")?.as_str()?.to_string(),
+            session: row
+                .get("session")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            level: row
+                .get("level")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            entry: row.get("entry")?.as_f64()?,
+            stop: row.get("stop")?.as_f64()?,
+            target: row.get("target")?.as_f64()?,
+            stop_pct: row.get("stop_pct").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            wick_pct: row.get("wick_pct").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            obi_entry: row.get("obi_entry").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            delta_entry: row
+                .get("delta_entry")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+            cvd_slope_entry: row.get("cvd_slope_entry").and_then(|v| v.as_f64()),
+        })
+    }
+
+    pub async fn load_mtf_active(&self, symbol: &str, direction: &str) -> Option<RestoredMtfTrade> {
+        let url = format!(
+            "{}/rest/v1/mtf_trades?is_open=eq.true&symbol=eq.{}&direction=eq.{}&order=entry_at.desc&limit=1",
+            self.url, symbol, direction
+        );
+        let result = self
+            .client
+            .get(&url)
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Accept", "application/json")
+            .send()
+            .await;
+
+        let rows: serde_json::Value = match result {
+            Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
+            Ok(r) => {
+                eprintln!("[supabase] load_mtf_active HTTP {}", r.status());
+                return None;
+            }
+            Err(e) => {
+                eprintln!("[supabase] load_mtf_active error: {e}");
+                return None;
+            }
         };
 
         let row = rows.as_array()?.first()?;
@@ -1927,37 +2091,69 @@ impl SupabaseWriter {
             .map(|dt| dt.timestamp_millis())?;
 
         Some(RestoredMtfTrade {
-            entry_at:  entry_at_str.to_string(),
+            entry_at: entry_at_str.to_string(),
             ts_ms,
-            sig:       row.get("sig")?.as_str()?.to_string(),
-            session:   row.get("session").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            trend:     row.get("d1_trend").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            entry:     row.get("entry")?.as_f64()?,
-            stop:      row.get("stop")?.as_f64()?,
-            target:    row.get("target")?.as_f64()?,
-            stop_pct:  row.get("stop_pct").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            obi_entry:       row.get("obi_entry").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            sig: row.get("sig")?.as_str()?.to_string(),
+            session: row
+                .get("session")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            trend: row
+                .get("d1_trend")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            entry: row.get("entry")?.as_f64()?,
+            stop: row.get("stop")?.as_f64()?,
+            target: row.get("target")?.as_f64()?,
+            stop_pct: row.get("stop_pct").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            obi_entry: row.get("obi_entry").and_then(|v| v.as_f64()).unwrap_or(0.0),
             cvd_slope_entry: row.get("cvd_slope_entry").and_then(|v| v.as_f64()),
-            dz_score:        row.get("dz_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            stacked_imb:     row.get("stacked_imb").and_then(|v| v.as_str()).unwrap_or("None").to_string(),
-            equal_low:       row.get("equal_low").and_then(|v| v.as_bool()).unwrap_or(false),
+            dz_score: row.get("dz_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            stacked_imb: row
+                .get("stacked_imb")
+                .and_then(|v| v.as_str())
+                .unwrap_or("None")
+                .to_string(),
+            equal_low: row
+                .get("equal_low")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         })
     }
 }
 
 pub struct RestoredMtfTrade {
-    pub entry_at:        String,
-    pub ts_ms:           i64,
-    pub sig:             String,
-    pub session:         String,
-    pub trend:           String,
-    pub entry:           f64,
-    pub stop:            f64,
-    pub target:          f64,
-    pub stop_pct:        f64,
-    pub obi_entry:       f64,
+    pub entry_at: String,
+    pub ts_ms: i64,
+    pub sig: String,
+    pub session: String,
+    pub trend: String,
+    pub entry: f64,
+    pub stop: f64,
+    pub target: f64,
+    pub stop_pct: f64,
+    pub obi_entry: f64,
     pub cvd_slope_entry: Option<f64>,
-    pub dz_score:        f64,
-    pub stacked_imb:     String,
-    pub equal_low:       bool,
+    pub dz_score: f64,
+    pub stacked_imb: String,
+    pub equal_low: bool,
+}
+
+pub struct RestoredMtfSpotTrade {
+    pub ts_ms: i64,
+    pub direction: data::strategy::detectors::mtf_spot_detector::MtfSpotDirection,
+    pub strategy: String,
+    pub sig: String,
+    pub session: String,
+    pub level: String,
+    pub entry: f64,
+    pub stop: f64,
+    pub target: f64,
+    pub stop_pct: f64,
+    pub wick_pct: f64,
+    pub obi_entry: f64,
+    pub delta_entry: f64,
+    pub cvd_slope_entry: Option<f64>,
 }
