@@ -84,7 +84,7 @@ export default function MTFModuleView() {
   const [btTrades, setBtTrades] = useState<Trade[]>([])
 
   useEffect(() => {
-    setLoading(true)
+    let cancelled = false
     const since = Date.now() - 30 * 86400000
     const table = liveSource === 'spot' ? 'mtf_spot_trades' : 'mtf_trades'
     const select = liveSource === 'spot'
@@ -92,15 +92,20 @@ export default function MTFModuleView() {
       : 'id,symbol,sig,session,direction,d1_trend,entry,stop,target,stop_pct,is_open,result_r,gross_r,fee_r,reason,exit_price,duration_bars,entry_at,closed_at,obi_entry,cvd_slope_entry,dz_score,stacked_imb,equal_low'
     const db = supabase as unknown as { from: (name: string) => any }
 
-    db
-      .from(table)
-      .select(select)
-      .gte('entry_at', new Date(since).toISOString())
-      .order('entry_at', { ascending: true })
-      .then(({ data }: { data: unknown[] | null }) => {
-        setTrades((data ?? []) as LiveMtfTrade[])
-        setLoading(false)
-      })
+    async function refresh(showLoading = false) {
+      if (showLoading) setLoading(true)
+      const { data } = await db
+        .from(table)
+        .select(select)
+        .gte('entry_at', new Date(since).toISOString())
+        .order('entry_at', { ascending: true })
+      if (cancelled) return
+      setTrades((data ?? []) as LiveMtfTrade[])
+      setLoading(false)
+    }
+
+    refresh(true)
+    const refreshTimer = window.setInterval(() => refresh(false), 10_000)
 
     const ch = supabase.channel(`htf-module-${liveSource}`)
       .on('postgres_changes', { event: '*', schema: 'public', table }, p => {
@@ -109,7 +114,11 @@ export default function MTFModuleView() {
         else if (p.eventType === 'UPDATE') setTrades(prev => prev.map(t => String(t.id) === String(row.id) ? row : t))
       }).subscribe()
 
-    return () => { supabase.removeChannel(ch) }
+    return () => {
+      cancelled = true
+      window.clearInterval(refreshTimer)
+      supabase.removeChannel(ch)
+    }
   }, [liveSource])
 
   const MAX_OPEN_MS = 20 * 60 * 60 * 1000
