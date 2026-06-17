@@ -5114,7 +5114,10 @@ async fn run_symbol(symbol_str: String, tf_min: u64, primary: bool) {
                                 pending = Some((open_ms, kline));
                             }
                             Some((prev_open, _)) if open_ms == prev_open => {
-                                if kline.is_closed {
+                                // Bybit Spot repeats same-open updates with is_closed=true.
+                                // For spot, finalize only when a later candle open arrives.
+                                let should_finalize_same_open = ex.is_futures();
+                                if should_finalize_same_open && kline.is_closed {
                                     pending = None;
                                     let bar_close_ms = open_ms + tf_ms;
                                     state.on_bar_close(kline, bar_close_ms, &symbol_str).await;
