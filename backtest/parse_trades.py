@@ -2,42 +2,49 @@
 parse_trades.py
 ---------------
 Lee los archivos de trades mensuales Bybit SPOT BTCUSDT (CSV.GZ) y produce
-un parquet con barras M1: open, high, low, close, volume, buy_vol, sell_vol, delta, cvd.
+barras M1: open, high, low, close, volume, buy_vol, sell_vol, delta, cvd.
+
+Cache incremental: cada CSV.GZ se parsea una sola vez y se guarda en
+    processed/trades_cache/YYYY-MM.parquet
+Re-runs saltan meses ya cacheados.
+
+Rango de datos: 2025-06-15 → 2026-01-20 (inclusive)
 
 Uso:
-    python backtest/parse_trades.py
-
-Salida:
-    data/bybit-spot/processed/m1_trades.parquet
+    python backtest/parse_trades.py              # procesa todo lo pendiente
+    python backtest/parse_trades.py --rebuild    # borra caché y reprocesa todo
 """
 
 import gzip
-import csv
 import io
-import os
 import sys
+import argparse
 from pathlib import Path
 from datetime import datetime, timezone
 
 import pandas as pd
-import numpy as np
 
 TRADES_DIR = Path(__file__).parent.parent / "data/bybit-spot/trades"
-OUT_DIR    = Path(__file__).parent.parent / "data/bybit-spot/processed"
-OUT_FILE   = OUT_DIR / "m1_trades.parquet"
+PROC_DIR   = Path(__file__).parent.parent / "data/bybit-spot/processed"
+CACHE_DIR  = PROC_DIR / "trades_cache"
+OUT_FILE   = PROC_DIR / "m1_trades.parquet"
 
-# Jun 15 2025 00:00:00 UTC  →  Jun 15 2026 00:00:00 UTC
-START_MS = int(datetime(2025, 6, 15, tzinfo=timezone.utc).timestamp() * 1000)
-END_MS   = int(datetime(2026, 6, 16, tzinfo=timezone.utc).timestamp() * 1000)
+START_MS = int(datetime(2025, 6, 15,  tzinfo=timezone.utc).timestamp() * 1000)
+END_MS   = int(datetime(2026, 6, 16,  tzinfo=timezone.utc).timestamp() * 1000)  # 15 inclusive
+
+# Meses a procesar
+MONTHS = [
+    "2025-06", "2025-07", "2025-08", "2025-09",
+    "2025-10", "2025-11", "2025-12",
+    "2026-01", "2026-02", "2026-03", "2026-04", "2026-05",
+]
 
 
-def read_trades_file(path: Path) -> pd.DataFrame:
-    """Lee un CSV.GZ de trades. Columnas: id, timestamp, price, volume, side."""
+def parse_month(path: Path) -> pd.DataFrame:
+    """Lee un CSV.GZ de trades mensuales → barras M1 filtradas al rango."""
     with gzip.open(path, "rt", encoding="utf-8", newline="") as f:
         content = f.read()
 
-    # El CSV tiene 6 columnas en los datos pero solo 5 encabezados.
-    # Especificamos los nombres explícitamente para evitar el warning de pandas.
     df = pd.read_csv(
         io.StringIO(content),
         names=["id", "timestamp", "price", "volume", "side", "_extra"],
@@ -46,80 +53,86 @@ def read_trades_file(path: Path) -> pd.DataFrame:
         usecols=["timestamp", "price", "volume", "side"],
     )
     df["side"] = df["side"].astype("category")
-    return df
 
+    # Filtrar al rango global
+    df = df[(df["timestamp"] >= START_MS) & (df["timestamp"] < END_MS)]
+    if df.empty:
+        return pd.DataFrame()
 
-def agg_to_m1(df: pd.DataFrame) -> pd.DataFrame:
-    """Agrega ticks a barras de 1 minuto."""
-    # Truncar al minuto (floor a 60 segundos)
+    # Agregar a barras M1
     df["ts_min"] = (df["timestamp"] // 60_000) * 60_000
 
-    # OHLCV + volumen direccional
-    grp = df.groupby("ts_min", sort=True)
-
-    ohlcv = grp["price"].agg(
-        open="first",
-        high="max",
-        low="min",
-        close="last",
+    ohlcv = df.groupby("ts_min", sort=True)["price"].agg(
+        open="first", high="max", low="min", close="last"
     )
-    vol   = grp["volume"].sum().rename("volume")
-    buy   = df[df["side"] == "buy"].groupby("ts_min")["volume"].sum().rename("buy_vol")
-    sell  = df[df["side"] == "sell"].groupby("ts_min")["volume"].sum().rename("sell_vol")
+    vol  = df.groupby("ts_min")["volume"].sum().rename("volume")
+    buy  = df[df["side"] == "buy"].groupby("ts_min")["volume"].sum().rename("buy_vol")
+    sell = df[df["side"] == "sell"].groupby("ts_min")["volume"].sum().rename("sell_vol")
 
     bars = pd.concat([ohlcv, vol, buy, sell], axis=1)
     bars["buy_vol"]  = bars["buy_vol"].fillna(0.0)
     bars["sell_vol"] = bars["sell_vol"].fillna(0.0)
     bars["delta"]    = bars["buy_vol"] - bars["sell_vol"]
     bars.index.name  = "ts_ms"
-    return bars
+    return bars.reset_index()
 
 
 def main():
-    files = sorted(TRADES_DIR.glob("BTCUSDT-*.csv.gz"))
-    if not files:
-        sys.exit(f"No se encontraron archivos en {TRADES_DIR}")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rebuild", action="store_true", help="Borrar caché y reprocesar todo")
+    args = parser.parse_args()
 
-    print(f"Archivos encontrados: {len(files)}")
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    chunks = []
-    for f in files:
-        print(f"  leyendo {f.name} ...", end=" ", flush=True)
-        df = read_trades_file(f)
+    if args.rebuild:
+        for f in CACHE_DIR.glob("*.parquet"):
+            f.unlink()
+        print("Caché borrada.")
 
-        # Filtrar al rango de interés
-        mask = (df["timestamp"] >= START_MS) & (df["timestamp"] < END_MS)
-        df   = df[mask]
-        if df.empty:
-            print("(fuera de rango, skip)")
+    pending = []
+    skipped = 0
+    for ym in MONTHS:
+        cache_file = CACHE_DIR / f"{ym}.parquet"
+        src_file   = TRADES_DIR / f"BTCUSDT-{ym}.csv.gz"
+
+        if not src_file.exists():
+            print(f"  SKIP {src_file.name} (no descargado)")
             continue
+        if cache_file.exists():
+            skipped += 1
+            continue
+        pending.append((ym, src_file, cache_file))
 
-        bars = agg_to_m1(df)
-        chunks.append(bars)
-        print(f"{len(bars):,} barras M1")
+    print(f"Meses en rango : {len(MONTHS)}  |  ya cacheados: {skipped}  |  pendientes: {len(pending)}")
 
-    if not chunks:
-        sys.exit("No hay datos en el rango pedido.")
+    for i, (ym, src, cache) in enumerate(pending, 1):
+        print(f"  [{i}/{len(pending)}] {src.name} ...", end=" ", flush=True)
+        bars = parse_month(src)
+        if bars.empty:
+            print("sin datos en rango")
+            continue
+        bars.to_parquet(cache, index=False, engine="pyarrow")
+        print(f"{len(bars):,} barras M1  -> {cache.name}")
 
-    combined = pd.concat(chunks).sort_index()
+    # Combinar todos los meses cacheados
+    cache_files = sorted(CACHE_DIR.glob("*.parquet"))
+    if not cache_files:
+        sys.exit("No hay datos en cache.")
 
-    # Eliminar duplicados de solapamiento entre meses (el primer tick del mes nuevo
-    # puede coincidir con el último minuto del mes anterior)
-    combined = combined[~combined.index.duplicated(keep="last")]
+    print(f"\nCombinando {len(cache_files)} meses...", end=" ", flush=True)
+    combined = pd.concat([pd.read_parquet(f) for f in cache_files], ignore_index=True)
+    combined = combined.sort_values("ts_ms").drop_duplicates("ts_ms", keep="last").reset_index(drop=True)
 
-    # CVD acumulado (reset diario sería más útil pero empezamos con global)
+    # CVD acumulado global
     combined["cvd"] = combined["delta"].cumsum()
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    combined.reset_index().to_parquet(OUT_FILE, index=False, engine="pyarrow")
+    combined.to_parquet(OUT_FILE, index=False, engine="pyarrow")
 
-    print(f"\nGuardado: {OUT_FILE}")
-    print(f"Total barras M1 : {len(combined):,}")
-    print(f"Rango            : {combined.index[0]}  ->  {combined.index[-1]}")
-    first_ts = pd.Timestamp(combined.index[0], unit="ms", tz="UTC")
-    last_ts  = pd.Timestamp(combined.index[-1], unit="ms", tz="UTC")
-    print(f"                 : {first_ts}  →  {last_ts}")
-    print(f"Tamaño parquet   : {OUT_FILE.stat().st_size / 1e6:.1f} MB")
+    first = pd.Timestamp(combined["ts_ms"].iloc[0],  unit="ms", tz="UTC")
+    last  = pd.Timestamp(combined["ts_ms"].iloc[-1], unit="ms", tz="UTC")
+    print(f"{len(combined):,} barras M1")
+    print(f"Rango   : {first}  ->  {last}")
+    print(f"Guardado: {OUT_FILE}  ({OUT_FILE.stat().st_size / 1e6:.1f} MB)")
 
 
 if __name__ == "__main__":

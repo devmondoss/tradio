@@ -1955,6 +1955,13 @@ impl SupabaseWriter {
             "obi_entry":        sig.obi_entry,
             "delta_entry":      sig.delta_entry,
             "cvd_slope_entry":  sig.cvd_slope_entry,
+            // Live fields (null for paper trades)
+            "live_entry_order_id":  serde_json::Value::Null,
+            "live_fill_price":      serde_json::Value::Null,
+            "live_filled_qty":      serde_json::Value::Null,
+            "live_tp_order_id":     serde_json::Value::Null,
+            "live_sl_order_id":     serde_json::Value::Null,
+            "is_live":              false,
         });
 
         if event.is_open {
@@ -1991,6 +1998,47 @@ impl SupabaseWriter {
             if let Err(e) = result {
                 eprintln!("[supabase] write_mtf_spot_trade PATCH error: {e}");
             }
+        }
+    }
+
+    /// Write live trade fields to Supabase when a real order is placed/closed.
+    pub async fn patch_mtf_spot_live(
+        &self,
+        symbol: &str,
+        entry_at: &str,
+        strategy: &str,
+        entry_order_id: &str,
+        fill_price: Option<f64>,
+        filled_qty: f64,
+        tp_order_id: Option<&str>,
+        sl_order_id: Option<&str>,
+    ) {
+        let url = format!("{}/rest/v1/mtf_spot_trades", self.url);
+        let body = serde_json::json!({
+            "live_entry_order_id": entry_order_id,
+            "live_fill_price":     fill_price,
+            "live_filled_qty":     filled_qty,
+            "live_tp_order_id":    tp_order_id,
+            "live_sl_order_id":    sl_order_id,
+            "is_live":             true,
+        });
+        let result = self
+            .client
+            .patch(&url)
+            .query(&[
+                ("symbol",   format!("eq.{symbol}")),
+                ("entry_at", format!("eq.{entry_at}")),
+                ("strategy", format!("eq.{strategy}")),
+                ("is_open",  "eq.true".to_string()),
+            ])
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await;
+        if let Err(e) = result {
+            eprintln!("[supabase] patch_mtf_spot_live error: {e}");
         }
     }
 

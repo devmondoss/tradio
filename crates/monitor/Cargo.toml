@@ -25,3 +25,6 @@ hyper-util = { version = "0.1.10", default-features = false }
 tokio-rustls = "0.26.4"
 webpki-roots = "1.0.3"
 http-body-util = "0.1.2"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"

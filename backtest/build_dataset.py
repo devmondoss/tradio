@@ -3,6 +3,8 @@ build_dataset.py
 ----------------
 Une m1_trades.parquet + m1_obi.parquet en un único dataset backtest-ready.
 
+Rango: 2025-06-15 → 2026-01-20
+
 Salida:
     data/bybit-spot/processed/btcusdt_m1.parquet
 
@@ -54,7 +56,7 @@ def main():
     print(f"Cobertura OBI : {coverage:.1f}% de los minutos tienen datos de OB")
     first_ts = pd.Timestamp(merged["ts_ms"].iloc[0],  unit="ms", tz="UTC")
     last_ts  = pd.Timestamp(merged["ts_ms"].iloc[-1], unit="ms", tz="UTC")
-    print(f"Rango         : {first_ts}  →  {last_ts}")
+    print(f"Rango         : {first_ts}  ->  {last_ts}")
     print(f"Guardado      : {out_path}  ({out_path.stat().st_size / 1e6:.1f} MB)")
 
 

@@ -3,11 +3,12 @@ use std::collections::VecDeque;
 
 const MIN_STOP_PCT: f64 = 0.0030;
 const MAX_STOP_PCT: f64 = 0.0075;
-const TARGET_R: f64 = 2.0;
+const TARGET_R: f64 = 2.5; // fijo (Paso 1 2026-06-18): supera a regime+CVD en AvgR neto
 const CVD_FLIP_BARS: usize = 5;
 const OBI_FLIP_THR: f64 = 0.15;
 const MIN_PROFIT_CVD: f64 = 1.0;
-const FEE_RT: f64 = 0.0007;
+const FEE_RT: f64 = 0.0011; // futuros Bybit round-trip (taker 0.055% x2). Spot basico seria 0.0020
+const FORWARD: usize = 1200; // timeout en barras M1 (~20h) — paridad con backtest Python
 const LEVEL_TOL: f64 = 0.007;
 const ATR_MULT: f64 = 0.40;
 const H1_MS: i64 = 3_600_000;
@@ -556,19 +557,12 @@ impl MtfSpotState {
                         self.close_trade(trade, TARGET_R, "target", target, ctx.ts_ms),
                     );
                 }
-                if ctx.cvd_slope.unwrap_or(0.0) > 0.0 {
-                    self.cvd_streak += 1;
-                } else {
-                    self.cvd_streak = 0;
-                }
-                let curr_r = (trade.entry - ctx.close) / trade.risk;
-                if self.cvd_streak >= CVD_FLIP_BARS
-                    && ctx.obi10_mean > OBI_FLIP_THR
-                    && curr_r >= MIN_PROFIT_CVD
-                {
+                // CVD exit ELIMINADO en shorts (Paso 1 2026-06-18): cortaba ganadores
+                // a ~1.3R. Solo stop/target/timeout. Ver docs/mtf/MTF_SPOT_EDGE_REALITY_Y_PLAN.md
+                if trade.bars_in_trade >= FORWARD {
                     let gross = (trade.entry - ctx.close) / trade.risk;
                     return TradeUpdate::Closed(
-                        self.close_trade(trade, gross, "cvd_exit", ctx.close, ctx.ts_ms),
+                        self.close_trade(trade, gross, "timeout", ctx.close, ctx.ts_ms),
                     );
                 }
             }
@@ -586,6 +580,12 @@ impl MtfSpotState {
                     let target = trade.target;
                     return TradeUpdate::Closed(
                         self.close_trade(trade, TARGET_R, "target", target, ctx.ts_ms),
+                    );
+                }
+                if trade.bars_in_trade >= FORWARD {
+                    let gross = (ctx.close - trade.entry) / trade.risk;
+                    return TradeUpdate::Closed(
+                        self.close_trade(trade, gross, "timeout", ctx.close, ctx.ts_ms),
                     );
                 }
                 if ctx.cvd_slope.unwrap_or(0.0) < 0.0 {
@@ -648,7 +648,9 @@ enum TradeUpdate {
 
 fn short_session(ts_ms: i64) -> Option<String> {
     let hm = (ts_ms / 60_000) % 1440;
-    if (12 * 60..16 * 60).contains(&hm) {
+    if (7 * 60..12 * 60).contains(&hm) {
+        Some("london".into()) // re-habilitada v5 — paridad con backtest Python
+    } else if (12 * 60..16 * 60).contains(&hm) {
         Some("overlap".into())
     } else if (16 * 60..20 * 60).contains(&hm) {
         Some("ny".into())

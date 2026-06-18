@@ -7,6 +7,8 @@ pub struct MonitorRuntimeConfig {
     pub mtf_futures_longs: bool,
     pub mtf_spot_shorts: bool,
     pub mtf_spot_longs: bool,
+    /// True when MONITOR_PROFILE=mtf_spot_live — enables real order execution on Bybit.
+    pub live_mode: bool,
 }
 
 impl MonitorRuntimeConfig {
@@ -31,6 +33,26 @@ impl MonitorRuntimeConfig {
                 mtf_futures_longs: false,
                 mtf_spot_shorts: true,
                 mtf_spot_longs: true,
+                live_mode: false,
+            },
+            "mtf_spot_live" | "spot_live" => Self {
+                profile,
+                mtf_futures_shorts: false,
+                mtf_futures_longs: false,
+                mtf_spot_shorts: true,
+                mtf_spot_longs: true,
+                live_mode: true,
+            },
+            // Corre la estrategia calibrada en SPOT contra un exchange de FUTUROS
+            // (bybit_linear). Solo shorts (longs descartados, sin edge). Paper.
+            // El detector spot consume el order book del feed conectado = futuros.
+            "mtf_spot_futures_paper" | "spot_futures_paper" => Self {
+                profile,
+                mtf_futures_shorts: false,
+                mtf_futures_longs: false,
+                mtf_spot_shorts: true,
+                mtf_spot_longs: false,
+                live_mode: false,
             },
             "mtf_all" | "mtf_all_paper" | "all_paper" => Self {
                 profile,
@@ -38,6 +60,7 @@ impl MonitorRuntimeConfig {
                 mtf_futures_longs: true,
                 mtf_spot_shorts: true,
                 mtf_spot_longs: true,
+                live_mode: false,
             },
             "off" | "none" | "disabled" => Self {
                 profile,
@@ -45,6 +68,7 @@ impl MonitorRuntimeConfig {
                 mtf_futures_longs: false,
                 mtf_spot_shorts: false,
                 mtf_spot_longs: false,
+                live_mode: false,
             },
             _ => Self {
                 profile,
@@ -52,6 +76,7 @@ impl MonitorRuntimeConfig {
                 mtf_futures_longs: true,
                 mtf_spot_shorts: false,
                 mtf_spot_longs: false,
+                live_mode: false,
             },
         };
 
@@ -92,10 +117,15 @@ impl MonitorRuntimeConfig {
             }
         }
 
+        // Perfil que corre la estrategia spot-calibrada sobre un exchange de futuros.
+        let spot_on_futures = matches!(
+            cfg.profile.as_str(),
+            "mtf_spot_futures_paper" | "spot_futures_paper"
+        );
         if exchange.is_spot() {
             cfg.mtf_futures_shorts = false;
             cfg.mtf_futures_longs = false;
-        } else if exchange.is_futures() {
+        } else if exchange.is_futures() && !spot_on_futures {
             cfg.mtf_spot_shorts = false;
             cfg.mtf_spot_longs = false;
         }
@@ -133,7 +163,11 @@ impl MonitorRuntimeConfig {
             );
         }
         if self.uses_spot_mtf() {
-            println!("[monitor_config] MTF spot paper detector enabled");
+            if self.live_mode {
+                println!("[monitor_config] MTF spot LIVE detector enabled — real orders will be placed on Bybit");
+            } else {
+                println!("[monitor_config] MTF spot paper detector enabled");
+            }
         }
     }
 }

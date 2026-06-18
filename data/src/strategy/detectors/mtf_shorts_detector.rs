@@ -56,8 +56,8 @@ pub struct MtfSignal {
 pub struct MtfTrade {
     pub signal: MtfSignal,
     pub result_r: Option<f64>,
-    pub gross_r: Option<f64>,   // antes de fees (para comparar con backtest)
-    pub fee_r: Option<f64>,     // costo en R (fee_r = 0.07% * entry / risk)
+    pub gross_r: Option<f64>, // antes de fees (para comparar con backtest)
+    pub fee_r: Option<f64>,   // costo en R (fee_r = 0.07% * entry / risk)
     pub reason: Option<String>,
     pub exit_price: Option<f64>,
     pub exit_ts_ms: Option<i64>,
@@ -68,7 +68,7 @@ pub struct MtfTrade {
 /// Vela H1 agregada desde barras M1 (bucket horario UTC exacto)
 #[derive(Debug, Clone, Default)]
 pub struct H1Candle {
-    pub ts_h: i64,   // hora UTC en segundos (ts_ms / 3_600_000 * 3600)
+    pub ts_h: i64, // hora UTC en segundos (ts_ms / 3_600_000 * 3600)
     pub high: f64,
     pub low: f64,
     pub close: f64,
@@ -158,26 +158,53 @@ impl MtfShortsState {
     /// puedan cerrar el trade si golpeó SL/TP durante el downtime.
     pub fn restore_active_trade(
         &mut self,
-        entry: f64, stop: f64, target: f64,
-        ts_ms: i64, sig: String, session: String, d1_trend: String,
-        stop_pct: f64, obi_entry: f64, cvd_slope_entry: Option<f64>,
-        dz_score: f64, stacked_imb: String, equal_low: bool,
+        entry: f64,
+        stop: f64,
+        target: f64,
+        ts_ms: i64,
+        sig: String,
+        session: String,
+        d1_trend: String,
+        stop_pct: f64,
+        obi_entry: f64,
+        cvd_slope_entry: Option<f64>,
+        dz_score: f64,
+        stacked_imb: String,
+        equal_low: bool,
     ) {
-        let risk   = stop - entry;
-        let fee_r  = 0.0007 * entry / risk;
+        let risk = stop - entry;
+        let fee_r = 0.0007 * entry / risk;
         let signal = MtfSignal {
-            symbol: self.symbol.clone(), ts_ms, sig, entry, stop, target,
-            stop_pct, session, d1_trend, obi_entry, cvd_slope_entry,
-            dz_score, stacked_imb, equal_low,
+            symbol: self.symbol.clone(),
+            ts_ms,
+            sig,
+            entry,
+            stop,
+            target,
+            stop_pct,
+            session,
+            d1_trend,
+            obi_entry,
+            cvd_slope_entry,
+            dz_score,
+            stacked_imb,
+            equal_low,
         };
         self.active_trade = Some(ActiveTrade {
-            entry, stop, risk, target, fee_r, signal,
+            entry,
+            stop,
+            risk,
+            target,
+            fee_r,
+            signal,
             bars_in_trade: 0,
         });
         self.last_sig_bar = self.bar_count;
     }
 
-    pub fn has_active_trade(&self) -> bool { self.active_trade.is_some() }
+    pub fn has_active_trade(&self) -> bool {
+        self.active_trade.is_some()
+    }
 
     /// ts_ms de entrada del trade activo — para filtrar barras de warmup anteriores a la entrada.
     pub fn active_entry_ms(&self) -> Option<i64> {
@@ -202,7 +229,13 @@ impl MtfShortsState {
     pub fn seed_h1(&mut self, candles: &[(i64, f64, f64, f64)]) {
         for &(ts_ms, h, l, c) in candles {
             let ts_h = (ts_ms / 3_600_000) * 3600;
-            let candle = H1Candle { ts_h, high: h, low: l, close: c, bar_count: 60 };
+            let candle = H1Candle {
+                ts_h,
+                high: h,
+                low: l,
+                close: c,
+                bar_count: 60,
+            };
             self.push_h1_complete(candle);
         }
         println!("[mtf] H1 seeded {} candles", candles.len());
@@ -239,16 +272,22 @@ impl MtfShortsState {
         match self.d1_ema20 {
             None => "unknown",
             Some(ema) => {
-                if price > ema * 1.005 { "bull" }
-                else if price < ema * 0.995 { "bear" }
-                else { "neutral" }
+                if price > ema * 1.005 {
+                    "bull"
+                } else if price < ema * 0.995 {
+                    "bear"
+                } else {
+                    "neutral"
+                }
             }
         }
     }
 
     fn h1_atr(&self) -> f64 {
         let n = self.h1_history.len();
-        if n == 0 { return 0.0; }
+        if n == 0 {
+            return 0.0;
+        }
         self.h1_history.iter().map(|c| c.high - c.low).sum::<f64>() / n as f64
     }
 
@@ -269,17 +308,20 @@ impl MtfShortsState {
             };
         } else if bar_h != self.h1_current.ts_h {
             // hora cambió — cerrar la H1 anterior y abrir nueva
-            let completed = std::mem::replace(&mut self.h1_current, H1Candle {
-                ts_h: bar_h,
-                high: ctx.high,
-                low: ctx.low,
-                close: ctx.close,
-                bar_count: 1,
-            });
+            let completed = std::mem::replace(
+                &mut self.h1_current,
+                H1Candle {
+                    ts_h: bar_h,
+                    high: ctx.high,
+                    low: ctx.low,
+                    close: ctx.close,
+                    bar_count: 1,
+                },
+            );
             self.push_h1_complete(completed);
         } else {
             self.h1_current.high = self.h1_current.high.max(ctx.high);
-            self.h1_current.low  = self.h1_current.low.min(ctx.low);
+            self.h1_current.low = self.h1_current.low.min(ctx.low);
             self.h1_current.close = ctx.close;
             self.h1_current.bar_count += 1;
         }
@@ -297,7 +339,9 @@ impl MtfShortsState {
         if let Some(trade) = self.active_trade.take() {
             let result = self.update_active_trade(trade, ctx);
             match result {
-                TradeUpdate::StillOpen(t) => { self.active_trade = Some(t); }
+                TradeUpdate::StillOpen(t) => {
+                    self.active_trade = Some(t);
+                }
                 TradeUpdate::Closed(htf_trade) => {
                     self.cvd_streak = 0;
                     self.obi_streak = 0;
@@ -339,16 +383,22 @@ impl MtfShortsState {
         // ── 5. Stop H1 real (vela H1 que contiene esta barra M1) ─────────────
         // Usamos la H1 en construcción (la hora actual), no la anterior
         let h1_high = self.h1_current.high;
-        let h1_atr  = self.h1_atr();
-        if h1_atr <= 0.0 { return None; }
+        let h1_atr = self.h1_atr();
+        if h1_atr <= 0.0 {
+            return None;
+        }
 
-        let stop_price  = h1_high + 0.3 * h1_atr;
+        let stop_price = h1_high + 0.3 * h1_atr;
         let entry_price = ctx.close;
         let risk = stop_price - entry_price;
-        if risk <= 0.0 { return None; }
+        if risk <= 0.0 {
+            return None;
+        }
 
         let stop_pct = risk / entry_price * 100.0;
-        if stop_pct < MIN_STOP_PCT || stop_pct > MAX_STOP_PCT { return None; }
+        if stop_pct < MIN_STOP_PCT || stop_pct > MAX_STOP_PCT {
+            return None;
+        }
 
         // ── 6. Fee en R (igual que el backtest Python) ────────────────────────
         let fee_r = FEE_RT * entry_price / risk;
@@ -408,48 +458,83 @@ impl MtfShortsState {
         if l <= trade.target {
             let target = trade.target;
             let gross = TARGET_R;
-            return TradeUpdate::Closed(self.close_trade(trade, gross, "TAKE_PROFIT", target, ctx.ts_ms));
+            return TradeUpdate::Closed(self.close_trade(
+                trade,
+                gross,
+                "TAKE_PROFIT",
+                target,
+                ctx.ts_ms,
+            ));
         }
 
         if h >= trade.stop {
             let stop = trade.stop;
-            return TradeUpdate::Closed(self.close_trade(trade, -1.0, "STOP_LOSS", stop, ctx.ts_ms));
+            return TradeUpdate::Closed(self.close_trade(
+                trade,
+                -1.0,
+                "STOP_LOSS",
+                stop,
+                ctx.ts_ms,
+            ));
         }
 
         let cvd_slope = ctx.cvd_slope.unwrap_or(0.0);
-        let obi_fast  = ctx.obi_fast;
-        let curr_r    = (trade.entry - ctx.close) / trade.risk;
+        let obi_fast = ctx.obi_fast;
+        let curr_r = (trade.entry - ctx.close) / trade.risk;
 
-        if cvd_slope > 0.0 { self.cvd_streak += 1; } else { self.cvd_streak = 0; }
-        if obi_fast > OBI_FLIP_THR { self.obi_streak += 1; } else { self.obi_streak = 0; }
+        if cvd_slope > 0.0 {
+            self.cvd_streak += 1;
+        } else {
+            self.cvd_streak = 0;
+        }
+        if obi_fast > OBI_FLIP_THR {
+            self.obi_streak += 1;
+        } else {
+            self.obi_streak = 0;
+        }
 
         if self.cvd_streak >= CVD_FLIP_BARS && self.obi_streak >= 1 && curr_r >= MIN_PROFIT_CVD {
             let exit_px = ctx.close;
-            let gross   = (trade.entry - exit_px) / trade.risk;
-            return TradeUpdate::Closed(self.close_trade(trade, gross, "CVD_EXHAUSTION", exit_px, ctx.ts_ms));
+            let gross = (trade.entry - exit_px) / trade.risk;
+            return TradeUpdate::Closed(self.close_trade(
+                trade,
+                gross,
+                "CVD_EXHAUSTION",
+                exit_px,
+                ctx.ts_ms,
+            ));
         }
 
         if trade.bars_in_trade >= FORWARD_MAX {
             let exit_px = ctx.close;
-            let gross   = (trade.entry - exit_px) / trade.risk;
-            return TradeUpdate::Closed(self.close_trade(trade, gross, "EXPIRED", exit_px, ctx.ts_ms));
+            let gross = (trade.entry - exit_px) / trade.risk;
+            return TradeUpdate::Closed(
+                self.close_trade(trade, gross, "EXPIRED", exit_px, ctx.ts_ms),
+            );
         }
 
         TradeUpdate::StillOpen(trade)
     }
 
-    fn close_trade(&self, trade: ActiveTrade, gross_r: f64, reason: &str, exit_px: f64, exit_ts_ms: i64) -> MtfTrade {
+    fn close_trade(
+        &self,
+        trade: ActiveTrade,
+        gross_r: f64,
+        reason: &str,
+        exit_px: f64,
+        exit_ts_ms: i64,
+    ) -> MtfTrade {
         let net_r = gross_r - trade.fee_r;
         MtfTrade {
-            signal:        trade.signal,
-            result_r:      Some((net_r   * 10000.0).round() / 10000.0),
-            gross_r:       Some((gross_r * 10000.0).round() / 10000.0),
-            fee_r:         Some((trade.fee_r * 10000.0).round() / 10000.0),
-            reason:        Some(reason.to_string()),
-            exit_price:    Some(exit_px),
-            exit_ts_ms:    Some(exit_ts_ms),
+            signal: trade.signal,
+            result_r: Some((net_r * 10000.0).round() / 10000.0),
+            gross_r: Some((gross_r * 10000.0).round() / 10000.0),
+            fee_r: Some((trade.fee_r * 10000.0).round() / 10000.0),
+            reason: Some(reason.to_string()),
+            exit_price: Some(exit_px),
+            exit_ts_ms: Some(exit_ts_ms),
             duration_bars: Some(trade.bars_in_trade),
-            is_open:       false,
+            is_open: false,
         }
     }
 }
@@ -472,48 +557,80 @@ fn detect_signal(symbol: &str, ctx: &MtfBarContext) -> Option<String> {
     }
 
     let is_london = matches!(ctx.session.as_str(), "London" | "LondonNyOverlap");
-    let is_ny     = ctx.session == "NewYork";
-    let is_exp    = ctx.regime == "Expansion";
-    let abs_ask   = ctx.absorption == "Ask";
-    let eq_true   = ctx.equal_high;
-    let oi        = ctx.oi_momentum.unwrap_or(false);
-    let vr        = ctx.vr;
-    let vpin      = ctx.vpin;
-    let obif      = ctx.obi_fast;
+    let is_ny = ctx.session == "NewYork";
+    let is_exp = ctx.regime == "Expansion";
+    let abs_ask = ctx.absorption == "Ask";
+    let eq_true = ctx.equal_high;
+    let oi = ctx.oi_momentum.unwrap_or(false);
+    let vr = ctx.vr;
+    let vpin = ctx.vpin;
+    let obif = ctx.obi_fast;
 
-    let rng     = (ctx.high - ctx.low).max(1e-10);
-    let body    = (ctx.close - ctx.open).abs();
+    let rng = (ctx.high - ctx.low).max(1e-10);
+    let body = (ctx.close - ctx.open).abs();
     let wick_hi = ctx.high - ctx.open.max(ctx.close);
     let is_shoot = (wick_hi / rng) > 0.45 && (body / rng) < 0.40;
 
     match symbol {
         "BTCUSDT" => {
-            if !is_london && !is_ny { return None; }
-            if is_shoot && abs_ask && obif < 0.0 { return Some("btc:shoot+ask+obi".into()); }
-            if is_shoot && is_london              { return Some("btc:shoot+london".into()); }
+            if !is_london && !is_ny {
+                return None;
+            }
+            if is_shoot && abs_ask && obif < 0.0 {
+                return Some("btc:shoot+ask+obi".into());
+            }
+            if is_shoot && is_london {
+                return Some("btc:shoot+london".into());
+            }
         }
         "ETHUSDT" => {
-            if is_ny && oi && eq_true             { return Some("eth:ny+oi+eq".into()); }
-            if abs_ask && is_london && is_exp     { return Some("eth:ask+london+exp".into()); }
-            if abs_ask && vpin > 0.6 && is_ny    { return Some("eth:ask+vpin+ny".into()); }
+            if is_ny && oi && eq_true {
+                return Some("eth:ny+oi+eq".into());
+            }
+            if abs_ask && is_london && is_exp {
+                return Some("eth:ask+london+exp".into());
+            }
+            if abs_ask && vpin > 0.6 && is_ny {
+                return Some("eth:ask+vpin+ny".into());
+            }
         }
         "SOLUSDT" => {
-            if is_ny && vr > 4.0 && oi            { return Some("sol:ny+vr4+oi".into()); }
-            if is_ny && vr > 4.0 && eq_true       { return Some("sol:ny+vr4+eq".into()); }
-            if eq_true && is_london && is_exp     { return Some("sol:eq+london+exp".into()); }
+            if is_ny && vr > 4.0 && oi {
+                return Some("sol:ny+vr4+oi".into());
+            }
+            if is_ny && vr > 4.0 && eq_true {
+                return Some("sol:ny+vr4+eq".into());
+            }
+            if eq_true && is_london && is_exp {
+                return Some("sol:eq+london+exp".into());
+            }
         }
         // BNB: solo NY — London WR=30-42% en todos los patrones (calibrado 2026-06-14)
         "BNBUSDT" => {
-            if !is_ny { return None; }
-            if eq_true && oi                       { return Some("bnb:eq+ny+oi".into()); }
-            if oi                                  { return Some("bnb:oi+ny".into()); }
+            if !is_ny {
+                return None;
+            }
+            if eq_true && oi {
+                return Some("bnb:eq+ny+oi".into());
+            }
+            if oi {
+                return Some("bnb:oi+ny".into());
+            }
         }
         // XRP: solo NY — London WR=26-39% en todos los patrones (calibrado 2026-06-14)
         "XRPUSDT" => {
-            if !is_ny { return None; }
-            if eq_true && oi                       { return Some("xrp:eq+ny+oi".into()); }
-            if abs_ask                             { return Some("xrp:ask+ny".into()); }
-            if oi                                  { return Some("xrp:oi+ny".into()); }
+            if !is_ny {
+                return None;
+            }
+            if eq_true && oi {
+                return Some("xrp:eq+ny+oi".into());
+            }
+            if abs_ask {
+                return Some("xrp:ask+ny".into());
+            }
+            if oi {
+                return Some("xrp:oi+ny".into());
+            }
         }
         _ => {}
     }

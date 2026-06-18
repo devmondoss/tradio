@@ -13,9 +13,9 @@
 //!   BNB: 1 patrón (hammer+dz_buy n=20, WR=55%)
 //!   BTC: sin edge suficiente (n<10 en todos los candidatos)
 
+use super::mtf_shorts_detector::{H1Candle, MtfBarContext};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use super::mtf_shorts_detector::{MtfBarContext, H1Candle};
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ pub struct MtfLongsState {
     // H4 EMA20 — seeded al arrancar desde Binance H4 REST
     h4_ema20: Option<f64>,
     h4_closes: VecDeque<f64>,
-    h4_last_bucket: i64,   // ts_ms / (4*3_600_000)
+    h4_last_bucket: i64, // ts_ms / (4*3_600_000)
     h4_high: f64,
     h4_low: f64,
     h4_close: f64,
@@ -119,26 +119,53 @@ impl MtfLongsState {
     /// Restaura un trade Long abierto desde Supabase después de un redeploy.
     pub fn restore_active_trade(
         &mut self,
-        entry: f64, stop: f64, target: f64,
-        ts_ms: i64, sig: String, session: String, h4_trend: String,
-        stop_pct: f64, obi_entry: f64, cvd_slope_entry: Option<f64>,
-        dz_score: f64, stacked_imb: String, equal_low: bool,
+        entry: f64,
+        stop: f64,
+        target: f64,
+        ts_ms: i64,
+        sig: String,
+        session: String,
+        h4_trend: String,
+        stop_pct: f64,
+        obi_entry: f64,
+        cvd_slope_entry: Option<f64>,
+        dz_score: f64,
+        stacked_imb: String,
+        equal_low: bool,
     ) {
-        let risk  = entry - stop;
+        let risk = entry - stop;
         let fee_r = 0.0007 * entry / risk;
         let signal = MtfLongSignal {
-            symbol: self.symbol.clone(), ts_ms, sig, entry, stop, target,
-            stop_pct, session, h4_trend, obi_entry, cvd_slope_entry,
-            dz_score, stacked_imb, equal_low,
+            symbol: self.symbol.clone(),
+            ts_ms,
+            sig,
+            entry,
+            stop,
+            target,
+            stop_pct,
+            session,
+            h4_trend,
+            obi_entry,
+            cvd_slope_entry,
+            dz_score,
+            stacked_imb,
+            equal_low,
         };
         self.active_trade = Some(ActiveTrade {
-            entry, stop, risk, target, fee_r, signal,
+            entry,
+            stop,
+            risk,
+            target,
+            fee_r,
+            signal,
             bars_in_trade: 0,
         });
         self.last_sig_bar = self.bar_count;
     }
 
-    pub fn has_active_trade(&self) -> bool { self.active_trade.is_some() }
+    pub fn has_active_trade(&self) -> bool {
+        self.active_trade.is_some()
+    }
 
     /// ts_ms de entrada del trade activo — para filtrar barras de warmup anteriores a la entrada.
     pub fn active_entry_ms(&self) -> Option<i64> {
@@ -164,7 +191,13 @@ impl MtfLongsState {
     pub fn seed_h1(&mut self, candles: &[(i64, f64, f64, f64)]) {
         for &(ts_ms, h, l, c) in candles {
             let ts_h = (ts_ms / 3_600_000) * 3600;
-            let candle = H1Candle { ts_h, high: h, low: l, close: c, bar_count: 60 };
+            let candle = H1Candle {
+                ts_h,
+                high: h,
+                low: l,
+                close: c,
+                bar_count: 60,
+            };
             self.push_h1_complete(candle);
         }
         println!("[mtf_long] H1 seeded {} candles", candles.len());
@@ -196,16 +229,22 @@ impl MtfLongsState {
         match self.h4_ema20 {
             None => "unknown",
             Some(ema) => {
-                if price > ema * 1.005 { "bull" }
-                else if price < ema * 0.995 { "bear" }
-                else { "neutral" }
+                if price > ema * 1.005 {
+                    "bull"
+                } else if price < ema * 0.995 {
+                    "bear"
+                } else {
+                    "neutral"
+                }
             }
         }
     }
 
     fn h1_atr(&self) -> f64 {
         let n = self.h1_history.len();
-        if n == 0 { return 0.0; }
+        if n == 0 {
+            return 0.0;
+        }
         self.h1_history.iter().map(|c| c.high - c.low).sum::<f64>() / n as f64
     }
 
@@ -216,18 +255,22 @@ impl MtfLongsState {
         let bucket = ctx.ts_ms / (4 * 3_600_000);
         if self.h4_last_bucket == -1 {
             self.h4_last_bucket = bucket;
-            self.h4_high  = ctx.high;
-            self.h4_low   = ctx.low;
+            self.h4_high = ctx.high;
+            self.h4_low = ctx.low;
             self.h4_close = ctx.close;
         } else if bucket != self.h4_last_bucket {
             self.push_h4_close(self.h4_close);
             self.h4_last_bucket = bucket;
-            self.h4_high  = ctx.high;
-            self.h4_low   = ctx.low;
+            self.h4_high = ctx.high;
+            self.h4_low = ctx.low;
             self.h4_close = ctx.close;
         } else {
-            if ctx.high > self.h4_high { self.h4_high = ctx.high; }
-            if ctx.low  < self.h4_low  { self.h4_low  = ctx.low;  }
+            if ctx.high > self.h4_high {
+                self.h4_high = ctx.high;
+            }
+            if ctx.low < self.h4_low {
+                self.h4_low = ctx.low;
+            }
             self.h4_close = ctx.close;
         }
 
@@ -235,18 +278,27 @@ impl MtfLongsState {
         let bar_h = ctx.ts_ms / 3_600_000;
         if self.h1_current.ts_h == 0 {
             self.h1_current = H1Candle {
-                ts_h: bar_h, high: ctx.high, low: ctx.low,
-                close: ctx.close, bar_count: 1,
+                ts_h: bar_h,
+                high: ctx.high,
+                low: ctx.low,
+                close: ctx.close,
+                bar_count: 1,
             };
         } else if bar_h != self.h1_current.ts_h {
-            let completed = std::mem::replace(&mut self.h1_current, H1Candle {
-                ts_h: bar_h, high: ctx.high, low: ctx.low,
-                close: ctx.close, bar_count: 1,
-            });
+            let completed = std::mem::replace(
+                &mut self.h1_current,
+                H1Candle {
+                    ts_h: bar_h,
+                    high: ctx.high,
+                    low: ctx.low,
+                    close: ctx.close,
+                    bar_count: 1,
+                },
+            );
             self.push_h1_complete(completed);
         } else {
-            self.h1_current.high  = self.h1_current.high.max(ctx.high);
-            self.h1_current.low   = self.h1_current.low.min(ctx.low);
+            self.h1_current.high = self.h1_current.high.max(ctx.high);
+            self.h1_current.low = self.h1_current.low.min(ctx.low);
             self.h1_current.close = ctx.close;
             self.h1_current.bar_count += 1;
         }
@@ -255,7 +307,9 @@ impl MtfLongsState {
         if let Some(trade) = self.active_trade.take() {
             let result = self.update_active_trade(trade, ctx);
             match result {
-                TradeUpdate::StillOpen(t) => { self.active_trade = Some(t); }
+                TradeUpdate::StillOpen(t) => {
+                    self.active_trade = Some(t);
+                }
                 TradeUpdate::Closed(t) => {
                     self.cvd_streak = 0;
                     self.obi_streak = 0;
@@ -281,15 +335,21 @@ impl MtfLongsState {
         // ── 5. Stop = H1_low - 0.3×ATR ───────────────────────────────────────
         let h1_low = self.h1_current.low;
         let h1_atr = self.h1_atr();
-        if h1_atr <= 0.0 { return None; }
+        if h1_atr <= 0.0 {
+            return None;
+        }
 
-        let stop_price  = h1_low - 0.3 * h1_atr;
+        let stop_price = h1_low - 0.3 * h1_atr;
         let entry_price = ctx.close;
         let risk = entry_price - stop_price;
-        if risk <= 0.0 { return None; }
+        if risk <= 0.0 {
+            return None;
+        }
 
         let stop_pct = risk / entry_price * 100.0;
-        if stop_pct < MIN_STOP_PCT || stop_pct > MAX_STOP_PCT { return None; }
+        if stop_pct < MIN_STOP_PCT || stop_pct > MAX_STOP_PCT {
+            return None;
+        }
 
         let fee_r = FEE_RT * entry_price / risk;
 
@@ -348,48 +408,83 @@ impl MtfLongsState {
         // Long: TP si el precio sube al target, SL si baja al stop
         if h >= trade.target {
             let target = trade.target;
-            return TradeUpdate::Closed(self.close_trade(trade, TARGET_R, "TAKE_PROFIT", target, ctx.ts_ms));
+            return TradeUpdate::Closed(self.close_trade(
+                trade,
+                TARGET_R,
+                "TAKE_PROFIT",
+                target,
+                ctx.ts_ms,
+            ));
         }
         if l <= trade.stop {
             let stop = trade.stop;
-            return TradeUpdate::Closed(self.close_trade(trade, -1.0, "STOP_LOSS", stop, ctx.ts_ms));
+            return TradeUpdate::Closed(self.close_trade(
+                trade,
+                -1.0,
+                "STOP_LOSS",
+                stop,
+                ctx.ts_ms,
+            ));
         }
 
         let cvd_slope = ctx.cvd_slope.unwrap_or(0.0);
-        let obi_fast  = ctx.obi_fast;
-        let curr_r    = (ctx.close - trade.entry) / trade.risk;
+        let obi_fast = ctx.obi_fast;
+        let curr_r = (ctx.close - trade.entry) / trade.risk;
 
         // CVD exit para longs: sellers retomando (CVD negativo, OBI negativo)
-        if cvd_slope < 0.0 { self.cvd_streak += 1; } else { self.cvd_streak = 0; }
-        if obi_fast < -OBI_FLIP_THR { self.obi_streak += 1; } else { self.obi_streak = 0; }
+        if cvd_slope < 0.0 {
+            self.cvd_streak += 1;
+        } else {
+            self.cvd_streak = 0;
+        }
+        if obi_fast < -OBI_FLIP_THR {
+            self.obi_streak += 1;
+        } else {
+            self.obi_streak = 0;
+        }
 
         if self.cvd_streak >= CVD_FLIP_BARS && self.obi_streak >= 1 && curr_r >= MIN_PROFIT_CVD {
             let exit_px = ctx.close;
-            let gross   = (exit_px - trade.entry) / trade.risk;
-            return TradeUpdate::Closed(self.close_trade(trade, gross, "CVD_EXHAUSTION", exit_px, ctx.ts_ms));
+            let gross = (exit_px - trade.entry) / trade.risk;
+            return TradeUpdate::Closed(self.close_trade(
+                trade,
+                gross,
+                "CVD_EXHAUSTION",
+                exit_px,
+                ctx.ts_ms,
+            ));
         }
 
         if trade.bars_in_trade >= FORWARD_MAX {
             let exit_px = ctx.close;
-            let gross   = (exit_px - trade.entry) / trade.risk;
-            return TradeUpdate::Closed(self.close_trade(trade, gross, "EXPIRED", exit_px, ctx.ts_ms));
+            let gross = (exit_px - trade.entry) / trade.risk;
+            return TradeUpdate::Closed(
+                self.close_trade(trade, gross, "EXPIRED", exit_px, ctx.ts_ms),
+            );
         }
 
         TradeUpdate::StillOpen(trade)
     }
 
-    fn close_trade(&self, trade: ActiveTrade, gross_r: f64, reason: &str, exit_px: f64, exit_ts_ms: i64) -> MtfLongTrade {
+    fn close_trade(
+        &self,
+        trade: ActiveTrade,
+        gross_r: f64,
+        reason: &str,
+        exit_px: f64,
+        exit_ts_ms: i64,
+    ) -> MtfLongTrade {
         let net_r = gross_r - trade.fee_r;
         MtfLongTrade {
-            signal:        trade.signal,
-            result_r:      Some((net_r   * 10000.0).round() / 10000.0),
-            gross_r:       Some((gross_r * 10000.0).round() / 10000.0),
-            fee_r:         Some((trade.fee_r * 10000.0).round() / 10000.0),
-            reason:        Some(reason.to_string()),
-            exit_price:    Some(exit_px),
-            exit_ts_ms:    Some(exit_ts_ms),
+            signal: trade.signal,
+            result_r: Some((net_r * 10000.0).round() / 10000.0),
+            gross_r: Some((gross_r * 10000.0).round() / 10000.0),
+            fee_r: Some((trade.fee_r * 10000.0).round() / 10000.0),
+            reason: Some(reason.to_string()),
+            exit_price: Some(exit_px),
+            exit_ts_ms: Some(exit_ts_ms),
             duration_bars: Some(trade.bars_in_trade),
-            is_open:       false,
+            is_open: false,
         }
     }
 }
@@ -407,62 +502,114 @@ fn detect_signal_long(symbol: &str, ctx: &MtfBarContext) -> Option<String> {
     }
 
     let is_london = matches!(ctx.session.as_str(), "London" | "LondonNyOverlap");
-    let is_ny     = ctx.session == "NewYork";
-    let is_exp    = ctx.regime == "Expansion";
-    let oi        = ctx.oi_momentum.unwrap_or(false);
-    let eq_low    = ctx.equal_low;
-    let obi       = ctx.obi_l5;
-    let dz        = ctx.dz;
-    let stk_bull  = ctx.stacked_imb == "Bullish";
-    let obi_pos   = obi > 0.2;
-    let dz_buy    = dz > 0.5;
-    let vr        = ctx.vr;
+    let is_ny = ctx.session == "NewYork";
+    let is_exp = ctx.regime == "Expansion";
+    let oi = ctx.oi_momentum.unwrap_or(false);
+    let eq_low = ctx.equal_low;
+    let obi = ctx.obi_l5;
+    let dz = ctx.dz;
+    let stk_bull = ctx.stacked_imb == "Bullish";
+    let obi_pos = obi > 0.2;
+    let dz_buy = dz > 0.5;
+    let vr = ctx.vr;
 
     let above_vwap = ctx.vwap_session.map_or(false, |v| v > 0.0 && ctx.close > v);
 
-    let rng     = (ctx.high - ctx.low).max(1e-10);
-    let body    = (ctx.close - ctx.open).abs();
+    let rng = (ctx.high - ctx.low).max(1e-10);
+    let body = (ctx.close - ctx.open).abs();
     let wick_lo = ctx.open.min(ctx.close) - ctx.low;
     let is_hammer = (wick_lo / rng) > 0.45 && (body / rng) < 0.40;
 
     match symbol {
         // ETH: mineado v2 2026-06-14 — London + NY con edge WR≥55%
         "ETHUSDT" => {
-            if stk_bull && is_london                { return Some("eth:stacked_bull+london".into()); }
-            if stk_bull && is_ny                    { return Some("eth:stacked_bull+ny".into()); }
-            if is_hammer && dz_buy                  { return Some("eth:hammer+dz_buy".into()); }
-            if is_hammer && is_ny                   { return Some("eth:hammer+ny".into()); }
-            if eq_low && is_london && is_exp        { return Some("eth:eq_low+london+exp".into()); }
-            if oi && is_ny                          { return Some("eth:oi+ny".into()); }
+            if stk_bull && is_london {
+                return Some("eth:stacked_bull+london".into());
+            }
+            if stk_bull && is_ny {
+                return Some("eth:stacked_bull+ny".into());
+            }
+            if is_hammer && dz_buy {
+                return Some("eth:hammer+dz_buy".into());
+            }
+            if is_hammer && is_ny {
+                return Some("eth:hammer+ny".into());
+            }
+            if eq_low && is_london && is_exp {
+                return Some("eth:eq_low+london+exp".into());
+            }
+            if oi && is_ny {
+                return Some("eth:oi+ny".into());
+            }
         }
         // SOL: London domina, VWAP-centric subsets primero (más específicos)
         "SOLUSDT" => {
-            if above_vwap && stk_bull && is_london  { return Some("sol:above_vwap+stk+london".into()); }
-            if above_vwap && stk_bull && oi         { return Some("sol:above_vwap+stk+oi".into()); }
-            if above_vwap && oi && is_ny            { return Some("sol:above_vwap+oi+ny".into()); }
-            if vr > 3.0 && is_london               { return Some("sol:vr_high+london".into()); }
-            if is_hammer && dz_buy                  { return Some("sol:hammer+dz_buy".into()); }
-            if is_hammer && is_london               { return Some("sol:hammer+london".into()); }
-            if stk_bull && is_london                { return Some("sol:stacked_bull+london".into()); }
-            if is_hammer && obi_pos                 { return Some("sol:hammer+obi_pos".into()); }
-            if oi && is_london                      { return Some("sol:oi+london".into()); }
-            if eq_low && is_london && is_exp        { return Some("sol:eq_low+london+exp".into()); }
-            if eq_low && is_london                  { return Some("sol:eq_low+london".into()); }
-            if stk_bull && is_ny                    { return Some("sol:stacked_bull+ny".into()); }
-            if is_hammer && is_ny                   { return Some("sol:hammer+ny".into()); }
-            if oi && is_ny                          { return Some("sol:oi+ny".into()); }
+            if above_vwap && stk_bull && is_london {
+                return Some("sol:above_vwap+stk+london".into());
+            }
+            if above_vwap && stk_bull && oi {
+                return Some("sol:above_vwap+stk+oi".into());
+            }
+            if above_vwap && oi && is_ny {
+                return Some("sol:above_vwap+oi+ny".into());
+            }
+            if vr > 3.0 && is_london {
+                return Some("sol:vr_high+london".into());
+            }
+            if is_hammer && dz_buy {
+                return Some("sol:hammer+dz_buy".into());
+            }
+            if is_hammer && is_london {
+                return Some("sol:hammer+london".into());
+            }
+            if stk_bull && is_london {
+                return Some("sol:stacked_bull+london".into());
+            }
+            if is_hammer && obi_pos {
+                return Some("sol:hammer+obi_pos".into());
+            }
+            if oi && is_london {
+                return Some("sol:oi+london".into());
+            }
+            if eq_low && is_london && is_exp {
+                return Some("sol:eq_low+london+exp".into());
+            }
+            if eq_low && is_london {
+                return Some("sol:eq_low+london".into());
+            }
+            if stk_bull && is_ny {
+                return Some("sol:stacked_bull+ny".into());
+            }
+            if is_hammer && is_ny {
+                return Some("sol:hammer+ny".into());
+            }
+            if oi && is_ny {
+                return Some("sol:oi+ny".into());
+            }
         }
         // XRP: patrones mineados 2026-06-14 — NY domina (n≥13, WR≥56%)
         "XRPUSDT" => {
-            if is_hammer && dz_buy && is_ny         { return Some("xrp:hammer+dz_buy".into()); }
-            if is_hammer && obi_pos && is_ny        { return Some("xrp:hammer+obi_pos".into()); }
-            if is_hammer && stk_bull && is_ny       { return Some("xrp:hammer+stacked".into()); }
-            if is_hammer && is_ny                   { return Some("xrp:hammer+ny".into()); }
-            if stk_bull && is_ny                    { return Some("xrp:stacked_bull+ny".into()); }
+            if is_hammer && dz_buy && is_ny {
+                return Some("xrp:hammer+dz_buy".into());
+            }
+            if is_hammer && obi_pos && is_ny {
+                return Some("xrp:hammer+obi_pos".into());
+            }
+            if is_hammer && stk_bull && is_ny {
+                return Some("xrp:hammer+stacked".into());
+            }
+            if is_hammer && is_ny {
+                return Some("xrp:hammer+ny".into());
+            }
+            if stk_bull && is_ny {
+                return Some("xrp:stacked_bull+ny".into());
+            }
         }
         // BNB: un patrón NY con edge claro (mineado 2026-06-14)
         "BNBUSDT" => {
-            if is_hammer && dz_buy && is_ny         { return Some("bnb:hammer+dz_buy".into()); }
+            if is_hammer && dz_buy && is_ny {
+                return Some("bnb:hammer+dz_buy".into());
+            }
         }
         // BTC: sin edge en longs con n suficiente (mineado 2026-06-14)
         _ => {}

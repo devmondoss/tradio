@@ -14,9 +14,12 @@
 //!   PAPER_INITIAL_CAPITAL, PAPER_LEVERAGE, PAPER_MAX_POSITIONS,
 //!   PAPER_RISK_PCT, PAPER_SLIPPAGE_BPS, PAPER_TAKER_FEE, PAPER_FUNDING_RATE
 
+mod bybit_order;
 mod exchange_config;
 mod intrabar;
+mod live_executor;
 mod monitor_config;
+mod slack_alert;
 mod supabase_writer;
 mod ws_server;
 
@@ -739,6 +742,10 @@ struct BarState {
     // HTF Longs detector — H4 EMA20 + H1 low-stop + patrones London/NY alcistas
     mtf_longs_state: data::strategy::detectors::mtf_longs_detector::MtfLongsState,
     mtf_spot_state: data::strategy::detectors::mtf_spot_detector::MtfSpotState,
+    // Live order executor — Some when MONITOR_PROFILE=mtf_spot_live and BYBIT_API_KEY is set.
+    live_account: Option<live_executor::LiveAccount>,
+    // Timestamp of last reconciliation check (ms).
+    last_reconcile_ms: i64,
     // Runtime profile — separates futures MTF, spot MTF, and future venue profiles.
     runtime_cfg: MonitorRuntimeConfig,
     futures_market: bool,
@@ -873,6 +880,12 @@ impl BarState {
                 symbol,
             ),
             mtf_spot_state: data::strategy::detectors::mtf_spot_detector::MtfSpotState::new(symbol),
+            live_account: if runtime_cfg.live_mode {
+                live_executor::LiveConfig::from_env().map(live_executor::LiveAccount::new)
+            } else {
+                None
+            },
+            last_reconcile_ms: 0,
             runtime_cfg,
             futures_market,
             ws_tx,
@@ -2126,6 +2139,11 @@ impl BarState {
                 weekly_high: None,
                 weekly_low: None,
             };
+            // Tick live account bar counter before detector runs
+            if let Some(ref mut live) = self.live_account {
+                live.tick_bar();
+            }
+
             if let Some(event) = self.mtf_spot_state.on_bar_close(
                 &spot_ctx,
                 self.runtime_cfg.mtf_spot_shorts,
@@ -2149,7 +2167,27 @@ impl BarState {
                         event.signal.session,
                         event.signal.level
                     );
+                    // Live execution: place real order on Bybit
+                    if let Some(ref mut live) = self.live_account {
+                        if live.is_halted() {
+                            eprintln!("[live] kill switch active — skipping signal");
+                        } else {
+                            let signal = event.signal.clone();
+                            match live.open_position(&signal).await {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    let sym = signal.symbol.clone();
+                                    let err_str = e.to_string();
+                                    eprintln!("[live] OPEN FAILED: {err_str}");
+                                    tokio::spawn(async move {
+                                        crate::slack_alert::order_error(&sym, "open", &err_str).await;
+                                    });
+                                }
+                            }
+                        }
+                    }
                 } else {
+                    let reason = event.reason.as_deref().unwrap_or("?");
                     println!(
                         "[mtf_spot] CLOSED {} {} sig={} net={:+.4}R gross={:+.4}R fee={:.4}R reason={} dur={}bars",
                         symbol,
@@ -2158,9 +2196,27 @@ impl BarState {
                         event.result_r.unwrap_or(0.0),
                         event.gross_r.unwrap_or(0.0),
                         event.fee_r.unwrap_or(0.0),
-                        event.reason.as_deref().unwrap_or("?"),
+                        reason,
                         event.duration_bars.unwrap_or(0)
                     );
+                    // Live: detector closed the trade (CVD exit or TTL) — force close real position
+                    let needs_live_close = matches!(reason, "CVD_EXIT" | "TTL_EXPIRED");
+                    if needs_live_close {
+                        if let Some(ref mut live) = self.live_account {
+                            if live.has_active() {
+                                live.close_position(reason, spot_ctx.close).await;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Periodic reconciliation: check if Bybit TP/SL already triggered
+            let now = bar_ms;
+            if self.live_account.is_some() && now - self.last_reconcile_ms > 30_000 {
+                self.last_reconcile_ms = now;
+                if let Some(ref mut live) = self.live_account {
+                    live.reconcile().await;
                 }
             }
         }

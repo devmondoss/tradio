@@ -1,5 +1,8 @@
 # MTF Spot Longs - Spec BTC SPOT v1
 
+> Sizing: ver `docs/mtf/MTF_SPOT_SIZING_AUDIT.md` (2026-06-18). El score sizing
+> es apalancamiento, no edge — escala activa `[1,1,1,1,1.5]` (boost solo sc4).
+
 Documento vivo para BTCUSDT Bybit Spot. Longs v1 nace como el espejo operativo de Shorts, pero no se debe asumir simetria perfecta: los niveles, sesiones y comportamiento de flujo se validan por backtest.
 
 Creado: 2026-06-17

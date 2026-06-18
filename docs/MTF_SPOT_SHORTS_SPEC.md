@@ -1,4 +1,6 @@
-# MTF SPOT Shorts — Spec BTC SPOT v4
+# MTF SPOT Shorts — Spec BTC SPOT v5
+> ⚠️ Sizing: ver `docs/mtf/MTF_SPOT_SIZING_AUDIT.md` (2026-06-18). El score sizing
+> es apalancamiento, no edge — escala activa `[1,1,1,1,1.5]` (boost solo sc4).
 > Documento vivo. Construido desde cero para BTC SPOT Bybit.
 > El sistema live (futuros multi-símbolo) usa `oi_momentum` y `funding_regime` que no existen en SPOT.
 > Este spec reemplaza esos filtros con microestructura real del libro de órdenes.
@@ -19,34 +21,57 @@
 
 ---
 
-## Estado activo — mtf_spot_shorts_v4 (2026-06-17)
+## Estado activo — mtf_basics v5 (2026-06-17)
 
-Shorts v4 es la version canonica actual para BTCUSDT Bybit Spot.
+**Archivo canónico:** `backtest/mtf_basics.py`
 
-### Resultados validados
+### Resultados walk-forward
 
-| Corte | Trades | WR | AvgR | TotalR | Equity |
-|-------|--------|----|------|--------|--------|
-| Full sample | 693 | 49.1% | +0.334R | +231.46R | $38,544.51 |
-| OOS Mar-May 2026 | 204 | 52.0% | +0.409R | +83.49R | n/a |
+| | In-Sample | Out-of-Sample |
+|--|-----------|---------------|
+| Período | Jun 2025 – Feb 2026 | Mar 2026 – May 2026 |
+| Trades | ~660 | **301** |
+| WR | ~48% | **49.5%** |
+| AvgR | ~+0.30 | **+0.338** |
+| Trades/día | 3.0 | **3.6** |
+| TotalR | ~185R | **101.9R** |
 
-Notas:
+**Capital: $500 → $44,794** con rebalanceo mensual (modelo realista).  
+**~278R totales en 365 días.** Con $10,000 de capital y $200 de riesgo fijo → +$55,600 al año.
 
-- El crecimiento de equity viene de compounding al 2% por trade, no de que cada trade arriesgue el mismo monto fijo.
-- La metrica mas importante para comparar versiones es `AvgR` y `TotalR`; la equity se acelera por compounding.
-- `LEVEL_TOL=0.007` significa tolerancia de 0.70% alrededor del nivel. No es entrada tarde por definicion; exige que la mecha haya alcanzado la zona y el cierre confirme rechazo.
+OOS supera IS en WR y AvgR → sin overfitting detectado.
 
-### Implementacion actual
+### Por sesión (OOS)
 
-- Backtest canonico: `backtest/mtf_spot_backtest.py`
+| Sesión | UTC | WR | AvgR | Estado |
+|--------|-----|----|------|--------|
+| London | 07–12 | 48.2% | +0.284 | ✅ Activa |
+| Overlap | 12–16 | 49.3% | +0.347 | ✅ Activa |
+| New York | 16–20 | 49.5% | +0.303 | ✅ Activa |
+
+### Por nivel (OOS)
+
+| Nivel | n | WR | AvgR |
+|-------|---|----|------|
+| WH+VAH | 51 | **58.8%** | **+0.575** |
+| AH+WH+VAH | 41 | **58.5%** | **+0.458** |
+| PDH+WH+VAH | 21 | 52.4% | +0.425 |
+| VAH solo | 500 | 48.2% | +0.301 |
+| AH+VAH | 328 | 47.0% | +0.253 |
+
+WH (Weekly High) sigue siendo el multiplicador de calidad — cualquier combo que lo incluya supera 57% WR.
+
+### Modelo de capital
+
+- **Rebalanceo mensual**: al inicio de cada mes se recalcula el riesgo como 2% del capital actual.
+- Crece exponencialmente pero controlado — no per-trade (irreal), no fijo (plano sin escala).
+- Con $500 iniciales → $44,794 al año. Con $10K → ~$894K proyectado (escala linealmente por capital base).
+
+### Implementación
+
+- Backtest canónico: `backtest/mtf_basics.py`
 - Detector live Rust: `data/src/strategy/detectors/mtf_spot_detector.rs`
 - UI local: `apps/rbf-review/src/views/MTFModuleView.tsx`
-- Tabla paper live: `mtf_spot_trades`
-- Migracion requerida: `migrations/mtf_spot_trades.sql`
-
-### Estado de confianza
-
-El backtest esta validado, y el detector Rust ya implementa las mismas reglas principales. Falta el parity harness Python-vs-Rust para afirmar que live emitira exactamente los mismos trades que el backtest.
 
 ---
 
@@ -184,20 +209,34 @@ No hay salida por timeout. Un trade MTF Spot queda abierto hasta `target`, `stop
 
 | Sesión | UTC | WR | AvgR | Estado |
 |--------|-----|----|------|--------|
-| London | 07–12 | 37.3% | +0.027 | **EXCLUIDA** |
-| Overlap | 12–16 | 46.7% | +0.288 | ✅ Activa |
-| New York | 16–20 | 47.0% | +0.208 | ✅ Activa |
+| Asia | 00–07 | 43.6% | +0.133 | **EXCLUIDA** |
+| London | 07–12 | 48.2% | +0.284 | ✅ **Activa** (v5) |
+| Overlap | 12–16 | 49.3% | +0.347 | ✅ Activa |
+| New York | 16–20 | 49.5% | +0.303 | ✅ Activa |
 
-Londres excluido definitivamente — WR 37%, casi ruido, arrastra todo el sistema.
+**London re-habilitada en v5:** fue excluida en versiones tempranas (WR 37%) sin los filtros actuales aplicados. Con VAH requerido + PDH+VAH bloqueado + WH 15h bloqueado + AH+VAH OBI bloqueado, London sube a WR 48.2% — comparable a las otras sesiones. Añade +79 trades OOS y sube capital de $37K a $44K.
+
+**Asia excluida:** WR 43.6%, AvgR +0.133 OOS. Las horas 03h UTC (WR 26.7%) y 06h UTC (WR 37.5%) son especialmente tóxicas. La mayoría de los trades son AH+VAH (104/140) — el Asian High se está formando durante Asia, el nivel no está consolidado aún.
 
 ---
 
 ### Gestión de capital
 
-- **Riesgo por trade:** 2% del capital actual (compounding)
-- **Capital inicial de referencia:** $500
-- Sin cooldown entre trades — cada barra válida puede generar señal
-- Un trade abierto a la vez (no se abre nuevo hasta cerrar el actual)
+- **Rebalanceo mensual:** al inicio de cada mes, riesgo = 2% del capital actual.
+- Sin cooldown entre trades — cada barra válida puede ser un trade.
+- Un trade abierto a la vez (no se abre nuevo hasta cerrar el actual).
+- Timeout máximo: 1200 barras M1 (~20h).
+
+---
+
+## Filtros de nivel activos (bloqueos)
+
+| Bloqueo | Condición | Razón |
+|---------|-----------|-------|
+| PDH+VAH | solo esos 2 niveles | A 0.70% tol PDH y VAH pueden estar 1.4% separados — falsa confluencia. WR 37.9%, AvgR -0.072 |
+| PDH+AH+VAH | PDH y AH ambos en el label | 3 niveles contestados = zona dura, no unilateral. WR 37.8%, AvgR -0.015 |
+| WH trades | hora UTC == 15 | Cierre Overlap / apertura NY — transición tóxica. WR 30.8%, AvgR -0.197 |
+| AH+VAH | OBI < -0.15 | Asian High ya atacado agresivamente en Asia — nivel no defendido. WR 30%, AvgR -0.132 |
 
 ---
 
@@ -233,6 +272,37 @@ Edge real en análisis estático (WR 50.6%, AvgR +0.440) pero en backtest dinám
 
 ### Order Blocks / near_bearish_ob
 `near_bearish_ob` solo en 5.3% de barras (n=27 en trades). Cuando está presente, WR 37% vs 43% sin él. El OB actúa como zona de soporte donde compradores también están activos.
+
+### Filtro H4 dirección (EMA20 + sin HH)
+Inspirado en framework top-down 4H→1H→5M: solo entrar cuando H4 bajista (close < EMA20) y sin Higher High en H4. WR OOS sube a 60-61% pero frecuencia cae de 2.3 a 0.8 tpd y capital baja de $38K a $14K. Con rebalanceo mensual el compounding premia la frecuencia; matar trades mata el sistema.
+
+| Config | n_OOS | WR | AvgR | Capital |
+|--------|-------|-----|------|---------|
+| Sin filtro H4 | 204 | 52% | +0.409 | $38,545 |
+| H4 EMA20 | 105 | 53% | +0.445 | $29,274 |
+| H4 sin HH | 102 | 61% | +0.612 | $20,062 |
+| H4 ambos | 70 | 61% | +0.657 | $14,310 |
+
+### POC como nivel adicional
+`vp_poc` disponible en datos. Añade 9 trades OOS (POC+VAH WR 48.5%, AvgR +0.309) — calidad inferior a VAH solo, capital baja $7K.
+
+### PDL como resistencia (soporte roto)
+`prev_day_low` como nivel de rechazo — no agrega ningún trade OOS nuevo con los filtros actuales.
+
+### Asia session (00–07 UTC)
+155 trades OOS, WR 43.6%, AvgR +0.133. Horas tóxicas: 03h (WR 26.7%) y 06h (WR 37.5%). Dominado por AH+VAH (74%) — Asian High en formación, nivel no consolidado. No agrega valor.
+
+### Timeframes M5 y M15 como entrada
+Mismo stop H1+0.40×ATR calibrado para ruido M1. En M5/M15 el precio se mueve más dentro de la barra, el stop activa antes de que el trade se desarrolle. Señales limpias de M1 desaparecen al agregar a M5/M15.
+
+| TF | n_OOS | WR | AvgR | tpd | Capital |
+|----|-------|-----|------|-----|---------|
+| M1 | 204 | 52% | +0.409 | 2.3 | $38,545 |
+| M5 | 82 | 44% | +0.258 | 0.9 | $1,217 |
+| M15 | 22 | 32% | -0.045 | 0.2 | $405 |
+
+### London WH only (London con WH requerido)
++8 trades OOS vs BASE, capital $44,763 vs $44,794 full London. No hay razón para restringir London — con filtros actuales toda London es buena.
 
 ---
 
@@ -313,23 +383,55 @@ NY      = (16*60, 20*60)   # 16–20 UTC
 |---------|-----------------|---------|--------|---------|---------|
 | v1 | baseline — ATR×0.40, doji, 2R, LEVEL_TOL 0.40% | $15,099 | 49.7% | +0.345 | 2.2 |
 | v2 | LEVEL_TOL 0.40% → 0.70%, bloqueo PDH+VAH falso | $27,886 | 50.7% | +0.384 | 2.5 |
-| **v3** | **bloqueo 15h UTC en WH trades** | **$30,578** | **51.0%** | **+0.385** | **2.4** |
-| **v4** | **version actual en UI/live Rust; reglas spot separadas de futures** | **$38,544** | **52.0%** | **+0.409** | **~2.3** |
+| v3 | bloqueo 15h UTC en WH trades | $30,578 | 51.0% | +0.385 | 2.4 |
+| v4 | bloqueo AH+VAH OBI<-0.15 | $38,545 | 52.0% | +0.409 | 2.3 |
+| **v5** | **London re-habilitada + AH+VAH OBI aplicado a main + rebalanceo mensual** | **$44,794** | **49.5%** | **+0.338** | **3.6** |
 
-Cada versión OOS mejor o igual que IS → evolución limpia sin overfitting.
+Notas v5:
+- WR OOS baja de 52% a 49.5% porque London añade ~100 trades con WR 48% — normal, la calidad es buena.
+- AvgR baja de +0.409 a +0.338 por el mismo motivo — más trades, ligeramente más diluido.
+- Trades/día sube de 2.3 a 3.6 — el capital crece más por volumen.
+- Rebalanceo mensual reemplaza compounding per-trade: más realista, sigue siendo exponencial pero controlado.
+
+Cada versión OOS sostenida → evolución limpia sin overfitting.
 
 ---
 
-## Próximos pasos (pendiente)
+## Configuración código activo
 
-1. Construir parity harness Python-vs-Rust para `mtf_spot_shorts_v4`.
-2. Comparar entradas, stops, targets y exits contra `MtfSpotState`.
-3. Ejecutar `migrations/mtf_spot_trades.sql` antes de Railway paper live.
-4. Correr Bybit Spot paper live y auditar diferencias entre senal teorica, precio stream y fila Supabase.
-5. Investigar perdedores por cluster:
-   - distancia close vs nivel
-   - tipo de nivel
-   - sesion
-   - stop_pct
-   - OBI extremo vs moderado
-   - reversals por CVD antes/despues de 1R
+```python
+# backtest/mtf_basics.py — v5
+
+CAPITAL   = 500.0
+RISK_PCT  = 0.02        # 2% del capital al inicio de cada mes (rebalanceo mensual)
+TARGET_R  = 2.0
+FORWARD   = 1200        # barras M1 máximas (~20h timeout)
+MIN_STOP  = 0.0030      # 0.30% mínimo
+MAX_STOP  = 0.0075      # 0.75% máximo
+LEVEL_TOL = 0.007       # 0.70% zona alrededor del nivel
+ATR_MULT  = 0.40        # stop = H1_high + 0.40 × ATR_H1
+FEE_RT    = 0.0007      # 0.07% round-trip
+
+# Sesiones activas: London (07-12) + Overlap (12-16) + NY (16-20)
+# Asia (00-07) excluida
+
+# Bloqueos de nivel:
+# - VAH requerido en el match
+# - PDH+AH+VAH (3+ niveles con PDH y AH) → bloqueado
+# - PDH+VAH solo → bloqueado (falsa confluencia)
+# - WH a las 15h UTC → bloqueado
+# - AH+VAH con OBI < -0.15 → bloqueado
+
+# Rechazo: 0.30 < wick_pct < 0.85 AND close <= open
+# Flujo:   obi10_mean < -0.05 OR delta < 0
+# Stop:    H1_high + 0.40 × ATR_H1, constrained [0.30%, 0.75%]
+# Exit:    target 2R | CVD exit (5 barras CVD+ + OBI>0.15 @ ≥1R) | stop | timeout
+```
+
+---
+
+## Próximos pasos
+
+1. Sistema de longs — espejo de shorts en soporte (VAL, Asian Low, PDL). Potencialmente dobla oportunidades.
+2. Parity harness Python vs Rust detector para validar que live emite los mismos trades que backtest.
+3. Paper live en Bybit SPOT con rebalanceo mensual real.

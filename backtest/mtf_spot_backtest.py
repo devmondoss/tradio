@@ -45,8 +45,7 @@ EXPORTS_DIR = ROOT / "exports"
 SYMBOL = "BTCUSDT"
 CAPITAL_INIT = 500.0
 RISK_PCT = 0.02
-FEE_RT = 0.0007
-TARGET_R = 2.0
+FEE_RT = 0.0011   # futuros (paridad con detector Rust). Spot basico real seria 0.0020
 MIN_STOP = 0.0030
 MAX_STOP = 0.0075
 LEVEL_TOL = 0.007
@@ -54,6 +53,16 @@ ATR_MULT = 0.40
 H1_MS = 3_600_000
 D1_MS = 86_400_000
 OOS_MS = int(pd.Timestamp("2026-03-01", tz="UTC").value // 1_000_000)
+
+# Score v3 — IS thresholds (Jun2025–Feb2026)
+SCORE_SV_Q50 = 3.989
+SCORE_BV_Q50 = 2.712
+SCORE_VR_Q50 = 0.933
+SCORE_MULT   = [1.00, 1.00, 1.00, 1.00, 1.50]  # conservador (auditoria 2026-06-18): solo boost sc4
+
+
+def quality_score(sv: float, bv: float, cvd: float, vr: float) -> int:
+    return sum([sv >= SCORE_SV_Q50, bv >= SCORE_BV_Q50, cvd > 0, vr >= SCORE_VR_Q50])
 
 
 def atr14(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
@@ -88,12 +97,9 @@ def resample_ohlc(df: pd.DataFrame, freq_ms: int) -> pd.DataFrame:
 
 def session_of(ts_ms: int) -> str:
     hm = (ts_ms // 60_000) % 1440
-    if 7 * 60 <= hm < 12 * 60:
-        return "london"
-    if 12 * 60 <= hm < 16 * 60:
-        return "overlap"
-    if 16 * 60 <= hm < 20 * 60:
-        return "ny"
+    if  7 * 60 <= hm < 12 * 60: return "london"
+    if 12 * 60 <= hm < 16 * 60: return "overlap"
+    if 16 * 60 <= hm < 20 * 60: return "ny"
     return ""
 
 
@@ -152,21 +158,32 @@ def build_trade(
     obi: float,
     delta: float,
     cvd_slope: float,
+    sell_vol: float,
+    buy_vol: float,
+    vr_val: float,
+    score: int,
+    entry_risk_usd: float,
+    capital_after: float,
     mfe_r: float,
     mae_r: float,
-    capital_before: float,
 ) -> dict:
-    risk = stop - entry
-    gross_r = (entry - exit_price) / risk if risk > 0 else 0.0
-    risk_usd = capital_before * RISK_PCT
-    pnl_usd = risk_usd * gross_r - risk_usd * FEE_RT
-    equity = capital_before + pnl_usd
-    stop_pct = risk / entry * 100
+    risk_dist = stop - entry
+    gross_r = (entry - exit_price) / risk_dist if risk_dist > 0 else 0.0
+    fee_r = FEE_RT * entry / risk_dist if risk_dist > 0 else 0.0  # fee sobre NOTIONAL
+    pnl_usd = entry_risk_usd * (gross_r - fee_r)
+    stop_pct = risk_dist / entry * 100
+
+    sc_sv  = sell_vol  >= SCORE_SV_Q50
+    sc_bv  = buy_vol   >= SCORE_BV_Q50
+    sc_cvd = cvd_slope >  0
+    sc_vr  = vr_val    >= SCORE_VR_Q50
+
     evidence = [
         f"level:{level}",
         f"wick:{wick_pct:.2f}",
         f"obi:{obi:.3f}",
         f"delta:{delta:.1f}",
+        f"score:{score}/4",
     ]
     return {
         "idx": idx,
@@ -174,27 +191,27 @@ def build_trade(
         "sym": SYMBOL,
         "dir": "Short",
         "session": session,
-        "score": None,
+        "score": score,
         "entry": round(entry, 2),
         "stop": round(stop, 2),
         "target": round(target, 2),
         "exit": round(exit_price, 2),
         "resultR": round(gross_r, 3),
         "pnlUsd": round(pnl_usd, 2),
-        "riskUsd": round(risk_usd, 2),
+        "riskUsd": round(entry_risk_usd, 2),
         "stopPct": round(stop_pct, 3),
-        "equity": round(equity, 2),
+        "equity": round(capital_after, 2),
         "reason": reason,
         "tsMs": entry_ts,
         "ts": entry_ts // 1000,
         "closedAt": pd.Timestamp(exit_ts, unit="ms", tz="UTC").isoformat(),
-        "regime": "spot-v1",
+        "regime": "spot-v6",
         "sessionPhase": session,
         "evidence": evidence,
         "confluenceFlags": [level],
         "vetoReason": "",
         "cvdInRange": None,
-        "vr": None,
+        "vr": round(vr_val, 4),
         "priceVsVwap": None,
         "funding": None,
         "cvdSlope": round(cvd_slope, 4),
@@ -205,6 +222,14 @@ def build_trade(
         "rangeTouch": None,
         "durationMin": bars,
         "isOpen": False,
+        "sellVol": round(sell_vol, 4),
+        "buyVol": round(buy_vol, 4),
+        "scoreBreakdown": {
+            "sv": sc_sv, "svVal": round(sell_vol, 3), "svThr": SCORE_SV_Q50,
+            "bv": sc_bv, "bvVal": round(buy_vol, 3),  "bvThr": SCORE_BV_Q50,
+            "cvd": sc_cvd, "cvdVal": round(cvd_slope, 4),
+            "vr": sc_vr, "vrVal": round(vr_val, 3),   "vrThr": SCORE_VR_Q50,
+        },
         "htf": {
             "level": level,
             "wickPct": round(wick_pct, 3),
@@ -222,12 +247,17 @@ def simulate(df: pd.DataFrame) -> tuple[list[dict], float]:
     rows = df.to_dict("records")
     trades: list[dict] = []
     capital = CAPITAL_INIT
+    monthly_risk = CAPITAL_INIT * RISK_PCT
+    current_month = -1
     in_trade = False
 
-    entry = stop = target = risk = 0.0
+    entry = stop = target = risk_dist = 0.0
+    entry_risk_usd = 0.0
     start_i = entry_ts = 0
     trade_session = trade_level = ""
     trade_wick = trade_obi = trade_delta = trade_cvd = 0.0
+    trade_sv = trade_bv = trade_vr = 0.0
+    trade_score = 0
     mfe_r = mae_r = 0.0
     cvd_pos_streak = 0
 
@@ -236,55 +266,51 @@ def simulate(df: pd.DataFrame) -> tuple[list[dict], float]:
 
         if in_trade:
             high = float(row["high"])
-            low = float(row["low"])
+            low  = float(row["low"])
             close = float(row["close"])
-            mfe_r = max(mfe_r, (entry - low) / risk)
-            mae_r = max(mae_r, (high - entry) / risk)
-            bars = i - start_i
+            mfe_r = max(mfe_r, (entry - low)  / risk_dist)
+            mae_r = max(mae_r, (high - entry)  / risk_dist)
+            bars  = i - start_i
 
-            cvd_now = float(row.get("cvd_slope") or 0.0)
+            cvd_now = float(row.get("cvd_slope")  or 0.0)
             obi_now = float(row.get("obi10_mean") or 0.0)
             cvd_pos_streak = cvd_pos_streak + 1 if cvd_now > 0 else 0
-            cur_r = (entry - close) / risk
+            cur_r = (entry - close) / risk_dist
 
-            reason = ""
-            exit_price = 0.0
+            # CVD exit ELIMINADO (Paso 1 2026-06-18) para paridad con el detector Rust:
+            # cortaba ganadores a ~1.3R. Solo stop/target/timeout.
+            reason = ""; exit_price = 0.0
             if high >= stop:
                 reason, exit_price = "stop", stop
             elif low <= target:
                 reason, exit_price = "target", target
-            elif cvd_pos_streak >= 5 and obi_now > 0.15 and cur_r >= 1.0:
-                reason, exit_price = "cvd_exit", close
+            elif bars >= 1200:
+                reason, exit_price = "timeout", close
 
             if reason:
                 trade = build_trade(
-                    len(trades) + 1,
-                    entry_ts,
-                    ts,
-                    entry,
-                    stop,
-                    target,
-                    exit_price,
-                    reason,
-                    bars,
-                    trade_session,
-                    trade_level,
-                    trade_wick,
-                    trade_obi,
-                    trade_delta,
-                    trade_cvd,
-                    mfe_r,
-                    mae_r,
-                    capital,
+                    len(trades) + 1, entry_ts, ts,
+                    entry, stop, target, exit_price,
+                    reason, bars, trade_session, trade_level,
+                    trade_wick, trade_obi, trade_delta, trade_cvd,
+                    trade_sv, trade_bv, trade_vr, trade_score,
+                    entry_risk_usd, capital + entry_risk_usd * ((entry - exit_price) / risk_dist - FEE_RT * entry / risk_dist),
+                    mfe_r, mae_r,
                 )
                 capital += trade["pnlUsd"]
                 trades.append(trade)
-                in_trade = False
-                cvd_pos_streak = 0
+                in_trade = False; cvd_pos_streak = 0
             continue
 
+        # Monthly rebalance
+        mo = pd.Timestamp(ts, unit="ms", tz="UTC")
+        month_key = mo.year * 12 + mo.month
+        if month_key != current_month:
+            monthly_risk = capital * RISK_PCT
+            current_month = month_key
+
         session = session_of(ts)
-        if session not in ("overlap", "ny"):
+        if not session:
             continue
 
         ok_level, level = active_level(row)
@@ -311,28 +337,42 @@ def simulate(df: pd.DataFrame) -> tuple[list[dict], float]:
             continue
         h1_high, h1_atr = h1_data
         entry_ = float(row["close"])
-        stop_ = h1_high + ATR_MULT * h1_atr
-        risk_ = stop_ - entry_
+        stop_  = h1_high + ATR_MULT * h1_atr
+        risk_  = stop_ - entry_
         if risk_ <= 0:
             continue
-        stop_frac = risk_ / entry_
-        if not (MIN_STOP <= stop_frac <= MAX_STOP):
+        if not (MIN_STOP <= risk_ / entry_ <= MAX_STOP):
             continue
 
-        in_trade = True
-        entry = entry_
-        stop = stop_
-        risk = risk_
-        target = entry - TARGET_R * risk
-        start_i = i
-        entry_ts = ts
-        trade_session = session
-        trade_level = level
-        trade_wick = wick_pct
-        trade_obi = float(row.get("obi10_mean") or 0.0)
-        trade_delta = float(row.get("delta") or 0.0)
-        trade_cvd = float(row.get("cvd_slope") or 0.0)
-        mfe_r = mae_r = 0.0
+        # Target FIJO 2.5R (Paso 1 2026-06-18, paridad con detector Rust).
+        tgt = 2.5
+
+        # Score v3 sizing
+        sv  = float(row.get("sell_vol")  or 0.0)
+        bv  = float(row.get("buy_vol")   or 0.0)
+        cvd = float(row.get("cvd_slope") or 0.0)
+        vr  = float(row.get("vr")        or 0.0)
+        sc  = quality_score(sv, bv, cvd, vr)
+
+        in_trade       = True
+        entry          = entry_
+        stop           = stop_
+        risk_dist      = risk_
+        target         = entry - tgt * risk_dist
+        entry_risk_usd = monthly_risk * SCORE_MULT[sc]
+        start_i        = i
+        entry_ts       = ts
+        trade_session  = session
+        trade_level    = level
+        trade_wick     = wick_pct
+        trade_obi      = float(row.get("obi10_mean") or 0.0)
+        trade_delta    = float(row.get("delta") or 0.0)
+        trade_cvd      = cvd
+        trade_sv       = sv
+        trade_bv       = bv
+        trade_vr       = vr
+        trade_score    = sc
+        mfe_r = mae_r  = 0.0
         cvd_pos_streak = 0
 
     return trades, capital
@@ -354,10 +394,17 @@ def summarize(trades: list[dict], df: pd.DataFrame, capital_final: float) -> dic
     by_reason = defaultdict(int)
     by_session = defaultdict(int)
     by_level = defaultdict(int)
+    by_score: dict[int, dict] = {}
     for t in closed:
         by_reason[t["reason"]] += 1
         by_session[t["session"]] += 1
         by_level[t["htf"]["level"]] += 1
+        sc = t.get("score") or 0
+        if sc not in by_score:
+            by_score[sc] = {"n": 0, "wins": 0}
+        by_score[sc]["n"] += 1
+        if (t.get("resultR") or 0) > 0:
+            by_score[sc]["wins"] += 1
 
     return {
         "trades": trades,
@@ -372,7 +419,7 @@ def summarize(trades: list[dict], df: pd.DataFrame, capital_final: float) -> dic
         "n_shorts": n,
         "n_longs": 0,
         "longs_enabled": False,
-        "strategy": "mtf_spot_shorts_v4",
+        "strategy": "mtf_spot_shorts_v6",
         "oos": {
             "n": len(oos),
             "wins": oos_wins,
@@ -384,6 +431,7 @@ def summarize(trades: list[dict], df: pd.DataFrame, capital_final: float) -> dic
             "reason": dict(sorted(by_reason.items())),
             "session": dict(sorted(by_session.items())),
             "level": dict(sorted(by_level.items())),
+            "score": {str(k): v for k, v in sorted(by_score.items())},
         },
     }
 
@@ -450,7 +498,7 @@ def main() -> None:
                     "end_ms": end_ms,
                     "start_label": start_lbl,
                     "symbol": SYMBOL,
-                    "strategy": "mtf_spot_shorts_v4",
+                    "strategy": "mtf_spot_shorts_v6",
                 }
             )
         )

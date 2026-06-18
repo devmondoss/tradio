@@ -16,11 +16,11 @@ repository = "https://github.com/flowsurface-rs/flowsurface"
 homepage = "https://flowsurface.com"
 
 [workspace]
-members = [ "data", "exchange", "crates/monitor", "crates/rbf_monitor", "crates/buyer_exhaustion"]
+members = [ "data", "exchange", "crates/monitor", "crates/rbf_monitor", "crates/buyer_exhaustion", "crates/ob_parser"]
 
 [workspace.dependencies]
 iced_core = { version = "0.14.0", features = ["serde"] }
-chrono = { version = "0.4.40", default-features = false, features = ["serde", "now", "clock"] }
+chrono = { version = "=0.4.40", default-features = false, features = ["serde", "now", "clock"] }
 serde = { version = "1.0.219", default-features = false, features = ["derive"] }
 serde_json = "1.0.140"
 toml = "0.8.19"

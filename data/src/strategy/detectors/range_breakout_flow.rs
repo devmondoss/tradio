@@ -894,7 +894,10 @@ impl RangeBreakoutState {
                     && vr >= cfg.pre_breakout_vr_min
                 {
                     let sweep_risk = close - low;
-                    if sweep_risk > 1e-6 && sweep_risk >= cfg.sweep_min_risk_usd && sweep_risk / close <= cfg.sweep_max_risk_frac {
+                    if sweep_risk > 1e-6
+                        && sweep_risk >= cfg.sweep_min_risk_usd
+                        && sweep_risk / close <= cfg.sweep_max_risk_frac
+                    {
                         let rr_sweep = 2.0_f64;
                         let stop_price = low;
                         let target_price = close + rr_sweep * sweep_risk;
@@ -916,9 +919,18 @@ impl RangeBreakoutState {
                             };
                         let price_vs_vwap_sr =
                             vwap.filter(|&v| v > 0.0).map(|v| (close - v) / v * 100.0);
-                        let vr_tier_sr: u8 = if vr >= 4.0 { 3 } else if vr >= 2.0 { 2 } else { 1 };
-                        let bar_disp_sr =
-                            if high > low { (close - open).abs() / (high - low) } else { 0.5 };
+                        let vr_tier_sr: u8 = if vr >= 4.0 {
+                            3
+                        } else if vr >= 2.0 {
+                            2
+                        } else {
+                            1
+                        };
+                        let bar_disp_sr = if high > low {
+                            (close - open).abs() / (high - low)
+                        } else {
+                            0.5
+                        };
                         let cvd_per_bar_sr = if range_bars > 0 {
                             cvd_in_range / range_bars as f64
                         } else {
@@ -935,7 +947,14 @@ impl RangeBreakoutState {
                         self.last_sweep_bar = self.bars_seen;
                         println!(
                             "[rbf_sweep] Long entry={:.2} stop={:.2} target={:.2} rr={:.1} vr={:.2}x obi={:.3} score={}/6 veto={:?}",
-                            close, stop_price, target_price, rr_sweep, vr, obi, confluence_score, veto_reason
+                            close,
+                            stop_price,
+                            target_price,
+                            rr_sweep,
+                            vr,
+                            obi,
+                            confluence_score,
+                            veto_reason
                         );
                         return Some(RbfSignal {
                             direction: RbfDirection::Long,

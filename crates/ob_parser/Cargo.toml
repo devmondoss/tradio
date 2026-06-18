@@ -1,0 +1,18 @@
+[package]
+name = "ob-parser"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ob_parser"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+chrono.workspace = true
+zip       = "2"
+arrow-array  = { version = "54", default-features = false }
+arrow-schema = { version = "54", default-features = false }
+parquet      = { version = "54", default-features = false, features = ["arrow"] }
+rayon     = "1"
+anyhow    = "1"
