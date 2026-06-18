@@ -1916,6 +1916,7 @@ impl SupabaseWriter {
         &self,
         event: &data::strategy::detectors::mtf_spot_detector::MtfSpotTrade,
         symbol: &str,
+        market_type: &str,
     ) {
         use chrono::DateTime;
         let sig = &event.signal;
@@ -1930,7 +1931,7 @@ impl SupabaseWriter {
         let body = serde_json::json!({
             "symbol":           symbol,
             "venue":            "bybit",
-            "market_type":      "spot",
+            "market_type":      market_type,
             "strategy":         sig.strategy,
             "sig":              sig.sig,
             "session":          sig.session,

@@ -2152,8 +2152,9 @@ impl BarState {
                 if let Some(sb) = self.supabase.clone() {
                     let ev = event.clone();
                     let sym = symbol.to_string();
+                    let mkt = if self.futures_market { "linear" } else { "spot" }.to_string();
                     tokio::spawn(async move {
-                        sb.write_mtf_spot_trade(&ev, &sym).await;
+                        sb.write_mtf_spot_trade(&ev, &sym, &mkt).await;
                     });
                 }
                 if event.is_open {
@@ -4363,8 +4364,9 @@ async fn warm_up_history(
                                 let ev = closed;
                                 let sym_s = symbol.to_string();
                                 let sb2 = sb.clone();
+                                let mkt = if state.futures_market { "linear" } else { "spot" }.to_string();
                                 tokio::spawn(async move {
-                                    sb2.write_mtf_spot_trade(&ev, &sym_s).await;
+                                    sb2.write_mtf_spot_trade(&ev, &sym_s, &mkt).await;
                                 });
                             }
                         }
