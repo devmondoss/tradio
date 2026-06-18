@@ -344,8 +344,8 @@ def simulate(df: pd.DataFrame) -> tuple[list[dict], float]:
         if not (MIN_STOP <= risk_ / entry_ <= MAX_STOP):
             continue
 
-        # Target FIJO 2.5R (Paso 1 2026-06-18, paridad con detector Rust).
-        tgt = 2.5
+        # Target FIJO 1.8R (mejor balance WR/AvgR/volumen, paridad con detector Rust).
+        tgt = 1.8
 
         # Score v3 sizing
         sv  = float(row.get("sell_vol")  or 0.0)

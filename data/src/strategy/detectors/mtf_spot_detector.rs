@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 
 const MIN_STOP_PCT: f64 = 0.0030;
 const MAX_STOP_PCT: f64 = 0.0075;
-const TARGET_R: f64 = 2.5; // fijo (Paso 1 2026-06-18): supera a regime+CVD en AvgR neto
+const TARGET_R: f64 = 1.8; // mejor balance WR/AvgR/volumen, IS≈OOS (2026-06-18)
 const CVD_FLIP_BARS: usize = 5;
 const OBI_FLIP_THR: f64 = 0.15;
 const MIN_PROFIT_CVD: f64 = 1.0;
