@@ -15,3 +15,7 @@ calibration/.env
 # Large datasets
 dataset/*.parquet
 data/bybit-spot/
+
+# Generated reports (Plotly/Chart.js HTML — reproducibles, inflan el repo)
+dataset/*.html
+scripts/*.html
