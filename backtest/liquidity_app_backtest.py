@@ -1,7 +1,7 @@
 """
-liquidity_app_backtest.py — Backtest de la cartera de LIQUIDEZ para la app de review (rbf-review)
+liquidity_app_backtest.py — Backtest de la cartera de LIQUIDEZ para la app de review (trade-lab)
 =================================================================================================
-Emite los trades en el shape `Trade` que espera apps/rbf-review (entry/stop/target/exit/tsMs/dir/
+Emite los trades en el shape `Trade` que espera apps/trade-lab (entry/stop/target/exit/tsMs/dir/
 resultR...) para visualizarlos en el chart. Misma lógica que la cartera consolidada:
   • fade del área-valor del día previo (VAH/VAL/POC)
   • POC del order block previo
@@ -57,9 +57,10 @@ def gen_area_valor(a, prevvp):
         return out
     return g
 
-def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0):
+def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=0.0):
     """Entrada decidida en el TF de 'a'; SALIDA simulada en M1 (honesto, sin ambigüedad intrabar).
-    Cada generador corre INDEPENDIENTE (cooldown/cap propios) y se agrupan."""
+    Cada generador corre INDEPENDIENTE (cooldown/cap propios) y se agrupan.
+    stop_floor_pct: piso de stop — ensancha stops minúsculos a floor% del precio (robustez en vivo)."""
     m1ts,m1h,m1l,m1c=m1; bar_ms=tf_min*60_000
     atr_med=pd.Series(a.atr).rolling(500,min_periods=50).median().shift(1).values
     trades=[]
@@ -77,7 +78,13 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0):
                 if side=="short" and not (lvl>ref): continue
                 if side=="long" and not (a.l[i] <= lvl - margin/1e4*lvl): continue
                 if side=="short" and not (a.h[i] >= lvl + margin/1e4*lvl): continue
-                entry=lvl; risk=abs(entry-stop)
+                entry=lvl
+                # piso de stop: si quedó más cerca que floor%, alejarlo (mata la cola frágil de stops minúsculos)
+                if stop_floor_pct>0:
+                    min_risk=stop_floor_pct/100.0*entry
+                    if abs(entry-stop)<min_risk:
+                        stop = entry-min_risk if side=="long" else entry+min_risk
+                risk=abs(entry-stop)
                 if risk<=0: continue
                 if side=="long" and not (stop<entry<tp2): continue
                 if side=="short" and not (tp2<entry<stop): continue
@@ -155,6 +162,8 @@ def main():
     ap.add_argument("--info", action="store_true")
     ap.add_argument("--no-volfilter", action="store_true")
     ap.add_argument("--tf", type=int, default=15)   # M15: targets estructurales sobre niveles reales
+    ap.add_argument("--stop-floor", type=float, default=0.15,
+                    help="piso de stop %% (ensancha stops minúsculos; 0 = sin piso). Default 0.15.")
     ap.add_argument("--symbol", default="BTCUSDT")
     args=ap.parse_args()
 
@@ -174,7 +183,8 @@ def main():
     # exacto. El fade de área-valor (H1) requiere su motor completo (clasificación de día +
     # VP congelado) y se valida aparte en backtest/_consolidated.py; no se incluye en el visual.
     gens=[L2.gen_h5(), L2.gen_h21(), L2.gen_h21_short()]   # +mirror corto del POC defendido (balancea long/short)
-    raws=run(a, gens, timeout_min=24*60, volfilter=not args.no_volfilter, m1=m1, tf_min=args.tf)
+    raws=run(a, gens, timeout_min=24*60, volfilter=not args.no_volfilter, m1=m1, tf_min=args.tf,
+             stop_floor_pct=args.stop_floor)
     trades=[to_trade_json(r,i) for i,r in enumerate(raws)]
     eq=CAP0
     for tr in trades: eq+=tr["pnlUsd"]; tr["equity"]=round(eq,2)

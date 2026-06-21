@@ -52,13 +52,31 @@ function DetailPanel({ trade }: { trade: Trade }) {
       <InfoRow label="Resultado" value={trade.isOpen ? 'OPEN' : fmtR(r)} color={rColor} />
       {!trade.isOpen && <InfoRow label="PnL" value={fmtUsd(trade.pnlUsd)} color={rColor} />}
       {trade.durationMin != null && <InfoRow label="Dur" value={fmtDur(trade.durationMin)} />}
-      {trade.reason && <InfoRow label="Exit" value={trade.reason} />}
+      {trade.reason && (
+        <InfoRow
+          label="Exit"
+          value={trade.reason === 'breakeven' && trade.tp1 != null ? 'breakeven · 50% en TP1' : trade.reason}
+          color={trade.reason === 'target' ? 'var(--green)' : trade.reason === 'stop' ? 'var(--red)' : undefined}
+        />
+      )}
+      {trade.reason === 'breakeven' && trade.tp1 != null && r != null && r > 0 && (
+        <div style={{ fontSize: 8, color: 'var(--text3)', lineHeight: 1.4, padding: '2px 0' }}>
+          50% cerrado en TP1 (ganancia), resto a breakeven → resultado = el parcial
+        </div>
+      )}
 
       <SectionHeader label="Precios" />
       <InfoRow label="Entry"  value={trade.entry} />
       <InfoRow label="Stop"   value={trade.stop}   color="var(--red)" />
-      <InfoRow label="Target" value={trade.target}  color="var(--green)" />
-      {trade.exit > 0 && <InfoRow label="Exit" value={trade.exit} />}
+      {trade.tp1 != null && (
+        <InfoRow
+          label="TP1 (50%)"
+          value={`${trade.tp1} (${trade.dir === 'Long' ? '+' : ''}${(100 * (trade.tp1 - trade.entry) / trade.entry).toFixed(3)}%)`}
+          color="var(--green)"
+        />
+      )}
+      <InfoRow label="Target" value={trade.targetName ? `${trade.target} · ${trade.targetName}` : trade.target}  color="var(--green)" />
+      {trade.exit > 0 && <InfoRow label="Exit (resto)" value={trade.exit} />}
       <InfoRow label="Stop%"  value={trade.stopPct + '%'} />
       <InfoRow label="Risk$"  value={'$' + trade.riskUsd.toFixed(3)} />
 

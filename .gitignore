@@ -19,7 +19,7 @@ data/bybit-perp/
 /exports/
 /share_dataset/
 backtest/htf/
-apps/rbf-review/api/cache/
+apps/trade-lab/api/cache/
 **/*.parquet
 
 # Generated reports (Plotly/Chart.js HTML — reproducibles, inflan el repo)

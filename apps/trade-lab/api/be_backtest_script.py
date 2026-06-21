@@ -8,7 +8,7 @@ Fuente de datos:
   - Histórico: Binance REST API v3/klines (sin auth, hasta ~2 años atrás)
     bar_delta = 2 * taker_buy_base_vol - volume
     session   = clasificado por hora UTC (espejo de session_tracker.rs)
-  - Caché en disco: apps/rbf-review/api/cache/  (1ª vez lento, siguientes ~instante)
+  - Caché en disco: apps/trade-lab/api/cache/  (1ª vez lento, siguientes ~instante)
 
 Lógica: espejo de BuyerExhaustionConfig::default()
   - Rango 8 barras M1 con CVD neto > 0 (compradores atrapados)

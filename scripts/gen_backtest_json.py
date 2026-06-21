@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Convierte los CSVs de backtest a JSON para el frontend React.
-Output: apps/rbf-review/public/data/backtest.json
+Output: apps/trade-lab/public/data/backtest.json
 
 Uso:
     python scripts/gen_backtest_json.py
@@ -136,7 +136,7 @@ def main():
         }
     }
 
-    out_path = 'apps/rbf-review/public/data/backtest.json'
+    out_path = 'apps/trade-lab/public/data/backtest.json'
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, separators=(',', ':'))

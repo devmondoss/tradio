@@ -5,7 +5,7 @@
 ## TL;DR — dónde estamos
 - Reencuadre del proyecto: **el orderflow no predice dirección** (EDGE_VERDICT) → el único edge es
   **provisión de liquidez** (poner límites maker en niveles de volumen y cobrar la rotación).
-- Estrategia construida, backtesteada (datos VERIFICADOS 365d), visualizable en `apps/rbf-review`, y
+- Estrategia construida, backtesteada (datos VERIFICADOS 365d), visualizable en `apps/trade-lab`, y
   **corriendo en paper 24/7** en Railway → escribiendo a Supabase.
 - **Falta lo único que el backtest no puede zanjar: validar el fill ratio maker real** (en curso, paper).
 
@@ -60,7 +60,7 @@
 | `backtest/_build_tickfeats.py` | Columnas tick (footprint/VP) para H8/H10/H12 (ya cerrados) |
 | `live/levels.py` | Cálculo de niveles en vivo (paridad con backtest) |
 | `live/paper_liquidity.py` | Harness paper: WS Bybit, órdenes virtuales, fill ratio por vol, Supabase, health server |
-| `apps/rbf-review/` | App visual (tab único liquidez); `LocalResultsView.tsx`, `TradeChart.tsx` |
+| `apps/trade-lab/` | App visual (tab único liquidez); `LocalResultsView.tsx`, `TradeChart.tsx` |
 | `migrations/liquidity_paper.sql` | Tablas Supabase |
 
 ## Pendientes (priorizados para la próxima sesión)
@@ -76,5 +76,5 @@
 ## Cómo retomar
 - Leer este doc + `LIQUIDITY_STRATEGY.md`.
 - Backtest: `python backtest/liquidity_app_backtest.py --days 540 --json` (365d verificados).
-- Visual: `cd apps/rbf-review && npm run dev` (tab Liquidez auto-corre).
+- Visual: `cd apps/trade-lab && npm run dev` (tab Liquidez auto-corre).
 - Paper vivo: `select * from liquidity_paper_fill_ratio;` en Supabase (proyecto nuevo).

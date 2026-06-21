@@ -18,7 +18,7 @@ Toda la documentación de la estrategia de liquidez vive aquí.
 - `backtest/_listas2.py`, `backtest/liquidity_app_backtest.py`, `backtest/_consolidated.py`, `backtest/_filters.py`
 - `live/levels.py`, `live/paper_liquidity.py`, `live/Dockerfile`, `live/README.md`
 - `migrations/liquidity_paper.sql`
-- `apps/rbf-review/` (app visual, tab único de liquidez)
+- `apps/trade-lab/` (app visual, tab único de liquidez)
 - `Dockerfile.liquidity`, `railway.toml`, `railway.liquidity-paper.env.example`
 
 ## Contexto general (NO movido — sigue en docs/orderflow/)

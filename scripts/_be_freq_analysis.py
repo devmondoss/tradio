@@ -4,7 +4,7 @@ Objetivo: cuántas señales/día/símbolo podemos generar con base amplia.
 Microestructura NO disponible en 730d → se usa como gate en live, no aquí.
 """
 import sys, time, itertools, math
-sys.path.insert(0, 'apps/rbf-review/api')
+sys.path.insert(0, 'apps/trade-lab/api')
 import be_backtest_script as bt
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed

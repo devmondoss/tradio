@@ -17,7 +17,7 @@
 | Fee | **honesto**: maker 2 bps/lado en entrada+tp1+target; **taker 5.5 bps/lado en stop/BE/timeout** (88% de salidas son a mercado) · Riesgo: **fijo $5/trade (1%, sin compounding)** · cap 2/día por nivel |
 | **Resultado OOS** | **WR ~73% · avgR +0.89 · target mediana 3.7% (rotación real) · ~3-4 trades/día** (cartera con mirror, fee honesto) |
 
-Reproducir: `python backtest/liquidity_app_backtest.py --days 540 --json` · Visual: `apps/rbf-review` (tab único).
+Reproducir: `python backtest/liquidity_app_backtest.py --days 540 --json` · Visual: `apps/trade-lab` (tab único).
 
 ---
 
@@ -276,15 +276,15 @@ por nivel, margen de selección adversa 2 bps en backtest. Ver `backtest/_consol
 
 ---
 
-## 9. Visualización en la app (rbf-review) — solo liquidez
+## 9. Visualización en la app (trade-lab) — solo liquidez
 
-La app `apps/rbf-review` quedó **enfocada solo en esta estrategia** (se quitaron los tabs MTF/Chart).
+La app `apps/trade-lab` quedó **enfocada solo en esta estrategia** (se quitaron los tabs MTF/Chart).
 - Backtest: `backtest/liquidity_app_backtest.py` (lo invoca `vite.config.ts` vía `/api/backtest/liquidity`).
 - Emite los trades en el shape `Trade` → lista clicable + chart de velas (entry/stop/target/exit) + stats.
 - Riesgo **FIJO $5/trade (sin compounding)**, a propósito: el compounding 2% infla (ej. MTF Spot Longs
   mostraba $500→$26k = +5113%, artefacto exponencial). Para comparar estrategias mirar **avgR y WR**,
   no el equity compuesto.
-- Correr: `cd apps/rbf-review && npm run dev` → "Ejecutar Backtest".
+- Correr: `cd apps/trade-lab && npm run dev` → "Ejecutar Backtest".
 
 ## 10. ⭐ Fix de targets ESTRUCTURALES (no scalp de ATR fijo)
 
