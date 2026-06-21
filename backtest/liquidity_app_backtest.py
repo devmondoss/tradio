@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np, pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 import _listas2 as L2
+import _session_vp as SVP
 
 FEE_MAKER=L2.FEE_MAKER; FEE_TAKER=L2.FEE_TAKER; CAP0, RISK = 500.0, 0.01; SYM="BTCUSDT"
 
@@ -61,7 +62,8 @@ def _is_chop(reg):
     return str(reg).lower() in ("chop","range","balance","consolidation")
 
 def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=0.0, min_tp1_pct=0.0,
-        system="A", trail_atr=4.0, min_tp1_rr=2.5):
+        system="A", trail_atr=4.0, min_tp1_rr=2.5,
+        svp_dayvp=None, svp_naked=None, m1_cvd=None, cvd_reversal_pct=0.35):
     """Entrada decidida en el TF de 'a'; SALIDA simulada en M1 (honesto, sin ambigüedad intrabar).
     system='A' → FADE: parcial 50% en TP1 (solo si TP1 ≥ min_tp1_rr×riesgo) → BE → target estructural.
     system='AB'/'C' → ENRUTA por régimen: Chop→fade · Tendencia→trailing stop (monta la continuación).
@@ -215,6 +217,12 @@ def main():
 
     a=L2.A2(t)
     m1=L2.load_m1_exit(start_ms=full0)   # OHLC M1 para salidas honestas (sin ambigüedad intrabar)
+    # Footprint: session VP (LVN/HVN/Naked POC) + CVD para targets y exit signals
+    svp_dayvp = SVP.load_dayvp()
+    svp_naked = SVP.load_naked_poc()
+    m1_cvd    = SVP.load_m1_cvd(start_ms=full0) if svp_dayvp else None
+    if not svp_dayvp:
+        import sys as _sys; print("[footprint] sin cache → ejecuta: python backtest/_session_vp.py --build", file=_sys.stderr)
     # Componentes POC (provisión de liquidez en niveles de volumen): replican el edge validado
     # exacto. El fade de área-valor (H1) requiere su motor completo (clasificación de día +
     # VP congelado) y se valida aparte en backtest/_consolidated.py; no se incluye en el visual.
@@ -222,7 +230,8 @@ def main():
     sys_arg = "AB" if args.system == "C" else args.system
     raws=run(a, gens, timeout_min=24*60, volfilter=not args.no_volfilter, m1=m1, tf_min=args.tf,
              stop_floor_pct=args.stop_floor, min_tp1_pct=args.min_range, system=sys_arg,
-             min_tp1_rr=args.min_tp1_rr)
+             min_tp1_rr=args.min_tp1_rr,
+             svp_dayvp=svp_dayvp, svp_naked=svp_naked, m1_cvd=m1_cvd)
     trades=[to_trade_json(r,i) for i,r in enumerate(raws)]
     eq=CAP0
     for tr in trades: eq+=tr["pnlUsd"]; tr["equity"]=round(eq,2)
