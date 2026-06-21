@@ -2,7 +2,7 @@
 levels.py — Niveles de la estrategia de liquidez (CONFIG FINAL: M15 · estructural · POC)
 =========================================================================================
 Paridad con el backtest final (backtest/liquidity_app_backtest.py + _listas2.py):
-  • 2 componentes POC: POC del order-block (largo/corto) + POC defendido (largo)
+  • 3 componentes POC: POC del order-block (largo/corto) + POC defendido (largo) + mirror corto (resistencia defendida)
   • TARGET ESTRUCTURAL = siguiente nivel de liquidez real (VAH/VAL/swing/PDH-PDL), no múltiplo fijo
   • Filtro de VOLATILIDAD (ATR > mediana móvil) — etiqueta vol_regime; high_vol_only para despliegue
   • Stop estructural (OB high/low ±0.25·ATR ; POC defendido −0.6·ATR) · min_RR 1.2
@@ -94,7 +94,7 @@ def compute_levels(m15: pd.DataFrame, high_vol_only=False, vol_window=500):
         tp1, tp2 = struct_target(side, obpoc)
         if np.isfinite(tp2):
             out.append(dict(side=side, kind="poc_orderblock", price=obpoc, stop=stop, tp1=tp1, tp=tp2))
-    # --- POC defendido (nodo de alto volumen tocado por mínimos recientes) ---
+    # --- POC defendido (nodo de alto volumen tocado por mínimos recientes) -> long ---
     defended = va["poc"]
     touches = int(np.sum(np.abs(l[-OB_WIN:] - defended)/defended <= 0.002))
     if touches >= 2:
@@ -102,6 +102,14 @@ def compute_levels(m15: pd.DataFrame, high_vol_only=False, vol_window=500):
         if np.isfinite(tp2):
             out.append(dict(side="long", kind="poc_defendido", price=defended,
                             stop=defended-0.6*a, tp1=tp1, tp=tp2))
+    # --- MIRROR: POC de resistencia defendido (nodo tocado por MÁXIMOS recientes) -> short ---
+    # Paridad con gen_h21_short del backtest: balancea la cartera (antes ~80% longs).
+    touches_hi = int(np.sum(np.abs(h[-OB_WIN:] - defended)/defended <= 0.002))
+    if touches_hi >= 2:
+        tp1, tp2 = struct_target("short", defended)
+        if np.isfinite(tp2):
+            out.append(dict(side="short", kind="poc_defendido_short", price=defended,
+                            stop=defended+0.6*a, tp1=tp1, tp=tp2))
 
     # --- filtros finales: lado correcto del mercado + min_RR + etiqueta de régimen ---
     valid = []

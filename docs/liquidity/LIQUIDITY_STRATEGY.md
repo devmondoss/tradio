@@ -8,14 +8,14 @@
 |---|---|
 | Mercado | BTCUSDT perpetuo Bybit (linear) |
 | **Datos** | **era tick VERIFICADA 2025-06-19 → 2026-06 (~365d)**. El OHLCV existe desde 2025-01 (klines, 532d) pero el pre-tick NO está verificado → NO se usa. IS<2026-03 / OOS≥2026-03 |
-| Componentes | POC del order-block + POC defendido (provisión de liquidez maker) |
+| Componentes | POC del order-block + POC defendido (long) + **mirror corto del POC defendido** (provisión de liquidez maker) |
 | TF de decisión | **M15** (recalcula niveles cada cierre; fills/salidas en tiempo real / M1) |
 | Entrada | orden LÍMITE maker en el nivel · selección adversa 2 bps |
 | Filtro | **volatilidad: ATR > mediana móvil(500)** (clave) |
 | Target | **ROTACIÓN al nivel de liquidez LEJANO** (~3.7%, no scalp) · parcial 50% en el nivel cercano → breakeven → resto corre al lejano · min_RR 1.2 |
 | Salida | simulada/evaluada en **M1** (honesto) · timeout 24h |
-| Fee | maker 4 bps RT · Riesgo: **fijo $5/trade (1%, sin compounding)** · cap 2/día por nivel |
-| **Resultado OOS** | **WR ~72% · avgR +1.00 · target mediana 3.7% (rotación real) · ~2 trades/día** |
+| Fee | **honesto**: maker 2 bps/lado en entrada+tp1+target; **taker 5.5 bps/lado en stop/BE/timeout** (88% de salidas son a mercado) · Riesgo: **fijo $5/trade (1%, sin compounding)** · cap 2/día por nivel |
+| **Resultado OOS** | **WR ~73% · avgR +0.89 · target mediana 3.7% (rotación real) · ~3-4 trades/día** (cartera con mirror, fee honesto) |
 
 Reproducir: `python backtest/liquidity_app_backtest.py --days 540 --json` · Visual: `apps/rbf-review` (tab único).
 
@@ -158,6 +158,107 @@ IS +0.409 ≈ OOS +0.474 (robusto). Reproducir: `python backtest/_consolidated.p
 (orderblock +0.59 WR 67%, defendido +0.41 WR 62%) pero **empeora el fade de área-valor**
 (+0.31 → +0.085): ese componente prefiere baja volatilidad. Posible mejora futura: aplicar el
 filtro solo a los componentes POC.
+
+## 7b. ⭐ Mirror corto del POC defendido (2026-06-21) — CABLEADO
+
+`gen_h21` solo compraba soportes → cartera ~80% long. Añadido el **espejo**
+(`gen_h21_short` en `_listas2.py`): vende en **resistencias de volumen defendidas ≥2 veces**
+(máximos previos pegados al nivel + rechazo), stop `lvl+0.6·ATR`, target estructural abajo.
+Cableado en `liquidity_app_backtest.py` (gens = h5 + h21 + h21_short).
+
+| Cartera (M15, salida M1, vol ON) | n | OOS n | WR | OOS avgR | OOS netR | long/short |
+|---|---|---|---|---|---|---|
+| BASE (h5+h21) | 901 | 261 | 73.8% | +1.004 | +262.2 | 77/23 |
+| **+mirror (h5+h21+h21s)** | **1210** | 355 | **75.2%** | +0.988 | **+350.8** | **57/43** |
+
+El mirror tiene edge propio (OOS avgR **+0.94**, WR 79%, n=309 — *mejor* que el H21 long +0.49)
+y aguanta fills 10 bps (OOS +0.68). +34% trades y +34% netR OOS sin diluir el avgR.
+⚠️ Vigilar: el mirror rinde más en OOS que en IS → puede deberse a rotaciones bajistas del
+tramo OOS (mar-2026+), no solo al edge. Confirmar cuando haya más OOS.
+**✅ Portado a live (2026-06-21):** `live/levels.py` emite `poc_defendido_short` (resistencia
+defendida por máximos ≥2 veces, stop `+0.6·ATR`, target estructural abajo). El harness
+(`paper_liquidity.py`) es agnóstico al lado → el paper ya coloca shorts del mirror. **Requiere
+restart del servicio Railway** para tomar el código nuevo (el proceso vivo corre el código viejo).
+
+## 7c. ⭐ Re-auditoría del edge + fee honesto (2026-06-21)
+
+Tras la duda "no cuadra" (stops minúsculos → RR gigante). Tres pruebas independientes la
+**refutan**: (1) `corr(stopPct, R) = −0.09` (≈0, no es stop-chico→R-grande); (2) los winners R>3
+tienen stop medio 0.20% ≈ el resto 0.22% (no salen de stops menores); (3) sobrevive un piso de
+stop forzado de 0.50% (OOS avgR +0.40, WR 83%). El top-5 es solo 11% del netR → no es lotería.
+
+**Fee honesto cableado** (`_audit_fee.py`, y en `liquidity_app_backtest.py`): el 88% de las
+salidas son a mercado (breakeven 58% + stop 25% + timeout 5%), solo 12-14% (target) son límite.
+Cobrar taker (5.5bps/lado) en esas salidas cuesta **−10% de netR** (avgR +0.83→+0.72, OOS
++0.99→+0.89). El edge aguanta. **Peor caso apilado** (fee honesto + fills 10bps + piso 0.20%):
+OOS avgR **+0.47**, WR 70%, n=199 → sigue claramente positivo. Reproducir: `python backtest/_audit_edge.py`,
+`_audit_fee.py`, `_audit_mirror.py`. La única pregunta abierta sigue siendo el fill ratio maker real.
+
+## 7d. ⭐⭐ Análisis de MARKOUT post-fill (2026-06-21) — la pregunta del fill ratio, RESPONDIDA con datos
+
+Métrica de mesa de market-making: tras un fill límite en el nivel, ¿a dónde va el precio? Medido con
+el **tape tick-a-tick real** (raw_trades, 365d, 5.310 fills), sin simular salida ni PnL → aísla la
+**calidad del fill**, lo único que el backtest no ve. `backtest/_audit_markout.py`.
+
+| Régimen | +1s | +5s | +30s | +60s | +300s | n |
+|---|---|---|---|---|---|---|
+| TODO | −0.77 | −0.91 | −0.79 | −0.21 | **+5.59** | 5310 |
+| **VOL-HIGH** | −0.82 | −0.94 | −0.69 | +0.20 | **+7.56** | 2826 |
+| VOL-LOW | −0.72 | −0.87 | −0.90 | −0.68 | **+3.35** | 2484 |
+
+(bps; + = favorable. Spread BTC perp ≈ 0.5-1bp, fee maker 2bps/lado.)
+
+**Tres conclusiones:**
+1. **Selección adversa real pero pequeña** (~0.8 bps los primeros 30s): el flujo informado te llena y
+   el precio continúa un pelín antes de revertir. Manejable.
+2. **El edge es REAL** — confirmado por una lente independiente del backtest. A +300s ya es +5.6 bps
+   (y los trades reales aguantan horas hasta la rotación ~3.7%=370bps). La reversión aplasta a la
+   selección adversa Y al fee.
+3. ⭐ **El miedo "VOL-HIGH = fills tóxicos" queda REFUTADO** (era LA pregunta abierta): en VOL-HIGH la
+   selección adversa inmediata es igual de chica, pero la reversión es **mucho mayor** (+7.56 vs +3.35
+   @5min). El filtro de volatilidad queda vindicado a nivel de microestructura. El mirror H21s es el
+   mejor (+8.27 @5min VOL-HIGH).
+
+**Implicación operativa:** como la reversión tarda minutos, **cualquier salida rápida destruiría el
+edge** (cristaliza la selección adversa). Confirma target estructural + aguante. Lever destapado:
+colocar el límite 1-2 bps más profundo para esquivar la continuación inmediata (ver §7e).
+
+## 7e. Offset de profundidad + compounding (2026-06-21) — `_audit_offset_compound.py`
+
+**Offset de entrada (raspar la selección adversa de 0.8bps del §7d): NO es palanca de dinero.**
+Colocar el límite N bps más profundo dispara el avgR (+0.72→+3.22 @10bps) PERO es **artefacto**:
+la entrada se acerca al stop → encoge el denominador del riesgo → R infla sin más dinero. Tell: el
+**OOS netR queda plano** (+317→+379) mientras el avgR se triplica. El `n` casi no baja por el cap
+2/día (engañoso; el fill ratio real caería). Veredicto: **entrada en el nivel (offset 0-2bps máx)**;
+el edge está en el aguante, no en raspar la entrada. (Mismo patrón "stop-chico→R-gigante" del §7c.)
+
+**Compounding sin retiros (riesgo 1% del capital/trade, $500 inicial):** $500→**$2.1M** en 363d
+(×4189); OOS ×21.2 en 109d. Matemáticamente order-invariant (producto de (1+0.01·r); el orden solo
+afecta el DD, no el destino). PERO es **fantasía de capacidad**: a $2M no hay fills maker en estos
+niveles de nicho. Real a tamaño chico (miles de $), se rompe al crecer. Por eso el app usa riesgo
+FIJO. Para el edge → avgR/WR; para equity desplegable → falta techo de capacidad (lo da el paper).
+Riesgo de ruina nulo: peor trade −2.5R = −2.5% capital con 1%, sin apalancamiento.
+
+## 7f. Funding (descartado) + Capacidad (el techo del compounding) — 2026-06-21
+
+**Funding EV — descartado, demasiado chico.** `_audit_funding.py`: funding BTC perp +0.33bps/8h,
+positivo 73% (longs pagan, shorts cobran). Pero el hold medio es 3.9h (mediana 1.2h) → solo 0.45
+eventos/trade. Impacto real: longs −1.3%, shorts +1.4% del avgR, **neto −$14 en todo el año**.
+Direccionalmente correcto (viento de cola del mirror) pero irrelevante en magnitud. No es lever.
+
+**Capacidad — el techo realista que le faltaba al compounding.** `_audit_capacity.py`: volumen taker
+que cruza el nivel por fill (= tope de fill maker) = **mediana 82 BTC ($7.3M)**, VOL-HIGH 107 BTC.
+Con stops 0.19% (notional = capital·5.3), capital desplegable: **realista (25% del flujo) ≈ $346k**
+(nivel mediano) / $149k (p25); conservador (10%) ≈ $138k. **El compounding a $2.1M es inalcanzable**
+(requeriría ~$11M notional/trade); pero el techo real son **bajos-medios cientos de miles de $**, no
+miles → estrategia seriamente desplegable. Compounding real hasta ~$300k, ahí se aplana.
+
+## 7g. Sizing por componente (2026-06-21) — `_audit_sizing.py`
+
+Tilt de riesgo por rendimiento IS (pesos derivados SOLO de IS → OOS, honesto). Sube retorno pero
+baja Sharpe: equal-weight OOS netR +317 Sharpe +6.97 ; tilt-avgR +374 (+18%) Sharpe +6.57 (−6%).
+H5 fue el mejor IS y OOS (+1.195) → el tilt no es puro overfit, pero concentrar pierde
+diversificación. **Default: equal-weight; tilt SUAVE hacia H5 defendible si priorizas retorno.**
 
 ## 8. Estado y siguiente paso
 

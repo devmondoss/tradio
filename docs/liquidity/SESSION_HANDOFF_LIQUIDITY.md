@@ -12,18 +12,21 @@
 ## La estrategia (CONFIG FINAL CONGELADA)
 - **Mercado/datos:** BTCUSDT perp Bybit · **era tick VERIFICADA 2025-06-19 → 2026-06 (~365d)**.
   IS<2026-03 / OOS≥2026-03. (El OHLCV existe desde 2025-01 pero el pre-tick NO se usa.)
-- **2 componentes** (mismo principio = liquidez): **POC del order-block** (long/short) + **POC defendido** (long).
+- **3 componentes** (mismo principio = liquidez): **POC del order-block** (long/short) + **POC defendido** (long)
+  + **mirror corto del POC defendido** (short, añadido 2026-06-21 → cartera balanceada 57/43 long/short).
 - **TF decisión:** M15. **Entrada:** orden LÍMITE maker en el nivel (selección adversa 2 bps).
 - **Filtro CLAVE:** volatilidad — solo opera con ATR > su mediana móvil(500). [sube avgR +0.13→+1.0]
 - **Target:** ROTACIÓN al nivel de liquidez **LEJANO** (VAH/VAL/swing/PDH-PDL/**weekly**) ≈ **3.7% mediana**.
   Parcial 50% en el nivel cercano → stop a breakeven → el resto corre al lejano.
 - **Salida:** evaluada en **M1** (honesto, sin ambigüedad intrabar). Timeout 24h. Riesgo FIJO $5/trade (1%, sin compounding).
-- **Resultado OOS:** WR ~72% · avgR +1.00 · target mediana 3.7% · ~2 trades/día · $500→~$4.4k (365d).
+- **Fee HONESTO:** maker 2bps/lado en entrada+tp1+target; **taker 5.5bps/lado en stop/BE/timeout** (88% de salidas a mercado).
+- **Resultado OOS:** WR ~73% · avgR +0.89 · target mediana 3.7% · ~3-4 trades/día · $500→~$4.9k (365d, con mirror + fee honesto).
 
 ## ⚠️ Dudas abiertas / "lo que no cuadra" (revisar con cabeza fresca)
-1. **El usuario siente que "no cuadra"** (registrado para la próxima sesión). Probable origen: stops
-   minúsculos (0.06-0.19%) que generan RR enormes (+25R = $126 real). Vale re-auditar si el edge es
-   real o artefacto de stop-chico + fill maker.
+1. ✅ **RESUELTO (2026-06-21) — la duda "no cuadra"**: re-auditado. El edge NO es artefacto de
+   stop-chico × RR — `corr(stopPct,R)=−0.09`, winners no tienen stop menor, sobrevive piso 0.50%
+   (OOS +0.40), top-5 solo 11% del netR. Fee honesto (taker en salidas a mercado) cuesta −10%, edge
+   aguanta. Peor caso apilado (fee+fills10bps+piso0.20%): OOS +0.47R, WR 70%. Ver §7c de LIQUIDITY_STRATEGY.
 2. **El edge es maker-dependiente:** a TAKER es negativo. Todo descansa en conseguir fills maker.
    → **el fill ratio real es la pregunta que decide todo** (se está midiendo en paper).
 3. **Concentración (fat tail):** top-5 trades = 21% del netR OOS. PERO avgR sin el top-5 = +0.81
@@ -61,12 +64,14 @@
 | `migrations/liquidity_paper.sql` | Tablas Supabase |
 
 ## Pendientes (priorizados para la próxima sesión)
-1. **Re-auditar el edge** con cabeza fresca (la duda del usuario): ¿stops tan chicos son realistas?
-   ¿el fill maker aguanta? Considerar modelar fills más pesimistas / un piso de stop absoluto.
-2. **Leer el fill ratio del paper** (días de datos, esp. VOL-HIGH) → decide si es desplegable.
-3. **Mirror corto del POC defendido** (hoy ~80% longs; falta vender resistencias de volumen defendidas).
-4. **Footprint real desde ticks en live** (cerrar gap de aproximación) — solo si valida.
-5. Si valida fills → **portar a Rust** (motor de producción con ejecución real + kill-switch + Slack).
+1. ✅ **Re-auditar el edge** (hecho 2026-06-21): duda refutada, fee honesto cableado. Ver §7c.
+2. ✅ **Mirror corto del POC defendido** (hecho 2026-06-21): backtest (`gen_h21_short`) + live
+   (`live/levels.py` → `poc_defendido_short`). Cartera balanceada 57/43. Ver §7b.
+3. 🔴 **REINICIAR el servicio Railway del paper** para que tome el código nuevo (mirror + fee honesto).
+   El proceso vivo corre el código viejo (solo longs, fee flat). Sin restart no coloca shorts.
+4. **Leer el fill ratio del paper** (días de datos, esp. VOL-HIGH) → decide si es desplegable.
+5. **Footprint real desde ticks en live** (cerrar gap de aproximación) — solo si valida.
+6. Si valida fills → **portar a Rust** (motor de producción con ejecución real + kill-switch + Slack).
 
 ## Cómo retomar
 - Leer este doc + `LIQUIDITY_STRATEGY.md`.

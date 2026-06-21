@@ -33,7 +33,8 @@ SYMBOL = os.getenv("SYMBOL", "BTCUSDT")
 REST = "https://api.bybit.com"
 WS_PUBLIC = "wss://stream.bybit.com/v5/public/linear"
 LOG = Path(__file__).parent / "paper_fills.csv"
-FEE_RT = 0.0004          # maker round-trip
+FEE_MAKER_SIDE = 0.0002  # maker por lado (límite: entrada, tp1, target)
+FEE_TAKER_SIDE = 0.00055 # taker por lado (mercado: stop, breakeven, timeout)
 SUPA_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPA_KEY = os.getenv("SUPABASE_KEY", "")
 
@@ -129,7 +130,10 @@ class PaperBook:
                     if (not done) and px <= p["tp"]:
                         p["realized"] += p["rem"]*((p["entry"]-p["tp"])/risk); reason="target"; exit_px=p["tp"]; done=True
                 if done:
-                    r = p["realized"] - FEE_RT*p["entry"]/risk
+                    # fee HONESTO: maker en entrada+tp1+target; taker en stop/BE/timeout (salida a mercado)
+                    exit_side = FEE_MAKER_SIDE if reason=="target" else FEE_TAKER_SIDE
+                    fee_frac = FEE_MAKER_SIDE*1.0 + (FEE_MAKER_SIDE*0.5 if p["filled1"] else 0.0) + exit_side*p["rem"]
+                    r = p["realized"] - fee_frac*p["entry"]/risk
                     rec = dict(symbol=SYMBOL, tf=str(self.tf), kind=p["kind"], side=p["side"],
                                vol_regime=p["vol_regime"], entry=p["entry"], stop=p["stop"], target=p["tp"],
                                exit_price=exit_px, result_r=round(r,4), win=bool(r>0), reason=reason,

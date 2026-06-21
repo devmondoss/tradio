@@ -331,6 +331,20 @@ def gen_h21(K=15, tol=0.002):   # POC defendido >=2 veces + lift -> long, TARGET
         return
     return g
 
+def gen_h21_short(K=15, tol=0.002):   # ESPEJO de H21: POC de resistencia defendido >=2 veces -> SHORT
+    def g(a,i):
+        if i<K: return
+        win=a.fp_poc[i-K:i]; win=win[np.isfinite(win)]
+        if len(win)<3: return
+        lvl=np.median(win)
+        touches=np.sum(np.abs(a.h[i-K:i]-lvl)/lvl<=tol)   # toques desde ARRIBA (rechazos en resistencia)
+        if touches>=2 and a.c[i]<a.c[i-1] and abs(a.h[i]-lvl)/lvl<=tol:
+            stop=lvl+0.6*a.atr[i]
+            tp1,tp2=struct_target(a,i,"short",lvl)
+            if np.isfinite(tp2): return [("short", lvl, stop, tp1, tp2, "H21s")]
+        return
+    return g
+
 def gen_h9():   # POC desplazándose (régimen) -> trend-follow pullback al POC del día
     def g(a,i):
         # POC del día sube vs ayer y antier -> bias long; entrar en pullback al vp_poc

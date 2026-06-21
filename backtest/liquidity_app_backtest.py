@@ -19,7 +19,7 @@ import numpy as np, pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 import _listas2 as L2
 
-FEE_MAKER=L2.FEE_MAKER; CAP0, RISK = 500.0, 0.01; SYM="BTCUSDT"
+FEE_MAKER=L2.FEE_MAKER; FEE_TAKER=L2.FEE_TAKER; CAP0, RISK = 500.0, 0.01; SYM="BTCUSDT"
 
 def day_vp_prev(m5_df):
     """VP por día (close-ponderado, bins $5) congelado: dict date->(poc,vah,val) del día PREVIO."""
@@ -83,7 +83,7 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0):
                 if side=="short" and not (tp2<entry<stop): continue
                 if abs(tp2-entry)/risk < 1.2: continue
                 # --- SALIDA en M1 desde el cierre de la barra de entrada (parcial POC + breakeven) ---
-                fee_r=FEE_MAKER*entry/risk; exit_px=None; exit_ts=None; reason="timeout"
+                exit_px=None; exit_ts=None; reason="timeout"
                 cur_stop=stop; realized=0.0; rem=1.0; filled1=False; p1=0.5 if tp1 else 0.0
                 j0=np.searchsorted(m1ts, a.ts[i]+bar_ms)
                 jend=np.searchsorted(m1ts, a.ts[i]+bar_ms+timeout_min*60_000)
@@ -109,6 +109,10 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0):
                     if jj<=j0: continue
                     px=m1c[jj]; realized+=rem*(((px-entry) if side=="long" else (entry-px))/risk)
                     exit_px=px; exit_ts=m1ts[jj]
+                # fee HONESTO: maker(2bps/lado) en entrada+tp1+target; taker(5.5bps/lado) en stop/BE/timeout (mercado)
+                mk=FEE_MAKER/2.0; tk=FEE_TAKER/2.0
+                exit_side=mk if reason=="target" else tk
+                fee_r=(mk*1.0 + (mk*p1 if filled1 else 0.0) + exit_side*rem)*entry/risk
                 r=realized-fee_r
                 # ¿qué NIVEL de liquidez es el target lejano? (para el visual: por qué el target ahí)
                 if side=="long":
@@ -169,7 +173,7 @@ def main():
     # Componentes POC (provisión de liquidez en niveles de volumen): replican el edge validado
     # exacto. El fade de área-valor (H1) requiere su motor completo (clasificación de día +
     # VP congelado) y se valida aparte en backtest/_consolidated.py; no se incluye en el visual.
-    gens=[L2.gen_h5(), L2.gen_h21()]
+    gens=[L2.gen_h5(), L2.gen_h21(), L2.gen_h21_short()]   # +mirror corto del POC defendido (balancea long/short)
     raws=run(a, gens, timeout_min=24*60, volfilter=not args.no_volfilter, m1=m1, tf_min=args.tf)
     trades=[to_trade_json(r,i) for i,r in enumerate(raws)]
     eq=CAP0
