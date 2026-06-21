@@ -1,0 +1,17 @@
+[package]
+name = "trades-parser"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "trades_parser"
+path = "src/main.rs"
+
+[dependencies]
+chrono.workspace = true
+flate2 = "1"
+arrow-array  = { version = "54", default-features = false }
+arrow-schema = { version = "54", default-features = false }
+parquet      = { version = "54", default-features = false, features = ["arrow"] }
+rayon     = "1"
+anyhow    = "1"

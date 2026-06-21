@@ -306,17 +306,28 @@ fn read_parquet(path: &Path) -> anyhow::Result<Vec<M1Bar>> {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+fn arg_val(args: &[String], key: &str) -> Option<String> {
+    args.windows(2).find(|w| w[0] == key).map(|w| w[1].clone())
+}
+
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let rebuild   = args.iter().any(|a| a == "--rebuild");
-    let date_only = args.windows(2)
-        .find(|w| w[0] == "--date")
-        .map(|w| w[1].clone());
+    let date_only = arg_val(&args, "--date");
 
+    // Rutas y rango configurables (default = spot, retrocompatible).
     let base      = std::env::current_dir()?;
-    let ob_dir    = base.join("data/bybit-spot/orderbook");
-    let cache_dir = base.join("data/bybit-spot/processed/ob_cache");
-    let out_file  = base.join("data/bybit-spot/processed/m1_obi.parquet");
+    let ob_dir    = arg_val(&args, "--ob-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| base.join("data/bybit-spot/orderbook"));
+    let cache_dir = arg_val(&args, "--cache-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| base.join("data/bybit-spot/processed/ob_cache"));
+    let out_file  = arg_val(&args, "--out")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| base.join("data/bybit-spot/processed/m1_obi.parquet"));
+    let start_s   = arg_val(&args, "--start").unwrap_or_else(|| START.to_string());
+    let end_s     = arg_val(&args, "--end").unwrap_or_else(|| END.to_string());
 
     if rebuild && cache_dir.exists() {
         fs::remove_dir_all(&cache_dir)?;
@@ -328,8 +339,8 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("No se encontro el directorio de orderbook: {}", ob_dir.display());
     }
 
-    let start_d = NaiveDate::parse_from_str(START, "%Y-%m-%d")?;
-    let end_d   = NaiveDate::parse_from_str(END,   "%Y-%m-%d")?;
+    let start_d = NaiveDate::parse_from_str(&start_s, "%Y-%m-%d")?;
+    let end_d   = NaiveDate::parse_from_str(&end_s,   "%Y-%m-%d")?;
 
     let mut all_zips: Vec<PathBuf> = fs::read_dir(&ob_dir)?
         .filter_map(|e| e.ok())

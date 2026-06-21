@@ -2138,13 +2138,33 @@ impl BarState {
                 asian_low: None,
                 weekly_high: None,
                 weekly_low: None,
+                // v2 / directions / ICT — el pipeline live aún no computa estas features.
+                // Defaults seguros: ticks=0 → fallback baseline; estructura None → cálculo
+                // interno del detector. Cuando el feed live las envíe, actuarán como gates.
+                body_below_poc: false,
+                minus_ticks: 0.0,
+                plus_ticks: 0.0,
+                fp_absorb_buy: false,
+                fp_absorb_sell: false,
+                n_trades: 0.0,
+                near_bearish_fvg: false,
+                near_bearish_ob: false,
+                displacement_bear: false,
+                sweep_confirmed: false,
+                vp_lvn_below: false,
+                vp_poc: None,
+                vpin: 0.0,
+                h1_bos_bear: None,
+                h1_choch_bear: None,
+                h1_bos_bull: None,
+                h4_bos_bear: None,
             };
             // Tick live account bar counter before detector runs
             if let Some(ref mut live) = self.live_account {
                 live.tick_bar();
             }
 
-            if let Some(event) = self.mtf_spot_state.on_bar_close(
+            for event in self.mtf_spot_state.on_bar_close(
                 &spot_ctx,
                 self.runtime_cfg.mtf_spot_shorts,
                 self.runtime_cfg.mtf_spot_longs,
@@ -4342,6 +4362,23 @@ async fn warm_up_history(
                 asian_low: None,
                 weekly_high: None,
                 weekly_low: None,
+                body_below_poc: false,
+                minus_ticks: 0.0,
+                plus_ticks: 0.0,
+                fp_absorb_buy: false,
+                fp_absorb_sell: false,
+                n_trades: 0.0,
+                near_bearish_fvg: false,
+                near_bearish_ob: false,
+                displacement_bear: false,
+                sweep_confirmed: false,
+                vp_lvn_below: false,
+                vp_poc: None,
+                vpin: 0.0,
+                h1_bos_bear: None,
+                h1_choch_bear: None,
+                h1_bos_bull: None,
+                h4_bos_bear: None,
             };
             if state.mtf_spot_state.has_active_trade() {
                 if state
@@ -4350,7 +4387,7 @@ async fn warm_up_history(
                     .map(|entry_ms| open_ms > entry_ms)
                     .unwrap_or(false)
                 {
-                    if let Some(closed) = state.mtf_spot_state.on_bar_close(&warm_ctx, false, false)
+                    for closed in state.mtf_spot_state.on_bar_close(&warm_ctx, false, false)
                     {
                         if !closed.is_open {
                             println!(

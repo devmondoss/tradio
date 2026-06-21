@@ -3,17 +3,25 @@ use std::collections::VecDeque;
 
 const MIN_STOP_PCT: f64 = 0.0030;
 const MAX_STOP_PCT: f64 = 0.0075;
-const TARGET_R: f64 = 1.8; // mejor balance WR/AvgR/volumen, IS≈OOS (2026-06-18)
-const CVD_FLIP_BARS: usize = 5;
-const OBI_FLIP_THR: f64 = 0.15;
-const MIN_PROFIT_CVD: f64 = 1.0;
-const FEE_RT: f64 = 0.0011; // futuros Bybit round-trip (taker 0.055% x2). Spot basico seria 0.0020
-const FORWARD: usize = 1200; // timeout en barras M1 (~20h) — paridad con backtest Python
+const TARGET_R: f64 = 2.8; // barrido 2026-06-18: mejor IS/OOS balance
+/// Fee round-trip por DEFECTO (Bybit perp/linear taker ≈ 0.055% × 2 = 0.0011).
+/// Es propiedad de la VENUE, no de la estrategia — se puede sobre-escribir por venue
+/// (Binance/WhiteBit/spot/futuros) vía `MtfSpotState::set_fee_rt`. El default preserva
+/// la paridad con el backtest (fee 0.0011).
+const DEFAULT_FEE_RT: f64 = 0.0011;
+const FORWARD: usize = 240; // timeout 4h (mtf_system directions, 2026-06-19); la cola swing aporta poco
+const COOLDOWN: i64 = 15;   // barras entre entradas de la misma dirección (anti-stack)
 const LEVEL_TOL: f64 = 0.007;
 const ATR_MULT: f64 = 0.40;
 const H1_MS: i64 = 3_600_000;
+const H4_MS: i64 = 14_400_000;
 const D1_MS: i64 = 86_400_000;
 const WEEK_ROLLING_BARS: usize = 5 * 24 * 60;
+const D1_EMA_ALPHA: f64 = 2.0 / 21.0; // EMA20
+const H1_EMA_ALPHA: f64 = 2.0 / 21.0; // EMA20 sobre H1
+const D1_REGIME_THR: f64 = 0.980;       // close < d1_ema * 0.98 para shorts
+const D1_REGIME_LONG_LO: f64 = 1.000;   // close >= d1_ema * 1.000 para longs
+const D1_REGIME_LONG_HI: f64 = 1.030;   // close <= d1_ema * 1.030 para longs
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MtfSpotBarContext {
@@ -45,6 +53,49 @@ pub struct MtfSpotBarContext {
     pub weekly_high: Option<f64>,
     #[serde(default)]
     pub weekly_low: Option<f64>,
+    // v2 gates — opcionales para compatibilidad con live existente
+    #[serde(default)]
+    pub body_below_poc: bool,
+    #[serde(default)]
+    pub minus_ticks: f64,
+    #[serde(default)]
+    pub plus_ticks: f64,
+    #[serde(default)]
+    pub fp_absorb_buy: bool,
+    #[serde(default)]
+    pub fp_absorb_sell: bool,
+    // sizing fields — opcionales, 0.0 si no disponible
+    #[serde(default)]
+    pub n_trades: f64,
+    // ── directions / ICT union (mtf_system 2026-06-19) ──────────────────────
+    // Disparadores ICT shorts (además de rejection@VAH):
+    #[serde(default)]
+    pub near_bearish_fvg: bool,
+    #[serde(default)]
+    pub near_bearish_ob: bool,
+    #[serde(default)]
+    pub displacement_bear: bool,
+    #[serde(default)]
+    pub sweep_confirmed: bool,
+    // Veto shorts: sin LVN (void) por debajo = sin espacio limpio al target
+    #[serde(default)]
+    pub vp_lvn_below: bool,
+    // Gate longs: cuerpo no por encima del POC
+    #[serde(default)]
+    pub vp_poc: Option<f64>,
+    // Sizing vpin-aware (no afecta paridad: sizing_mult no se compara)
+    #[serde(default)]
+    pub vpin: f64,
+    // Estructura H1/H4 precomputada (parquet). Si Some, se usa en vez del cálculo
+    // interno del detector (que queda como fallback live). Igual patrón que h1_high.
+    #[serde(default)]
+    pub h1_bos_bear: Option<bool>,
+    #[serde(default)]
+    pub h1_choch_bear: Option<bool>,
+    #[serde(default)]
+    pub h1_bos_bull: Option<bool>,
+    #[serde(default)]
+    pub h4_bos_bear: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,8 +114,8 @@ impl MtfSpotDirection {
 
     pub fn strategy(self) -> &'static str {
         match self {
-            Self::Long => "mtf_spot_longs_v1",
-            Self::Short => "mtf_spot_shorts_v4",
+            Self::Long => "mtf_directions_long",
+            Self::Short => "mtf_directions_short",
         }
     }
 
@@ -94,6 +145,7 @@ pub struct MtfSpotSignal {
     pub obi_entry: f64,
     pub delta_entry: f64,
     pub cvd_slope_entry: Option<f64>,
+    pub sizing_mult: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +166,7 @@ pub struct MtfSpotTrade {
 #[derive(Debug, Clone, Default)]
 struct H1Candle {
     bucket: i64,
+    open: f64,
     high: f64,
     low: f64,
     close: f64,
@@ -135,11 +188,42 @@ struct ActiveTrade {
 #[derive(Debug)]
 pub struct MtfSpotState {
     symbol: String,
+    fee_rt: f64, // venue-specific round-trip fee (default DEFAULT_FEE_RT)
     active_trade: Option<ActiveTrade>,
     bar_count: usize,
-    cvd_streak: usize,
+
+    // H1 tracking
     h1_current: Option<H1Candle>,
-    h1_history: VecDeque<H1Candle>,
+    h1_history: VecDeque<H1Candle>,  // completed H1 bars, max 20
+    h1_ema20: Option<f64>,
+    h1_uptrend_streak: usize,        // consecutive H1 bars con close > h1_ema20 (para ChoCH bear)
+    h1_downtrend_streak: usize,      // consecutive H1 bars con close < h1_ema20 (para ChoCH bull)
+    h1_bos_bars_ago: usize,          // BOS bajista: 0 = acaba de ocurrir, 999 = no hay reciente
+    h1_choch_bars_ago: usize,        // ChoCH bajista
+    h1_bos_bull_bars_ago: usize,     // BOS alcista: 0 = acaba de ocurrir, 999 = no hay reciente
+    h1_choch_bull_bars_ago: usize,   // ChoCH alcista
+
+    // H4 tracking (para gate NOT h4_bos_bear en longs)
+    h4_current: Option<H1Candle>,    // reutiliza misma struct (OHLC + bucket)
+    h4_history: VecDeque<H1Candle>,  // completadas, max 10
+    h4_bos_bear_bars_ago: usize,     // BOS bajista H4: 0 = acaba de ocurrir, 999 = no hay
+
+    // D1 EMA regime
+    d1_ema20: Option<f64>,
+    daily_close: f64,               // cierre del dia actual (se actualiza cada M1)
+
+    // Sizing calibration — percentil 50 de n_trades / vpin en IS (Ene25–Feb26)
+    // Actualizado por warm_up; cero hasta que tengamos suficientes datos
+    n_trades_q50: f64,
+    n_trades_samples: VecDeque<f64>,
+    vpin_q50: f64,
+    vpin_samples: VecDeque<f64>,
+
+    // Cooldown por dirección (modelo directions): barra de la última entrada
+    last_short_entry_bar: i64,
+    last_long_entry_bar: i64,
+
+    // Levels
     rolling_5d: VecDeque<(f64, f64)>,
     current_day: i64,
     daily_high: f64,
@@ -154,11 +238,29 @@ impl MtfSpotState {
     pub fn new(symbol: &str) -> Self {
         Self {
             symbol: symbol.to_string(),
+            fee_rt: DEFAULT_FEE_RT,
             active_trade: None,
             bar_count: 0,
-            cvd_streak: 0,
             h1_current: None,
-            h1_history: VecDeque::with_capacity(14),
+            h1_history: VecDeque::with_capacity(20),
+            h1_ema20: None,
+            h1_uptrend_streak: 0,
+            h1_downtrend_streak: 0,
+            h1_bos_bars_ago: 999,
+            h1_choch_bars_ago: 999,
+            h1_bos_bull_bars_ago: 999,
+            h1_choch_bull_bars_ago: 999,
+            h4_current: None,
+            h4_history: VecDeque::with_capacity(10),
+            h4_bos_bear_bars_ago: 999,
+            d1_ema20: None,
+            daily_close: 0.0,
+            n_trades_q50: 0.0,
+            n_trades_samples: VecDeque::with_capacity(1024),
+            vpin_q50: 0.0,
+            vpin_samples: VecDeque::with_capacity(1024),
+            last_short_entry_bar: i64::MIN / 2,
+            last_long_entry_bar: i64::MIN / 2,
             rolling_5d: VecDeque::with_capacity(WEEK_ROLLING_BARS + 1),
             current_day: -1,
             daily_high: f64::NEG_INFINITY,
@@ -172,6 +274,14 @@ impl MtfSpotState {
 
     pub fn has_active_trade(&self) -> bool {
         self.active_trade.is_some()
+    }
+
+    /// Sobre-escribe el fee round-trip según la venue (Bybit/Binance/WhiteBit, spot/perp).
+    /// La estrategia es agnóstica; el fee es config de venue. Default = DEFAULT_FEE_RT.
+    pub fn set_fee_rt(&mut self, fee_rt: f64) {
+        if fee_rt >= 0.0 {
+            self.fee_rt = fee_rt;
+        }
     }
 
     pub fn active_entry_ms(&self) -> Option<i64> {
@@ -202,7 +312,7 @@ impl MtfSpotState {
         if risk <= 0.0 {
             return;
         }
-        let fee_r = FEE_RT * entry / risk;
+        let fee_r = self.fee_rt * entry / risk;
         let signal = MtfSpotSignal {
             symbol: self.symbol.clone(),
             ts_ms,
@@ -219,6 +329,7 @@ impl MtfSpotState {
             obi_entry,
             delta_entry,
             cvd_slope_entry,
+            sizing_mult: 1.0,  // restore no recalcula sizing
         };
         self.active_trade = Some(ActiveTrade {
             signal,
@@ -236,32 +347,68 @@ impl MtfSpotState {
     pub fn warm_up_bar(&mut self, ctx: &MtfSpotBarContext) {
         self.bar_count += 1;
         self.update_levels(ctx);
+        if ctx.n_trades > 0.0 {
+            self.n_trades_samples.push_back(ctx.n_trades);
+            if self.n_trades_samples.len() % 1000 == 0 {
+                self.n_trades_q50 = median_of(&self.n_trades_samples);
+            }
+        }
+        if ctx.vpin > 0.0 {
+            self.vpin_samples.push_back(ctx.vpin);
+            if self.vpin_samples.len() % 1000 == 0 {
+                self.vpin_q50 = median_of(&self.vpin_samples);
+            }
+        }
     }
 
+    /// Devuelve los eventos generados en esta barra. Normalmente 0 o 1, pero en la
+    /// barra que CIERRA un trade puede haber 2: [cierre, apertura] — replica el orden
+    /// salida→entrada de mtf_system (re-entrada en la misma barra de cierre).
     pub fn on_bar_close(
         &mut self,
         ctx: &MtfSpotBarContext,
         allow_shorts: bool,
         allow_longs: bool,
-    ) -> Option<MtfSpotTrade> {
+    ) -> Vec<MtfSpotTrade> {
         self.bar_count += 1;
         self.update_levels(ctx);
+
+        // Actualizar mediana n_trades / vpin en tiempo real (ventana deslizante, max 10k)
+        if ctx.n_trades > 0.0 {
+            if self.n_trades_samples.len() >= 10_000 {
+                self.n_trades_samples.pop_front();
+            }
+            self.n_trades_samples.push_back(ctx.n_trades);
+            if self.n_trades_q50 == 0.0 || self.n_trades_samples.len() % 500 == 0 {
+                self.n_trades_q50 = median_of(&self.n_trades_samples);
+            }
+        }
+        if ctx.vpin > 0.0 {
+            if self.vpin_samples.len() >= 10_000 {
+                self.vpin_samples.pop_front();
+            }
+            self.vpin_samples.push_back(ctx.vpin);
+            if self.vpin_q50 == 0.0 || self.vpin_samples.len() % 500 == 0 {
+                self.vpin_q50 = median_of(&self.vpin_samples);
+            }
+        }
+
+        let mut events: Vec<MtfSpotTrade> = Vec::new();
 
         if let Some(trade) = self.active_trade.take() {
             match self.update_active_trade(trade, ctx) {
                 TradeUpdate::StillOpen(t) => {
                     self.active_trade = Some(t);
-                    return None;
+                    return events; // sigue abierto: nada que emitir
                 }
                 TradeUpdate::Closed(t) => {
-                    self.cvd_streak = 0;
-                    return Some(t);
+                    events.push(t); // cierre; intentamos re-entrar en ESTA misma barra
                 }
             }
         }
 
         if self.symbol != "BTCUSDT" {
-            return None;
+            return events;
         }
 
         let candidate = match (allow_shorts, allow_longs) {
@@ -269,14 +416,22 @@ impl MtfSpotState {
             (true, false) => self.detect_short(ctx),
             (false, true) => self.detect_long(ctx),
             (false, false) => None,
-        }?;
+        };
 
-        self.open_trade(candidate, ctx)
+        if let Some(candidate) = candidate {
+            if let Some(open_ev) = self.open_trade(candidate, ctx) {
+                events.push(open_ev);
+            }
+        }
+
+        events
     }
 
     fn update_levels(&mut self, ctx: &MtfSpotBarContext) {
         self.update_h1(ctx);
+        self.update_h4(ctx);
         self.update_daily_levels(ctx);
+        self.daily_close = ctx.close;
         self.rolling_5d.push_back((ctx.high, ctx.low));
         if self.rolling_5d.len() > WEEK_ROLLING_BARS {
             self.rolling_5d.pop_front();
@@ -289,6 +444,7 @@ impl MtfSpotState {
             None => {
                 self.h1_current = Some(H1Candle {
                     bucket,
+                    open: ctx.open,
                     high: ctx.high,
                     low: ctx.low,
                     close: ctx.close,
@@ -299,13 +455,15 @@ impl MtfSpotState {
                     current,
                     H1Candle {
                         bucket,
+                        open: ctx.open,
                         high: ctx.high,
                         low: ctx.low,
                         close: ctx.close,
                     },
                 );
+                self.on_h1_complete(&completed);
                 self.h1_history.push_back(completed);
-                if self.h1_history.len() > 14 {
+                if self.h1_history.len() > 20 {
                     self.h1_history.pop_front();
                 }
             }
@@ -317,14 +475,141 @@ impl MtfSpotState {
         }
     }
 
+    fn on_h1_complete(&mut self, candle: &H1Candle) {
+        // Actualizar H1 EMA20
+        self.h1_ema20 = Some(match self.h1_ema20 {
+            None => candle.close,
+            Some(prev) => H1_EMA_ALPHA * candle.close + (1.0 - H1_EMA_ALPHA) * prev,
+        });
+        let ema = self.h1_ema20.unwrap();
+
+        // Racha uptrend (para ChoCH bearish) y downtrend (para ChoCH bullish)
+        if candle.close > ema {
+            self.h1_uptrend_streak += 1;
+            self.h1_downtrend_streak = 0;
+        } else {
+            self.h1_uptrend_streak = 0;
+            self.h1_downtrend_streak += 1;
+        }
+
+        // Envejecer BOS y ChoCH (bear y bull)
+        self.h1_bos_bars_ago       = self.h1_bos_bars_ago.saturating_add(1);
+        self.h1_choch_bars_ago     = self.h1_choch_bars_ago.saturating_add(1);
+        self.h1_bos_bull_bars_ago  = self.h1_bos_bull_bars_ago.saturating_add(1);
+        self.h1_choch_bull_bars_ago = self.h1_choch_bull_bars_ago.saturating_add(1);
+
+        let hist = &self.h1_history;
+        let n = hist.len();
+
+        // H1 BOS bajista: close rompe bajo el swing low de las 3 H1 anteriores
+        if n >= 2 {
+            let swing_lo = if n >= 3 {
+                hist[n-1].low.min(hist[n-2].low).min(hist[n-3].low)
+            } else {
+                hist[n-1].low.min(hist[n-2].low)
+            };
+            if candle.close < swing_lo {
+                self.h1_bos_bars_ago = 0;
+            }
+        }
+
+        // H1 ChoCH bajista: primer Lower High tras uptrend (>= 3 barras alcistas previas)
+        if n >= 1 && self.h1_uptrend_streak == 0 {
+            let bullish_before = hist.iter().rev().take(3).filter(|c| c.close > ema).count();
+            if bullish_before >= 3 && candle.high < hist[n-1].high && candle.close < hist[n-1].close {
+                self.h1_choch_bars_ago = 0;
+            }
+        }
+
+        // H1 BOS alcista: close rompe sobre el swing high de las 3 H1 anteriores
+        if n >= 2 {
+            let swing_hi = if n >= 3 {
+                hist[n-1].high.max(hist[n-2].high).max(hist[n-3].high)
+            } else {
+                hist[n-1].high.max(hist[n-2].high)
+            };
+            if candle.close > swing_hi {
+                self.h1_bos_bull_bars_ago = 0;
+            }
+        }
+
+        // H1 ChoCH alcista: primer Higher Low tras downtrend (>= 3 barras bajistas previas)
+        if n >= 1 && self.h1_downtrend_streak == 0 {
+            let bearish_before = hist.iter().rev().take(3).filter(|c| c.close < ema).count();
+            if bearish_before >= 3 && candle.low > hist[n-1].low && candle.close > hist[n-1].close {
+                self.h1_choch_bull_bars_ago = 0;
+            }
+        }
+    }
+
+    fn update_h4(&mut self, ctx: &MtfSpotBarContext) {
+        let bucket = ctx.ts_ms / H4_MS;
+        match self.h4_current.as_mut() {
+            None => {
+                self.h4_current = Some(H1Candle {
+                    bucket,
+                    open: ctx.open,
+                    high: ctx.high,
+                    low: ctx.low,
+                    close: ctx.close,
+                });
+            }
+            Some(current) if current.bucket != bucket => {
+                let completed = std::mem::replace(
+                    current,
+                    H1Candle {
+                        bucket,
+                        open: ctx.open,
+                        high: ctx.high,
+                        low: ctx.low,
+                        close: ctx.close,
+                    },
+                );
+                self.on_h4_complete(&completed);
+                self.h4_history.push_back(completed);
+                if self.h4_history.len() > 10 {
+                    self.h4_history.pop_front();
+                }
+            }
+            Some(current) => {
+                current.high = current.high.max(ctx.high);
+                current.low = current.low.min(ctx.low);
+                current.close = ctx.close;
+            }
+        }
+    }
+
+    fn on_h4_complete(&mut self, candle: &H1Candle) {
+        self.h4_bos_bear_bars_ago = self.h4_bos_bear_bars_ago.saturating_add(1);
+
+        let hist = &self.h4_history;
+        let n = hist.len();
+        if n >= 2 {
+            let swing_lo = if n >= 3 {
+                hist[n-1].low.min(hist[n-2].low).min(hist[n-3].low)
+            } else {
+                hist[n-1].low.min(hist[n-2].low)
+            };
+            if candle.close < swing_lo {
+                self.h4_bos_bear_bars_ago = 0;
+            }
+        }
+    }
+
     fn update_daily_levels(&mut self, ctx: &MtfSpotBarContext) {
         let day = ctx.ts_ms / D1_MS;
         let hm = (ctx.ts_ms / 60_000) % 1440;
 
         if day != self.current_day {
+            // Cerrar el dia anterior y actualizar D1 EMA
             if self.current_day >= 0 && self.daily_high.is_finite() && self.daily_low.is_finite() {
                 self.prev_day_high = Some(self.daily_high);
                 self.prev_day_low = Some(self.daily_low);
+                // daily_close es el ultimo close del dia anterior
+                self.d1_ema20 = Some(match self.d1_ema20 {
+                    None => self.daily_close,
+                    Some(prev) => D1_EMA_ALPHA * self.daily_close + (1.0 - D1_EMA_ALPHA) * prev,
+                });
             }
             self.current_day = day;
             self.daily_high = ctx.high;
@@ -339,6 +624,39 @@ impl MtfSpotState {
         if hm < 2 * 60 {
             self.asian_high = Some(self.asian_high.map_or(ctx.high, |v| v.max(ctx.high)));
             self.asian_low = Some(self.asian_low.map_or(ctx.low, |v| v.min(ctx.low)));
+        }
+    }
+
+    fn h1_bos_bear_active(&self) -> bool {
+        self.h1_bos_bars_ago <= 2
+    }
+
+    fn h1_choch_bear_active(&self) -> bool {
+        self.h1_choch_bars_ago <= 2
+    }
+
+    fn h1_bos_bull_active(&self) -> bool {
+        self.h1_bos_bull_bars_ago <= 2
+    }
+
+    fn h4_bos_bear_active(&self) -> bool {
+        self.h4_bos_bear_bars_ago <= 2
+    }
+
+    fn d1_regime_short_ok(&self, ctx: &MtfSpotBarContext) -> bool {
+        match self.d1_ema20 {
+            None => false,
+            Some(ema) => ctx.close <= ema * D1_REGIME_THR,
+        }
+    }
+
+    fn d1_regime_long_ok(&self, ctx: &MtfSpotBarContext) -> bool {
+        match self.d1_ema20 {
+            None => false,
+            Some(ema) => {
+                let ratio = ctx.close / ema;
+                ratio >= D1_REGIME_LONG_LO && ratio <= D1_REGIME_LONG_HI
+            }
         }
     }
 
@@ -374,55 +692,143 @@ impl MtfSpotState {
     }
 
     fn detect_short(&self, ctx: &MtfSpotBarContext) -> Option<SignalCandidate> {
+        // Cooldown: misma dirección no re-entra dentro de COOLDOWN barras de la última
+        if (self.bar_count as i64) - self.last_short_entry_bar < COOLDOWN {
+            return None;
+        }
+
+        // Gate 0: Régimen D1 EMA (close <= ema * 0.98)
+        if !self.d1_regime_short_ok(ctx) {
+            return None;
+        }
+
+        // Gate 0b: Estructura H1 bajista (BOS o ChoCH). Preferir parquet si viene en ctx.
+        let bos_bear = ctx.h1_bos_bear.unwrap_or_else(|| self.h1_bos_bear_active());
+        let choch_bear = ctx.h1_choch_bear.unwrap_or_else(|| self.h1_choch_bear_active());
+        if !bos_bear && !choch_bear {
+            return None;
+        }
+
         let session = short_session(ctx.ts_ms)?;
-        let level = self.short_level(ctx)?;
-        let parts: Vec<&str> = level.split('+').collect();
 
-        if !parts.contains(&"VAH") {
-            return None;
-        }
-        if parts.len() >= 3 && parts.contains(&"PDH") && parts.contains(&"AH") {
-            return None;
-        }
-        if parts.len() == 2 && parts.contains(&"PDH") && parts.contains(&"VAH") {
-            return None;
-        }
-        let hour = ((ctx.ts_ms / H1_MS) % 24) as u8;
-        if parts.contains(&"WH") && hour == 15 {
-            return None;
-        }
-        if level == "AH+VAH" && ctx.obi10_mean < -0.15 {
-            return None;
-        }
+        // ── DISPARADOR: unión ICT validada (mtf_system 2026-06-19). El "level"
+        // del signal pasa a ser el NOMBRE del disparador (no la composición de niveles).
+        // Prioridad por orden; OTE y EqualHighSweep EXCLUIDOS (flip OOS).
+        let (trigger, wick_pct): (&'static str, f64) = {
+            let rej = rejection_short(ctx);
+            let at_vah = self
+                .short_level(ctx)
+                .map(|l| l.split('+').any(|p| p == "VAH"))
+                .unwrap_or(false);
+            if at_vah && rej.is_some() {
+                ("rejection_VAH", rej.unwrap())
+            } else if ctx.near_bearish_ob && rej.is_some() {
+                ("OrderBlock", rej.unwrap())
+            } else if ctx.near_bearish_fvg && rej.is_some() {
+                ("FVG", rej.unwrap())
+            } else if ctx.displacement_bear {
+                ("Displacement", 0.0)
+            } else if ctx.sweep_confirmed {
+                ("LiquiditySweep", 0.0)
+            } else {
+                return None;
+            }
+        };
 
-        let wick_pct = rejection_short(ctx)?;
-        if !(ctx.obi10_mean < -0.05 || ctx.delta < 0.0) {
-            return None;
+        // Confirmación orderflow constante. Fallback baseline solo si el pipeline live
+        // aún no envía v2 data (parity siempre la trae → fallback nunca se activa).
+        let has_v2_data = ctx.minus_ticks > 0.0 || ctx.plus_ticks > 0.0;
+        if has_v2_data {
+            // Gate: body_below_poc
+            if !ctx.body_below_poc {
+                return None;
+            }
+            // Gate: agresión (minus_ticks > plus_ticks)
+            if ctx.minus_ticks <= ctx.plus_ticks {
+                return None;
+            }
+            // Veto: absorción compradora
+            if ctx.fp_absorb_buy {
+                return None;
+            }
+            // Veto: sin LVN (void) por debajo del nivel = sin espacio limpio al target
+            if !ctx.vp_lvn_below {
+                return None;
+            }
+        } else {
+            // Fallback baseline mientras el pipeline live no envíe v2 data
+            if !(ctx.obi10_mean < -0.05 || ctx.delta < 0.0) {
+                return None;
+            }
         }
 
         Some(SignalCandidate {
             direction: MtfSpotDirection::Short,
             session,
-            level,
+            level: trigger.to_string(),
             wick_pct,
         })
     }
 
     fn detect_long(&self, ctx: &MtfSpotBarContext) -> Option<SignalCandidate> {
-        let session = long_session(ctx.ts_ms)?;
-        let level = self.long_level(ctx)?;
-        let parts: Vec<&str> = level.split('+').collect();
-
-        if !parts.contains(&"VAL") {
+        // Cooldown por dirección
+        if (self.bar_count as i64) - self.last_long_entry_bar < COOLDOWN {
             return None;
         }
+
+        // Gate 0: Régimen D1 EMA — precio entre 1.000x-1.030x EMA (no crash, no burbuja)
+        if !self.d1_regime_long_ok(ctx) {
+            return None;
+        }
+
+        // Gate 0b: H4 no bajista — H4 BOS bearish NO activo. Preferir parquet si viene.
+        if ctx.h4_bos_bear.unwrap_or_else(|| self.h4_bos_bear_active()) {
+            return None;
+        }
+
+        // Gate 0c: Estructura H1 alcista — BOS bullish activo. Preferir parquet si viene.
+        if !ctx.h1_bos_bull.unwrap_or_else(|| self.h1_bos_bull_active()) {
+            return None;
+        }
+
+        let session = long_session(ctx.ts_ms)?;
+
+        // Gate 1: Nivel de soporte — cualquiera de VAL/AL/PDL/WL (no solo VAL).
+        let level = self.long_level(ctx)?;
+        let parts: Vec<&str> = level.split('+').collect();
+        if !parts.iter().any(|p| matches!(*p, "VAL" | "AL" | "PDL" | "WL")) {
+            return None;
+        }
+        // Triple PDL+AL+otros → demasiado ruido (mismo filtro que shorts)
         if parts.len() >= 3 && parts.contains(&"PDL") && parts.contains(&"AL") {
             return None;
         }
 
+        // Gate 2: Rechazo wick alcista en M1
         let wick_pct = rejection_long(ctx)?;
-        if !(ctx.obi10_mean > 0.05 || ctx.delta > 0.0) {
-            return None;
+
+        // Gate 2a: cuerpo no por encima del POC (precio aún en zona de soporte)
+        if let Some(poc) = ctx.vp_poc.filter(|v| *v > 0.0) {
+            if ctx.open.min(ctx.close) > poc {
+                return None;
+            }
+        }
+
+        let has_v2_data = ctx.minus_ticks > 0.0 || ctx.plus_ticks > 0.0;
+        if has_v2_data {
+            // Gate 2b: agresión compradora (plus_ticks > minus_ticks)
+            if ctx.plus_ticks <= ctx.minus_ticks {
+                return None;
+            }
+            // Veto: absorción vendedora
+            if ctx.fp_absorb_sell {
+                return None;
+            }
+        } else {
+            // Fallback baseline mientras el pipeline live no envíe v2 data
+            if !(ctx.obi10_mean > 0.05 || ctx.delta > 0.0) {
+                return None;
+            }
         }
 
         Some(SignalCandidate {
@@ -487,7 +893,35 @@ impl MtfSpotState {
             MtfSpotDirection::Short => entry - TARGET_R * risk,
             MtfSpotDirection::Long => entry + TARGET_R * risk,
         };
-        let fee_r = FEE_RT * entry / risk;
+        let fee_r = self.fee_rt * entry / risk;
+
+        // ── Sizing vpin-aware (mtf_system 2026-06-19) ────────────────────────
+        // `tape & vpin_hi` = flujo tóxico con volumen = firma institucional robusta OOS.
+        // vpin es ORTOGONAL a tape (corr=0.12). NO afecta paridad (sizing_mult no se compara).
+        //   Short: cvd>0 (absorción) / obi>=0 (bids pesadas = bull trap en VAH).
+        //   Long:  cvd>0 (compradores defendiendo) / obi>0 (bids pesadas en VAL). Tape-solo NO sube.
+        let cvd      = ctx.cvd_slope.unwrap_or(0.0);
+        let obi      = ctx.obi10_mean;
+        let tape     = ctx.n_trades > 0.0 && ctx.n_trades >= self.n_trades_q50;
+        let vpin_hi  = ctx.vpin > 0.0 && ctx.vpin >= self.vpin_q50;
+        let cvd_ok   = cvd > 0.0;
+        let sizing_mult = if tape && vpin_hi && cvd_ok {
+            2.5
+        } else if tape && vpin_hi {
+            2.0
+        } else {
+            let third = match candidate.direction {
+                MtfSpotDirection::Short => cvd_ok || tape || obi >= 0.0,
+                MtfSpotDirection::Long => cvd_ok || obi > 0.0,
+            };
+            if third { 1.5 } else { 1.0 }
+        };
+
+        match candidate.direction {
+            MtfSpotDirection::Short => self.last_short_entry_bar = self.bar_count as i64,
+            MtfSpotDirection::Long => self.last_long_entry_bar = self.bar_count as i64,
+        }
+
         let signal = MtfSpotSignal {
             symbol: self.symbol.clone(),
             ts_ms: ctx.ts_ms,
@@ -504,6 +938,7 @@ impl MtfSpotState {
             obi_entry: ctx.obi10_mean,
             delta_entry: ctx.delta,
             cvd_slope_entry: ctx.cvd_slope,
+            sizing_mult,
         };
 
         self.active_trade = Some(ActiveTrade {
@@ -517,7 +952,6 @@ impl MtfSpotState {
             mfe_r: 0.0,
             mae_r: 0.0,
         });
-        self.cvd_streak = 0;
 
         Some(MtfSpotTrade {
             signal,
@@ -557,8 +991,6 @@ impl MtfSpotState {
                         self.close_trade(trade, TARGET_R, "target", target, ctx.ts_ms),
                     );
                 }
-                // CVD exit ELIMINADO en shorts (Paso 1 2026-06-18): cortaba ganadores
-                // a ~1.3R. Solo stop/target/timeout. Ver docs/mtf/MTF_SPOT_EDGE_REALITY_Y_PLAN.md
                 if trade.bars_in_trade >= FORWARD {
                     let gross = (trade.entry - ctx.close) / trade.risk;
                     return TradeUpdate::Closed(
@@ -588,21 +1020,7 @@ impl MtfSpotState {
                         self.close_trade(trade, gross, "timeout", ctx.close, ctx.ts_ms),
                     );
                 }
-                if ctx.cvd_slope.unwrap_or(0.0) < 0.0 {
-                    self.cvd_streak += 1;
-                } else {
-                    self.cvd_streak = 0;
-                }
-                let curr_r = (ctx.close - trade.entry) / trade.risk;
-                if self.cvd_streak >= CVD_FLIP_BARS
-                    && ctx.obi10_mean < -OBI_FLIP_THR
-                    && curr_r >= MIN_PROFIT_CVD
-                {
-                    let gross = (ctx.close - trade.entry) / trade.risk;
-                    return TradeUpdate::Closed(
-                        self.close_trade(trade, gross, "cvd_exit", ctx.close, ctx.ts_ms),
-                    );
-                }
+                // mtf_system: longs salen solo por target/stop/timeout (sin CVD exit)
             }
         }
 
@@ -649,7 +1067,7 @@ enum TradeUpdate {
 fn short_session(ts_ms: i64) -> Option<String> {
     let hm = (ts_ms / 60_000) % 1440;
     if (7 * 60..12 * 60).contains(&hm) {
-        Some("london".into()) // re-habilitada v5 — paridad con backtest Python
+        Some("london".into())
     } else if (12 * 60..16 * 60).contains(&hm) {
         Some("overlap".into())
     } else if (16 * 60..20 * 60).contains(&hm) {
@@ -661,7 +1079,7 @@ fn short_session(ts_ms: i64) -> Option<String> {
 
 fn long_session(ts_ms: i64) -> Option<String> {
     let hm = (ts_ms / 60_000) % 1440;
-    if (14 * 60..16 * 60).contains(&hm) {
+    if (12 * 60..16 * 60).contains(&hm) {
         Some("overlap".into())
     } else if (16 * 60..20 * 60).contains(&hm) {
         Some("ny".into())
@@ -704,4 +1122,15 @@ fn join_near_levels(price: f64, checks: &[(&'static str, Option<f64>)]) -> Optio
 
 fn round4(v: f64) -> f64 {
     (v * 10_000.0).round() / 10_000.0
+}
+
+/// Mediana (elemento len/2 del orden ascendente, igual que el q50 de Python con
+/// índice s[len/2]). Copia a un Vec contiguo y ordena — O(n log n), no O(n²).
+fn median_of(samples: &VecDeque<f64>) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let mut s: Vec<f64> = samples.iter().copied().collect();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    s[s.len() / 2]
 }

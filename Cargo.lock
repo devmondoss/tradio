@@ -5486,6 +5486,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "trades-parser"
+version = "0.8.8"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "arrow-schema",
+ "chrono",
+ "flate2",
+ "parquet",
+ "rayon",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

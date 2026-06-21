@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
         let ctx: MtfSpotBarContext = serde_json::from_str(&line)?;
-        if let Some(event) = state.on_bar_close(&ctx, allow_shorts, allow_longs) {
+        for event in state.on_bar_close(&ctx, allow_shorts, allow_longs) {
             if !event.is_open {
                 trades.push(ParityTrade {
                     ts_ms: event.signal.ts_ms,
