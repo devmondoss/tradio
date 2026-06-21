@@ -154,17 +154,19 @@ impl PaperBook {
     /// Procesar un tick: simular fills y actualizar posiciones abiertas.
     pub fn on_trade(&mut self, px: f64, ts: i64) {
         // ── fills ──
+        // mem::take libera el borrow de self.resting para que make_event pueda tomar &self
+        let orders = std::mem::take(&mut self.resting);
         let mut filled: Vec<RestingOrder> = Vec::new();
         let mut still:  Vec<RestingOrder> = Vec::new();
-        for o in self.resting.drain(..) {
+        for o in orders {
             let hit = match o.level.side {
                 Side::Long  => px <= o.level.price,
                 Side::Short => px >= o.level.price,
             };
             if hit {
-                let idx = Self::reg_idx(o.level.vol_regime);
-                self.filled[idx] += 1;
-                self.events.push(self.make_event("fill", &o.level, ts));
+                self.filled[Self::reg_idx(o.level.vol_regime)] += 1;
+                let evt = self.make_event("fill", &o.level, ts);
+                self.events.push(evt);
                 filled.push(o);
             } else {
                 still.push(o);
