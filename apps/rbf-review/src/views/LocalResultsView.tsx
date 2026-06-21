@@ -336,8 +336,7 @@ export default function LocalResultsView({
           setDataFrom(`${label} (~${nDays}d)`)
           setAvailableDays(nDays)
           setDays(nDays)
-          // liquidity: NO auto-arrancar — mostrar primero la ficha completa de config; el usuario decide
-          if (strategy !== 'liquidity') triggerRun(nDays)
+          triggerRun(nDays)   // auto-corre el RANGO COMPLETO disponible (sin race del default 14d)
         })
         .catch(() => { /* parquet no disponible */ })
       return
