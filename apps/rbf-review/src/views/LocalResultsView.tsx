@@ -390,7 +390,8 @@ export default function LocalResultsView({
     }
   }
 
-  function run() { triggerRun(days) }
+  // "Ejecutar Backtest" corre el rango COMPLETO disponible (evita la race del default 14d)
+  function run() { const d = availableDays ?? days; setDays(d); triggerRun(d) }
 
   if (!ran && !loading) {
     return (
