@@ -81,10 +81,35 @@ function DetailPanel({ trade }: { trade: Trade }) {
       <InfoRow label="Risk$"  value={'$' + trade.riskUsd.toFixed(3)} />
 
       <SectionHeader label="Micro" />
-      {trade.vr       != null && <InfoRow label="VR"       value={trade.vr.toFixed(2) + 'x'}       color={trade.vr >= 3 ? 'var(--green)' : 'var(--yellow)'} />}
-      {trade.cvdSlope != null && <InfoRow label="CVD"      value={trade.cvdSlope.toFixed(4)} />}
+      {trade.mscore != null && (
+        <div style={{ marginBottom: 5 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+            <span style={{ fontSize: 14, fontWeight: 800, fontFamily: 'var(--mono)',
+              color: trade.mscore >= 3 ? 'var(--green)' : trade.mscore >= 2 ? 'var(--yellow)' : 'var(--text3)' }}>
+              {trade.mscore}/4
+            </span>
+            <span style={{ fontSize: 9, color: 'var(--text3)' }}>micro score</span>
+          </div>
+          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+            {[
+              { label: 'OBI',    ok: trade.obi != null && (trade.dir === 'Long' ? trade.obi > 0.02 : trade.obi < -0.02) },
+              { label: 'VR>1.5', ok: trade.vr != null && trade.vr > 1.5 },
+              { label: 'ABS',    ok: !!trade.absorb },
+              { label: 'DZ',     ok: trade.dz != null && (trade.dir === 'Long' ? trade.dz < -0.5 : trade.dz > 0.5) },
+            ].map(({ label, ok }) => (
+              <span key={label} style={{ fontSize: 8, padding: '1px 4px', borderRadius: 3, fontFamily: 'var(--mono)',
+                background: ok ? 'rgba(35,134,54,0.15)' : 'rgba(240,62,62,0.08)',
+                color: ok ? 'var(--green)' : 'var(--text3)', border: `1px solid ${ok ? 'rgba(35,134,54,0.3)' : 'rgba(240,62,62,0.15)'}` }}>
+                {ok ? '●' : '○'} {label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {trade.vr       != null && <InfoRow label="VR"       value={trade.vr.toFixed(2) + 'x'}       color={trade.vr >= 1.5 ? 'var(--green)' : 'var(--text3)'} />}
+      {trade.cvdSlope != null && <InfoRow label="CVD slope" value={trade.cvdSlope.toFixed(4)} />}
       {trade.obi      != null && <InfoRow label="OBI"      value={trade.obi.toFixed(3)} />}
-      {trade.dz       != null && <InfoRow label="DZ"       value={trade.dz.toFixed(0)} />}
+      {trade.dz       != null && <InfoRow label="DZ"       value={trade.dz.toFixed(1)} />}
       {trade.funding  != null && <InfoRow label="Funding"  value={(trade.funding * 100).toFixed(4) + '%'} />}
       {trade.priceVsVwap != null && <InfoRow label="vsVWAP" value={(trade.priceVsVwap * 100).toFixed(3) + '%'} />}
 

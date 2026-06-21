@@ -89,10 +89,31 @@ def gen_naked_poc(svp_naked, tol=0.002):
 def _is_chop(reg):
     return str(reg).lower() in ("chop","range","balance","consolidation")
 
+def _micro_score(a, i, side):
+    """Score 0-4 de microestructura para entrada en fade.
+    Fades: queremos absorcion activa en el nivel + sesgo de libro favorable.
+      OBI > 0 para long (mas bids) | OBI < 0 para short (mas asks)      +1
+      VR > 1.5 (volumen elevado = nivel significativo, actividad real)   +1
+      fp_absorb_buy/sell (footprint: compradores/vendedores absorben)    +1
+      DZ < -0.5 para long (presion vendedora = buyers absorben sells)   +1
+           DZ > +0.5 para short (presion compradora = sellers absorben)
+    Threshold recomendado: >= 2 (no filtrar excesivo, pero confirmar 2 de 4)."""
+    score = 0
+    obi = a.obi5_mean[i] if np.isfinite(a.obi5_mean[i]) else 0.0
+    if side == "long"  and obi > 0.02:  score += 1
+    if side == "short" and obi < -0.02: score += 1
+    if np.isfinite(a.vr[i]) and a.vr[i] > 1.5: score += 1
+    if side == "long"  and bool(a.fp_absorb_buy[i]):  score += 1
+    if side == "short" and bool(a.fp_absorb_sell[i]): score += 1
+    if np.isfinite(a.dz[i]):
+        if side == "long"  and a.dz[i] < -0.5: score += 1
+        if side == "short" and a.dz[i] > +0.5: score += 1
+    return score
+
 def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=0.0, min_tp1_pct=0.0,
         system="A", trail_atr=4.0, min_tp1_rr=2.5,
         svp_dayvp=None, svp_naked=None, m1_cvd=None, cvd_reversal_pct=0.35,
-        lvn_filter=False):
+        lvn_filter=False, micro_min=0, cvd_after_partial=False):
     """Entrada decidida en el TF de 'a'; SALIDA simulada en M1 (honesto, sin ambigüedad intrabar).
     system='A' → FADE: parcial 50% en TP1 (solo si TP1 ≥ min_tp1_rr×riesgo) → BE → target estructural.
     system='AB'/'C' → ENRUTA por régimen: Chop→fade · Tendencia→trailing stop (monta la continuación).
@@ -126,10 +147,11 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=
                 if side=="short" and not (tp2<entry<stop): continue
                 if abs(tp2-entry)/risk < 1.2: continue
                 # FILTRO LVN: solo operar si hay zona de bajo volumen entre entry y target
-                # (camino despejado = precio viajara rapido hasta el objetivo)
                 if lvn_filter and svp_dayvp:
                     day_int = int(a.ts[i]) // 86_400_000
                     if not SVP.lvn_in_path(svp_dayvp, day_int, entry, tp2): continue
+                # FILTRO MICROESTRUCTURA: absorcion + OBI + VR + DZ
+                if micro_min > 0 and _micro_score(a, i, side) < micro_min: continue
                 use_fade = (system=="A") or (system=="AB" and _is_chop(a.reg[i]))
                 j0=np.searchsorted(m1ts, a.ts[i]+bar_ms)
                 jend=np.searchsorted(m1ts, a.ts[i]+bar_ms+timeout_min*60_000)
@@ -144,14 +166,18 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=
                     p1 = 0.5 if take_partial else 0.0
                     # --- FADE: parcial en TP1 → breakeven → target estructural ---
                     exit_px=None; exit_ts=None; reason="timeout"
-                    cur_stop=stop; realized=0.0; rem=1.0; filled1=False
+                    cur_stop=stop; realized=0.0; rem=1.0; filled1=False; j_partial=-1
                     for j in range(j0, min(jend,len(m1ts))):
                         if side=="long":
                             if m1l[j]<=cur_stop:
                                 realized+=rem*((cur_stop-entry)/risk); exit_px=cur_stop
                                 reason=("breakeven" if filled1 else "stop"); exit_ts=m1ts[j]; break
                             if not filled1 and take_partial and m1h[j]>=tp1:
-                                realized+=p1*((tp1-entry)/risk); rem-=p1; filled1=True; cur_stop=entry
+                                realized+=p1*((tp1-entry)/risk); rem-=p1; filled1=True; cur_stop=entry; j_partial=j
+                            if filled1 and cvd_after_partial and m1_cvd is not None and j_partial>=0:
+                                if SVP.cvd_exit_check(m1_cvd, j_partial, j, "long", reversal_pct=0.50, min_swing=200.0):
+                                    exit_px=m1c[j]; reason="cvd_partial"; exit_ts=m1ts[j]
+                                    realized+=rem*((m1c[j]-entry)/risk); break
                             if m1h[j]>=tp2:
                                 realized+=rem*((tp2-entry)/risk); exit_px=tp2; reason="target"; exit_ts=m1ts[j]; break
                         else:
@@ -159,7 +185,11 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=
                                 realized+=rem*((entry-cur_stop)/risk); exit_px=cur_stop
                                 reason=("breakeven" if filled1 else "stop"); exit_ts=m1ts[j]; break
                             if not filled1 and take_partial and m1l[j]<=tp1:
-                                realized+=p1*((entry-tp1)/risk); rem-=p1; filled1=True; cur_stop=entry
+                                realized+=p1*((entry-tp1)/risk); rem-=p1; filled1=True; cur_stop=entry; j_partial=j
+                            if filled1 and cvd_after_partial and m1_cvd is not None and j_partial>=0:
+                                if SVP.cvd_exit_check(m1_cvd, j_partial, j, "short", reversal_pct=0.50, min_swing=200.0):
+                                    exit_px=m1c[j]; reason="cvd_partial"; exit_ts=m1ts[j]
+                                    realized+=rem*((entry-m1c[j])/risk); break
                             if m1l[j]<=tp2:
                                 realized+=rem*((entry-tp2)/risk); exit_px=tp2; reason="target"; exit_ts=m1ts[j]; break
                     if exit_px is None:
@@ -196,12 +226,20 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=
                         exit_px=m1c[jj]; exit_ts=m1ts[jj]
                     r=(((exit_px-entry) if side=="long" else (entry-exit_px))/risk)-fee_r
                     tgt=float(exit_px); tp1_out=None; tname="trailing"; gestion="trail"
+                mscore  = _micro_score(a, i, side)
+                m_obi   = float(a.obi5_mean[i])   if np.isfinite(a.obi5_mean[i])   else None
+                m_vr    = float(a.vr[i])           if np.isfinite(a.vr[i])           else None
+                m_dz    = float(a.dz[i])           if np.isfinite(a.dz[i])           else None
+                m_cvds  = float(a.cvd_slope[i])    if np.isfinite(a.cvd_slope[i])    else None
+                m_abs   = bool(a.fp_absorb_buy[i] if side=="long" else a.fp_absorb_sell[i])
                 trades.append(dict(tsMs=int(a.ts[i]), dir=("Long" if side=="long" else "Short"),
                                    entry=float(entry), stop=float(stop), target=tgt,
                                    tp1=tp1_out, targetName=tname,
                                    exit=float(exit_px), resultR=float(r), reason=reason,
                                    kind=kind, closedAt=int(exit_ts), stopPct=float(100*risk/entry),
-                                   regime=str(a.reg[i]), gestion=gestion))
+                                   regime=str(a.reg[i]), gestion=gestion,
+                                   mscore=mscore, obi=m_obi, vr=m_vr, dz=m_dz,
+                                   cvdSlope=m_cvds, absorb=m_abs))
                 cool=i+6; dcount[d]=dcount.get(d,0)+1; break
     return sorted(trades, key=lambda t:t["tsMs"])
 
@@ -216,9 +254,12 @@ def to_trade_json(raw, i):
         "reason":raw["reason"], "tsMs":raw["tsMs"], "ts":raw["tsMs"]//1000,
         "closedAt":pd.to_datetime(raw["closedAt"],unit="ms",utc=True).isoformat(),
         "regime":raw["regime"], "gestion":raw.get("gestion","fade"), "sessionPhase":"", "evidence":[raw["kind"]],
-        "confluenceFlags":[raw["kind"], raw.get("gestion","fade")], "vetoReason":"", "cvdInRange":None, "vr":None,
-        "priceVsVwap":None, "funding":None, "cvdSlope":None, "obi":None, "dz":None,
+        "confluenceFlags":[raw["kind"], raw.get("gestion","fade"), f"micro={raw.get('mscore',0)}/4"],
+        "vetoReason":"", "cvdInRange":None,
+        "vr":raw.get("vr"), "priceVsVwap":None, "funding":None,
+        "cvdSlope":raw.get("cvdSlope"), "obi":raw.get("obi"), "dz":raw.get("dz"),
         "rangePct":None, "rangeBars":None, "rangeTouch":None, "durationMin":None, "isOpen":False,
+        "mscore":raw.get("mscore"), "absorb":raw.get("absorb"),
     }
 
 def main():
@@ -241,6 +282,10 @@ def main():
                     help="Desactiva gen_naked_poc() (activo por defecto cuando hay cache SVP).")
     ap.add_argument("--lvn-filter", action="store_true",
                     help="Solo operar fades con LVN entre entry y target (experimental, suele reducir netR).")
+    ap.add_argument("--micro-min", type=int, default=0,
+                    help="Score minimo de microestructura para tomar un trade (0=sin filtro, 2=recomendado).")
+    ap.add_argument("--cvd-partial", action="store_true",
+                    help="Salida CVD post-parcial: cuando el parcial esta tomado (BE+), salir si CVD revierte 50%%.")
     args=ap.parse_args()
 
     full0=L2.TICK_MS   # era tick VERIFICADA (2025-06-19+, 365d). Pre-tick era OHLCV no verificado.
@@ -274,7 +319,8 @@ def main():
              stop_floor_pct=args.stop_floor, min_tp1_pct=args.min_range, system=sys_arg,
              min_tp1_rr=args.min_tp1_rr,
              svp_dayvp=svp_dayvp, svp_naked=svp_naked, m1_cvd=m1_cvd,
-             lvn_filter=args.lvn_filter)
+             lvn_filter=args.lvn_filter,
+             micro_min=args.micro_min, cvd_after_partial=args.cvd_partial)
     trades=[to_trade_json(r,i) for i,r in enumerate(raws)]
     eq=CAP0
     for tr in trades: eq+=tr["pnlUsd"]; tr["equity"]=round(eq,2)

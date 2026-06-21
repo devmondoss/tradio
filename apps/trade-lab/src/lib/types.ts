@@ -37,6 +37,8 @@ export interface Trade {
   rangeTouch: number | null
   durationMin: number | null
   isOpen: boolean
+  mscore?: number | null     // micro score 0-4 (OBI + VR + absorcion + DZ) al momento de entrada
+  absorb?: boolean | null    // fp_absorb_buy/sell activo en la entrada
   // Live trading fields (null for paper trades)
   isLive?: boolean
   liveEntryOrderId?: string | null
