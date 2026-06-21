@@ -1,0 +1,32 @@
+---
+name: project_orderflow_edge_verdict
+description: Veredicto causal año-completo — BTC perp orderflow NO tiene edge direccional desplegable IS/OOS (3 frentes convergen)
+metadata:
+  type: project
+---
+
+Sobre el encargo de descubrir un edge direccional desplegable en BTCUSDT perp Bybit (orderflow/micro,
+alta frecuencia, fees reales 11 bps RT, IS/OOS estricto): **veredicto = NO hay edge desplegable**, con
+dataset del año completo re-bajado sin lookahead (365d ticks tick-a-tick + ob_1s + OI + funding).
+
+Tres frentes independientes convergen (ver `docs/orderflow/EDGE_VERDICT_2026-06-19.md`):
+1. **Eventos univariados** (2.76M, 16 tipos): mejor signed OOS = sweep_down +0.9 bps vs 11 bps fee; hit ~50-55%; MFE/MAE simétricos ±15-22 bps. Los heurísticos de traders (absorción, CVD-div, flush stops, OBI extremo, big trades) mapean 1:1 → ninguno harvesteable.
+2. **Derivados OI/funding** (horario): único flag (funding_pos_extreme) es artefacto n_oos=51, IS≈0, régimen-dependiente. No edge + horizonte multi-hora (anti-frecuencia).
+3. **Capstone ML** (LightGBM, 2.07M filas, 23 features causales): **OOS Spearman 0.0008** (cero), sign-acc 50.0%, decil-top +0.45 bps → −10.6 net. Sobreajuste puro (IS Spearman +0.23).
+4. **Orderflow como CONFIRMACIÓN** (la tesis correcta del usuario: orderflow no es estrategia, confirma el edge de una). Estrategia base de las transcripciones = Delta Range Reversal con Absorción (`transcripciones/Delta_Range_Reversal_v3_Unificado.md`), fade de extremos de rango. `_range_fade.py` + `_fade_conditional.py`: el fade base es moneda al aire (WR 50.8% IS → 45.5% OOS, decae) y NINGUNA señal de orderflow lo mejora robusto OOS (absorción +5.7 IS→−1.7 OOS; delta fuerte/CVD-div predicen ruptura, Δ −7 a −16). Magnitud clave: stop 0.25·ATR M5 ≈ 3.6 bps < fee 11 bps ⇒ el stop tight del spec es fee-suicida.
+
+**Why:** el retorno forward condicionado a CUALQUIER feature/combinación —incl. en puntos de decisión estructural— es cuasi-martingala simétrica; la señal vive 1-2 órdenes bajo el fee. Forzar estrategia = sobreajuste.
+
+**How to apply:** no construir estrategia direccional BTC-solo sobre estos datos. HUECO de datos honesto sin cerrar: el spec llama "señal estrella crypto" a clusters de **liquidaciones + heatmap DOM**, que NO están en el dataset (sí OB L2 1s + OI + funding). Bajar liquidaciones de Bybit = próximo paso real si se quiere cerrar ese frente. Otros ortogonales: cross-asset lead-lag ETH/SOL→BTC. Pipeline reproducible: `build_events.py`, `_event_predict.py`, `_deriv_predict.py`, `_ml_build.py`, `_ml_eval.py`, `_range_fade.py`, `_fade_conditional.py`. Reemplaza/extiende [[project_htf_orderflow]] y [[project_orderflow_funnel]]. NO revisar templates MTF/ICT ([[project_mtf_strategy]]).
+
+**Metodología (feedback del usuario):** las estrategias a probar se EXTRAEN de `transcripciones/` (no inventar, analizarlas TODAS y definir el set); el orderflow se prueba como capa de confirmación sobre la estructura base, contra el dataset rico de 365d.
+
+**SET COMPLETO de las transcripciones (docs/orderflow/STRATEGY_SET.md) — las 6 probadas, TODAS negativas:** S1 Range Reversal (WR45.5%OOS), S2 Breakout Continuation, S3 Sweep/SFP +proxy-liquidación, S4 VWAP±2σ, S5 AMD sesión, S6 Level Scalp Okala (28 tr/día, alta frecuencia confirmada pero perdiendo). Scripts: `_range_fade.py`, `_fade_conditional.py`, `_s2_breakout.py`, `_s3_sweep.py`, `_s4_s5.py`, `_s6_level_scalp.py`. En las 6 el orderflow nunca da lift robusto OOS (parpadea +IS→−OOS o filtra a n insignificante). **Bybit NO publica liquidaciones históricas** (v5 realtime-only); proxy fiel = OI-drop (ya en S3/S5). Fee 11bps domina: stop 25bps→0.44R/trade, stop tight 3-5bps→>1R. **9 frentes independientes convergen: no hay edge desplegable BTC-perp-solo a fee retail.**
+
+**ICT Market Maker Model + OTE** (S7b, `_s7_ict_mmm.py`, M15: bias daily + sweep PDH/PDL + displacement/CISD + entrada OTE 0.62 o market): negativa en ambos modos (market WR 77-85% pero avgR −0.3 por RR<1; OTE WR 15%OOS avgR −1.0). Que ambos extremos del trade-off RR/WR den avgR<0 ⇒ sin edge direccional. Probado OF estilo-forex (delta a favor) Y **cripto (delta EN CONTRA = absorción, el catálogo dice que en BTC el delta va contra el precio)** → ninguno rescata. ICT es baja frecuencia (~30-50 tr/año) → opuesto al objetivo. Research cripto-ICT en STRATEGY_SET: midnight-open(00:00UTC)/NWOG/NDOG como key levels = único refinamiento testeable pendiente (expectativa baja). Modelo discrecional → backtest mecánico aproximado.
+
+**TOP-DOWN multi-timeframe 4H→1H→5m** (S8, `_topdown.py`, la "imagen completa" SMC/ICT que el usuario mostró en capturas: 4H dirección EMA20 → 1H zona FVG/OB alineada → 5m engulfing/rechazo + orderflow VR+delta): NEGATIVA. Solo-estructura WR 36%OOS avgR −0.99 (4.9 tr/día); +orderflow 5m WR 31%OOS avgR −1.78 → el OF EMPEORA OOS (recorta 1178→444). El framework anidado completo tampoco da edge. = 11º frente. Conclusión robusta: ni los setups sueltos ni el top-down anidado ni ICT MMM, con o sin orderflow, dan expectativa + robusta OOS en BTC perp a fee retail.
+
+**MINERÍA DE PATRONES anti-overfit** (`_mine_build.py`+`_mine.py`, etiqueta triple-barrera target/stop, 28 features causales, control con NULL de etiquetas barajadas): a ±80bps (fee 0.137R) el modelo flexible da AUC OOS 0.52 (decil top P(up) OOS 0.50); de 1.326 reglas el edge OOS de las IS-seleccionadas (−0.007) NO supera el p95 del null (+0.0036) = ruido de búsqueda. ÚNICO hallazgo con señal OOS real: persistencia de tendencia (`dist_vwap<lo`→sigue bajando, ~58-62% direccional, edge OOS ~+0.13) pero queda JUSTO bajo el fee y es regime-dependiente; el ORDERFLOW/microestructura no aporta predicción OOS. A ±35bps: 0/1326 reglas baten fee ni IS. **El fee es el muro: existe momentum-VWAP débil real pero vive en la línea de 11-14 bps.**
+
+**VWAP-momentum con MAKER** (`_vwap_mom.py`, M5, barrera ±80bps): la última hipótesis viva, operada explícita. Taker 11bps: avgR OOS −0.13. Maker 4bps: −0.038. Maker VIP 2bps (mejor caso, sesión, th moderado): **−0.001R = EXACTAMENTE en breakeven OOS, sin cruzar**. 24h o th más fuerte → WR<50%, peor. Modelo maker es optimista (asume fill gratis sin selección adversa). CONCLUSIÓN FINAL: ni con maker hay edge desplegable robusto OOS. ~12 frentes + minería anti-overfit + test maker → no hay edge BTC-perp-solo a fees retail. Lo único real es momentum-VWAP débil que vive EXACTO en la línea del coste. Lo que movería la aguja: fees institucionales <2bps, cross-asset, u otra fuente de alfa (no orderflow-BTC-solo).

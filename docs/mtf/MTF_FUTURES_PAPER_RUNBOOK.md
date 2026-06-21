@@ -3,7 +3,8 @@
 > Objetivo: validar FORWARD el sistema de shorts (única estrategia con edge) en
 > futuros, porque no hay data histórica de futuros para backtestear. El paper
 > recoge su propia data hacia adelante.
-> Creado: 2026-06-18. Ver `MTF_SPOT_EDGE_REALITY_Y_PLAN.md` para el porqué.
+> Creado: 2026-06-18. Estado vigente y el porqué de futuros: [`MTF_SISTEMA.md`](MTF_SISTEMA.md).
+> Razonamiento original (archivado): [`../archive/mtf/MTF_SPOT_EDGE_REALITY_Y_PLAN.md`](../archive/mtf/MTF_SPOT_EDGE_REALITY_Y_PLAN.md).
 
 ---
 

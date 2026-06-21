@@ -96,6 +96,9 @@ import pandas as pd
 
 ROOT = Path(__file__).parent.parent
 SYMBOL_TO_PATH = {
+    # Futuros (default — todo el trabajo nuevo va aqui)
+    'BTCUSDT_PERP': ROOT / 'data/bybit-perp/processed/btcusdt_perp_m1.parquet',
+    # Spot (legacy)
     'BTCUSDT':    ROOT / 'data/bybit-spot/processed/btcusdt_m1.parquet',
     'BTCUSDT_M5': ROOT / 'data/bybit-spot/processed/btcusdt_m5.parquet',
     'BTCUSDT_M15':ROOT / 'data/bybit-spot/processed/btcusdt_m15.parquet',
@@ -744,6 +747,174 @@ def compute_ict_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# ── H1 features (EMA20, BOS, ChoCH, OB, FVG) ────────────────────────────────
+def compute_h1_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Resamplea a H1 y calcula estructura ICT/SMC (bears Y bulls):
+      h1_ema20       : EMA20 sobre cierres H1
+      h1_bearish     : close_m1 < h1_ema20
+      h1_bos_bear    : BOS bajista H1 (cierre bajo swing low previo, ultimas 3 H1)
+      h1_choch_bear  : ChoCH bajista (primer LH tras uptrend H1)
+      h1_ob_bear     : precio dentro del OB bajista H1 activo
+      h1_fvg_bear    : precio dentro del FVG bajista H1 activo
+      h1_bos_bull    : BOS alcista H1 (cierre sobre swing high previo, ultimas 3 H1)
+      h1_choch_bull  : ChoCH alcista (primer HH tras downtrend H1)
+      h1_ob_bull     : precio dentro del OB alcista H1 activo
+    """
+    n    = len(df)
+    ts   = df['ts_ms'].values
+    cl_b = df['close'].values
+
+    h1_bucket = (ts // H1_MS) * H1_MS
+
+    df_tmp = df.copy()
+    df_tmp['h1_ts'] = h1_bucket
+    h1 = df_tmp.groupby('h1_ts', sort=True).agg(
+        open  = ('open',  'first'),
+        high  = ('high',  'max'),
+        low   = ('low',   'min'),
+        close = ('close', 'last'),
+    ).reset_index().rename(columns={'h1_ts': 'ts_ms'})
+
+    nh1   = len(h1)
+    h1_cl = h1['close'].values
+    h1_hi = h1['high'].values
+    h1_lo = h1['low'].values
+    h1_op = h1['open'].values
+    h1_ts = h1['ts_ms'].values
+
+    if nh1 < 10:
+        for col in ('h1_ema20','h1_bearish',
+                    'h1_bos_bear','h1_choch_bear','h1_ob_bear','h1_fvg_bear',
+                    'h1_bos_bull','h1_choch_bull','h1_ob_bull'):
+            df[col] = False if col != 'h1_ema20' else np.nan
+        return df
+
+    # H1 EMA20
+    h1_ema20 = ema(h1_cl, 20)
+
+    # H1 swing low/high (ventana rolling 3 H1)
+    h1_swing_lo      = pd.Series(h1_lo).rolling(3, min_periods=2).min().values
+    h1_swing_lo_prev = np.roll(h1_swing_lo, 1); h1_swing_lo_prev[0] = np.nan
+    h1_swing_hi      = pd.Series(h1_hi).rolling(3, min_periods=2).max().values
+    h1_swing_hi_prev = np.roll(h1_swing_hi, 1); h1_swing_hi_prev[0] = np.nan
+
+    # ── BAJISTA ───────────────────────────────────────────────────────────────
+    # H1 BOS bajista
+    h1_bos_b = h1_cl < h1_swing_lo_prev
+
+    # H1 ChoCH bajista: primer LH despues de 3+ cierres sobre EMA
+    h1_uptrend = np.zeros(nh1, dtype=bool)
+    streak = 0
+    for j in range(nh1):
+        streak = streak + 1 if h1_cl[j] > h1_ema20[j] else 0
+        h1_uptrend[j] = streak >= 3
+
+    h1_choch_b = np.zeros(nh1, dtype=bool)
+    for j in range(1, nh1):
+        if h1_uptrend[j - 1] and h1_hi[j] < h1_hi[j - 1] and h1_cl[j] < h1_cl[j - 1]:
+            h1_choch_b[j] = True
+
+    # H1 Order Block bajista: ultima vela alcista antes de impulso bajista
+    h1_ob_hi = np.full(nh1, np.nan)
+    h1_ob_lo = np.full(nh1, np.nan)
+    cur_ob_hi = cur_ob_lo = np.nan
+    for j in range(nh1 - 2):
+        if h1_cl[j] > h1_op[j]:
+            drop = h1_cl[j] - h1_cl[j + 2]
+            if drop > 0 and h1_cl[j + 2] < h1_op[j]:
+                cur_ob_hi = h1_hi[j]; cur_ob_lo = h1_op[j]
+        h1_ob_hi[j + 2] = cur_ob_hi
+        h1_ob_lo[j + 2] = cur_ob_lo
+
+    # H1 FVG bajista: low[j-2] > high[j]
+    h1_fvg_top = np.full(nh1, np.nan)
+    h1_fvg_bot = np.full(nh1, np.nan)
+    cur_ft = cur_fb = np.nan
+    for j in range(2, nh1):
+        ft = h1_lo[j - 2]; fb = h1_hi[j]
+        if ft > fb:
+            cur_ft = ft; cur_fb = fb
+        if not np.isnan(cur_ft) and (cur_fb <= h1_cl[j] <= cur_ft):
+            cur_ft = cur_fb = np.nan
+        h1_fvg_top[j] = cur_ft
+        h1_fvg_bot[j] = cur_fb
+
+    # BOS bajista reciente (ultimas 3 H1)
+    bos_recent_b = np.zeros(nh1, dtype=bool)
+    for j in range(nh1):
+        bos_recent_b[j] = np.any(h1_bos_b[max(0, j - 2): j + 1])
+
+    # ── ALCISTA (espejo) ──────────────────────────────────────────────────────
+    # H1 BOS alcista: cierre H1 sobre swing high H1 previo
+    h1_bos_bull_arr = h1_cl > h1_swing_hi_prev
+
+    # H1 ChoCH alcista: primer HH despues de 3+ cierres bajo EMA
+    h1_downtrend = np.zeros(nh1, dtype=bool)
+    streak_dn = 0
+    for j in range(nh1):
+        streak_dn = streak_dn + 1 if h1_cl[j] < h1_ema20[j] else 0
+        h1_downtrend[j] = streak_dn >= 3
+
+    h1_choch_bull_arr = np.zeros(nh1, dtype=bool)
+    for j in range(1, nh1):
+        if h1_downtrend[j - 1] and h1_lo[j] > h1_lo[j - 1] and h1_cl[j] > h1_cl[j - 1]:
+            h1_choch_bull_arr[j] = True
+
+    # H1 Order Block alcista: ultima vela bajista antes de impulso alcista
+    h1_ob_bull_hi = np.full(nh1, np.nan)
+    h1_ob_bull_lo = np.full(nh1, np.nan)
+    cur_ob_bull_hi = cur_ob_bull_lo = np.nan
+    for j in range(nh1 - 2):
+        if h1_cl[j] < h1_op[j]:  # vela bajista
+            rise = h1_cl[j + 2] - h1_cl[j]
+            if rise > 0 and h1_cl[j + 2] > h1_op[j]:
+                cur_ob_bull_hi = h1_op[j]; cur_ob_bull_lo = h1_lo[j]
+        h1_ob_bull_hi[j + 2] = cur_ob_bull_hi
+        h1_ob_bull_lo[j + 2] = cur_ob_bull_lo
+
+    # BOS alcista reciente (ultimas 3 H1)
+    bos_recent_bull = np.zeros(nh1, dtype=bool)
+    for j in range(nh1):
+        bos_recent_bull[j] = np.any(h1_bos_bull_arr[max(0, j - 2): j + 1])
+
+    # ChoCH alcista reciente (ultimas 3 H1)
+    choch_recent_bull = np.zeros(nh1, dtype=bool)
+    for j in range(nh1):
+        choch_recent_bull[j] = np.any(h1_choch_bull_arr[max(0, j - 2): j + 1])
+
+    # Mapear H1 -> M1 por bucket. CAUSAL (sin lookahead): cada barra M1 ve la estructura
+    # del ÚLTIMO bucket H1 CERRADO (idx-1), no el en-curso (cuyo close es fin-de-hora =
+    # dato futuro). Antes se usaba el bucket actual → lookahead intra-hora. 2026-06-19.
+    h1_idx = np.clip(np.searchsorted(h1_ts, h1_bucket, side='left') - 1, 0, nh1 - 1)
+
+    df = df.copy()
+    df['h1_ema20']       = h1_ema20[h1_idx]
+    df['h1_bearish']     = cl_b < h1_ema20[h1_idx]
+    # bajista
+    df['h1_bos_bear']    = bos_recent_b[h1_idx]
+    df['h1_choch_bear']  = h1_choch_b[h1_idx]
+    df['h1_ob_bear']     = (
+        ~np.isnan(h1_ob_hi[h1_idx]) &
+        (cl_b <= h1_ob_hi[h1_idx]) &
+        (cl_b >= h1_ob_lo[h1_idx])
+    )
+    df['h1_fvg_bear']    = (
+        ~np.isnan(h1_fvg_top[h1_idx]) &
+        (cl_b <= h1_fvg_top[h1_idx]) &
+        (cl_b >= h1_fvg_bot[h1_idx])
+    )
+    # alcista
+    df['h1_bos_bull']    = bos_recent_bull[h1_idx]
+    df['h1_choch_bull']  = choch_recent_bull[h1_idx]
+    df['h1_ob_bull']     = (
+        ~np.isnan(h1_ob_bull_hi[h1_idx]) &
+        (cl_b <= h1_ob_bull_hi[h1_idx]) &
+        (cl_b >= h1_ob_bull_lo[h1_idx])
+    )
+    return df
+
+
 # ── H4 features (EMA20, OB, FVG, BoS) ───────────────────────────────────────
 
 def compute_h4_features(df: pd.DataFrame, bars_per_h4: int) -> pd.DataFrame:
@@ -835,8 +1006,9 @@ def compute_h4_features(df: pd.DataFrame, bars_per_h4: int) -> pd.DataFrame:
     # Para cada barra base, encontrar el H4 mas reciente completado
     h4_ts_arr = h4_ts
 
-    # Indices: para cada barra base, indice del H4 bucket actual
-    h4_idx_per_bar = np.searchsorted(h4_ts_arr, h4_bucket, side='left')
+    # Indices: para cada barra base, índice del último H4 bucket CERRADO (idx-1).
+    # CAUSAL (sin lookahead): el bucket en-curso tiene close=fin-de-H4 = dato futuro. 2026-06-19.
+    h4_idx_per_bar = np.searchsorted(h4_ts_arr, h4_bucket, side='left') - 1
     h4_idx_per_bar = np.clip(h4_idx_per_bar, 0, nh4 - 1)
 
     base_h4_ema   = h4_ema[h4_idx_per_bar]
@@ -975,8 +1147,12 @@ def enrich(df: pd.DataFrame, verbose: bool = True, tf: str = 'm1') -> pd.DataFra
     log("  [15/16] ICT features (OTE London KZ 02:00, FVG, OB, displacement)...")
     df = compute_ict_features(df)
 
-    # 16. H4 features (EMA20, OB, FVG, BoS)
-    log("  [16/16] H4 features (EMA20, OB, FVG, BoS)...")
+    # 16. H1 features (EMA20, BOS, ChoCH, OB, FVG) — capa de setup ICT
+    log("  [16/17] H1 features (EMA20, BOS/ChoCH/OB bear+bull)...")
+    df = compute_h1_features(df)
+
+    # 17. H4 features (EMA20, OB, FVG, BoS)
+    log("  [17/17] H4 features (EMA20, OB, FVG, BoS)...")
     df = compute_h4_features(df, bars_h4)
 
     # Weekly high/low ajustado al timeframe
@@ -995,12 +1171,12 @@ def enrich(df: pd.DataFrame, verbose: bool = True, tf: str = 'm1') -> pd.DataFra
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--symbol', default='BTCUSDT', choices=list(SYMBOL_TO_PATH.keys()))
+    parser.add_argument('--symbol', default='BTCUSDT_PERP', choices=list(SYMBOL_TO_PATH.keys()),
+                        help='Default: BTCUSDT_PERP (futuros). Spot: BTCUSDT.')
     parser.add_argument('--tf', default='m1', choices=list(TF_BARS.keys()),
                         help='Timeframe base: m1 (default), m5, m15')
     args = parser.parse_args()
 
-    # Auto-detect tf desde symbol si no se especifica
     if args.tf == 'm1' and 'M5' in args.symbol:
         args.tf = 'm5'
     elif args.tf == 'm1' and 'M15' in args.symbol:

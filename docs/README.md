@@ -11,6 +11,7 @@ Este indice existe para evitar leer documentacion historica como si fuera el est
 | [rbf/RBF_REGLAS_ACTIVAS.md](rbf/RBF_REGLAS_ACTIVAS.md) | Fuente de verdad operativa de RBF: reglas live, config, score, vetos y dataset. |
 | [rbf/RBF_FEATURE_MATRIX.md](rbf/RBF_FEATURE_MATRIX.md) | Contrato de features RBF para ciencia/ingenieria de datos. |
 | [rbf/DATASET.md](rbf/DATASET.md) | Dataset M1 + microestructura, tablas y limites de backfill/live. |
+| [mtf/MTF_SISTEMA.md](mtf/MTF_SISTEMA.md) | Fuente de verdad del sistema MTF (FUTUROS Bybit perp, BTCUSDT). Estado, params, infra y edge honesto. |
 | [BUILD.md](BUILD.md) | Setup local de build en Windows. |
 
 ## Referencias oficiales
@@ -34,6 +35,7 @@ Este indice existe para evitar leer documentacion historica como si fuera el est
 - **Microestructura:** OBI L5/L10/L20, spread, CVD slope, DZ, VR, absorption, stacked imbalance, VPIN, OI, VWAP.
 - **Scalping S1/S2/S3:** etapa previa/soporte historico, no foco operativo actual.
 - **MomentumFlow v2:** paper hasta acumular muestra out-of-sample suficiente.
+- **MTF (futuros):** Bybit perp BTCUSDT, M1, solo shorts. Infra verificada; edge causal fino y NO desplegable (ver [mtf/MTF_SISTEMA.md](mtf/MTF_SISTEMA.md)). Eras spot/multi-símbolo archivadas en [archive/mtf/](archive/mtf/).
 - **DRR:** desactivado. Tablas `shadow_signals` y `signal_outcomes` eliminadas de Supabase.
 
 ## Archivo historico
