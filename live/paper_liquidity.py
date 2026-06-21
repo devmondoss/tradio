@@ -262,9 +262,9 @@ def bootstrap(interval):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--system", default=os.getenv("SYSTEM", "maker"),
-                    choices=["maker", "flow"],
-                    help="maker = fade puro (System A). flow = fade+trail segun regimen (System C).")
+    ap.add_argument("--system", default=os.getenv("SYSTEM", "both"),
+                    choices=["maker", "flow", "both"],
+                    help="maker | flow | both (default). 'both' corre MAKER y FLOW en el mismo proceso.")
     ap.add_argument("--live-testnet", action="store_true")
     ap.add_argument("--high-vol-only", action="store_true",
                     default=os.getenv("HIGH_VOL_ONLY", "").lower() == "true")
@@ -274,8 +274,10 @@ def main():
     HVO   = args.high_vol_only
     TF    = str(args.tf)
 
-    book  = PaperBook(TF, SYS)
-    global _BOOK; _BOOK = book
+    # Un PaperBook por sistema activo. "both" arranca los dos en paralelo.
+    systems = ["maker", "flow"] if SYS == "both" else [SYS]
+    books   = {s: PaperBook(TF, s) for s in systems}
+    global _BOOK; _BOOK = list(books.values())[0]   # health muestra el primero
 
     port  = os.getenv("PORT")
     if port: start_health(int(port))
@@ -289,14 +291,16 @@ def main():
                                or not os.getenv("BYBIT_API_KEY")):
         print("LIVE-TESTNET requiere BYBIT_TESTNET=true + claves. Abortando."); return
 
-    m    = bootstrap(TF)
-    lvls = compute_levels(m, system=SYS, high_vol_only=HVO)
-    book.refresh(lvls, int(time.time() * 1000))
-    print(f"Bootstrap {len(m)} velas M{TF}. Niveles activos: {len(book.resting)}")
-    for o in book.resting:
-        print(f"  {o['side']:>5} {o['kind']:<18} @ {o['price']:.1f}"
-              f"  stop={o['stop']:.1f}  tp={o['tp']:.1f}"
-              f"  gestion={o['gestion']}  vol={o['vol_regime']}")
+    m  = bootstrap(TF)
+    ts0 = int(time.time() * 1000)
+    for s, book in books.items():
+        lvls = compute_levels(m, system=s, high_vol_only=HVO)
+        book.refresh(lvls, ts0)
+        print(f"[{s.upper()}] Bootstrap {len(m)} velas M{TF}. Niveles: {len(book.resting)}")
+        for o in book.resting:
+            print(f"  {o['side']:>5} {o['kind']:<18} @ {o['price']:.1f}"
+                  f"  stop={o['stop']:.1f}  tp={o['tp']:.1f}"
+                  f"  gestion={o['gestion']}  vol={o['vol_regime']}")
 
     if not (SUPA_URL and SUPA_KEY) and not LOG.exists():
         with open(LOG, "w", newline="") as f:
@@ -305,23 +309,29 @@ def main():
                 "gestion", "entry", "exit_price", "result_r", "reason",
             ])
 
+    def _flush(book):
+        ev = book.drain_events()
+        if ev: supa_insert("liquidity_paper_events", ev)
+        new = book.drain_log()
+        if new:
+            supa_insert("liquidity_paper_trades", new)
+            if not (SUPA_URL and SUPA_KEY):
+                with open(LOG, "a", newline="") as f:
+                    w = csv.writer(f)
+                    for r in new:
+                        w.writerow([r["closed_at"], r["system"], r["kind"], r["side"],
+                                    r["vol_regime"], r["regime"], r["gestion"],
+                                    r["entry"], r["exit_price"], r["result_r"], r["reason"]])
+
     def on_msg(ws, msg):
         d = json.loads(msg); topic = d.get("topic", "")
         if topic.startswith("publicTrade"):
             for t in d.get("data", []):
-                book.on_trade(float(t["p"]), int(t["T"]))
-            ev = book.drain_events()
-            if ev: supa_insert("liquidity_paper_events", ev)
-            new = book.drain_log()
-            if new:
-                supa_insert("liquidity_paper_trades", new)
-                if not (SUPA_URL and SUPA_KEY):
-                    with open(LOG, "a", newline="") as f:
-                        w = csv.writer(f)
-                        for r in new:
-                            w.writerow([r["closed_at"], r["system"], r["kind"], r["side"],
-                                        r["vol_regime"], r["regime"], r["gestion"],
-                                        r["entry"], r["exit_price"], r["result_r"], r["reason"]])
+                px = float(t["p"]); ts = int(t["T"])
+                for book in books.values():
+                    book.on_trade(px, ts)
+            for book in books.values():
+                _flush(book)
         elif topic.startswith("kline"):
             for bar in d.get("data", []):
                 if bar.get("confirm"):
@@ -329,15 +339,18 @@ def main():
                                high=float(bar["high"]), low=float(bar["low"]),
                                close=float(bar["close"]), volume=float(bar["volume"]))
                     nonlocal m
-                    m    = pd.concat([m, pd.DataFrame([row])], ignore_index=True).tail(2000)
-                    lvls = compute_levels(m, system=SYS, high_vol_only=HVO)
-                    book.refresh(lvls, row["ts_ms"])
-                    ev = book.drain_events()
-                    if ev: supa_insert("liquidity_paper_events", ev)
-                    print(f"[{datetime.now(timezone.utc):%m-%d %H:%M}] M{TF}"
-                          f" @ {row['close']:.1f}"
-                          f" | niveles={len(book.resting)} | {book.line()}")
-                    supa_insert("liquidity_paper_snapshots", [book.snapshot()])
+                    m = pd.concat([m, pd.DataFrame([row])], ignore_index=True).tail(2000)
+                    snaps = []
+                    lines = []
+                    for s, book in books.items():
+                        lvls = compute_levels(m, system=s, high_vol_only=HVO)
+                        book.refresh(lvls, row["ts_ms"])
+                        _flush(book)
+                        snaps.append(book.snapshot())
+                        lines.append(f"[{s.upper()}] {book.line()}")
+                    print(f"[{datetime.now(timezone.utc):%m-%d %H:%M}] M{TF} @ {row['close']:.1f}")
+                    for ln in lines: print(f"  {ln}")
+                    supa_insert("liquidity_paper_snapshots", snaps)
 
     def on_open(ws):
         ws.send(json.dumps({"op": "subscribe",
