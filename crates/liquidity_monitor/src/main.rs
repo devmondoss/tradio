@@ -1,0 +1,376 @@
+//! liquidity_monitor — estrategia de provisión de liquidez en Rust.
+//!
+//! Reemplaza live/paper_liquidity.py con:
+//!   - WS Bybit publicTrade + kline.15 (tokio-tungstenite, sin GIL)
+//!   - FootprintAccumulator inline (HashMap<u32,(f64,f64)>)
+//!   - compute_levels() en Rust (paridad con backtest)
+//!   - PaperBook para fill ratio + PnL virtual
+//!   - Supabase REST (mismas tablas que el Python)
+//!
+//! Env:
+//!   SYMBOL, TF, SYSTEM (maker|flow|both), HIGH_VOL_ONLY (true|false)
+//!   SUPABASE_URL, SUPABASE_KEY
+
+mod book;
+mod levels;
+mod supa;
+
+use book::PaperBook;
+#[allow(unused_imports)]
+use levels::{ClosedBar, System, update_atr};
+use supa::SupaClient;
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::{SinkExt, StreamExt};
+use serde_json::{json, Value};
+use tokio::time::interval;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+// ── Config ──────────────────────────────────────────────────────────────────
+
+const WS_URL:       &str = "wss://stream.bybit.com/v5/public/linear";
+const REST_BASE:    &str = "https://api.bybit.com";
+const MAX_BARS:     usize = 700;   // 500 ATR median + 200 buffer
+const FP_BIN:       f64  = 5.0;   // $5 bin — igual que levels.py
+
+fn env(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+// ── Footprint helpers ────────────────────────────────────────────────────────
+
+fn fp_add(fp: &mut HashMap<u32, (f64, f64)>, price: f64, qty: f64, is_sell: bool) {
+    let bin = (price / FP_BIN).round() as u32;
+    let entry = fp.entry(bin).or_insert((0.0, 0.0));
+    if is_sell { entry.1 += qty; } else { entry.0 += qty; }
+}
+
+// ── Bootstrap REST ───────────────────────────────────────────────────────────
+
+async fn bootstrap(symbol: &str, tf: &str) -> Vec<ClosedBar> {
+    let client = reqwest::Client::new();
+    let resp: Value = client
+        .get(format!("{}/v5/market/kline", REST_BASE))
+        .query(&[
+            ("category", "linear"), ("symbol", symbol),
+            ("interval", tf), ("limit", "1000"),
+        ])
+        .send().await.expect("bootstrap REST failed")
+        .json().await.expect("bootstrap parse failed");
+
+    let list = resp["result"]["list"].as_array().expect("no list");
+    let mut bars: Vec<ClosedBar> = list.iter().rev().map(|k| {
+        let ts_ms = k[0].as_str().unwrap_or("0").parse::<i64>().unwrap_or(0);
+        let open  = k[1].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        let high  = k[2].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        let low   = k[3].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        let close = k[4].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        let vol   = k[5].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        ClosedBar::from_bootstrap(ts_ms, open, high, low, close, vol)
+    }).collect();
+
+    // La última barra puede estar incompleta (kline actual) — descartarla
+    if bars.last().map(|b| b.ts_ms).unwrap_or(0) > chrono::Utc::now().timestamp_millis() - 60_000 {
+        bars.pop();
+    }
+    bars
+}
+
+// ── ATR median ───────────────────────────────────────────────────────────────
+
+fn compute_atr_series(bars: &[ClosedBar]) -> Vec<f64> {
+    if bars.len() < levels::ATR_N + 1 { return vec![]; }
+    let mut atrs = Vec::with_capacity(bars.len());
+    let mut cur = 0.0_f64;
+    for i in 1..bars.len() {
+        cur = update_atr(cur, &bars[i], bars[i-1].close, levels::ATR_N);
+        if i >= levels::ATR_N { atrs.push(cur); }
+    }
+    atrs
+}
+
+fn median_of(v: &[f64]) -> f64 {
+    if v.is_empty() { return 0.0; }
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    s[s.len() / 2]
+}
+
+// ── Estado principal ──────────────────────────────────────────────────────────
+
+struct State {
+    bars:        VecDeque<ClosedBar>,
+    cur_fp:      HashMap<u32, (f64, f64)>,
+    cur_atr:     f64,
+    atr_history: VecDeque<f64>,
+    books:       Vec<PaperBook>,
+    symbol:      String,
+    tf:          String,
+    high_vol_only: bool,
+    supa:        Option<Arc<SupaClient>>,
+}
+
+impl State {
+    fn systems_for(sys: &str) -> Vec<System> {
+        match sys {
+            "maker" => vec![System::Maker],
+            "flow"  => vec![System::Flow],
+            _       => vec![System::Maker, System::Flow],
+        }
+    }
+
+    fn atr_median(&self) -> f64 {
+        let window: Vec<f64> = self.atr_history.iter()
+            .rev().take(500).copied().collect();
+        median_of(&window)
+    }
+
+    fn on_trade(&mut self, price: f64, qty: f64, is_sell: bool, ts: i64) {
+        fp_add(&mut self.cur_fp, price, qty, is_sell);
+        for book in &mut self.books {
+            book.on_trade(price, ts);
+        }
+    }
+
+    async fn on_bar_close(&mut self, ts_ms: i64, open: f64, high: f64, low: f64, close: f64, vol: f64) {
+        // 1. Crear barra cerrada con footprint acumulado
+        let fp = std::mem::take(&mut self.cur_fp);
+        let bar = ClosedBar::from_live(ts_ms, open, high, low, close, vol, fp);
+
+        // 2. Actualizar ATR incremental
+        let prev_close = self.bars.back().map(|b| b.close).unwrap_or(close);
+        self.cur_atr = update_atr(self.cur_atr, &bar, prev_close, levels::ATR_N);
+        self.atr_history.push_back(self.cur_atr);
+        if self.atr_history.len() > 600 { self.atr_history.pop_front(); }
+
+        // 3. Persistir footprint en Supabase
+        if let Some(ref supa) = self.supa {
+            let s = supa.clone();
+            let b = bar.clone();
+            tokio::spawn(async move { s.write_footprint(&b).await; });
+        }
+
+        // 4. Guardar barra
+        self.bars.push_back(bar);
+        if self.bars.len() > MAX_BARS { self.bars.pop_front(); }
+
+        // 5. Calcular niveles
+        let bars_slice: Vec<ClosedBar> = self.bars.iter().cloned().collect();
+        let atr_med = self.atr_median();
+        let atr     = self.cur_atr;
+
+        // Determinar sistema de cada book y calcular sus niveles
+        let system_per_book: Vec<System> = self.books.iter().map(|b| {
+            if b.system == "maker" { System::Maker } else { System::Flow }
+        }).collect();
+
+        let mut book_levels: Vec<Vec<levels::Level>> = system_per_book.iter().map(|&sys| {
+            levels::compute_levels(&bars_slice, atr, atr_med, sys, self.high_vol_only)
+        }).collect();
+
+        // 6. Refresh orders + flush a Supabase
+        let supa = self.supa.clone();
+        for (i, book) in self.books.iter_mut().enumerate() {
+            let lvls = std::mem::take(&mut book_levels[i]);
+            book.refresh(lvls, ts_ms);
+
+            let events = book.drain_events();
+            let trades = book.drain_trades();
+
+            println!("  [{}] {}", book.system.to_uppercase(), book.status_line());
+
+            if let Some(ref s) = supa {
+                let sc = s.clone();
+                let ev = events.clone();
+                let tr = trades.clone();
+                let cp = close;
+                let placed = book.placed;
+                let filled = book.filled;
+                let sys_name = book.system.clone();
+                tokio::spawn(async move {
+                    sc.write_events(&ev).await;
+                    sc.write_trades(&tr).await;
+                    // snapshot simple
+                    let snap = serde_json::json!([{
+                        "symbol": sc.symbol_ref(),
+                        "tf":     sc.tf_ref(),
+                        "system": sys_name,
+                        "at":     supa::SupaClient::iso_ms(ts_ms),
+                        "placed_high":     placed[0],
+                        "filled_high":     filled[0],
+                        "fill_ratio_high": if placed[0] > 0 { filled[0] as f64 / placed[0] as f64 } else { 0.0 },
+                        "placed_low":      placed[1],
+                        "filled_low":      filled[1],
+                        "fill_ratio_low":  if placed[1] > 0 { filled[1] as f64 / placed[1] as f64 } else { 0.0 },
+                        "close_px": cp,
+                    }]);
+                    sc.raw_insert("liquidity_paper_snapshots", snap).await;
+                });
+            }
+        }
+
+        let now = chrono::Utc::now().format("%m-%d %H:%M").to_string();
+        println!("[{now}] M{} bar closed @ {close:.1}  ATR={atr:.1}  atr_med={atr_med:.1}", self.tf);
+    }
+}
+
+// ── WS message handler ────────────────────────────────────────────────────────
+
+async fn handle_message(state: &mut State, msg: &str) {
+    let d: Value = match serde_json::from_str(msg) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let topic = d["topic"].as_str().unwrap_or("");
+
+    if topic.starts_with("publicTrade") {
+        if let Some(data) = d["data"].as_array() {
+            for t in data {
+                let px  = t["p"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                let qty = t["v"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                let ts  = t["T"].as_i64().unwrap_or(0);
+                let is_sell = t["S"].as_str() == Some("Sell");
+                if px > 0.0 && qty > 0.0 {
+                    state.on_trade(px, qty, is_sell, ts);
+                }
+            }
+        }
+    } else if topic.starts_with("kline") {
+        if let Some(data) = d["data"].as_array() {
+            for bar in data {
+                if bar["confirm"].as_bool() != Some(true) { continue; }
+                let ts_ms = bar["start"].as_i64().unwrap_or(0);
+                let open  = bar["open"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                let high  = bar["high"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                let low   = bar["low"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                let close = bar["close"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                let vol   = bar["volume"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                state.on_bar_close(ts_ms, open, high, low, close, vol).await;
+            }
+        }
+    }
+}
+
+// ── main ─────────────────────────────────────────────────────────────────────
+
+#[tokio::main]
+async fn main() {
+    let symbol = env("SYMBOL", "BTCUSDT");
+    let tf     = env("TF", "15");
+    let system = env("SYSTEM", "both");
+    let hvo    = env("HIGH_VOL_ONLY", "false").to_lowercase() == "true";
+    let supa_url = env("SUPABASE_URL", "");
+    let supa_key = env("SUPABASE_KEY", "");
+
+    println!(">>> liquidity_monitor  SYMBOL={symbol}  TF={tf}  SYSTEM={system}  HIGH_VOL_ONLY={hvo}");
+
+    let supa = SupaClient::new(&supa_url, &supa_key, &symbol, &tf).map(Arc::new);
+
+    // Bootstrap REST: historial de barras
+    println!("[bootstrap] descargando klines M{tf}...");
+    let mut boot_bars: Vec<ClosedBar> = bootstrap(&symbol, &tf).await;
+
+    // Restaurar footprint bars desde Supabase
+    let mut restored = 0usize;
+    if let Some(ref s) = supa {
+        let fp_bars = s.load_footprint(200).await;
+        restored = fp_bars.len();
+        // Merge: si hay barra en fp_bars con mismo ts_ms, usar la del footprint
+        for fp_bar in fp_bars {
+            if let Some(b) = boot_bars.iter_mut().find(|b| b.ts_ms == fp_bar.ts_ms) {
+                *b = fp_bar;
+            }
+        }
+        println!("[supa] restauradas {restored} barras de footprint");
+    }
+    if restored == 0 {
+        println!("[FP] sin historial — warmup ~5h hasta VP tick activo");
+    }
+
+    // Calcular ATR histórico desde el bootstrap
+    let atr_series = compute_atr_series(&boot_bars);
+    let init_atr   = atr_series.last().copied().unwrap_or(0.0);
+    let mut atr_history: VecDeque<f64> = atr_series.into_iter().collect();
+
+    let books = State::systems_for(&system)
+        .into_iter()
+        .map(|s| PaperBook::new(if s == System::Maker { "maker" } else { "flow" }))
+        .collect();
+
+    let mut state = State {
+        bars:          boot_bars.into_iter().collect(),
+        cur_fp:        HashMap::new(),
+        cur_atr:       init_atr,
+        atr_history,
+        books,
+        symbol:        symbol.clone(),
+        tf:            tf.clone(),
+        high_vol_only: hvo,
+        supa:          supa.clone(),
+    };
+
+    println!("[bootstrap] {}/700 barras cargadas  ATR={:.1}", state.bars.len(), state.cur_atr);
+
+    // Suscribir y reconectar loop
+    let subscribe_msg = json!({
+        "op":   "subscribe",
+        "args": [
+            format!("publicTrade.{symbol}"),
+            format!("kline.{tf}.{symbol}"),
+        ]
+    }).to_string();
+
+    loop {
+        println!("[WS] conectando a {WS_URL}...");
+        match connect_async(WS_URL).await {
+            Err(e) => {
+                eprintln!("[WS] error: {e} — reintentando en 5s");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+            Ok((ws, _)) => {
+                let (mut write, mut read) = ws.split();
+                if let Err(e) = write.send(Message::Text(subscribe_msg.clone().into())).await {
+                    eprintln!("[WS] subscribe error: {e}");
+                    continue;
+                }
+                println!("[WS] suscrito publicTrade + kline.{tf}");
+
+                let mut ping_tick = interval(Duration::from_secs(20));
+
+                loop {
+                    tokio::select! {
+                        msg = read.next() => {
+                            match msg {
+                                Some(Ok(Message::Text(txt))) => {
+                                    handle_message(&mut state, &txt).await;
+                                }
+                                Some(Ok(Message::Ping(d))) => {
+                                    let _ = write.send(Message::Pong(d)).await;
+                                }
+                                Some(Err(e)) => {
+                                    eprintln!("[WS] error: {e} — reconectando");
+                                    break;
+                                }
+                                None => {
+                                    eprintln!("[WS] stream cerrado — reconectando");
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ = ping_tick.tick() => {
+                            let _ = write.send(Message::Text(
+                                json!({"op":"ping"}).to_string().into()
+                            )).await;
+                        }
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+}

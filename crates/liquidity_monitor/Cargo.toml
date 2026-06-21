@@ -1,0 +1,17 @@
+[package]
+name = "liquidity_monitor"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "liquidity_monitor"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "time"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+serde.workspace = true
+serde_json.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+chrono.workspace = true
