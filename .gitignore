@@ -12,9 +12,15 @@ calibration/.env
 # SQL — solo local, no va al repo
 /supabase/
 /strategies/
-# Large datasets
+# Large datasets (datos crudos/derivados — NUNCA al repo)
 dataset/*.parquet
 data/bybit-spot/
+data/bybit-perp/
+/exports/
+/share_dataset/
+backtest/htf/
+apps/rbf-review/api/cache/
+**/*.parquet
 
 # Generated reports (Plotly/Chart.js HTML — reproducibles, inflan el repo)
 dataset/*.html
