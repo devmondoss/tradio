@@ -72,15 +72,23 @@ class PaperBook:
         self.tf = tf
         self.resting = []      # niveles activos
         self.open_pos = []     # posiciones abiertas (con estado de gestión)
-        self.placed = {"high":0, "low":0}
+        self.placed = {"high":0, "low":0}   # contadores en-memoria (solo vista 'desde restart')
         self.filled = {"high":0, "low":0}
-        self.closed = []       # acumulado (para stats)
-        self.pending_log = []  # cerrados aún no escritos a Supabase
+        self.closed = []       # acumulado en-memoria (para stats live)
+        self.pending_log = []  # trades cerrados aún no escritos
+        self.pending_events = []  # eventos place/fill aún no escritos (fuente de verdad, restart-proof)
         self.lock = threading.Lock()
+
+    def _ev(self, etype, lv, ts):
+        return dict(at=iso(ts), symbol=SYMBOL, tf=self.tf, event_type=etype,
+                    kind=lv["kind"], side=lv["side"], vol_regime=lv.get("vol_regime","low"),
+                    price=lv["price"] if "price" in lv else lv.get("entry"))
 
     def refresh(self, levels, ts):
         with self.lock:
-            for lv in levels: self.placed[lv.get("vol_regime","low")] += 1
+            for lv in levels:
+                self.placed[lv.get("vol_regime","low")] += 1
+                self.pending_events.append(self._ev("place", lv, ts))   # evento PLACE por nivel
             self.resting = [dict(**lv, placed_ts=ts) for lv in levels]
 
     def on_trade(self, px, ts):
@@ -90,6 +98,7 @@ class PaperBook:
                 hit = (o["side"]=="long" and px <= o["price"]) or (o["side"]=="short" and px >= o["price"])
                 if hit:
                     reg = o.get("vol_regime","low"); self.filled[reg] += 1
+                    self.pending_events.append(self._ev("fill", o, ts))   # evento FILL
                     self.open_pos.append(dict(side=o["side"], entry=o["price"], stop=o["stop"],
                                               tp1=o.get("tp1"), tp=o["tp"], kind=o["kind"], vol_regime=reg,
                                               fill_ts=ts, cur_stop=o["stop"], realized=0.0, rem=1.0, filled1=False))
@@ -133,6 +142,11 @@ class PaperBook:
     def drain_log(self):
         with self.lock:
             out = self.pending_log; self.pending_log = []
+            return out
+
+    def drain_events(self):
+        with self.lock:
+            out = self.pending_events; self.pending_events = []
             return out
 
     def snapshot_row(self):
@@ -196,6 +210,8 @@ def main():
         d = json.loads(msg); topic = d.get("topic","")
         if topic.startswith("publicTrade"):
             for t in d.get("data",[]): book.on_trade(float(t["p"]), int(t["T"]))
+            ev = book.drain_events()
+            if ev: supa_insert("liquidity_paper_events", ev)   # fills (restart-proof)
             new = book.drain_log()
             if new:
                 supa_insert("liquidity_paper_trades", new)
@@ -212,6 +228,8 @@ def main():
                     nonlocal m
                     m = pd.concat([m, pd.DataFrame([row])], ignore_index=True).tail(2000)
                     book.refresh(compute_levels(m, high_vol_only=HVO), row["ts_ms"])
+                    ev = book.drain_events()
+                    if ev: supa_insert("liquidity_paper_events", ev)   # places (restart-proof)
                     print(f"[{datetime.now(timezone.utc):%m-%d %H:%M}] M{TF} @ {row['close']:.1f} | "
                           f"niveles={len(book.resting)} | {book.line()}")
                     supa_insert("liquidity_paper_snapshots", [book.snapshot_row()])

@@ -41,8 +41,37 @@ CREATE TABLE IF NOT EXISTS liquidity_paper_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_liq_snap_at ON liquidity_paper_snapshots (at DESC);
 
--- Vista rápida del estado más reciente
+-- Vista rápida del estado más reciente (snapshot en-memoria, 'desde el último restart')
 CREATE OR REPLACE VIEW liquidity_paper_latest AS
 SELECT DISTINCT ON (symbol, tf) *
 FROM liquidity_paper_snapshots
 ORDER BY symbol, tf, at DESC;
+
+-- 3) EVENTOS (fuente de verdad del fill ratio, INMUNE a restarts).
+--    1 fila por cada límite colocado (place) y por cada llenado (fill).
+CREATE TABLE IF NOT EXISTS liquidity_paper_events (
+    id           BIGSERIAL PRIMARY KEY,
+    created_at   TIMESTAMPTZ DEFAULT now(),
+    at           TIMESTAMPTZ,
+    symbol       TEXT NOT NULL,
+    tf           TEXT NOT NULL,
+    event_type   TEXT NOT NULL,        -- place | fill
+    kind         TEXT,                 -- poc_orderblock | poc_defendido
+    side         TEXT,                 -- long | short
+    vol_regime   TEXT,                 -- high | low
+    price        FLOAT8
+);
+CREATE INDEX IF NOT EXISTS idx_liq_events_at     ON liquidity_paper_events (at DESC);
+CREATE INDEX IF NOT EXISTS idx_liq_events_type   ON liquidity_paper_events (event_type);
+CREATE INDEX IF NOT EXISTS idx_liq_events_regime ON liquidity_paper_events (vol_regime);
+
+-- Fill ratio REAL acumulado (desde eventos, sobrevive a restarts), por régimen de volatilidad
+CREATE OR REPLACE VIEW liquidity_paper_fill_ratio AS
+SELECT
+    symbol, tf, vol_regime,
+    count(*) FILTER (WHERE event_type='place') AS placed,
+    count(*) FILTER (WHERE event_type='fill')  AS filled,
+    round(count(*) FILTER (WHERE event_type='fill')::numeric
+          / nullif(count(*) FILTER (WHERE event_type='place'), 0), 4) AS fill_ratio
+FROM liquidity_paper_events
+GROUP BY symbol, tf, vol_regime;
