@@ -12,10 +12,10 @@
 | TF de decisión | **M15** (recalcula niveles cada cierre; fills/salidas en tiempo real / M1) |
 | Entrada | orden LÍMITE maker en el nivel · selección adversa 2 bps |
 | Filtro | **volatilidad: ATR > mediana móvil(500)** (clave) |
-| Target | **estructural** (siguiente nivel de liquidez) · parcial 50% en POC → breakeven · min_RR 1.2 |
-| Salida | simulada/evaluada en **M1** (honesto) · timeout 8h |
+| Target | **ROTACIÓN al nivel de liquidez LEJANO** (~3.7%, no scalp) · parcial 50% en el nivel cercano → breakeven → resto corre al lejano · min_RR 1.2 |
+| Salida | simulada/evaluada en **M1** (honesto) · timeout 24h |
 | Fee | maker 4 bps RT · Riesgo: **fijo $5/trade (1%, sin compounding)** · cap 2/día por nivel |
-| **Resultado OOS** | **WR ~74% · avgR +1.05 · PnL +$1.186 · ~2 trades/día** |
+| **Resultado OOS** | **WR ~72% · avgR +1.00 · target mediana 3.7% (rotación real) · ~2 trades/día** |
 
 Reproducir: `python backtest/liquidity_app_backtest.py --days 540 --json` · Visual: `apps/rbf-review` (tab único).
 

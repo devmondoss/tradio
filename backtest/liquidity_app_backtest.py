@@ -159,7 +159,7 @@ def main():
     # exacto. El fade de área-valor (H1) requiere su motor completo (clasificación de día +
     # VP congelado) y se valida aparte en backtest/_consolidated.py; no se incluye en el visual.
     gens=[L2.gen_h5(), L2.gen_h21()]
-    raws=run(a, gens, timeout_min=8*60, volfilter=not args.no_volfilter, m1=m1, tf_min=args.tf)
+    raws=run(a, gens, timeout_min=24*60, volfilter=not args.no_volfilter, m1=m1, tf_min=args.tf)
     trades=[to_trade_json(r,i) for i,r in enumerate(raws)]
     eq=CAP0
     for tr in trades: eq+=tr["pnlUsd"]; tr["equity"]=round(eq,2)

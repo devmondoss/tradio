@@ -215,22 +215,22 @@ def gen_h2(W=20):   # Delta Range Reversal: fade extremos de rango intradía (ro
     return g
 
 def struct_target(a, i, side, entry):
-    """Target ESTRUCTURAL = siguiente nivel de liquidez REAL (no múltiplo fijo de ATR).
-    long  -> nivel más cercano POR ENCIMA (VAH / swing high / máx día previo)
-    short -> nivel más cercano POR DEBAJO (VAL / swing low / mín día previo).
-    Devuelve (tp1_intermedio, tp2_estructural). tp1 = POC si queda entre entry y tp2."""
+    """Target ESTRUCTURAL = captura la ROTACIÓN GRANDE de liquidez (no el rebote chico):
+    tp2 = nivel de liquidez MÁS LEJANO (VAH/VAL · swing · día previo · SEMANAL).
+    tp1 = nivel más cercano (parcial 50% ahí → breakeven → el resto corre al lejano).
+    Esto capta movimientos ~3-4% (la rotación real) en vez de scalps de 0.4%."""
     if side=="long":
-        cands=[a.vp_vah[i], a.swing_high_50[i], a.prev_day_high[i]]
+        cands=[a.vp_vah[i], a.swing_high_50[i], a.prev_day_high[i], a.weekly_high[i]]
         cands=[c for c in cands if np.isfinite(c) and c>entry*1.001]
-        tp2 = min(cands) if cands else np.nan
-        poc = a.vp_poc[i]
-        tp1 = poc if (np.isfinite(poc) and entry<poc<tp2) else None
+        if not cands: return None, np.nan
+        tp2 = max(cands)        # FAR = rotación grande
+        tp1 = min(cands)        # parcial en el más cercano
     else:
-        cands=[a.vp_val[i], a.swing_low_50[i], a.prev_day_low[i]]
+        cands=[a.vp_val[i], a.swing_low_50[i], a.prev_day_low[i], a.weekly_low[i]]
         cands=[c for c in cands if np.isfinite(c) and c<entry*0.999]
-        tp2 = max(cands) if cands else np.nan
-        poc = a.vp_poc[i]
-        tp1 = poc if (np.isfinite(poc) and tp2<poc<entry) else None
+        if not cands: return None, np.nan
+        tp2 = min(cands)
+        tp1 = max(cands)
     return tp1, tp2
 
 def gen_h5():   # Order Block: entrada en POC del OB, TARGET ESTRUCTURAL (siguiente nivel de liquidez)

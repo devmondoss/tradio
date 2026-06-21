@@ -68,16 +68,20 @@ def compute_levels(m15: pd.DataFrame, high_vol_only=False, vol_window=500):
     prev = df[df.date == days[-2]] if len(days) >= 2 else df.iloc[0:0]
     pdh = float(prev.high.max()) if len(prev) else np.nan
     pdl = float(prev.low.min()) if len(prev) else np.nan
+    wk = df[df.date.isin(days[-8:-1])] if len(days) >= 2 else df.iloc[0:0]   # ~7 días previos
+    wh = float(wk.high.max()) if len(wk) else np.nan
+    wl = float(wk.low.min()) if len(wk) else np.nan
 
     def struct_target(side, entry):
+        # ROTACIÓN al nivel de liquidez MÁS LEJANO (paridad con el backtest); parcial en el cercano
         if side == "long":
-            cands = [x for x in (va["vah"], sh, pdh) if np.isfinite(x) and x > entry*1.001]
-            tp2 = min(cands) if cands else np.nan
-            tp1 = va["poc"] if (entry < va["poc"] < tp2) else None
+            cands = [x for x in (va["vah"], sh, pdh, wh) if np.isfinite(x) and x > entry*1.001]
+            if not cands: return None, np.nan
+            tp2 = max(cands); tp1 = min(cands)
         else:
-            cands = [x for x in (va["val"], sl, pdl) if np.isfinite(x) and x < entry*0.999]
-            tp2 = max(cands) if cands else np.nan
-            tp1 = va["poc"] if (tp2 < va["poc"] < entry) else None
+            cands = [x for x in (va["val"], sl, pdl, wl) if np.isfinite(x) and x < entry*0.999]
+            if not cands: return None, np.nan
+            tp2 = min(cands); tp1 = max(cands)
         return tp1, tp2
 
     out = []
