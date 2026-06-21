@@ -58,12 +58,41 @@ def gen_area_valor(a, prevvp):
         return out
     return g
 
+def gen_naked_poc(svp_naked, tol=0.002):
+    """Fade en Naked POC: POC de sesion previa no revisitado = iman estructural.
+    Logica: cuando el precio toca por primera vez un POC no visitado, hay liquidez
+    atrapada ahi -> reversion de alta probabilidad. Stop: 0.6xATR mas alla del nivel.
+    Target: siguiente nivel estructural (igual que H5/H21)."""
+    def g(a, i):
+        if not svp_naked: return
+        day_int = int(a.ts[i]) // 86_400_000
+        pocs = svp_naked.get(day_int, [])
+        if not pocs: return
+        out = []
+        for poc in pocs:
+            if not np.isfinite(poc): continue
+            # LONG: precio cae hasta naked POC (soporte no visitado) y cierra arriba del open
+            if abs(a.l[i] - poc) / poc <= tol and a.c[i] > a.o[i]:
+                stop = poc - 0.6 * a.atr[i]
+                tp1, tp2 = L2.struct_target(a, i, "long", poc)
+                if np.isfinite(tp2):
+                    out.append(("long", poc, stop, tp1, tp2, "naked_poc"))
+            # SHORT: precio sube hasta naked POC (resistencia no visitada) y cierra abajo del open
+            if abs(a.h[i] - poc) / poc <= tol and a.c[i] < a.o[i]:
+                stop = poc + 0.6 * a.atr[i]
+                tp1, tp2 = L2.struct_target(a, i, "short", poc)
+                if np.isfinite(tp2):
+                    out.append(("short", poc, stop, tp1, tp2, "naked_poc"))
+        return out
+    return g
+
 def _is_chop(reg):
     return str(reg).lower() in ("chop","range","balance","consolidation")
 
 def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=0.0, min_tp1_pct=0.0,
         system="A", trail_atr=4.0, min_tp1_rr=2.5,
-        svp_dayvp=None, svp_naked=None, m1_cvd=None, cvd_reversal_pct=0.35):
+        svp_dayvp=None, svp_naked=None, m1_cvd=None, cvd_reversal_pct=0.35,
+        lvn_filter=False):
     """Entrada decidida en el TF de 'a'; SALIDA simulada en M1 (honesto, sin ambigüedad intrabar).
     system='A' → FADE: parcial 50% en TP1 (solo si TP1 ≥ min_tp1_rr×riesgo) → BE → target estructural.
     system='AB'/'C' → ENRUTA por régimen: Chop→fade · Tendencia→trailing stop (monta la continuación).
@@ -96,6 +125,11 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=
                 if side=="long" and not (stop<entry<tp2): continue
                 if side=="short" and not (tp2<entry<stop): continue
                 if abs(tp2-entry)/risk < 1.2: continue
+                # FILTRO LVN: solo operar si hay zona de bajo volumen entre entry y target
+                # (camino despejado = precio viajara rapido hasta el objetivo)
+                if lvn_filter and svp_dayvp:
+                    day_int = int(a.ts[i]) // 86_400_000
+                    if not SVP.lvn_in_path(svp_dayvp, day_int, entry, tp2): continue
                 use_fade = (system=="A") or (system=="AB" and _is_chop(a.reg[i]))
                 j0=np.searchsorted(m1ts, a.ts[i]+bar_ms)
                 jend=np.searchsorted(m1ts, a.ts[i]+bar_ms+timeout_min*60_000)
@@ -201,8 +235,12 @@ def main():
     ap.add_argument("--system", choices=["A","AB","C"], default="A",
                     help="A = solo fader (rangos). AB/C = enrutado por régimen (fade en chop, trailing en tendencia).")
     ap.add_argument("--min-tp1-rr", type=float, default=2.3,
-                    help="TP1 debe estar a ≥N×riesgo para tomar la parcial. Default 2.5 → parcial ≥1.25R, neto ≥1R.")
+                    help="TP1 debe estar a >=N*riesgo para tomar la parcial. Default 2.3.")
     ap.add_argument("--symbol", default="BTCUSDT")
+    ap.add_argument("--no-naked-poc", action="store_true",
+                    help="Desactiva gen_naked_poc() (activo por defecto cuando hay cache SVP).")
+    ap.add_argument("--lvn-filter", action="store_true",
+                    help="Solo operar fades con LVN entre entry y target (experimental, suele reducir netR).")
     args=ap.parse_args()
 
     full0=L2.TICK_MS   # era tick VERIFICADA (2025-06-19+, 365d). Pre-tick era OHLCV no verificado.
@@ -226,12 +264,17 @@ def main():
     # Componentes POC (provisión de liquidez en niveles de volumen): replican el edge validado
     # exacto. El fade de área-valor (H1) requiere su motor completo (clasificación de día +
     # VP congelado) y se valida aparte en backtest/_consolidated.py; no se incluye en el visual.
-    gens=[L2.gen_h5(), L2.gen_h21(), L2.gen_h21_short()]   # +mirror corto del POC defendido (balancea long/short)
+    gens=[L2.gen_h5(), L2.gen_h21(), L2.gen_h21_short()]
+    # Naked POC: fade en POC de sesion previa no revisitado (iman estructural)
+    # Default ON cuando hay cache. Desactivar con --no-naked-poc si se quiere baseline puro.
+    if not args.no_naked_poc and svp_naked:
+        gens.append(gen_naked_poc(svp_naked))
     sys_arg = "AB" if args.system == "C" else args.system
     raws=run(a, gens, timeout_min=24*60, volfilter=not args.no_volfilter, m1=m1, tf_min=args.tf,
              stop_floor_pct=args.stop_floor, min_tp1_pct=args.min_range, system=sys_arg,
              min_tp1_rr=args.min_tp1_rr,
-             svp_dayvp=svp_dayvp, svp_naked=svp_naked, m1_cvd=m1_cvd)
+             svp_dayvp=svp_dayvp, svp_naked=svp_naked, m1_cvd=m1_cvd,
+             lvn_filter=args.lvn_filter)
     trades=[to_trade_json(r,i) for i,r in enumerate(raws)]
     eq=CAP0
     for tr in trades: eq+=tr["pnlUsd"]; tr["equity"]=round(eq,2)
