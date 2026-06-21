@@ -5,7 +5,9 @@ Toda la documentación de la estrategia de liquidez vive aquí.
 ## Por dónde empezar
 - **[SESSION_HANDOFF_LIQUIDITY.md](SESSION_HANDOFF_LIQUIDITY.md)** ← **empieza aquí** (estado actual,
   dudas abiertas, infra live, pendientes, cómo retomar).
-- **[LIQUIDITY_STRATEGY.md](LIQUIDITY_STRATEGY.md)** — doc maestro: config final, resultados, hallazgos,
+- **[SYSTEM_AB.md](SYSTEM_AB.md)** ⭐ — la evolución: A (fader) + B (momentum trailing) enrutados por
+  régimen. Autopsia de movimientos perdidos, rango mínimo, detectores de régimen, toggle en trade-lab.
+- **[LIQUIDITY_STRATEGY.md](LIQUIDITY_STRATEGY.md)** — doc maestro de A: config, resultados, hallazgos,
   análisis de timeframe, fill ratio, parámetros, fix de targets estructurales.
 
 ## Cómo se llegó aquí (el camino)

@@ -35,7 +35,9 @@ function pythonBacktest(): Plugin {
         if (isLiquidityInfo || isLiquidity) {
           const wsRoot = path.join(server.config.root, '..', '..')
           const script = path.join(wsRoot, 'backtest', 'liquidity_app_backtest.py')
-          const a = isLiquidityInfo ? ['--info'] : ['--days', days, '--json']
+          const sysParam = params.get('system')
+          const system = (sysParam === 'AB' || sysParam === 'C') ? 'C' : 'A'
+          const a = isLiquidityInfo ? ['--info'] : ['--days', days, '--json', '--system', system, '--min-tp1-rr', '2.3']
           console.log(`[backtest/liquidity] ${a.join(' ')}`)
           const py = spawn(pyCmd, [script, ...a])
           let out = ''; let err = ''

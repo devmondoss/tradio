@@ -61,7 +61,7 @@ function DetailPanel({ trade }: { trade: Trade }) {
       )}
       {trade.reason === 'breakeven' && trade.tp1 != null && r != null && r > 0 && (
         <div style={{ fontSize: 8, color: 'var(--text3)', lineHeight: 1.4, padding: '2px 0' }}>
-          50% cerrado en TP1 (ganancia), resto a breakeven → resultado = el parcial
+          50% cerrado en TP1 (≥1.25R), resto a breakeven → neto ≥1R
         </div>
       )}
 

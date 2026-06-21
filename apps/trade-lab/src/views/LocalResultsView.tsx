@@ -21,9 +21,9 @@ const STRATEGY_META: Record<string, StrategyMeta> = {
   liquidity: {
     apiPath:    '/api/backtest/liquidity',
     infoPath:   '/api/backtest/liquidity_info',
-    label:      'Provisión de Liquidez · BTCUSDT Perp · CONFIG FINAL (M15 · estructural · salida M1 · maker)',
-    detail:     'QUÉ ES: no predice dirección — PROVEE liquidez. Deja órdenes LÍMITE maker reposando en niveles\nde volumen (POC). Cuando el precio vuelve, te llenan barato y rebota. Edge = mejor entrada + rebate maker.\n\nNIVELES (2 componentes, mismo principio):\n  • POC del Order Block previo (largo y corto)\n  • POC defendido ≥2 veces (soporte de volumen probado, largo)\n\nGESTIÓN: target ESTRUCTURAL (siguiente nivel de liquidez real, no scalp fijo) · parcial 50% en el POC\n→ stop a breakeven → resto corre al nivel estructural. Salida evaluada en M1 (honesto, sin lookahead intrabar).',
-    detail2:    'CONFIG FINAL CONGELADA:\n  Timeframe decisión: M15 (recalcula niveles cada cierre; fills y salidas en tiempo real / M1)\n  Entrada: orden LÍMITE maker en el nivel · selección adversa 2 bps (solo cuenta si el precio atraviesa)\n  Filtro VOLATILIDAD: solo opera con ATR > su mediana móvil(500)  [clave: +0.13→+1.05 avgR]\n  Stop: estructural (0.6·ATR) ~0.19% · Target: ROTACIÓN al nivel de liquidez LEJANO (~3.7%, no scalp)\n  Parcial 50% en el nivel cercano → breakeven → el resto corre a la rotación grande · Timeout 24h\n  Fee: maker 4 bps RT · Riesgo: FIJO $5/trade (1% de $500, SIN compounding) · cap 2 trades/día por nivel\n\nDATOS: era tick VERIFICADA Bybit perp 2025-06-19 → 2026-06 (~365d). IS<2026-03 / OOS≥2026-03.\nRESULTADOS OOS:  WR ~72% · avgR +1.00 · target mediana 3.7% · ~2 trades/día\nTOTAL 365d:  901 trades · WR 74% · avgR +0.87 · $500 → ~$4.4k\n\n⚠️ Riesgo abierto (NO resoluble en backtest): el ratio de fills maker reales (cola de órdenes).\n   Siguiente paso = validar en paper/testnet (live/paper_liquidity.py).',
+    label:      'A · Liquidity (fader de rangos) · BTCUSDT Perp · M15 · maker · rango mín 0.5% · fee honesto',
+    detail:     'QUÉ ES: estrategia A del sistema — FADER de niveles (gana en RANGOS). No predice dirección:\nPROVEE liquidez con límites maker en niveles de volumen (POC). Cuando el precio vuelve, te llenan\nbarato y rebota. Edge = mejor entrada + rebate maker.\n\nNIVELES (3 componentes, mismo principio):\n  • POC del Order Block previo (largo y corto)\n  • POC defendido ≥2 veces (soporte de volumen probado, largo)\n  • MIRROR: resistencia defendida ≥2 veces (corto) → cartera balanceada 57/43\n\nGESTIÓN BINARIA: entrada en nivel → STOP estructural ó TARGET estructural. Sin parciales.\nLa salida es tan clara como la entrada: un nivel real, nada más. Salida en M1 (honesto).',
+    detail2:    'CONFIG (live-honesta):\n  Timeframe: M15 · Entrada: LÍMITE maker en el nivel · selección adversa 2 bps\n  Filtro VOLATILIDAD: solo opera con ATR > su mediana móvil(500)\n  RANGO MÍNIMO 0.5% al nivel intermedio (calidad de setup, no de salida)\n  PISO DE STOP 0.15% (elimina stops minúsculos irreales) · Timeout 24h\n  FEE HONESTO: maker 2bps/lado en entrada+target; TAKER 5.5bps/lado en stop/timeout\n  Riesgo: FIJO $5/trade (1% de $500, SIN compounding) · cap 2 trades/día por nivel\n\nDATOS: era tick VERIFICADA Bybit perp 2025-06-19 → 2026-06 (~365d). IS<2026-03 / OOS≥2026-03.\nRESULTADOS 365d A:  ~440 trades · WR ~28% · avgR +1.34 · avg_win +8.25R · wins<1R: 2 (timeouts)\nRESULTADOS 365d C:  ~506 trades · WR ~29% · avgR +1.31 · avg_win +7.59R (175 trails +2.2R cada uno)\n\n⚠️ WR bajo (28-29%) es normal en sistema binario de alta expectativa: pocas ganancias grandes.\n   Riesgo abierto: ratio de fills maker reales → validar en paper (live/paper_liquidity.py).',
     presets:    [30, 90, 180],
     maxDays:    null,
     defaultDays: null,
@@ -317,6 +317,7 @@ export default function LocalResultsView({
   const [meta,     setMeta]    = useState<{ n: number; wins: number; equity: number; actualDays: number; microStart: string | null; longsEnabled?: boolean; nShorts?: number; nLongs?: number } | null>(null)
   const [dataFrom,      setDataFrom]      = useState<string | null>(null)
   const [availableDays, setAvailableDays] = useState<number | null>(meta_cfg.maxDays)
+  const [system,        setSystem]        = useState<'A' | 'C'>('A')   // liquidity: A solo vs C (sistema A+B enrutado)
 
   useEffect(() => {
     if (meta_cfg.maxDays !== null) {
@@ -360,14 +361,15 @@ export default function LocalResultsView({
       })
   }, [])
 
-  async function triggerRun(d: number) {
+  async function triggerRun(d: number, sys: 'A' | 'C' = system) {
     setLoading(true)
     setError(null)
     setTrades([])
     setMeta(null)
     try {
       const sep  = meta_cfg.apiPath.includes('?') ? '&' : '?'
-      const res  = await fetch(`${meta_cfg.apiPath}${sep}days=${d}`)
+      const sysQ = strategy === 'liquidity' ? `&system=${sys}` : ''
+      const res  = await fetch(`${meta_cfg.apiPath}${sep}days=${d}${sysQ}`)
       const text = await res.text()
       let data: any
       try { data = JSON.parse(text) } catch {
@@ -495,6 +497,20 @@ export default function LocalResultsView({
             color: panel === p ? 'var(--text)' : 'var(--text3)',
           }}>{p.charAt(0).toUpperCase() + p.slice(1)}</button>
         ))}
+
+        {strategy === 'liquidity' && (
+          <span style={{ display: 'flex', gap: 3, marginLeft: 6, borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
+            {([['A', 'A'], ['C', 'C']] as const).map(([s, lbl]) => (
+              <button key={s} title={s === 'A' ? 'A · Fader (fade en rangos, parcial+BE)' : 'C · Sistema completo: fade en rango, trailing en tendencia (A+B enrutado)'}
+                onClick={() => { setSystem(s); triggerRun(days, s) }} style={{
+                  padding: '2px 10px', borderRadius: 3, fontSize: 10, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700,
+                  background: system === s ? 'var(--blue)' : 'var(--bg3)',
+                  border: `1px solid ${system === s ? 'var(--blue)' : 'var(--border2)'}`,
+                  color: system === s ? '#fff' : 'var(--text3)',
+                }}>{lbl}</button>
+            ))}
+          </span>
+        )}
 
         {meta && (
           <span style={{ color: 'var(--text2)' }}>

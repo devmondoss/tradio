@@ -57,12 +57,18 @@ def gen_area_valor(a, prevvp):
         return out
     return g
 
-def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=0.0):
+def _is_chop(reg):
+    return str(reg).lower() in ("chop","range","balance","consolidation")
+
+def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=0.0, min_tp1_pct=0.0,
+        system="A", trail_atr=4.0, min_tp1_rr=2.5):
     """Entrada decidida en el TF de 'a'; SALIDA simulada en M1 (honesto, sin ambigüedad intrabar).
-    Cada generador corre INDEPENDIENTE (cooldown/cap propios) y se agrupan.
-    stop_floor_pct: piso de stop — ensancha stops minúsculos a floor% del precio (robustez en vivo)."""
+    system='A' → FADE: parcial 50% en TP1 (solo si TP1 ≥ min_tp1_rr×riesgo) → BE → target estructural.
+    system='AB'/'C' → ENRUTA por régimen: Chop→fade · Tendencia→trailing stop (monta la continuación).
+    stop_floor_pct: piso de stop. min_tp1_pct: rango mínimo al TP1. min_tp1_rr: parcial mínima en R."""
     m1ts,m1h,m1l,m1c=m1; bar_ms=tf_min*60_000
     atr_med=pd.Series(a.atr).rolling(500,min_periods=50).median().shift(1).values
+    mk=FEE_MAKER/2.0; tk=FEE_TAKER/2.0
     trades=[]
     for g in gens:
         cool=0; dcount={}
@@ -79,7 +85,6 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=
                 if side=="long" and not (a.l[i] <= lvl - margin/1e4*lvl): continue
                 if side=="short" and not (a.h[i] >= lvl + margin/1e4*lvl): continue
                 entry=lvl
-                # piso de stop: si quedó más cerca que floor%, alejarlo (mata la cola frágil de stops minúsculos)
                 if stop_floor_pct>0:
                     min_risk=stop_floor_pct/100.0*entry
                     if abs(entry-stop)<min_risk:
@@ -89,53 +94,78 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=
                 if side=="long" and not (stop<entry<tp2): continue
                 if side=="short" and not (tp2<entry<stop): continue
                 if abs(tp2-entry)/risk < 1.2: continue
-                # --- SALIDA en M1 desde el cierre de la barra de entrada (parcial POC + breakeven) ---
-                exit_px=None; exit_ts=None; reason="timeout"
-                cur_stop=stop; realized=0.0; rem=1.0; filled1=False; p1=0.5 if tp1 else 0.0
+                use_fade = (system=="A") or (system=="AB" and _is_chop(a.reg[i]))
                 j0=np.searchsorted(m1ts, a.ts[i]+bar_ms)
                 jend=np.searchsorted(m1ts, a.ts[i]+bar_ms+timeout_min*60_000)
-                for j in range(j0, min(jend,len(m1ts))):
+                if use_fade:
+                    # RANGO MÍNIMO: TP1 debe representar un nivel real (no migaja).
+                    if tp1 is None: continue
+                    if min_tp1_pct>0 and 100*abs(tp1-entry)/entry < min_tp1_pct: continue
+                    # PARCIAL solo si TP1 ≥ min_tp1_rr × riesgo.
+                    # Con min_tp1_rr=2.5: parcial de 0.5×2.5R = 1.25R → BE → neto ≥1R antes de fees.
+                    # Si TP1 < min_tp1_rr → no hay parcial: trade va entero a target (más WR potencial).
+                    take_partial = abs(tp1-entry)/risk >= min_tp1_rr
+                    p1 = 0.5 if take_partial else 0.0
+                    # --- FADE: parcial en TP1 → breakeven → target estructural ---
+                    exit_px=None; exit_ts=None; reason="timeout"
+                    cur_stop=stop; realized=0.0; rem=1.0; filled1=False
+                    for j in range(j0, min(jend,len(m1ts))):
+                        if side=="long":
+                            if m1l[j]<=cur_stop:
+                                realized+=rem*((cur_stop-entry)/risk); exit_px=cur_stop
+                                reason=("breakeven" if filled1 else "stop"); exit_ts=m1ts[j]; break
+                            if not filled1 and take_partial and m1h[j]>=tp1:
+                                realized+=p1*((tp1-entry)/risk); rem-=p1; filled1=True; cur_stop=entry
+                            if m1h[j]>=tp2:
+                                realized+=rem*((tp2-entry)/risk); exit_px=tp2; reason="target"; exit_ts=m1ts[j]; break
+                        else:
+                            if m1h[j]>=cur_stop:
+                                realized+=rem*((entry-cur_stop)/risk); exit_px=cur_stop
+                                reason=("breakeven" if filled1 else "stop"); exit_ts=m1ts[j]; break
+                            if not filled1 and take_partial and m1l[j]<=tp1:
+                                realized+=p1*((entry-tp1)/risk); rem-=p1; filled1=True; cur_stop=entry
+                            if m1l[j]<=tp2:
+                                realized+=rem*((entry-tp2)/risk); exit_px=tp2; reason="target"; exit_ts=m1ts[j]; break
+                    if exit_px is None:
+                        jj=min(jend,len(m1ts))-1
+                        if jj<=j0: continue
+                        px=m1c[jj]; realized+=rem*(((px-entry) if side=="long" else (entry-px))/risk)
+                        exit_px=px; exit_ts=m1ts[jj]
+                    exit_side=mk if reason=="target" else tk
+                    fee_r=(mk*1.0 + (mk*p1 if filled1 else 0.0) + exit_side*rem)*entry/risk
+                    r=realized-fee_r
                     if side=="long":
-                        if m1l[j]<=cur_stop:
-                            realized+=rem*((cur_stop-entry)/risk); exit_px=cur_stop
-                            reason=("breakeven" if filled1 else "stop"); exit_ts=m1ts[j]; break
-                        if not filled1 and tp1 and m1h[j]>=tp1:
-                            realized+=p1*((tp1-entry)/risk); rem-=p1; filled1=True; cur_stop=entry
-                        if m1h[j]>=tp2:
-                            realized+=rem*((tp2-entry)/risk); exit_px=tp2; reason="target"; exit_ts=m1ts[j]; break
+                        opts={"weekly_high":a.weekly_high[i],"prev_day_high":a.prev_day_high[i],
+                              "swing_high":a.swing_high_50[i],"vp_vah":a.vp_vah[i]}
                     else:
-                        if m1h[j]>=cur_stop:
-                            realized+=rem*((entry-cur_stop)/risk); exit_px=cur_stop
-                            reason=("breakeven" if filled1 else "stop"); exit_ts=m1ts[j]; break
-                        if not filled1 and tp1 and m1l[j]<=tp1:
-                            realized+=p1*((entry-tp1)/risk); rem-=p1; filled1=True; cur_stop=entry
-                        if m1l[j]<=tp2:
-                            realized+=rem*((entry-tp2)/risk); exit_px=tp2; reason="target"; exit_ts=m1ts[j]; break
-                if exit_px is None:
-                    jj=min(jend,len(m1ts))-1
-                    if jj<=j0: continue
-                    px=m1c[jj]; realized+=rem*(((px-entry) if side=="long" else (entry-px))/risk)
-                    exit_px=px; exit_ts=m1ts[jj]
-                # fee HONESTO: maker(2bps/lado) en entrada+tp1+target; taker(5.5bps/lado) en stop/BE/timeout (mercado)
-                mk=FEE_MAKER/2.0; tk=FEE_TAKER/2.0
-                exit_side=mk if reason=="target" else tk
-                fee_r=(mk*1.0 + (mk*p1 if filled1 else 0.0) + exit_side*rem)*entry/risk
-                r=realized-fee_r
-                # ¿qué NIVEL de liquidez es el target lejano? (para el visual: por qué el target ahí)
-                if side=="long":
-                    opts={"weekly_high":a.weekly_high[i],"prev_day_high":a.prev_day_high[i],
-                          "swing_high":a.swing_high_50[i],"vp_vah":a.vp_vah[i]}
+                        opts={"weekly_low":a.weekly_low[i],"prev_day_low":a.prev_day_low[i],
+                              "swing_low":a.swing_low_50[i],"vp_val":a.vp_val[i]}
+                    tname=min((k2 for k2 in opts if np.isfinite(opts[k2])),
+                              key=lambda k2: abs(opts[k2]-tp2), default="estructural")
+                    tgt=float(tp2); tp1_out=float(tp1); gestion="fade"
                 else:
-                    opts={"weekly_low":a.weekly_low[i],"prev_day_low":a.prev_day_low[i],
-                          "swing_low":a.swing_low_50[i],"vp_val":a.vp_val[i]}
-                tname=min((k2 for k2 in opts if np.isfinite(opts[k2])),
-                          key=lambda k2: abs(opts[k2]-tp2), default="estructural")
+                    # --- TRAILING: monta la continuación (best ± trail_atr·ATR) · maker in / taker out ---
+                    atr0=a.atr[i]; fee_r=(mk+tk)*entry/risk
+                    best=entry; trail=stop; exit_px=None; exit_ts=None; reason="trail"
+                    for j in range(j0, min(jend,len(m1ts))):
+                        if side=="long":
+                            best=max(best,m1h[j]); trail=max(trail,best-trail_atr*atr0)
+                            if m1l[j]<=trail: exit_px=trail; exit_ts=m1ts[j]; break
+                        else:
+                            best=min(best,m1l[j]); trail=min(trail,best+trail_atr*atr0)
+                            if m1h[j]>=trail: exit_px=trail; exit_ts=m1ts[j]; break
+                    if exit_px is None:
+                        jj=min(jend,len(m1ts))-1
+                        if jj<=j0: continue
+                        exit_px=m1c[jj]; exit_ts=m1ts[jj]
+                    r=(((exit_px-entry) if side=="long" else (entry-exit_px))/risk)-fee_r
+                    tgt=float(exit_px); tp1_out=None; tname="trailing"; gestion="trail"
                 trades.append(dict(tsMs=int(a.ts[i]), dir=("Long" if side=="long" else "Short"),
-                                   entry=float(entry), stop=float(stop), target=float(tp2),
-                                   tp1=(float(tp1) if tp1 is not None else None), targetName=tname,
+                                   entry=float(entry), stop=float(stop), target=tgt,
+                                   tp1=tp1_out, targetName=tname,
                                    exit=float(exit_px), resultR=float(r), reason=reason,
                                    kind=kind, closedAt=int(exit_ts), stopPct=float(100*risk/entry),
-                                   regime=str(a.reg[i])))
+                                   regime=str(a.reg[i]), gestion=gestion))
                 cool=i+6; dcount[d]=dcount.get(d,0)+1; break
     return sorted(trades, key=lambda t:t["tsMs"])
 
@@ -149,8 +179,8 @@ def to_trade_json(raw, i):
         "riskUsd":risk_usd, "stopPct":round(raw["stopPct"],3), "equity":0.0,
         "reason":raw["reason"], "tsMs":raw["tsMs"], "ts":raw["tsMs"]//1000,
         "closedAt":pd.to_datetime(raw["closedAt"],unit="ms",utc=True).isoformat(),
-        "regime":raw["regime"], "sessionPhase":"", "evidence":[raw["kind"]],
-        "confluenceFlags":[raw["kind"]], "vetoReason":"", "cvdInRange":None, "vr":None,
+        "regime":raw["regime"], "gestion":raw.get("gestion","fade"), "sessionPhase":"", "evidence":[raw["kind"]],
+        "confluenceFlags":[raw["kind"], raw.get("gestion","fade")], "vetoReason":"", "cvdInRange":None, "vr":None,
         "priceVsVwap":None, "funding":None, "cvdSlope":None, "obi":None, "dz":None,
         "rangePct":None, "rangeBars":None, "rangeTouch":None, "durationMin":None, "isOpen":False,
     }
@@ -164,6 +194,12 @@ def main():
     ap.add_argument("--tf", type=int, default=15)   # M15: targets estructurales sobre niveles reales
     ap.add_argument("--stop-floor", type=float, default=0.15,
                     help="piso de stop %% (ensancha stops minúsculos; 0 = sin piso). Default 0.15.")
+    ap.add_argument("--min-range", type=float, default=0.5,
+                    help="rango mínimo al primer objetivo %% (mata migajas; 0 = sin mínimo). Default 0.5.")
+    ap.add_argument("--system", choices=["A","AB","C"], default="A",
+                    help="A = solo fader (rangos). AB/C = enrutado por régimen (fade en chop, trailing en tendencia).")
+    ap.add_argument("--min-tp1-rr", type=float, default=2.3,
+                    help="TP1 debe estar a ≥N×riesgo para tomar la parcial. Default 2.5 → parcial ≥1.25R, neto ≥1R.")
     ap.add_argument("--symbol", default="BTCUSDT")
     args=ap.parse_args()
 
@@ -183,8 +219,10 @@ def main():
     # exacto. El fade de área-valor (H1) requiere su motor completo (clasificación de día +
     # VP congelado) y se valida aparte en backtest/_consolidated.py; no se incluye en el visual.
     gens=[L2.gen_h5(), L2.gen_h21(), L2.gen_h21_short()]   # +mirror corto del POC defendido (balancea long/short)
+    sys_arg = "AB" if args.system == "C" else args.system
     raws=run(a, gens, timeout_min=24*60, volfilter=not args.no_volfilter, m1=m1, tf_min=args.tf,
-             stop_floor_pct=args.stop_floor)
+             stop_floor_pct=args.stop_floor, min_tp1_pct=args.min_range, system=sys_arg,
+             min_tp1_rr=args.min_tp1_rr)
     trades=[to_trade_json(r,i) for i,r in enumerate(raws)]
     eq=CAP0
     for tr in trades: eq+=tr["pnlUsd"]; tr["equity"]=round(eq,2)
