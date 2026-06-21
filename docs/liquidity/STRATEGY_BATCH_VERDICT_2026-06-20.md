@@ -1,6 +1,6 @@
 # Veredicto del barrido "estrategia ≠ predictor" — hipótesis listas (2026-06-20)
 
-> **Reencuadre del usuario:** el [EDGE_VERDICT](EDGE_VERDICT_2026-06-19.md) cerró la pregunta
+> **Reencuadre del usuario:** el [EDGE_VERDICT](../orderflow/EDGE_VERDICT_2026-06-19.md) cerró la pregunta
 > *"¿alguna feature PREDICE el retorno forward?"* (no). Pero una estrategia no es un predictor:
 > es **estructura de entrada + gestión asimétrica** (stop, TP1 parcial, breakeven, TP2, timeout)
 > + **filtros de abstención** (H3/H4). Una expectativa positiva podría salir del path/payoff
