@@ -8,6 +8,8 @@ export interface Trade {
   entry: number
   stop: number
   target: number
+  tp1?: number | null         // nivel del parcial (cercano) — liquidez
+  targetName?: string | null  // qué nivel de liquidez ES el target lejano (weekly_high, etc.)
   exit: number
   resultR: number | null
   pnlUsd: number

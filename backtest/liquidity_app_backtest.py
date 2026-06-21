@@ -110,8 +110,18 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0):
                     px=m1c[jj]; realized+=rem*(((px-entry) if side=="long" else (entry-px))/risk)
                     exit_px=px; exit_ts=m1ts[jj]
                 r=realized-fee_r
+                # ¿qué NIVEL de liquidez es el target lejano? (para el visual: por qué el target ahí)
+                if side=="long":
+                    opts={"weekly_high":a.weekly_high[i],"prev_day_high":a.prev_day_high[i],
+                          "swing_high":a.swing_high_50[i],"vp_vah":a.vp_vah[i]}
+                else:
+                    opts={"weekly_low":a.weekly_low[i],"prev_day_low":a.prev_day_low[i],
+                          "swing_low":a.swing_low_50[i],"vp_val":a.vp_val[i]}
+                tname=min((k2 for k2 in opts if np.isfinite(opts[k2])),
+                          key=lambda k2: abs(opts[k2]-tp2), default="estructural")
                 trades.append(dict(tsMs=int(a.ts[i]), dir=("Long" if side=="long" else "Short"),
                                    entry=float(entry), stop=float(stop), target=float(tp2),
+                                   tp1=(float(tp1) if tp1 is not None else None), targetName=tname,
                                    exit=float(exit_px), resultR=float(r), reason=reason,
                                    kind=kind, closedAt=int(exit_ts), stopPct=float(100*risk/entry),
                                    regime=str(a.reg[i])))
@@ -123,6 +133,7 @@ def to_trade_json(raw, i):
     return {
         "idx":i+1, "id":f"liq-{i+1}", "sym":SYM, "dir":raw["dir"], "session":"",
         "score":None, "entry":raw["entry"], "stop":raw["stop"], "target":raw["target"],
+        "tp1":raw.get("tp1"), "targetName":raw.get("targetName"),
         "exit":raw["exit"], "resultR":round(raw["resultR"],4), "pnlUsd":round(raw["resultR"]*risk_usd,2),
         "riskUsd":risk_usd, "stopPct":round(raw["stopPct"],3), "equity":0.0,
         "reason":raw["reason"], "tsMs":raw["tsMs"], "ts":raw["tsMs"]//1000,

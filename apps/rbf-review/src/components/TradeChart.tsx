@@ -483,7 +483,7 @@ export default function TradeChart({ trade }: Props) {
       ctx.strokeStyle='rgba(22,163,74,0.25)';ctx.lineWidth=1;ctx.setLineDash([3,5])
       ctx.beginPath();ctx.moveTo(x0,tY);ctx.lineTo(x1,tY);ctx.stroke();ctx.setLineDash([])
       ctx.font='10px monospace';ctx.textAlign='left';ctx.fillStyle='rgba(22,163,74,0.5)'
-      ctx.fillText('TP  '+t.target.toFixed(prec),x1+6,tY+4)
+      ctx.fillText('TP  '+t.target.toFixed(prec)+(t.targetName?'  ('+t.targetName+')':''),x1+6,tY+4)
     }
     const profAlpha=isWin?0.28:0.10; const profStroke=isWin?'rgba(22,163,74,0.9)':'rgba(22,163,74,0.5)'
     ctx.fillStyle=`rgba(22,163,74,${profAlpha})`;ctx.fillRect(x0,ty0,w2,th)
@@ -513,9 +513,19 @@ export default function TradeChart({ trade }: Props) {
     const slLabelY = isShort ? sY-3 : sY+12
     ctx.fillStyle='rgba(220,38,38,0.95)';ctx.fillText('SL  '+t.stop.toFixed(prec),x1+6,slLabelY)
     if (!exitedEarly) {
-      // TP label: arriba del nivel si es long (tY arriba), abajo si es short
+      // TP label: arriba del nivel si es long (tY arriba), abajo si es short. Incluye QUÉ nivel de liquidez es.
       const tpLabelY = isShort ? tY+12 : tY-3
-      ctx.fillStyle='rgba(22,163,74,0.95)';ctx.fillText('TP  '+t.target.toFixed(prec),x1+6,tpLabelY)
+      ctx.fillStyle='rgba(22,163,74,0.95)';ctx.fillText('TP  '+t.target.toFixed(prec)+(t.targetName?'  ('+t.targetName+')':''),x1+6,tpLabelY)
+    }
+    // Parcial 50% (nivel de liquidez cercano) — línea punteada amarilla
+    if (t.tp1 != null && t.tp1 > 0) {
+      const p1Y = cv(series.priceToCoordinate(t.tp1))
+      if (p1Y != null) {
+        ctx.strokeStyle='rgba(240,192,64,0.7)';ctx.lineWidth=1;ctx.setLineDash([2,4])
+        ctx.beginPath();ctx.moveTo(x0,p1Y);ctx.lineTo(x1,p1Y);ctx.stroke();ctx.setLineDash([])
+        ctx.font='10px monospace';ctx.textAlign='left';ctx.fillStyle='rgba(240,192,64,0.95)'
+        ctx.fillText('PARCIAL 50%  '+t.tp1.toFixed(prec),x1+6,p1Y+4)
+      }
     }
 
     ctx.font='bold 10px monospace';ctx.textAlign='center'
