@@ -5,8 +5,48 @@
    acentos verdes puntuales, mucho espacio en blanco.
 ────────────────────────────────────────────────────────────────────────────── */
 
-/* ── Light mode (default) ─────────────────────────────────────────────────── */
+/* ── Dark mode (default) ──────────────────────────────────────────────────── */
 :root {
+  --bg:      #0d0d10;
+  --bg2:     #111115;
+  --bg3:     #18181f;
+  --bg4:     #1e1e26;
+
+  --border:  #22222a;
+  --border2: #2c2c36;
+
+  --text:    #e8e8f0;
+  --text2:   #808090;
+  --text3:   #484858;
+
+  --accent:     #22c55e;
+  --accent-bg:  rgba(34, 197, 94, 0.10);
+  --accent-dim: rgba(34, 197, 94, 0.18);
+
+  --green:     #22c55e;
+  --green-bg:  rgba(34, 197, 94, 0.08);
+  --red:       #ef4444;
+  --red-bg:    rgba(239, 68, 68, 0.08);
+  --blue:      #3b82f6;
+  --blue-bg:   rgba(59, 130, 246, 0.08);
+  --yellow:    #f59e0b;
+  --yellow-bg: rgba(245, 158, 11, 0.08);
+
+  --chart-bg:      #111115;
+  --chart-grid:    #18181f;
+  --chart-border:  #22222a;
+  --chart-text:    #484858;
+  --candle-up:     #e8e8f0;
+  --candle-down:   #2c2c36;
+  --candle-up-b:   #e8e8f0;
+  --candle-down-b: #3c3c48;
+
+  --sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'DM Mono', 'SF Mono', ui-monospace, monospace;
+}
+
+/* ── Light mode ───────────────────────────────────────────────────────────── */
+[data-theme="light"] {
   --bg:      #f5f5f7;
   --bg2:     #ffffff;
   --bg3:     #f0f0f3;
@@ -32,7 +72,6 @@
   --yellow:    #d97706;
   --yellow-bg: rgba(217, 119, 6, 0.07);
 
-  /* chart widget overrides */
   --chart-bg:        #ffffff;
   --chart-grid:      #f0f0f3;
   --chart-border:    #e2e2e6;
@@ -41,46 +80,6 @@
   --candle-down:     #d0d0d8;
   --candle-up-b:     #0a0a0f;
   --candle-down-b:   #b0b0b8;
-
-  --sans: 'Inter', system-ui, -apple-system, sans-serif;
-  --mono: 'DM Mono', 'SF Mono', ui-monospace, monospace;
-}
-
-/* ── Dark mode ────────────────────────────────────────────────────────────── */
-[data-theme="dark"] {
-  --bg:      #0d0d10;
-  --bg2:     #141418;
-  --bg3:     #1c1c22;
-  --bg4:     #242430;
-
-  --border:  #26262e;
-  --border2: #32323c;
-
-  --text:    #f0f0f4;
-  --text2:   #9090a0;
-  --text3:   #55555f;
-
-  --accent:     #22c55e;
-  --accent-bg:  rgba(34, 197, 94, 0.12);
-  --accent-dim: rgba(34, 197, 94, 0.22);
-
-  --green:     #22c55e;
-  --green-bg:  rgba(34, 197, 94, 0.10);
-  --red:       #ef4444;
-  --red-bg:    rgba(239, 68, 68, 0.10);
-  --blue:      #3b82f6;
-  --blue-bg:   rgba(59, 130, 246, 0.10);
-  --yellow:    #f59e0b;
-  --yellow-bg: rgba(245, 158, 11, 0.10);
-
-  --chart-bg:      #141418;
-  --chart-grid:    #1c1c22;
-  --chart-border:  #26262e;
-  --chart-text:    #55555f;
-  --candle-up:     #f0f0f4;
-  --candle-down:   #32323c;
-  --candle-up-b:   #f0f0f4;
-  --candle-down-b: #444450;
 }
 
 /* ── Reset ───────────────────────────────────────────────────────────────── */
@@ -254,22 +253,22 @@ html, body, #root {
 .mod-name-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 24px 0;
+  gap: 10px;
+  padding: 8px 16px 0;
 }
 
 .mod-name {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 2px;
+  letter-spacing: 1.8px;
   line-height: 1;
   text-transform: uppercase;
-  color: var(--text);
+  color: var(--text2);
   font-family: var(--mono);
 }
 
 .mod-desc {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text3);
 }
 
@@ -277,37 +276,37 @@ html, body, #root {
 .stats-row {
   display: flex;
   align-items: center;
-  padding: 12px 24px 0;
+  padding: 6px 16px 0;
   gap: 0;
 }
 
 .stat-col {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-right: 32px;
-  padding-bottom: 14px;
+  gap: 2px;
+  padding-right: 20px;
+  padding-bottom: 10px;
 }
 
 .stat-sep {
   border-right: 1px solid var(--border);
-  margin-right: 32px;
+  margin-right: 20px;
 }
 
 .stat-lbl {
-  font-size: 9px;
+  font-size: 8.5px;
   color: var(--text3);
   text-transform: uppercase;
-  letter-spacing: 1.2px;
+  letter-spacing: 1px;
   font-weight: 500;
 }
 
 .stat-val {
-  font-size: 22px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 600;
   line-height: 1;
   font-family: var(--mono);
-  letter-spacing: -1px;
+  letter-spacing: -0.3px;
   color: var(--text);
 }
 
@@ -315,21 +314,21 @@ html, body, #root {
 .subtabs {
   display: flex;
   align-items: stretch;
-  height: 38px;
+  height: 30px;
   gap: 0;
 }
 
 .subtab {
-  padding: 0 18px;
+  padding: 0 12px;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
   color: var(--text3);
   font-weight: 500;
-  font-size: 11.5px;
+  font-size: 11px;
   cursor: pointer;
   font-family: var(--sans);
-  transition: color 0.12s;
+  transition: color 0.10s;
   text-transform: capitalize;
 }
 
@@ -817,15 +816,15 @@ html, body, #root {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 32px;
+  gap: 24px;
   padding: 40px;
   background: var(--bg);
 }
 
 .hub-title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 2.5px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 2px;
   text-transform: uppercase;
   color: var(--text3);
   font-family: var(--mono);
@@ -833,21 +832,21 @@ html, body, #root {
 
 .hub-grid {
   display: grid;
-  grid-template-columns: repeat(2, 260px);
-  gap: 12px;
+  grid-template-columns: repeat(2, 210px);
+  gap: 6px;
 }
 
 .hub-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 20px 22px;
+  gap: 6px;
+  padding: 14px 16px;
   background: var(--bg2);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 4px;
   cursor: pointer;
   text-align: left;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color 0.10s, background 0.10s;
 }
 .hub-card:hover {
   background: var(--bg3);
@@ -855,18 +854,21 @@ html, body, #root {
 }
 
 .hub-card-icon {
-  opacity: 0.85;
+  color: var(--text3);
+  opacity: 0.7;
 }
 
 .hub-card-name {
-  font-size: 14px;
+  font-size: 11px;
   font-weight: 700;
-  font-family: var(--sans);
-  letter-spacing: -0.3px;
+  font-family: var(--mono);
+  letter-spacing: 0.5px;
+  color: var(--text);
+  text-transform: uppercase;
 }
 
 .hub-card-desc {
-  font-size: 10.5px;
+  font-size: 9.5px;
   color: var(--text3);
   line-height: 1.5;
   font-family: var(--sans);

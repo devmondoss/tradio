@@ -29,6 +29,34 @@ function pythonBacktest(): Plugin {
 
         const pyCmd = process.platform === 'win32' ? 'python' : 'python3'
 
+        // ── Liquidity (provisión de liquidez en niveles de volumen, POC) ─────
+        const isLiquidityInfo = url.startsWith('/api/backtest/liquidity_info')
+        const isLiquidity     = url.startsWith('/api/backtest/liquidity')
+        if (isLiquidityInfo || isLiquidity) {
+          const wsRoot = path.join(server.config.root, '..', '..')
+          const script = path.join(wsRoot, 'backtest', 'liquidity_app_backtest.py')
+          const a = isLiquidityInfo ? ['--info'] : ['--days', days, '--json']
+          console.log(`[backtest/liquidity] ${a.join(' ')}`)
+          const py = spawn(pyCmd, [script, ...a])
+          let out = ''; let err = ''
+          py.stdout.on('data', (d: Buffer) => { out += d.toString() })
+          py.stderr.on('data', (d: Buffer) => { err += d.toString() })
+          py.on('error', (e: Error) => {
+            res.writeHead(500, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: e.message }))
+          })
+          py.on('close', (code: number) => {
+            if (code !== 0 || !out.trim()) {
+              res.writeHead(500, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: err.trim() || `exit ${code}` }))
+              return
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+            res.end(out.trim())
+          })
+          return
+        }
+
         // ── MTF Local Info: metadatos del parquet (días disponibles) ─────────
         const isMtfLocalInfo = url.startsWith('/api/backtest/mtf_local_info')
         if (isMtfLocalInfo) {

@@ -1,5 +1,3 @@
-export type Tab = 'live' | 'stats'
-
 export interface Trade {
   idx: number
   id: string
@@ -37,10 +35,24 @@ export interface Trade {
   rangeTouch: number | null
   durationMin: number | null
   isOpen: boolean
+  // Live trading fields (null for paper trades)
+  isLive?: boolean
+  liveEntryOrderId?: string | null
+  liveFillPrice?: number | null
+  liveFilledQty?: number | null
+  liveTpOrderId?: string | null
+  liveSlOrderId?: string | null
   isPreBreakout?: boolean
   isSweepReclaim?: boolean
   htf?: unknown
+  sellVol?: number | null
+  buyVol?: number | null
+  scoreBreakdown?: {
+    sv: boolean; svVal: number; svThr: number
+    bv: boolean; bvVal: number; bvThr: number
+    cvd: boolean; cvdVal: number
+    vr: boolean; vrVal: number; vrThr: number
+  } | null
 }
 
-export const ACCOUNT  = 500
-export const RISK_USD = ACCOUNT * 0.02   // $10 — riesgo fijo 2% por trade
+export const ACCOUNT = 500

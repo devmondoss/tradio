@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts'
 import type { Trade } from '../lib/types'
-import { fetchKlines, TF_SECONDS } from '../lib/binance'
+import { fetchKlines, TF_SECONDS } from '../lib/exchanges'
 
 interface Props { trade: Trade | null }
 type CandleSeries = ISeriesApi<'Candlestick', Time>

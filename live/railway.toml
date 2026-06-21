@@ -1,0 +1,9 @@
+# Config del servicio Railway "liquidity-paper" (Root Directory = live).
+# Railway resuelve esta config relativa al Root Directory, así que dockerfilePath = "Dockerfile"
+# apunta a live/Dockerfile (el Python, NO el Rust raíz).
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+restartPolicyType = "always"

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { supabase, type MtfTrade, type MtfSpotTrade } from '../lib/supabase'
-import { fmtR } from '../lib/utils'
-import BacktestView from './BacktestView'
-import RbfLiveView from './LiveView'
-import type { Trade } from '../lib/types'
+import { supabase, type MtfTrade, type MtfSpotTrade } from '../../lib/supabase'
+import { fmtR } from '../../lib/utils'
+import LocalResultsView from '../../views/LocalResultsView'
+import TradesView from '../../views/TradesView'
+import type { Trade } from '../../lib/types'
 
 type LiveMtfTrade = MtfTrade | MtfSpotTrade
 type LiveSource = 'spot' | 'futures'
@@ -52,6 +52,12 @@ function mtfToTrade(t: LiveMtfTrade, idx: number): Trade {
     rangeTouch: null,
     durationMin: t.duration_bars ?? null,
     isOpen: t.is_open,
+    isLive: ('is_live' in t && t.is_live) ? true : false,
+    liveEntryOrderId: 'live_entry_order_id' in t ? t.live_entry_order_id : null,
+    liveFillPrice:    'live_fill_price' in t ? t.live_fill_price : null,
+    liveFilledQty:    'live_filled_qty' in t ? t.live_filled_qty : null,
+    liveTpOrderId:    'live_tp_order_id' in t ? t.live_tp_order_id : null,
+    liveSlOrderId:    'live_sl_order_id' in t ? t.live_sl_order_id : null,
   }
 }
 
@@ -74,10 +80,20 @@ function equity(trades: LiveMtfTrade[]): number {
 
 interface BtStats { n: number; wins: number; totalR: number; avgR: number; equity: number }
 
-export default function MTFModuleView() {
-  const [sub,      setSub]      = useState<SubTab>('live')
-  const [liveSource, setLiveSource] = useState<LiveSource>('spot')
-  const [btMode,   setBtMode]   = useState<BtMode>('Shorts')
+export default function MTFModule() {
+  const [sub,        setSub]        = useState<SubTab>(
+    () => (localStorage.getItem('tradio-mtf-sub') as SubTab) ?? 'live'
+  )
+  const [liveSource, setLiveSource] = useState<LiveSource>(
+    () => (localStorage.getItem('tradio-mtf-src') as LiveSource) ?? 'spot'
+  )
+  const [btMode,     setBtMode]     = useState<BtMode>(
+    () => (localStorage.getItem('tradio-mtf-bt') as BtMode) ?? 'Shorts'
+  )
+
+  function setSub2(v: SubTab)            { setSub(v);        localStorage.setItem('tradio-mtf-sub', v) }
+  function setLiveSource2(v: LiveSource) { setLiveSource(v); localStorage.setItem('tradio-mtf-src', v) }
+  function setBtMode2(v: BtMode)         { setBtMode(v);     localStorage.setItem('tradio-mtf-bt',  v) }
   const [trades,   setTrades]   = useState<LiveMtfTrade[]>([])
   const [loading,  setLoading]  = useState(true)
   const [btStats,  setBtStats]  = useState<BtStats | null>(null)
@@ -169,7 +185,6 @@ export default function MTFModuleView() {
 
         <div className="stats-row">
 
-          {/* ── Shorts ── */}
           <div className="stat-col" style={{ minWidth: 36 }}>
             <span className="stat-lbl" style={{ color: 'var(--red)' }}>Short</span>
             <span className="stat-val" style={{ color: 'var(--text3)' }}>{sS.n || '—'}</span>
@@ -187,10 +202,8 @@ export default function MTFModuleView() {
             <span className="stat-val" style={{ color: sS.n ? rC(sS.totalR) : 'var(--text3)' }}>{sS.n ? fmtR(sS.totalR) : '—'}</span>
           </div>
 
-          {/* ── divider ── */}
           <div style={{ width: 1, background: 'var(--border2)', alignSelf: 'stretch', margin: '4px 10px 4px 0' }} />
 
-          {/* ── Longs ── */}
           <div className="stat-col" style={{ minWidth: 36 }}>
             <span className="stat-lbl" style={{ color: 'var(--green)' }}>Long</span>
             <span className="stat-val" style={{ color: 'var(--text3)' }}>{sL.n || '—'}</span>
@@ -208,10 +221,8 @@ export default function MTFModuleView() {
             <span className="stat-val" style={{ color: sL.n ? rC(sL.totalR) : 'var(--text3)' }}>{sL.n ? fmtR(sL.totalR) : '—'}</span>
           </div>
 
-          {/* ── divider ── */}
           <div style={{ width: 1, background: 'var(--border2)', alignSelf: 'stretch', margin: '4px 10px 4px 0' }} />
 
-          {/* ── Equity ── */}
           <div className="stat-col">
             <span className="stat-lbl">Equity</span>
             <span className="stat-val" style={{ color: rC(eq - CAPITAL) }}>${eq.toFixed(0)}</span>
@@ -222,7 +233,7 @@ export default function MTFModuleView() {
           <div className="subtabs">
             {(['live', 'backtest'] as SubTab[]).map(t => (
               <button key={t} className={`subtab${sub === t ? ' active' : ''}`}
-                onClick={() => setSub(t)}
+                onClick={() => setSub2(t)}
                 style={{ borderBottomColor: sub === t ? COLOR : 'transparent' }}>
                 {t}
               </button>
@@ -233,7 +244,7 @@ export default function MTFModuleView() {
             <div className="subtabs" style={{ marginLeft: 10 }}>
               {(['spot', 'futures'] as LiveSource[]).map(t => (
                 <button key={t} className={`subtab${liveSource === t ? ' active' : ''}`}
-                  onClick={() => setLiveSource(t)}
+                  onClick={() => setLiveSource2(t)}
                   style={{ borderBottomColor: liveSource === t ? (t === 'spot' ? 'var(--green)' : COLOR) : 'transparent' }}>
                   {t === 'spot' ? 'Spot paper' : 'Futures'}
                 </button>
@@ -252,10 +263,9 @@ export default function MTFModuleView() {
         {sub === 'live' ? (
           loading
             ? <div className="mod-center">Cargando…</div>
-            : <RbfLiveView trades={converted} />
+            : <TradesView trades={converted} />
         ) : (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
-            {/* selector simbolo */}
             <div style={{
               display: 'flex', gap: 4, padding: '4px 8px', flexShrink: 0,
               borderBottom: '1px solid var(--border)', background: 'var(--bg2)',
@@ -264,7 +274,7 @@ export default function MTFModuleView() {
               <span style={{ fontSize: 9, color: 'var(--text3)', marginRight: 4 }}>Modo</span>
               {(['Shorts', 'Longs'] as BtMode[]).map(s => (
                 <button key={s}
-                  onClick={() => setBtMode(s)}
+                  onClick={() => setBtMode2(s)}
                   style={{
                     padding: '2px 14px', borderRadius: 3, fontSize: 10,
                     cursor: 'pointer', fontFamily: 'inherit',
@@ -277,10 +287,10 @@ export default function MTFModuleView() {
                 </button>
               ))}
               <span style={{ fontSize: 9, color: 'var(--text3)', marginLeft: 8 }}>
-                Bybit spot parquet · MTF Spot {btMode === 'Longs' ? 'Longs v1' : 'Shorts v4'} · resultados en exports/
+                Bybit spot parquet · MTF Spot {btMode === 'Longs' ? 'Longs v2' : 'Shorts v6'} · resultados en exports/
               </span>
             </div>
-            <BacktestView
+            <LocalResultsView
               key={btMode}
               strategy={btMode === 'Longs' ? 'mtf_spot_longs_btc' : 'mtf_local_btc'}
               onStats={setBtStats}

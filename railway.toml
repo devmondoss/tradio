@@ -1,6 +1,7 @@
 [build]
 builder = "dockerfile"
-dockerfilePath = "Dockerfile"
+# Estrategia de LIQUIDEZ (Python). Para volver al monitor Rust: dockerfilePath = "Dockerfile"
+dockerfilePath = "Dockerfile.liquidity"
 
 [deploy]
 restartPolicyType = "always"
