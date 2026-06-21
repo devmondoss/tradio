@@ -143,7 +143,7 @@ def main():
     ap.add_argument("--symbol", default="BTCUSDT")
     args=ap.parse_args()
 
-    full0=int(pd.Timestamp('2025-01-01',tz='UTC').value//1_000_000)
+    full0=L2.TICK_MS   # era tick VERIFICADA (2025-06-19+, 365d). Pre-tick era OHLCV no verificado.
     t=L2.load2(args.tf, start_ms=full0)
     if args.days and args.days>0:
         cutoff=t.ts_ms.max()-args.days*86_400_000

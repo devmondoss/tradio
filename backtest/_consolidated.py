@@ -24,7 +24,7 @@ OOS_MS = L1.OOS_MS; CAP0, RISK = L1.CAP0, L1.RISK; FEE_MAKER = L1.FEE_MAKER
 
 def h1_trades(tf, margin, volfilter):
     """Fade del área-valor (config fijada: bordes/POC del día previo, maker-límite, stop=max)."""
-    full0=int(pd.Timestamp('2025-01-01',tz='UTC').value//1_000_000)
+    full0=L2.TICK_MS  # era tick verificada (365d)
     t=L1.load(tf, open_hour=12, start_ms=full0); a=L1.A(t); timeout=int(8*60/tf)
     tr=L1.h1(a, FEE_MAKER, timeout, stop_mode="max", trigger="close", min_rr=1.5,
              sub1b=False, entry_mode="maker_limit", variants=("V1","V3"),
@@ -34,7 +34,7 @@ def h1_trades(tf, margin, volfilter):
 
 def h5_h21_trades(tf, margin, capN, tape, volfilter):
     """POC del order block + POC defendido (maker-límite)."""
-    full0=int(pd.Timestamp('2025-01-01',tz='UTC').value//1_000_000)
+    full0=L2.TICK_MS  # era tick verificada (365d)
     t=L2.load2(tf, start_ms=full0); a=L2.A2(t); timeout=int(8*60/tf)
     # filtro de volatilidad causal (ATR > mediana móvil 500)
     atr_med = pd.Series(a.atr).rolling(500, min_periods=50).median().shift(1).values

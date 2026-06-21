@@ -7,6 +7,7 @@
 | Parámetro | Valor |
 |---|---|
 | Mercado | BTCUSDT perpetuo Bybit (linear) |
+| **Datos** | **era tick VERIFICADA 2025-06-19 → 2026-06 (~365d)**. El OHLCV existe desde 2025-01 (klines, 532d) pero el pre-tick NO está verificado → NO se usa. IS<2026-03 / OOS≥2026-03 |
 | Componentes | POC del order-block + POC defendido (provisión de liquidez maker) |
 | TF de decisión | **M15** (recalcula niveles cada cierre; fills/salidas en tiempo real / M1) |
 | Entrada | orden LÍMITE maker en el nivel · selección adversa 2 bps |
@@ -219,7 +220,7 @@ En `backtest/liquidity_app_backtest.py` / `_listas2.py` (los que más mueven el 
 | Parámetro | Valor fijo | Afecta |
 |---|---|---|
 | Datos | `data/bybit-perp/processed/btcusdt_perp_m1.parquet` (real Bybit perp, 2025-01-01→2026-06-17, 767k velas M1) | — |
-| Inicio backtest | 2025-01-01 | rango |
+| Inicio backtest | **2025-06-19 (era tick verificada, ~365d)** — el pre-tick OHLCV existe pero NO se usa | rango |
 | Capital / riesgo | $500 / $5 fijo (1%, sin compounding) | equity |
 | Fee | maker 4 bps RT | rentabilidad |
 | **Timeframe** | **M15** | ⭐ |
