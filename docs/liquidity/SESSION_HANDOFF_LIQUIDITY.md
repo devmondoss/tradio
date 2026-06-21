@@ -67,8 +67,7 @@
 1. ✅ **Re-auditar el edge** (hecho 2026-06-21): duda refutada, fee honesto cableado. Ver §7c.
 2. ✅ **Mirror corto del POC defendido** (hecho 2026-06-21): backtest (`gen_h21_short`) + live
    (`live/levels.py` → `poc_defendido_short`). Cartera balanceada 57/43. Ver §7b.
-3. 🔴 **REINICIAR el servicio Railway del paper** para que tome el código nuevo (mirror + fee honesto).
-   El proceso vivo corre el código viejo (solo longs, fee flat). Sin restart no coloca shorts.
+3. ✅ **Railway reiniciado** (confirmado 2026-06-21): corre código nuevo (mirror + fee honesto).
 4. **Leer el fill ratio del paper** (días de datos, esp. VOL-HIGH) → decide si es desplegable.
 5. **Footprint real desde ticks en live** (cerrar gap de aproximación) — solo si valida.
 6. Si valida fills → **portar a Rust** (motor de producción con ejecución real + kill-switch + Slack).

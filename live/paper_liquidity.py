@@ -32,6 +32,7 @@ import websocket
 import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 from levels import compute_levels
+from footprint import FootprintAccumulator
 
 SYMBOL          = os.getenv("SYMBOL", "BTCUSDT")
 REST            = "https://api.bybit.com"
@@ -291,16 +292,19 @@ def main():
                                or not os.getenv("BYBIT_API_KEY")):
         print("LIVE-TESTNET requiere BYBIT_TESTNET=true + claves. Abortando."); return
 
+    fp = FootprintAccumulator()   # acumulador de ticks → volume profile real
+
     m  = bootstrap(TF)
     ts0 = int(time.time() * 1000)
     for s, book in books.items():
-        lvls = compute_levels(m, system=s, high_vol_only=HVO)
+        lvls = compute_levels(m, system=s, high_vol_only=HVO, fp_bars=fp.bars())
         book.refresh(lvls, ts0)
         print(f"[{s.upper()}] Bootstrap {len(m)} velas M{TF}. Niveles: {len(book.resting)}")
         for o in book.resting:
             print(f"  {o['side']:>5} {o['kind']:<18} @ {o['price']:.1f}"
                   f"  stop={o['stop']:.1f}  tp={o['tp']:.1f}"
-                  f"  gestion={o['gestion']}  vol={o['vol_regime']}")
+                  f"  gestion={o['gestion']}  vol={o['vol_regime']}"
+                  f"  fp={o.get('fp_source','ohlcv')}")
 
     if not (SUPA_URL and SUPA_KEY) and not LOG.exists():
         with open(LOG, "w", newline="") as f:
@@ -328,6 +332,9 @@ def main():
         if topic.startswith("publicTrade"):
             for t in d.get("data", []):
                 px = float(t["p"]); ts = int(t["T"])
+                vol  = float(t.get("v", 1.0))
+                side = t.get("S", "Buy")          # "Buy" | "Sell"
+                fp.on_trade(px, vol, side)         # acumular tick en footprint
                 for book in books.values():
                     book.on_trade(px, ts)
             for book in books.values():
@@ -335,16 +342,25 @@ def main():
         elif topic.startswith("kline"):
             for bar in d.get("data", []):
                 if bar.get("confirm"):
-                    row = dict(ts_ms=int(bar["start"]), open=float(bar["open"]),
+                    bar_ts = int(bar["start"])
+                    row = dict(ts_ms=bar_ts, open=float(bar["open"]),
                                high=float(bar["high"]), low=float(bar["low"]),
                                close=float(bar["close"]), volume=float(bar["volume"]))
                     nonlocal m
                     m = pd.concat([m, pd.DataFrame([row])], ignore_index=True).tail(2000)
+                    # Cerrar barra en el footprint ANTES de recalcular niveles
+                    closed_fp = fp.on_bar_close(bar_ts)
+                    fp_bars   = fp.bars()
+                    if closed_fp:
+                        print(f"  [FP] barra {bar_ts} POC={closed_fp['poc']:.1f}"
+                              f"  delta={closed_fp['delta']:+.1f}"
+                              f"  bars_acum={fp.n_bars()}"
+                              f"  source={'tick' if len(fp_bars) >= 20 else 'ohlcv (calentando)'}")
                     snaps = []
                     lines = []
                     for s, book in books.items():
-                        lvls = compute_levels(m, system=s, high_vol_only=HVO)
-                        book.refresh(lvls, row["ts_ms"])
+                        lvls = compute_levels(m, system=s, high_vol_only=HVO, fp_bars=fp_bars)
+                        book.refresh(lvls, bar_ts)
                         _flush(book)
                         snaps.append(book.snapshot())
                         lines.append(f"[{s.upper()}] {book.line()}")

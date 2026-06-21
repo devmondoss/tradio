@@ -30,6 +30,7 @@ MIN_TP1_RR = 2.3   # parcial solo si TP1 >= 2.3 x riesgo
 TRAIL_ATR  = 4.0   # multiplicador ATR para trailing stop (FLOW tendencia)
 NAKED_TOL  = 75.0  # $75 tolerancia para "POC visitado"
 NAKED_LOOKBACK = 10  # dias de lookback para naked POC approximado
+FP_MIN_BARS = 20   # mínimo de barras de footprint real para activar VP por ticks
 
 
 def _atr(h, l, c, n=14):
@@ -43,20 +44,41 @@ def _atr(h, l, c, n=14):
     return out
 
 
-def _vp(price, vol):
-    """POC / VAH / VAL por bins de precio ponderados por volumen."""
-    if len(price) == 0: return None
-    lo  = np.floor(price.min() / BIN) * BIN
-    idx = ((price - lo) // BIN).astype(int)
-    vols = np.bincount(idx, weights=vol).astype(float)
-    lvls = lo + np.arange(len(vols)) * BIN
-    poc  = float(lvls[vols.argmax()])
+def _vp_bins(lvls: np.ndarray, vols: np.ndarray) -> dict:
+    """POC / VAH / VAL desde arrays ya binados (lvls=precios, vols=volúmenes)."""
+    poc = float(lvls[vols.argmax()])
     order = np.argsort(vols)[::-1]; tot = vols.sum(); cum = 0.0; sel = []
     for k in order:
         sel.append(k); cum += vols[k]
         if cum >= 0.70 * tot: break
     va = lvls[sel]
     return dict(poc=poc, vah=float(va.max()), val=float(va.min()))
+
+
+def _vp(price, vol):
+    """POC / VAH / VAL desde OHLCV (aproximación: volumen asignado al close)."""
+    if len(price) == 0: return None
+    lo  = np.floor(price.min() / BIN) * BIN
+    idx = ((price - lo) // BIN).astype(int)
+    vols = np.bincount(idx, weights=vol).astype(float)
+    lvls = lo + np.arange(len(vols)) * BIN
+    return _vp_bins(lvls, vols)
+
+
+def _vp_from_fp(fp_bars: list) -> dict | None:
+    """VP real desde footprint tick acumulado (más preciso que OHLCV).
+    fp_bars: lista de dicts devueltos por FootprintAccumulator.on_bar_close()."""
+    if not fp_bars:
+        return None
+    combined: dict[float, float] = {}
+    for bar in fp_bars:
+        for p, v in zip(bar["prices"], bar["total"]):
+            combined[float(p)] = combined.get(float(p), 0.0) + float(v)
+    if not combined:
+        return None
+    lvls = np.array(sorted(combined.keys()))
+    vols = np.array([combined[p] for p in lvls])
+    return _vp_bins(lvls, vols)
 
 
 def _regime(c, atr_series, n_sma=50):
@@ -93,12 +115,17 @@ def _naked_poc_approx(df_m15, tol=NAKED_TOL, lookback=NAKED_LOOKBACK):
     return sorted(set(naked))
 
 
-def compute_levels(m15: pd.DataFrame, system="maker", high_vol_only=False, vol_window=500):
+def compute_levels(m15: pd.DataFrame, system="maker", high_vol_only=False, vol_window=500,
+                   fp_bars: list | None = None):
     """Calcula niveles de entrada para MAKER o FLOW.
 
-    system: "maker" = fade puro. "flow" = fade en chop, trail en tendencia.
+    system:   "maker" = fade puro. "flow" = fade en chop, trail en tendencia.
+    fp_bars:  historial de footprint real (FootprintAccumulator.bars()).
+              Si se pasa y tiene >= FP_MIN_BARS barras, se usa VP por ticks
+              para el value area y POC real del order block.
+              Si es None o insuficiente, cae al cálculo OHLCV aproximado.
     Devuelve lista de dicts con: side, kind, price, stop, tp1, tp,
-                                  vol_regime, regime, atr, gestion.
+                                  vol_regime, regime, atr, gestion, fp_source.
     """
     if len(m15) < max(300, VA_BARS + SWING + 50): return []
     df = m15.copy()
@@ -117,8 +144,13 @@ def compute_levels(m15: pd.DataFrame, system="maker", high_vol_only=False, vol_w
     is_trend = _regime(c, atr) if system == "flow" else False
     regime   = "trend" if is_trend else "chop"
 
-    # Niveles estructurales
-    va  = _vp(c[-VA_BARS:], v[-VA_BARS:])
+    # Niveles estructurales — VP real (ticks) si hay suficiente historial, OHLCV si no
+    use_fp = fp_bars is not None and len(fp_bars) >= FP_MIN_BARS
+    fp_source = "tick" if use_fp else "ohlcv"
+    if use_fp:
+        va = _vp_from_fp(fp_bars[-VA_BARS:])
+    if not use_fp or va is None:
+        va = _vp(c[-VA_BARS:], v[-VA_BARS:])
     if va is None: return []
     sh  = float(np.max(h[-SWING - 1:-1])); sl = float(np.min(l[-SWING - 1:-1]))
     days = sorted(df["date"].unique())
@@ -146,7 +178,12 @@ def compute_levels(m15: pd.DataFrame, system="maker", high_vol_only=False, vol_w
     win  = df.tail(OB_WIN)
     obi  = (win.high - win.low).values.argmax()
     obh, obl = float(win.high.values[obi]), float(win.low.values[obi])
-    obpoc = (obh + obl) / 2.0
+    # POC real del OB si tenemos el footprint de esa barra específica
+    ob_ts_ms = int(win.ts_ms.values[obi])
+    ob_fp = None
+    if fp_bars:
+        ob_fp = next((b for b in reversed(fp_bars) if b["ts_ms"] == ob_ts_ms), None)
+    obpoc = ob_fp["poc"] if ob_fp else (obh + obl) / 2.0
     for side, stop in (("long", obl - 0.25 * a), ("short", obh + 0.25 * a)):
         tp1, tp2 = struct_target(side, obpoc)
         if np.isfinite(tp2):
@@ -199,6 +236,6 @@ def compute_levels(m15: pd.DataFrame, system="maker", high_vol_only=False, vol_w
         # Gestion: MAKER siempre fade; FLOW fade en chop, trail en tendencia
         gestion = "trail" if (system == "flow" and is_trend) else "fade"
         o.update(vol_regime=vol_regime, regime=regime, atr=float(a),
-                 gestion=gestion, take_partial=take_partial)
+                 gestion=gestion, take_partial=take_partial, fp_source=fp_source)
         valid.append(o)
     return valid
