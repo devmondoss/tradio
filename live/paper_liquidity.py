@@ -294,6 +294,11 @@ def main():
 
     fp = FootprintAccumulator()   # acumulador de ticks → volume profile real
 
+    # Restaurar footprint desde Supabase (sobrevive reinicios de Railway)
+    n_restored = fp.restore_from_supa(SYMBOL, TF, SUPA_URL, SUPA_KEY)
+    if n_restored == 0:
+        print("[FP] sin historial en Supabase — warmup de 20 barras (~5h) antes de usar VP tick")
+
     m  = bootstrap(TF)
     ts0 = int(time.time() * 1000)
     for s, book in books.items():
@@ -352,10 +357,13 @@ def main():
                     closed_fp = fp.on_bar_close(bar_ts)
                     fp_bars   = fp.bars()
                     if closed_fp:
-                        print(f"  [FP] barra {bar_ts} POC={closed_fp['poc']:.1f}"
+                        src = "tick" if fp.n_bars() >= 20 else f"ohlcv (calentando {fp.n_bars()}/20)"
+                        print(f"  [FP] POC={closed_fp['poc']:.1f}"
                               f"  delta={closed_fp['delta']:+.1f}"
-                              f"  bars_acum={fp.n_bars()}"
-                              f"  source={'tick' if len(fp_bars) >= 20 else 'ohlcv (calentando)'}")
+                              f"  vol={closed_fp['vol']:.1f}"
+                              f"  bars={fp.n_bars()}  src={src}")
+                        # Persistir en Supabase para sobrevivir reinicios
+                        fp.save_bar_to_supa(closed_fp, SYMBOL, TF, SUPA_URL, SUPA_KEY)
                     snaps = []
                     lines = []
                     for s, book in books.items():
