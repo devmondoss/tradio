@@ -74,6 +74,7 @@ impl SupaClient {
             "regime":     e.regime,
             "gestion":    e.gestion,
             "price":      e.price,
+            "bar_delta":  (e.bar_delta * 10000.0).round() / 10000.0,
         })).collect();
         self.insert("liquidity_paper_events", json!(rows)).await;
     }
@@ -83,23 +84,24 @@ impl SupaClient {
     pub async fn write_trades(&self, trades: &[crate::book::ClosedTrade]) {
         if trades.is_empty() { return; }
         let rows: Vec<Value> = trades.iter().map(|t| json!({
-            "symbol":     self.symbol,
-            "tf":         self.tf,
-            "kind":       t.kind,
-            "side":       t.side,
-            "vol_regime": t.vol_regime,
-            "regime":     t.regime,
-            "gestion":    t.gestion,
-            "entry":      t.entry,
-            "stop":       t.stop,
-            "target":     t.target,
-            "exit_price": t.exit_price,
-            "result_r":   t.result_r,
-            "win":        t.win,
-            "reason":     t.reason,
-            "system":     t.system,
-            "opened_at":  Self::iso(t.opened_at),
-            "closed_at":  Self::iso(t.closed_at),
+            "symbol":              self.symbol,
+            "tf":                  self.tf,
+            "kind":                t.kind,
+            "side":                t.side,
+            "vol_regime":          t.vol_regime,
+            "regime":              t.regime,
+            "gestion":             t.gestion,
+            "entry":               t.entry,
+            "stop":                t.stop,
+            "target":              t.target,
+            "exit_price":          t.exit_price,
+            "result_r":            t.result_r,
+            "win":                 t.win,
+            "reason":              t.reason,
+            "system":              t.system,
+            "opened_at":           Self::iso(t.opened_at),
+            "closed_at":           Self::iso(t.closed_at),
+            "bar_delta_at_fill":   (t.bar_delta_at_fill * 10000.0).round() / 10000.0,
         })).collect();
         self.insert("liquidity_paper_trades", json!(rows)).await;
     }

@@ -102,15 +102,17 @@ fn median_of(v: &[f64]) -> f64 {
 // ── Estado principal ──────────────────────────────────────────────────────────
 
 struct State {
-    bars:        VecDeque<ClosedBar>,
-    cur_fp:      HashMap<u32, (f64, f64)>,
-    cur_atr:     f64,
-    atr_history: VecDeque<f64>,
-    books:       Vec<PaperBook>,
-    symbol:      String,
-    tf:          String,
+    bars:          VecDeque<ClosedBar>,
+    cur_fp:        HashMap<u32, (f64, f64)>,
+    cur_delta:     f64,   // buy_vol - sell_vol acumulado en la barra M15 en curso
+    cur_atr:       f64,
+    atr_history:   VecDeque<f64>,
+    books:         Vec<PaperBook>,
+    symbol:        String,
+    tf:            String,
     high_vol_only: bool,
-    supa:        Option<Arc<SupaClient>>,
+    disable_h5:    bool,
+    supa:          Option<Arc<SupaClient>>,
 }
 
 impl State {
@@ -130,14 +132,17 @@ impl State {
 
     fn on_trade(&mut self, price: f64, qty: f64, is_sell: bool, ts: i64) {
         fp_add(&mut self.cur_fp, price, qty, is_sell);
+        if is_sell { self.cur_delta -= qty; } else { self.cur_delta += qty; }
+        let delta = self.cur_delta;
         for book in &mut self.books {
-            book.on_trade(price, ts);
+            book.on_trade(price, ts, delta);
         }
     }
 
     async fn on_bar_close(&mut self, ts_ms: i64, open: f64, high: f64, low: f64, close: f64, vol: f64) {
         // 1. Crear barra cerrada con footprint acumulado
         let fp = std::mem::take(&mut self.cur_fp);
+        self.cur_delta = 0.0;
         let bar = ClosedBar::from_live(ts_ms, open, high, low, close, vol, fp);
 
         // 2. Actualizar ATR incremental
@@ -168,7 +173,7 @@ impl State {
         }).collect();
 
         let mut book_levels: Vec<Vec<levels::Level>> = system_per_book.iter().map(|&sys| {
-            levels::compute_levels(&bars_slice, atr, atr_med, sys, self.high_vol_only)
+            levels::compute_levels(&bars_slice, atr, atr_med, sys, self.high_vol_only, self.disable_h5)
         }).collect();
 
         // 6. Refresh orders + flush a Supabase
@@ -258,14 +263,21 @@ async fn handle_message(state: &mut State, msg: &str) {
 
 #[tokio::main]
 async fn main() {
-    let symbol = env("SYMBOL", "BTCUSDT");
-    let tf     = env("TF", "15");
-    let system = env("SYSTEM", "both");
-    let hvo    = env("HIGH_VOL_ONLY", "false").to_lowercase() == "true";
-    let supa_url = env("SUPABASE_URL", "");
-    let supa_key = env("SUPABASE_KEY", "");
+    let symbol      = env("SYMBOL", "BTCUSDT");
+    let tf          = env("TF", "15");
+    let system      = env("SYSTEM", "both");
+    let hvo         = env("HIGH_VOL_ONLY", "false").to_lowercase() == "true";
+    let disable_h5  = env("DISABLE_H5", "false").to_lowercase() == "true";
+    let fill_margin = env("FILL_MARGIN_BPS", "2").parse::<f64>().unwrap_or(2.0);
+    let timeout_h   = env("TIMEOUT_HOURS", "24").parse::<f64>().unwrap_or(24.0);
+    let supa_url    = env("SUPABASE_URL", "");
+    let supa_key    = env("SUPABASE_KEY", "");
 
-    println!(">>> liquidity_monitor  SYMBOL={symbol}  TF={tf}  SYSTEM={system}  HIGH_VOL_ONLY={hvo}");
+    println!(
+        ">>> liquidity_monitor  SYMBOL={symbol}  TF={tf}  SYSTEM={system}  \
+         HIGH_VOL_ONLY={hvo}  DISABLE_H5={disable_h5}  \
+         FILL_MARGIN={fill_margin}bps  TIMEOUT={timeout_h}h"
+    );
 
     let supa = SupaClient::new(&supa_url, &supa_key, &symbol, &tf).map(Arc::new);
 
@@ -297,18 +309,24 @@ async fn main() {
 
     let books = State::systems_for(&system)
         .into_iter()
-        .map(|s| PaperBook::new(if s == System::Maker { "maker" } else { "flow" }))
+        .map(|s| PaperBook::new(
+            if s == System::Maker { "maker" } else { "flow" },
+            fill_margin,
+            timeout_h,
+        ))
         .collect();
 
     let mut state = State {
         bars:          boot_bars.into_iter().collect(),
         cur_fp:        HashMap::new(),
+        cur_delta:     0.0,
         cur_atr:       init_atr,
         atr_history,
         books,
         symbol:        symbol.clone(),
         tf:            tf.clone(),
         high_vol_only: hvo,
+        disable_h5,
         supa:          supa.clone(),
     };
 

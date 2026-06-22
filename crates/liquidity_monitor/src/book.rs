@@ -18,31 +18,33 @@ pub struct RestingOrder {
 
 #[derive(Debug, Clone)]
 pub struct OpenPos {
-    pub level: Level,
-    pub entry: f64,
-    pub fill_ts: i64,
+    pub level:              Level,
+    pub entry:              f64,
+    pub fill_ts:            i64,
+    pub bar_delta_at_fill:  f64,
     // gestión fade
-    pub cur_stop: f64,
-    pub realized: f64,
-    pub rem: f64,
-    pub filled1: bool,
+    pub cur_stop:  f64,
+    pub realized:  f64,
+    pub rem:       f64,
+    pub filled1:   bool,
     // gestión trail
     pub best_price: f64,
     pub trail_stop: f64,
 }
 
 impl OpenPos {
-    pub fn new(level: Level, fill_ts: i64) -> Self {
-        let entry    = level.price;
+    pub fn new(level: Level, fill_ts: i64, bar_delta: f64) -> Self {
+        let entry      = level.price;
         let trail_stop = level.stop;
         Self {
-            cur_stop:  level.stop,
-            best_price: entry,
+            cur_stop:           level.stop,
+            best_price:         entry,
             trail_stop,
-            realized:  0.0,
-            rem:       1.0,
-            filled1:   false,
+            realized:           0.0,
+            rem:                1.0,
+            filled1:            false,
             fill_ts,
+            bar_delta_at_fill:  bar_delta,
             entry,
             level,
         }
@@ -53,59 +55,65 @@ impl OpenPos {
 
 #[derive(Debug, Clone)]
 pub struct ClosedTrade {
-    pub system:     String,
-    pub kind:       String,
-    pub side:       String,
-    pub vol_regime: String,
-    pub regime:     String,
-    pub gestion:    String,
-    pub entry:      f64,
-    pub stop:       f64,
-    pub target:     f64,
-    pub exit_price: f64,
-    pub result_r:   f64,
-    pub win:        bool,
-    pub reason:     String,
-    pub opened_at:  i64,
-    pub closed_at:  i64,
+    pub system:              String,
+    pub kind:                String,
+    pub side:                String,
+    pub vol_regime:          String,
+    pub regime:              String,
+    pub gestion:             String,
+    pub entry:               f64,
+    pub stop:                f64,
+    pub target:              f64,
+    pub exit_price:          f64,
+    pub result_r:            f64,
+    pub win:                 bool,
+    pub reason:              String,
+    pub opened_at:           i64,
+    pub closed_at:           i64,
+    pub bar_delta_at_fill:   f64,  // delta barra M15 al momento del fill
 }
 
 // ── Evento de place/fill ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct BookEvent {
-    pub event_type: String,   // "place" | "fill"
-    pub kind:       String,
-    pub side:       String,
-    pub vol_regime: String,
-    pub regime:     String,
-    pub gestion:    String,
-    pub price:      f64,
-    pub at:         i64,
+    pub event_type:  String,   // "place" | "fill"
+    pub kind:        String,
+    pub side:        String,
+    pub vol_regime:  String,
+    pub regime:      String,
+    pub gestion:     String,
+    pub price:       f64,
+    pub at:          i64,
+    pub bar_delta:   f64,      // delta acumulado de la barra M15 al momento del fill (0.0 para place)
 }
 
 // ── PaperBook ───────────────────────────────────────────────────────────────
 
 pub struct PaperBook {
-    pub system:   String,
-    resting:      Vec<RestingOrder>,
-    open_pos:     Vec<OpenPos>,
-    pub placed:   [u64; 2],  // [high, low]
-    pub filled:   [u64; 2],
-    pub trades:   Vec<ClosedTrade>,
-    pub events:   Vec<BookEvent>,
+    pub system:        String,
+    pub fill_margin:   f64,   // bps — mercado debe penetrar N bps el nivel para fill
+    pub timeout_ms:    i64,   // ms — cerrar posición si supera este tiempo (0=desactivado)
+    resting:           Vec<RestingOrder>,
+    open_pos:          Vec<OpenPos>,
+    pub placed:        [u64; 2],  // [high, low]
+    pub filled:        [u64; 2],
+    pub trades:        Vec<ClosedTrade>,
+    pub events:        Vec<BookEvent>,
 }
 
 impl PaperBook {
-    pub fn new(system: impl Into<String>) -> Self {
+    pub fn new(system: impl Into<String>, fill_margin_bps: f64, timeout_hours: f64) -> Self {
         Self {
-            system: system.into(),
-            resting: Vec::new(),
-            open_pos: Vec::new(),
-            placed: [0, 0],
-            filled: [0, 0],
-            trades: Vec::new(),
-            events: Vec::new(),
+            system:      system.into(),
+            fill_margin: fill_margin_bps,
+            timeout_ms:  (timeout_hours * 3600.0 * 1000.0) as i64,
+            resting:     Vec::new(),
+            open_pos:    Vec::new(),
+            placed:      [0, 0],
+            filled:      [0, 0],
+            trades:      Vec::new(),
+            events:      Vec::new(),
         }
     }
 
@@ -125,16 +133,17 @@ impl PaperBook {
         if g == Gestion::Fade { "fade" } else { "trail" }
     }
 
-    fn make_event(&self, etype: &str, lv: &Level, at: i64) -> BookEvent {
+    fn make_event(&self, etype: &str, lv: &Level, at: i64, bar_delta: f64) -> BookEvent {
         BookEvent {
-            event_type: etype.into(),
-            kind:       lv.kind.into(),
-            side:       Self::side_str(lv.side).into(),
-            vol_regime: Self::vol_str(lv.vol_regime).into(),
-            regime:     if lv.regime == crate::levels::MarketRegime::Trend { "trend" } else { "chop" }.into(),
-            gestion:    Self::gestion_str(lv.gestion).into(),
-            price:      lv.price,
+            event_type:  etype.into(),
+            kind:        lv.kind.into(),
+            side:        Self::side_str(lv.side).into(),
+            vol_regime:  Self::vol_str(lv.vol_regime).into(),
+            regime:      if lv.regime == crate::levels::MarketRegime::Trend { "trend" } else { "chop" }.into(),
+            gestion:     Self::gestion_str(lv.gestion).into(),
+            price:       lv.price,
             at,
+            bar_delta,
         }
     }
 
@@ -151,27 +160,29 @@ impl PaperBook {
 
             let idx = Self::reg_idx(lv.vol_regime);
             self.placed[idx] += 1;
-            let evt = self.make_event("place", &lv, ts);
+            let evt = self.make_event("place", &lv, ts, 0.0);
             self.events.push(evt);
             self.resting.push(RestingOrder { level: lv, placed_ts: ts });
         }
     }
 
     /// Procesar un tick: simular fills y actualizar posiciones abiertas.
-    pub fn on_trade(&mut self, px: f64, ts: i64) {
+    /// `bar_delta`: delta acumulado de la barra M15 en curso (buy_vol - sell_vol)
+    pub fn on_trade(&mut self, px: f64, ts: i64, bar_delta: f64) {
         // ── fills ──
         // mem::take libera el borrow de self.resting para que make_event pueda tomar &self
         let orders = std::mem::take(&mut self.resting);
         let mut filled: Vec<RestingOrder> = Vec::new();
         let mut still:  Vec<RestingOrder> = Vec::new();
+        let margin_frac = self.fill_margin / 10_000.0;
         for o in orders {
             let hit = match o.level.side {
-                Side::Long  => px <= o.level.price,
-                Side::Short => px >= o.level.price,
+                Side::Long  => px <= o.level.price * (1.0 - margin_frac),
+                Side::Short => px >= o.level.price * (1.0 + margin_frac),
             };
             if hit {
                 self.filled[Self::reg_idx(o.level.vol_regime)] += 1;
-                let evt = self.make_event("fill", &o.level, ts);
+                let evt = self.make_event("fill", &o.level, ts, bar_delta);
                 self.events.push(evt);
                 filled.push(o);
             } else {
@@ -180,7 +191,7 @@ impl PaperBook {
         }
         self.resting = still;
         for o in filled {
-            self.open_pos.push(OpenPos::new(o.level, ts));
+            self.open_pos.push(OpenPos::new(o.level, ts, bar_delta));
         }
 
         // ── gestión de posiciones abiertas ──
@@ -191,6 +202,35 @@ impl PaperBook {
         for mut p in self.open_pos.drain(..) {
             let risk = (p.entry - p.level.stop).abs();
             if risk <= 0.0 { continue; }
+
+            // ── Timeout: cerrar al precio actual si se supera el tiempo máximo ──
+            if self.timeout_ms > 0 && ts - p.fill_ts > self.timeout_ms {
+                let r_gross = match p.level.side {
+                    Side::Long  => (px - p.entry) / risk,
+                    Side::Short => (p.entry - px) / risk,
+                };
+                let fee_r = (FEE_MAKER + FEE_TAKER) * p.entry / risk;
+                let r_final = r_gross - fee_r;
+                self.trades.push(ClosedTrade {
+                    system:            self.system.clone(),
+                    kind:              p.level.kind.into(),
+                    side:              Self::side_str(p.level.side).into(),
+                    vol_regime:        Self::vol_str(p.level.vol_regime).into(),
+                    regime:            if p.level.regime == crate::levels::MarketRegime::Trend { "trend" } else { "chop" }.into(),
+                    gestion:           Self::gestion_str(p.level.gestion).into(),
+                    entry:             p.entry,
+                    stop:              p.level.stop,
+                    target:            p.level.tp,
+                    exit_price:        (px * 100.0).round() / 100.0,
+                    result_r:          (r_final * 10000.0).round() / 10000.0,
+                    win:               r_final > 0.0,
+                    reason:            "timeout".into(),
+                    opened_at:         p.fill_ts,
+                    closed_at:         ts,
+                    bar_delta_at_fill: p.bar_delta_at_fill,
+                });
+                continue;
+            }
 
             let mut done   = false;
             let mut reason = String::new();
@@ -276,21 +316,22 @@ impl PaperBook {
 
             if done {
                 self.trades.push(ClosedTrade {
-                    system:     self.system.clone(),
-                    kind:       p.level.kind.into(),
-                    side:       Self::side_str(p.level.side).into(),
-                    vol_regime: Self::vol_str(p.level.vol_regime).into(),
-                    regime:     if p.level.regime == crate::levels::MarketRegime::Trend { "trend" } else { "chop" }.into(),
-                    gestion:    Self::gestion_str(p.level.gestion).into(),
-                    entry:      p.entry,
-                    stop:       p.level.stop,
-                    target:     p.level.tp,
-                    exit_price: (exit_px * 100.0).round() / 100.0,
-                    result_r:   (r_final * 10000.0).round() / 10000.0,
-                    win:        r_final > 0.0,
+                    system:            self.system.clone(),
+                    kind:              p.level.kind.into(),
+                    side:              Self::side_str(p.level.side).into(),
+                    vol_regime:        Self::vol_str(p.level.vol_regime).into(),
+                    regime:            if p.level.regime == crate::levels::MarketRegime::Trend { "trend" } else { "chop" }.into(),
+                    gestion:           Self::gestion_str(p.level.gestion).into(),
+                    entry:             p.entry,
+                    stop:              p.level.stop,
+                    target:            p.level.tp,
+                    exit_price:        (exit_px * 100.0).round() / 100.0,
+                    result_r:          (r_final * 10000.0).round() / 10000.0,
+                    win:               r_final > 0.0,
                     reason,
-                    opened_at:  p.fill_ts,
-                    closed_at:  ts,
+                    opened_at:         p.fill_ts,
+                    closed_at:         ts,
+                    bar_delta_at_fill: p.bar_delta_at_fill,
                 });
             } else {
                 rem_pos.push(p);
