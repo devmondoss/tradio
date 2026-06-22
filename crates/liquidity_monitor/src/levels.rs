@@ -325,7 +325,7 @@ pub fn compute_levels(
     // ── Filtros finales ──────────────────────────────────────────────────
     let gestion = if trend { Gestion::Trail } else { Gestion::Fade };
 
-    out.into_iter().filter_map(|mut lv| {
+    let filtered: Vec<Level> = out.into_iter().filter_map(|mut lv| {
         let risk = (lv.price - lv.stop).abs();
         if risk <= 0.0 { return None; }
         if (lv.tp - lv.price).abs() / risk < MIN_RR { return None; }
@@ -338,5 +338,12 @@ pub fn compute_levels(
         lv.take_partial = tp1_rr >= MIN_TP1_RR;
         lv.gestion = gestion;
         Some(lv)
+    }).collect();
+
+    // Dedup: si dos niveles tienen el mismo lado y precio dentro de $2, conservar solo el primero
+    let mut seen: Vec<(Side, u32)> = Vec::new();
+    filtered.into_iter().filter(|lv| {
+        let key = (lv.side, (lv.price / 2.0).round() as u32);
+        if seen.contains(&key) { false } else { seen.push(key); true }
     }).collect()
 }

@@ -140,13 +140,19 @@ impl PaperBook {
 
     /// Reemplaza las órdenes en reposo con los niveles recién calculados.
     pub fn refresh(&mut self, levels: Vec<Level>, ts: i64) {
-        // Cancelar órdenes que ya no corresponden a ningún nivel activo
-        // (el comportamiento de Python cancela todo y re-coloca en cada barra)
         self.resting.clear();
         for lv in levels {
+            // No colocar si ya hay una posición abierta en el mismo lado y precio
+            // (evita acumular múltiples entradas en el mismo nivel barra a barra)
+            let already_open = self.open_pos.iter().any(|p| {
+                p.level.side == lv.side && (p.entry - lv.price).abs() < 2.0
+            });
+            if already_open { continue; }
+
             let idx = Self::reg_idx(lv.vol_regime);
             self.placed[idx] += 1;
-            self.events.push(self.make_event("place", &lv, ts));
+            let evt = self.make_event("place", &lv, ts);
+            self.events.push(evt);
             self.resting.push(RestingOrder { level: lv, placed_ts: ts });
         }
     }
