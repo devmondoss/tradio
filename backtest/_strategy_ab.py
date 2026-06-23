@@ -26,9 +26,10 @@ def is_chop(reg):
 
 def run_system(a, gens, m1, tf_min, mode="routed", trail_atr=4.0, volfilter=True,
                timeout_min=24*60, cooldown=6, max_day=2, margin=2.0, stop_floor_pct=0.15, min_range=0.5,
-               chop_mask=None):
+               chop_mask=None, tp2_cap_r=0.0):
     """mode: 'fade' (todo A), 'trail' (todo B), 'routed' (por régimen).
-    chop_mask: array bool por barra (True=fade/rango). Si None, usa la columna 'regime' (tosca)."""
+    chop_mask: array bool por barra (True=fade/rango). Si None, usa la columna 'regime' (tosca).
+    tp2_cap_r: si >0 limita tp2 a entry ± tp2_cap_r*risk (0=sin cap, usa target estructural)."""
     m1ts, m1h, m1l, m1c = m1; bar_ms = tf_min*60_000
     atr_med = pd.Series(a.atr).rolling(500, min_periods=50).median().shift(1).values
     trades = []
@@ -52,6 +53,13 @@ def run_system(a, gens, m1, tf_min, mode="routed", trail_atr=4.0, volfilter=True
                     if abs(entry-stop) < mr: stop = entry-mr if side == "long" else entry+mr
                 risk = abs(entry-stop)
                 if risk <= 0 or abs(tp2-entry)/risk < 1.2: continue
+                # Cap tp2 a un múltiplo fijo del riesgo (0 = sin cap)
+                if tp2_cap_r > 0:
+                    cap = entry + tp2_cap_r*risk if side == "long" else entry - tp2_cap_r*risk
+                    if (side == "long" and tp2 > cap) or (side == "short" and tp2 < cap):
+                        tp2 = cap
+                        if tp1 is not None and not (min(entry,tp2) < tp1 < max(entry,tp2)):
+                            tp1 = None
                 # ¿qué gestión? (routed = por régimen; fade/trail = forzado)
                 chop_here = chop_mask[i] if chop_mask is not None else is_chop(a.reg[i])
                 use_fade = (mode == "fade") or (mode == "routed" and chop_here)

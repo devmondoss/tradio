@@ -244,6 +244,7 @@ pub fn compute_levels(
     system: System,
     high_vol_only: bool,
     disable_h5: bool,
+    tp2_cap_r: f64,
 ) -> Vec<Level> {
     if bars.len() < 300 { return vec![]; }
 
@@ -331,6 +332,28 @@ pub fn compute_levels(
     let filtered: Vec<Level> = out.into_iter().filter_map(|mut lv| {
         let risk = (lv.price - lv.stop).abs();
         if risk <= 0.0 { return None; }
+        // Cap tp2 a N×risk si tp2_cap_r > 0
+        if tp2_cap_r > 0.0 {
+            let cap = match lv.side {
+                Side::Long  => lv.price + tp2_cap_r * risk,
+                Side::Short => lv.price - tp2_cap_r * risk,
+            };
+            let beyond = match lv.side {
+                Side::Long  => lv.tp > cap,
+                Side::Short => lv.tp < cap,
+            };
+            if beyond {
+                lv.tp = cap;
+                // anular tp1 si queda fuera del rango [price, nuevo tp]
+                if let Some(t1) = lv.tp1 {
+                    let in_range = match lv.side {
+                        Side::Long  => t1 > lv.price && t1 < lv.tp,
+                        Side::Short => t1 < lv.price && t1 > lv.tp,
+                    };
+                    if !in_range { lv.tp1 = None; }
+                }
+            }
+        }
         if (lv.tp - lv.price).abs() / risk < MIN_RR { return None; }
         match lv.side {
             Side::Long  if !(lv.price < price && lv.stop < lv.price && lv.price < lv.tp) => return None,

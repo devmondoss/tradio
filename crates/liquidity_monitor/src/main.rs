@@ -112,6 +112,7 @@ struct State {
     tf:            String,
     high_vol_only: bool,
     disable_h5:    bool,
+    tp2_cap_r:     f64,
     supa:          Option<Arc<SupaClient>>,
 }
 
@@ -173,7 +174,7 @@ impl State {
         }).collect();
 
         let mut book_levels: Vec<Vec<levels::Level>> = system_per_book.iter().map(|&sys| {
-            levels::compute_levels(&bars_slice, atr, atr_med, sys, self.high_vol_only, self.disable_h5)
+            levels::compute_levels(&bars_slice, atr, atr_med, sys, self.high_vol_only, self.disable_h5, self.tp2_cap_r)
         }).collect();
 
         // 6. Refresh orders + flush a Supabase
@@ -268,6 +269,7 @@ async fn main() {
     let system      = env("SYSTEM", "both");
     let hvo         = env("HIGH_VOL_ONLY", "false").to_lowercase() == "true";
     let disable_h5  = env("DISABLE_H5", "false").to_lowercase() == "true";
+    let tp2_cap_r   = env("TP2_CAP_R", "0").parse::<f64>().unwrap_or(0.0);
     let fill_margin = env("FILL_MARGIN_BPS", "2").parse::<f64>().unwrap_or(2.0);
     let timeout_h   = env("TIMEOUT_HOURS", "24").parse::<f64>().unwrap_or(24.0);
     let supa_url    = env("SUPABASE_URL", "");
@@ -275,7 +277,7 @@ async fn main() {
 
     println!(
         ">>> liquidity_monitor  SYMBOL={symbol}  TF={tf}  SYSTEM={system}  \
-         HIGH_VOL_ONLY={hvo}  DISABLE_H5={disable_h5}  \
+         HIGH_VOL_ONLY={hvo}  DISABLE_H5={disable_h5}  TP2_CAP_R={tp2_cap_r}  \
          FILL_MARGIN={fill_margin}bps  TIMEOUT={timeout_h}h"
     );
 
@@ -329,6 +331,7 @@ async fn main() {
         tf:            tf.clone(),
         high_vol_only: hvo,
         disable_h5,
+        tp2_cap_r,
         supa:          supa.clone(),
     };
 
