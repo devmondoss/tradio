@@ -1,1 +1,6 @@
 # Project-level cargo configuration
+# Local Windows overrides: add a .cargo/local.toml (gitignored) with:
+#   [build]
+#   target = "x86_64-pc-windows-gnu"
+#   [target.x86_64-pc-windows-gnu]
+#   linker = "path/to/gcc.exe"

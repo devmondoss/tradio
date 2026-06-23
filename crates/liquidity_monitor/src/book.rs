@@ -16,6 +16,8 @@ pub struct RestingOrder {
 
 // ── Posición abierta ────────────────────────────────────────────────────────
 
+const SCALE2_ATR_FACTOR: f64 = 0.3;   // segundo nivel = price ± 0.3×ATR
+
 #[derive(Debug, Clone)]
 pub struct OpenPos {
     pub level:              Level,
@@ -30,11 +32,25 @@ pub struct OpenPos {
     // gestión trail
     pub best_price: f64,
     pub trail_stop: f64,
+    // entrada escalonada (50 % en level, 50 % en level ± 0.3 ATR)
+    pub scale2_price:    f64,   // precio de la segunda orden (0.0 = no aplica)
+    pub scale2_filled:   bool,
+    pub effective_entry: f64,   // entry blended tras llenar scale2
 }
 
 impl OpenPos {
     pub fn new(level: Level, fill_ts: i64, bar_delta: f64) -> Self {
-        let entry      = level.price;
+        let entry = level.price;
+        let atr   = level.atr;
+        // scale2: 0.3×ATR más profundo en la dirección del trade
+        let scale2_price = if atr > 0.0 {
+            match level.side {
+                crate::levels::Side::Long  => entry - SCALE2_ATR_FACTOR * atr,
+                crate::levels::Side::Short => entry + SCALE2_ATR_FACTOR * atr,
+            }
+        } else {
+            0.0
+        };
         let trail_stop = level.stop;
         Self {
             cur_stop:           level.stop,
@@ -46,6 +62,9 @@ impl OpenPos {
             fill_ts,
             bar_delta_at_fill:  bar_delta,
             entry,
+            effective_entry:    entry,
+            scale2_price,
+            scale2_filled:      false,
             level,
         }
     }
@@ -70,7 +89,9 @@ pub struct ClosedTrade {
     pub reason:              String,
     pub opened_at:           i64,
     pub closed_at:           i64,
-    pub bar_delta_at_fill:   f64,  // delta barra M15 al momento del fill
+    pub bar_delta_at_fill:   f64,
+    pub scale2_filled:       bool,   // si la segunda orden también se ejecutó
+    pub effective_entry:     f64,    // entry real blended (= entry si solo 1 orden)
 }
 
 // ── Evento de place/fill ────────────────────────────────────────────────────
@@ -200,16 +221,30 @@ impl PaperBook {
         self.trades = closed;
 
         for mut p in self.open_pos.drain(..) {
-            let risk = (p.entry - p.level.stop).abs();
+            // ── scale2: llenar la segunda orden si precio alcanza scale2_price ──
+            if p.scale2_price > 0.0 && !p.scale2_filled {
+                let hit2 = match p.level.side {
+                    Side::Long  => px <= p.scale2_price,
+                    Side::Short => px >= p.scale2_price,
+                };
+                if hit2 {
+                    p.scale2_filled   = true;
+                    // entry blended = promedio de los dos fills (50/50)
+                    p.effective_entry = (p.entry + p.scale2_price) / 2.0;
+                }
+            }
+
+            // Usar effective_entry y riesgo desde effective_entry al stop
+            let risk = (p.effective_entry - p.level.stop).abs();
             if risk <= 0.0 { continue; }
 
-            // ── Timeout: cerrar al precio actual si se supera el tiempo máximo ──
+            // ── Timeout ──────────────────────────────────────────────────────
             if self.timeout_ms > 0 && ts - p.fill_ts > self.timeout_ms {
                 let r_gross = match p.level.side {
-                    Side::Long  => (px - p.entry) / risk,
-                    Side::Short => (p.entry - px) / risk,
+                    Side::Long  => (px - p.effective_entry) / risk,
+                    Side::Short => (p.effective_entry - px) / risk,
                 };
-                let fee_r = (FEE_MAKER + FEE_TAKER) * p.entry / risk;
+                let fee_r = (FEE_MAKER + FEE_TAKER) * p.effective_entry / risk;
                 let r_final = r_gross - fee_r;
                 self.trades.push(ClosedTrade {
                     system:            self.system.clone(),
@@ -228,6 +263,8 @@ impl PaperBook {
                     opened_at:         p.fill_ts,
                     closed_at:         ts,
                     bar_delta_at_fill: p.bar_delta_at_fill,
+                    scale2_filled:     p.scale2_filled,
+                    effective_entry:   p.effective_entry,
                 });
                 continue;
             }
@@ -258,49 +295,50 @@ impl PaperBook {
                     }
                     if done {
                         let r_gross = match p.level.side {
-                            Side::Long  => (exit_px - p.entry) / risk,
-                            Side::Short => (p.entry - exit_px) / risk,
+                            Side::Long  => (exit_px - p.effective_entry) / risk,
+                            Side::Short => (p.effective_entry - exit_px) / risk,
                         };
-                        let fee_r = (FEE_MAKER + FEE_TAKER) * p.entry / risk;
+                        let fee_r = (FEE_MAKER + FEE_TAKER) * p.effective_entry / risk;
                         r_final = r_gross - fee_r;
                     }
                 }
 
                 Gestion::Fade => {
+                    let ee = p.effective_entry;
                     match p.level.side {
                         Side::Long => {
                             if px <= p.cur_stop {
-                                p.realized += p.rem * ((p.cur_stop - p.entry) / risk);
+                                p.realized += p.rem * ((p.cur_stop - ee) / risk);
                                 reason  = if p.filled1 { "breakeven" } else { "stop" }.into();
                                 exit_px = p.cur_stop; done = true;
                             } else if !p.filled1 && p.level.take_partial {
                                 if let Some(tp1) = p.level.tp1 {
                                     if px >= tp1 {
-                                        p.realized += 0.5 * ((tp1 - p.entry) / risk);
-                                        p.rem -= 0.5; p.filled1 = true; p.cur_stop = p.entry;
+                                        p.realized += 0.5 * ((tp1 - ee) / risk);
+                                        p.rem -= 0.5; p.filled1 = true; p.cur_stop = ee;
                                     }
                                 }
                             }
                             if !done && px >= p.level.tp {
-                                p.realized += p.rem * ((p.level.tp - p.entry) / risk);
+                                p.realized += p.rem * ((p.level.tp - ee) / risk);
                                 reason = "target".into(); exit_px = p.level.tp; done = true;
                             }
                         }
                         Side::Short => {
                             if px >= p.cur_stop {
-                                p.realized += p.rem * ((p.entry - p.cur_stop) / risk);
+                                p.realized += p.rem * ((ee - p.cur_stop) / risk);
                                 reason  = if p.filled1 { "breakeven" } else { "stop" }.into();
                                 exit_px = p.cur_stop; done = true;
                             } else if !p.filled1 && p.level.take_partial {
                                 if let Some(tp1) = p.level.tp1 {
                                     if px <= tp1 {
-                                        p.realized += 0.5 * ((p.entry - tp1) / risk);
-                                        p.rem -= 0.5; p.filled1 = true; p.cur_stop = p.entry;
+                                        p.realized += 0.5 * ((ee - tp1) / risk);
+                                        p.rem -= 0.5; p.filled1 = true; p.cur_stop = ee;
                                     }
                                 }
                             }
                             if !done && px <= p.level.tp {
-                                p.realized += p.rem * ((p.entry - p.level.tp) / risk);
+                                p.realized += p.rem * ((ee - p.level.tp) / risk);
                                 reason = "target".into(); exit_px = p.level.tp; done = true;
                             }
                         }
@@ -308,7 +346,7 @@ impl PaperBook {
                     if done {
                         let exit_fee = if reason == "target" { FEE_MAKER } else { FEE_TAKER };
                         let partial_fee = if p.filled1 { FEE_MAKER * 0.5 } else { 0.0 };
-                        let fee_r = (FEE_MAKER + partial_fee + exit_fee * p.rem) * p.entry / risk;
+                        let fee_r = (FEE_MAKER + partial_fee + exit_fee * p.rem) * p.effective_entry / risk;
                         r_final = p.realized - fee_r;
                     }
                 }
@@ -332,6 +370,8 @@ impl PaperBook {
                     opened_at:         p.fill_ts,
                     closed_at:         ts,
                     bar_delta_at_fill: p.bar_delta_at_fill,
+                    scale2_filled:     p.scale2_filled,
+                    effective_entry:   p.effective_entry,
                 });
             } else {
                 rem_pos.push(p);

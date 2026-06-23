@@ -290,10 +290,12 @@ async fn main() {
     if let Some(ref s) = supa {
         let fp_bars = s.load_footprint(200).await;
         restored = fp_bars.len();
-        // Merge: si hay barra en fp_bars con mismo ts_ms, usar la del footprint
+        // Merge: overlay fp/poc del footprint sobre la barra bootstrap (OHLCV correcto)
         for fp_bar in fp_bars {
             if let Some(b) = boot_bars.iter_mut().find(|b| b.ts_ms == fp_bar.ts_ms) {
-                *b = fp_bar;
+                b.fp      = fp_bar.fp;
+                b.poc     = fp_bar.poc;
+                b.fp_real = true;
             }
         }
         println!("[supa] restauradas {restored} barras de footprint");

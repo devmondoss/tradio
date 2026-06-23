@@ -102,6 +102,8 @@ impl SupaClient {
             "opened_at":           Self::iso(t.opened_at),
             "closed_at":           Self::iso(t.closed_at),
             "bar_delta_at_fill":   (t.bar_delta_at_fill * 10000.0).round() / 10000.0,
+            "scale2_filled":       t.scale2_filled,
+            "effective_entry":     (t.effective_entry * 100.0).round() / 100.0,
         })).collect();
         self.insert("liquidity_paper_trades", json!(rows)).await;
     }

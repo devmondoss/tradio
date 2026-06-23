@@ -86,7 +86,7 @@ impl ClosedBar {
                 let vb = b.1.0 + b.1.1;
                 va.partial_cmp(&vb).unwrap()
             });
-            best.map(|(p, _)| *p as f64).unwrap_or((high + low) / 2.0)
+            best.map(|(p, _)| *p as f64 * BIN).unwrap_or((high + low) / 2.0)
         };
         let fp_real = !fp.is_empty();
         Self { ts_ms, open, high, low, close, volume: vol, day_id: ts_ms / 86_400_000,
@@ -243,6 +243,7 @@ pub fn compute_levels(
     atr_median: f64,
     system: System,
     high_vol_only: bool,
+    disable_h5: bool,
 ) -> Vec<Level> {
     if bars.len() < 300 { return vec![]; }
 
@@ -272,24 +273,26 @@ pub fn compute_levels(
     let mut out: Vec<Level> = Vec::new();
 
     // ── POC del Order Block (vela de mayor rango en OB_WIN) ──────────────
-    let ob_slice = &bars[bars.len().saturating_sub(OB_WIN)..];
-    if let Some(obi) = ob_slice.iter()
-        .enumerate()
-        .max_by(|a, b| (a.1.high - a.1.low).partial_cmp(&(b.1.high - b.1.low)).unwrap())
-        .map(|(i, _)| i)
-    {
-        let ob = &ob_slice[obi];
-        let (obh, obl) = (ob.high, ob.low);
-        let obpoc = ob.poc;  // real si fp_real, midpoint si bootstrap
+    if !disable_h5 {
+        let ob_slice = &bars[bars.len().saturating_sub(OB_WIN)..];
+        if let Some(obi) = ob_slice.iter()
+            .enumerate()
+            .max_by(|a, b| (a.1.high - a.1.low).partial_cmp(&(b.1.high - b.1.low)).unwrap())
+            .map(|(i, _)| i)
+        {
+            let ob = &ob_slice[obi];
+            let (obh, obl) = (ob.high, ob.low);
+            let obpoc = ob.poc;  // real si fp_real, midpoint si bootstrap
 
-        for (side, stop) in [
-            (Side::Long,  obl - 0.25 * atr),
-            (Side::Short, obh + 0.25 * atr),
-        ] {
-            if let Some((tp1, tp)) = struct_target(side, obpoc, &va, sh, sl, pdh, pdl, wh, wl) {
-                out.push(Level { side, kind: "poc_ob", price: obpoc, stop, tp1, tp,
-                                  vol_regime, regime, gestion: Gestion::Fade,
-                                  atr, take_partial: false, fp_source });
+            for (side, stop) in [
+                (Side::Long,  obl - 0.25 * atr),
+                (Side::Short, obh + 0.25 * atr),
+            ] {
+                if let Some((tp1, tp)) = struct_target(side, obpoc, &va, sh, sl, pdh, pdl, wh, wl) {
+                    out.push(Level { side, kind: "poc_ob", price: obpoc, stop, tp1, tp,
+                                      vol_regime, regime, gestion: Gestion::Fade,
+                                      atr, take_partial: false, fp_source });
+                }
             }
         }
     }
