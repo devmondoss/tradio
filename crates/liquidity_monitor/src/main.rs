@@ -104,9 +104,10 @@ fn median_of(v: &[f64]) -> f64 {
 struct State {
     bars:          VecDeque<ClosedBar>,
     cur_fp:        HashMap<u32, (f64, f64)>,
-    cur_delta:     f64,   // buy_vol - sell_vol acumulado en la barra M15 en curso
+    cur_delta:     f64,
     cur_atr:       f64,
     atr_history:   VecDeque<f64>,
+    oi_history:    VecDeque<(i64, f64)>,   // (ts_ms, open_interest)
     books:         Vec<PaperBook>,
     symbol:        String,
     tf:            String,
@@ -129,6 +130,26 @@ impl State {
         let window: Vec<f64> = self.atr_history.iter()
             .rev().take(500).copied().collect();
         median_of(&window)
+    }
+
+    /// Multiplicador de sizing basado en OI direction (1h lookback).
+    /// up >+0.1% → 2.0x | down <-0.1% → 0.5x | estable → 1.0x
+    fn oi_size_mult(&self) -> f64 {
+        if self.oi_history.len() < 2 { return 1.0; }
+        let now_ts = self.oi_history.back().map(|(t,_)| *t).unwrap_or(0);
+        let lookback_ms = 60 * 60_000i64;
+        let past_oi = self.oi_history.iter()
+            .rev()
+            .find(|(t, _)| now_ts - t >= lookback_ms)
+            .map(|(_, v)| *v);
+        let now_oi = self.oi_history.back().map(|(_, v)| *v).unwrap_or(0.0);
+        match past_oi {
+            Some(p) if p > 0.0 => {
+                let chg_pct = (now_oi - p) / p * 100.0;
+                if chg_pct > 0.1 { 2.0 } else if chg_pct < -0.1 { 0.5 } else { 1.0 }
+            }
+            _ => 1.0,
+        }
     }
 
     fn on_trade(&mut self, price: f64, qty: f64, is_sell: bool, ts: i64) {
@@ -179,9 +200,10 @@ impl State {
 
         // 6. Refresh orders + flush a Supabase
         let supa = self.supa.clone();
+        let oi_mult = self.oi_size_mult();
         for (i, book) in self.books.iter_mut().enumerate() {
             let lvls = std::mem::take(&mut book_levels[i]);
-            book.refresh(lvls, ts_ms);
+            book.refresh(lvls, ts_ms, oi_mult);
 
             let events = book.drain_events();
             let trades = book.drain_trades();
@@ -242,6 +264,17 @@ async fn handle_message(state: &mut State, msg: &str) {
                 if px > 0.0 && qty > 0.0 {
                     state.on_trade(px, qty, is_sell, ts);
                 }
+            }
+        }
+    } else if topic.starts_with("tickers") {
+        // OI llega en data como objeto (snapshot) o delta
+        let data = if d["data"].is_object() { &d["data"] } else { &d["data"][0] };
+        if let Some(oi_str) = data["openInterest"].as_str() {
+            if let Ok(oi) = oi_str.parse::<f64>() {
+                let ts = d["ts"].as_i64().unwrap_or(0);
+                state.oi_history.push_back((ts, oi));
+                // Mantener solo 2h de historial (120 entradas a 1/s es mucho — limitamos a 7200)
+                while state.oi_history.len() > 7_200 { state.oi_history.pop_front(); }
             }
         }
     } else if topic.starts_with("kline") {
@@ -332,6 +365,7 @@ async fn main() {
         high_vol_only: hvo,
         disable_h5,
         tp2_cap_r,
+        oi_history:    VecDeque::new(),
         supa:          supa.clone(),
     };
 
@@ -343,6 +377,7 @@ async fn main() {
         "args": [
             format!("publicTrade.{symbol}"),
             format!("kline.{tf}.{symbol}"),
+            format!("tickers.{symbol}"),
         ]
     }).to_string();
 

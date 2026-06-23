@@ -104,6 +104,7 @@ impl SupaClient {
             "bar_delta_at_fill":   (t.bar_delta_at_fill * 10000.0).round() / 10000.0,
             "scale2_filled":       t.scale2_filled,
             "effective_entry":     (t.effective_entry * 100.0).round() / 100.0,
+            "size_mult":           t.size_mult,
         })).collect();
         self.insert("liquidity_paper_trades", json!(rows)).await;
     }

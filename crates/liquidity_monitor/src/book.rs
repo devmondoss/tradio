@@ -92,6 +92,7 @@ pub struct ClosedTrade {
     pub bar_delta_at_fill:   f64,
     pub scale2_filled:       bool,   // si la segunda orden también se ejecutó
     pub effective_entry:     f64,    // entry real blended (= entry si solo 1 orden)
+    pub size_mult:           f64,    // multiplicador OI sizing (0.5 | 1.0 | 2.0)
 }
 
 // ── Evento de place/fill ────────────────────────────────────────────────────
@@ -113,11 +114,12 @@ pub struct BookEvent {
 
 pub struct PaperBook {
     pub system:        String,
-    pub fill_margin:   f64,   // bps — mercado debe penetrar N bps el nivel para fill
-    pub timeout_ms:    i64,   // ms — cerrar posición si supera este tiempo (0=desactivado)
+    pub fill_margin:   f64,
+    pub timeout_ms:    i64,
+    pub cur_size_mult: f64,   // multiplicador OI sizing vigente
     resting:           Vec<RestingOrder>,
     open_pos:          Vec<OpenPos>,
-    pub placed:        [u64; 2],  // [high, low]
+    pub placed:        [u64; 2],
     pub filled:        [u64; 2],
     pub trades:        Vec<ClosedTrade>,
     pub events:        Vec<BookEvent>,
@@ -129,6 +131,7 @@ impl PaperBook {
             system:      system.into(),
             fill_margin: fill_margin_bps,
             timeout_ms:  (timeout_hours * 3600.0 * 1000.0) as i64,
+            cur_size_mult: 1.0,
             resting:     Vec::new(),
             open_pos:    Vec::new(),
             placed:      [0, 0],
@@ -169,7 +172,8 @@ impl PaperBook {
     }
 
     /// Reemplaza las órdenes en reposo con los niveles recién calculados.
-    pub fn refresh(&mut self, levels: Vec<Level>, ts: i64) {
+    pub fn refresh(&mut self, levels: Vec<Level>, ts: i64, size_mult: f64) {
+        self.cur_size_mult = size_mult;
         self.resting.clear();
         for lv in levels {
             // No colocar si ya hay una posición abierta en el mismo lado y precio
@@ -265,6 +269,7 @@ impl PaperBook {
                     bar_delta_at_fill: p.bar_delta_at_fill,
                     scale2_filled:     p.scale2_filled,
                     effective_entry:   p.effective_entry,
+                    size_mult:         self.cur_size_mult,
                 });
                 continue;
             }
@@ -372,6 +377,7 @@ impl PaperBook {
                     bar_delta_at_fill: p.bar_delta_at_fill,
                     scale2_filled:     p.scale2_filled,
                     effective_entry:   p.effective_entry,
+                    size_mult:         self.cur_size_mult,
                 });
             } else {
                 rem_pos.push(p);
