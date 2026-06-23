@@ -32,6 +32,38 @@ pub enum Gestion { Fade, Trail }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum System { Maker, Flow }
 
+// ── Conversiones str ⇄ enum (para persistir/restaurar posiciones abiertas) ──
+
+impl Side {
+    pub fn as_str(self) -> &'static str { if self == Side::Long { "long" } else { "short" } }
+    pub fn from_str(s: &str) -> Side { if s == "short" { Side::Short } else { Side::Long } }
+}
+impl VolRegime {
+    pub fn as_str(self) -> &'static str { if self == VolRegime::High { "high" } else { "low" } }
+    pub fn from_str(s: &str) -> VolRegime { if s == "high" { VolRegime::High } else { VolRegime::Low } }
+}
+impl MarketRegime {
+    pub fn as_str(self) -> &'static str { if self == MarketRegime::Trend { "trend" } else { "chop" } }
+    pub fn from_str(s: &str) -> MarketRegime { if s == "trend" { MarketRegime::Trend } else { MarketRegime::Chop } }
+}
+impl Gestion {
+    pub fn as_str(self) -> &'static str { if self == Gestion::Fade { "fade" } else { "trail" } }
+    pub fn from_str(s: &str) -> Gestion { if s == "trail" { Gestion::Trail } else { Gestion::Fade } }
+}
+
+/// Mapea un kind de DB al &'static str canónico (los únicos generados por compute_levels).
+pub fn kind_from_str(s: &str) -> &'static str {
+    match s {
+        "poc_def"       => "poc_def",
+        "poc_def_short" => "poc_def_short",
+        _               => "poc_ob",
+    }
+}
+/// fp_source canónico.
+pub fn fp_source_from_str(s: &str) -> &'static str {
+    if s == "tick" { "tick" } else { "ohlcv" }
+}
+
 #[derive(Debug, Clone)]
 pub struct Level {
     pub side: Side,

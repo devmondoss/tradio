@@ -209,6 +209,115 @@ impl SupaClient {
         bars
     }
 
+    // ── Open positions (persistencia para sobrevivir redeploys) ─────────────
+
+    /// Reemplaza el set completo de posiciones abiertas de (symbol, tf, system):
+    /// borra las viejas e inserta las vivas. open_pos es chico, así que es barato.
+    pub async fn save_open_positions(&self, system: &str, positions: &[crate::book::OpenPos]) {
+        // 1. Borrar las existentes de este book
+        let _ = self.client
+            .delete(format!("{}/rest/v1/liquidity_paper_open_pos", self.url))
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .query(&[
+                ("symbol", format!("eq.{}", self.symbol)),
+                ("tf",     format!("eq.{}", self.tf)),
+                ("system", format!("eq.{}", system)),
+            ])
+            .send().await;
+
+        if positions.is_empty() { return; }
+
+        // 2. Insertar las vivas
+        let rows: Vec<Value> = positions.iter().map(|p| {
+            let lv = &p.level;
+            json!({
+                "symbol":            self.symbol,
+                "tf":                self.tf,
+                "system":            system,
+                "side":              lv.side.as_str(),
+                "kind":              lv.kind,
+                "price":             lv.price,
+                "lvl_stop":          lv.stop,
+                "tp1":               lv.tp1,
+                "tp":                lv.tp,
+                "vol_regime":        lv.vol_regime.as_str(),
+                "regime":            lv.regime.as_str(),
+                "gestion":           lv.gestion.as_str(),
+                "atr":               lv.atr,
+                "take_partial":      lv.take_partial,
+                "fp_source":         lv.fp_source,
+                "entry":             p.entry,
+                "fill_ts":           p.fill_ts,
+                "bar_delta_at_fill": p.bar_delta_at_fill,
+                "cur_stop":          p.cur_stop,
+                "realized":          p.realized,
+                "rem":               p.rem,
+                "filled1":           p.filled1,
+                "best_price":        p.best_price,
+                "trail_stop":        p.trail_stop,
+                "scale2_price":      p.scale2_price,
+                "scale2_filled":     p.scale2_filled,
+                "effective_entry":   p.effective_entry,
+            })
+        }).collect();
+        self.insert("liquidity_paper_open_pos", json!(rows)).await;
+    }
+
+    /// Restaurar posiciones abiertas de (symbol, tf, system) al arrancar.
+    pub async fn load_open_positions(&self, system: &str) -> Vec<crate::book::OpenPos> {
+        use crate::levels::{Level, Side, VolRegime, MarketRegime, Gestion,
+                            kind_from_str, fp_source_from_str};
+        let resp = self.client
+            .get(format!("{}/rest/v1/liquidity_paper_open_pos", self.url))
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .query(&[
+                ("symbol", format!("eq.{}", self.symbol)),
+                ("tf",     format!("eq.{}", self.tf)),
+                ("system", format!("eq.{}", system)),
+                ("select", "*".into()),
+            ])
+            .send().await;
+
+        let rows: Vec<Value> = match resp {
+            Ok(r) => r.json().await.unwrap_or_default(),
+            Err(_) => return vec![],
+        };
+
+        rows.iter().filter_map(|r| {
+            let level = Level {
+                side:         Side::from_str(r["side"].as_str()?),
+                kind:         kind_from_str(r["kind"].as_str()?),
+                price:        r["price"].as_f64()?,
+                stop:         r["lvl_stop"].as_f64()?,
+                tp1:          r["tp1"].as_f64(),               // None si null
+                tp:           r["tp"].as_f64()?,
+                vol_regime:   VolRegime::from_str(r["vol_regime"].as_str()?),
+                regime:       MarketRegime::from_str(r["regime"].as_str()?),
+                gestion:      Gestion::from_str(r["gestion"].as_str()?),
+                atr:          r["atr"].as_f64()?,
+                take_partial: r["take_partial"].as_bool().unwrap_or(false),
+                fp_source:    fp_source_from_str(r["fp_source"].as_str()?),
+            };
+            Some(crate::book::OpenPos {
+                level,
+                entry:             r["entry"].as_f64()?,
+                fill_ts:           r["fill_ts"].as_i64()?,
+                bar_delta_at_fill: r["bar_delta_at_fill"].as_f64().unwrap_or(0.0),
+                cur_stop:          r["cur_stop"].as_f64()?,
+                realized:          r["realized"].as_f64().unwrap_or(0.0),
+                rem:               r["rem"].as_f64().unwrap_or(1.0),
+                filled1:           r["filled1"].as_bool().unwrap_or(false),
+                best_price:        r["best_price"].as_f64()?,
+                trail_stop:        r["trail_stop"].as_f64()?,
+                scale2_price:      r["scale2_price"].as_f64().unwrap_or(0.0),
+                scale2_filled:     r["scale2_filled"].as_bool().unwrap_or(false),
+                effective_entry:   r["effective_entry"].as_f64()?,
+            })
+        }).collect()
+    }
+
     // ── Fill ratio view (diagnóstico) ───────────────────────────────────────
 
     pub async fn fill_ratio_snapshot(&self) -> Option<String> {

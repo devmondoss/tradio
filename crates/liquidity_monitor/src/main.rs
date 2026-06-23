@@ -15,7 +15,7 @@ mod book;
 mod levels;
 mod supa;
 
-use book::PaperBook;
+use book::{PaperBook, OpenPos};
 #[allow(unused_imports)]
 use levels::{ClosedBar, System, update_atr};
 use supa::SupaClient;
@@ -210,6 +210,16 @@ impl State {
 
             println!("  [{}] {}", book.system.to_uppercase(), book.status_line());
 
+            // Persistir posiciones abiertas para sobrevivir redeploys.
+            if let Some(ref s) = supa {
+                let sc = s.clone();
+                let sys_name = book.system.clone();
+                let open_snapshot: Vec<OpenPos> = book.open_positions().to_vec();
+                tokio::spawn(async move {
+                    sc.save_open_positions(&sys_name, &open_snapshot).await;
+                });
+            }
+
             if let Some(ref s) = supa {
                 let sc = s.clone();
                 let ev = events.clone();
@@ -344,7 +354,7 @@ async fn main() {
     let init_atr   = atr_series.last().copied().unwrap_or(0.0);
     let mut atr_history: VecDeque<f64> = atr_series.into_iter().collect();
 
-    let books = State::systems_for(&system)
+    let mut books: Vec<PaperBook> = State::systems_for(&system)
         .into_iter()
         .map(|s| PaperBook::new(
             if s == System::Maker { "maker" } else { "flow" },
@@ -352,6 +362,18 @@ async fn main() {
             timeout_h,
         ))
         .collect();
+
+    // Restaurar posiciones abiertas desde Supabase (sobreviven redeploys).
+    if let Some(ref s) = supa {
+        for book in books.iter_mut() {
+            let restored_pos = s.load_open_positions(&book.system).await;
+            if !restored_pos.is_empty() {
+                println!("[supa] restauradas {} posiciones abiertas [{}]",
+                         restored_pos.len(), book.system);
+                book.restore_positions(restored_pos);
+            }
+        }
+    }
 
     let mut state = State {
         bars:          boot_bars.into_iter().collect(),

@@ -390,6 +390,16 @@ impl PaperBook {
         std::mem::take(&mut self.trades)
     }
 
+    /// Posiciones abiertas vivas (para persistir tras cada bar_close).
+    pub fn open_positions(&self) -> &[OpenPos] {
+        &self.open_pos
+    }
+
+    /// Reinyectar posiciones abiertas restauradas desde Supabase al arrancar.
+    pub fn restore_positions(&mut self, pos: Vec<OpenPos>) {
+        self.open_pos = pos;
+    }
+
     pub fn drain_events(&mut self) -> Vec<BookEvent> {
         std::mem::take(&mut self.events)
     }
