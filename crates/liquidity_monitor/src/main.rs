@@ -115,6 +115,7 @@ struct State {
     disable_h5:    bool,
     tp2_cap_r:     f64,
     supa:          Option<Arc<SupaClient>>,
+    tick_count:    u64,   // ticks (publicTrade) recibidos en la barra en curso (diagnóstico)
 }
 
 impl State {
@@ -153,6 +154,7 @@ impl State {
     }
 
     fn on_trade(&mut self, price: f64, qty: f64, is_sell: bool, ts: i64) {
+        self.tick_count += 1;
         fp_add(&mut self.cur_fp, price, qty, is_sell);
         if is_sell { self.cur_delta -= qty; } else { self.cur_delta += qty; }
         let delta = self.cur_delta;
@@ -163,7 +165,9 @@ impl State {
 
     async fn on_bar_close(&mut self, ts_ms: i64, open: f64, high: f64, low: f64, close: f64, vol: f64) {
         // 1. Crear barra cerrada con footprint acumulado
+        let ticks = self.tick_count; self.tick_count = 0;   // diagnóstico: ticks recibidos esta barra
         let fp = std::mem::take(&mut self.cur_fp);
+        let fp_bins = fp.len();
         self.cur_delta = 0.0;
         let bar = ClosedBar::from_live(ts_ms, open, high, low, close, vol, fp);
 
@@ -251,7 +255,8 @@ impl State {
         }
 
         let now = chrono::Utc::now().format("%m-%d %H:%M").to_string();
-        println!("[{now}] M{} bar closed @ {close:.1}  ATR={atr:.1}  atr_med={atr_med:.1}", self.tf);
+        println!("[{now}] M{} bar closed @ {close:.1}  ATR={atr:.1}  atr_med={atr_med:.1}  \
+                  ticks={ticks} fp_bins={fp_bins}", self.tf);
     }
 }
 
@@ -389,6 +394,7 @@ async fn main() {
         tp2_cap_r,
         oi_history:    VecDeque::new(),
         supa:          supa.clone(),
+        tick_count:    0,
     };
 
     println!("[bootstrap] {}/700 barras cargadas  ATR={:.1}", state.bars.len(), state.cur_atr);
