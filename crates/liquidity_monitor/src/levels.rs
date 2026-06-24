@@ -83,6 +83,7 @@ pub struct Level {
     pub regime: MarketRegime,
     pub gestion: Gestion,
     pub atr: f64,
+    pub atr_median: f64,
     pub take_partial: bool,
     pub fp_source: &'static str,
 }
@@ -331,7 +332,7 @@ pub fn compute_levels(
                 if let Some((tp1, tp)) = struct_target(side, obpoc, &va, sh, sl, pdh, pdl, wh, wl) {
                     out.push(Level { side, kind: "poc_ob", price: obpoc, stop, tp1, tp,
                                       vol_regime, regime, gestion: Gestion::Fade,
-                                      atr, take_partial: false, fp_source });
+                                      atr, atr_median, take_partial: false, fp_source });
                 }
             }
         }
@@ -348,7 +349,7 @@ pub fn compute_levels(
             out.push(Level { side: Side::Long, kind: "poc_def", price: defended,
                               stop: defended - 0.6 * atr, tp1, tp,
                               vol_regime, regime, gestion: Gestion::Fade,
-                              atr, take_partial: false, fp_source });
+                              atr, atr_median, take_partial: false, fp_source });
         }
     }
 
@@ -361,7 +362,7 @@ pub fn compute_levels(
             out.push(Level { side: Side::Short, kind: "poc_def_short", price: defended,
                               stop: defended + 0.6 * atr, tp1, tp,
                               vol_regime, regime, gestion: Gestion::Fade,
-                              atr, take_partial: false, fp_source });
+                              atr, atr_median, take_partial: false, fp_source });
         }
     }
 

@@ -105,6 +105,20 @@ impl SupaClient {
             "scale2_filled":       t.scale2_filled,
             "effective_entry":     (t.effective_entry * 100.0).round() / 100.0,
             "size_mult":           t.size_mult,
+            // contexto completo (auto-explica y permite backtestear el trade)
+            "fp_source":           t.fp_source,
+            "tp1":                 t.tp1,
+            "atr":                 (t.atr * 100.0).round() / 100.0,
+            "atr_median":          (t.atr_median * 100.0).round() / 100.0,
+            "take_partial":        t.take_partial,
+            "placed_ts":           t.placed_ts,
+            "time_to_fill_s":      ((t.opened_at - t.placed_ts) as f64 / 1000.0).round(),
+            "filled1":             t.filled1,
+            "realized_r":          t.realized_r,
+            "fee_r":               t.fee_r,
+            "mfe_r":               t.mfe_r,
+            "mae_r":               t.mae_r,
+            "bar_delta_at_exit":   (t.bar_delta_at_exit * 10000.0).round() / 10000.0,
         })).collect();
         self.insert("liquidity_paper_trades", json!(rows)).await;
     }
@@ -297,14 +311,19 @@ impl SupaClient {
                 regime:       MarketRegime::from_str(r["regime"].as_str()?),
                 gestion:      Gestion::from_str(r["gestion"].as_str()?),
                 atr:          r["atr"].as_f64()?,
+                atr_median:   r["atr_median"].as_f64().unwrap_or(0.0),
                 take_partial: r["take_partial"].as_bool().unwrap_or(false),
                 fp_source:    fp_source_from_str(r["fp_source"].as_str()?),
             };
+            let entry_px = r["entry"].as_f64()?;
             Some(crate::book::OpenPos {
                 level,
-                entry:             r["entry"].as_f64()?,
+                entry:             entry_px,
                 fill_ts:           r["fill_ts"].as_i64()?,
+                placed_ts:         r["fill_ts"].as_i64().unwrap_or(0),
                 bar_delta_at_fill: r["bar_delta_at_fill"].as_f64().unwrap_or(0.0),
+                seen_hi:           r["best_price"].as_f64().unwrap_or(entry_px),
+                seen_lo:           r["best_price"].as_f64().unwrap_or(entry_px),
                 cur_stop:          r["cur_stop"].as_f64()?,
                 realized:          r["realized"].as_f64().unwrap_or(0.0),
                 rem:               r["rem"].as_f64().unwrap_or(1.0),

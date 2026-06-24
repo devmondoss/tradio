@@ -23,7 +23,10 @@ pub struct OpenPos {
     pub level:              Level,
     pub entry:              f64,
     pub fill_ts:            i64,
+    pub placed_ts:          i64,   // cuándo se colocó la orden (→ time-to-fill)
     pub bar_delta_at_fill:  f64,
+    pub seen_hi:            f64,   // máx px visto en la vida de la posición (MFE/MAE)
+    pub seen_lo:            f64,   // mín px visto
     // gestión fade
     pub cur_stop:  f64,
     pub realized:  f64,
@@ -39,7 +42,7 @@ pub struct OpenPos {
 }
 
 impl OpenPos {
-    pub fn new(level: Level, fill_ts: i64, bar_delta: f64) -> Self {
+    pub fn new(level: Level, fill_ts: i64, placed_ts: i64, bar_delta: f64) -> Self {
         let entry = level.price;
         let atr   = level.atr;
         // scale2: 0.3×ATR más profundo en la dirección del trade
@@ -60,7 +63,10 @@ impl OpenPos {
             rem:                1.0,
             filled1:            false,
             fill_ts,
+            placed_ts,
             bar_delta_at_fill:  bar_delta,
+            seen_hi:            entry,
+            seen_lo:            entry,
             entry,
             effective_entry:    entry,
             scale2_price,
@@ -93,6 +99,19 @@ pub struct ClosedTrade {
     pub scale2_filled:       bool,   // si la segunda orden también se ejecutó
     pub effective_entry:     f64,    // entry real blended (= entry si solo 1 orden)
     pub size_mult:           f64,    // multiplicador OI sizing (0.5 | 1.0 | 2.0)
+    // ── contexto completo (para auto-explicar y backtestear el trade) ──
+    pub fp_source:           String, // "tick" (footprint real) | "ohlcv" (midpoint)
+    pub tp1:                 Option<f64>, // nivel del parcial
+    pub atr:                 f64,    // ATR al entrar (tamaño de stop)
+    pub atr_median:          f64,    // mediana ATR(500) → fuerza del filtro de vol (atr/atr_median)
+    pub take_partial:        bool,
+    pub placed_ts:           i64,    // cuándo se colocó la orden (→ time-to-fill = opened_at-placed_ts)
+    pub filled1:             bool,   // ¿tocó el parcial TP1?
+    pub realized_r:          f64,    // R bancado del parcial antes de la salida final
+    pub fee_r:               f64,    // fees en R (bruto = result_r + fee_r)
+    pub mfe_r:               f64,    // máx excursión a favor (en R)
+    pub mae_r:               f64,    // máx excursión en contra (en R)
+    pub bar_delta_at_exit:   f64,    // order-flow (delta) al salir
 }
 
 // ── Evento de place/fill ────────────────────────────────────────────────────
@@ -216,7 +235,7 @@ impl PaperBook {
         }
         self.resting = still;
         for o in filled {
-            self.open_pos.push(OpenPos::new(o.level, ts, bar_delta));
+            self.open_pos.push(OpenPos::new(o.level, ts, o.placed_ts, bar_delta));
         }
 
         // ── gestión de posiciones abiertas ──
@@ -241,6 +260,14 @@ impl PaperBook {
             // Usar effective_entry y riesgo desde effective_entry al stop
             let risk = (p.effective_entry - p.level.stop).abs();
             if risk <= 0.0 { continue; }
+
+            // MFE/MAE: trackear extremos vistos en toda la vida de la posición
+            p.seen_hi = p.seen_hi.max(px);
+            p.seen_lo = p.seen_lo.min(px);
+            let (mfe_r, mae_r) = match p.level.side {
+                Side::Long  => ((p.seen_hi - p.effective_entry)/risk, (p.effective_entry - p.seen_lo)/risk),
+                Side::Short => ((p.effective_entry - p.seen_lo)/risk, (p.seen_hi - p.effective_entry)/risk),
+            };
 
             // ── Timeout ──────────────────────────────────────────────────────
             if self.timeout_ms > 0 && ts - p.fill_ts > self.timeout_ms {
@@ -270,6 +297,18 @@ impl PaperBook {
                     scale2_filled:     p.scale2_filled,
                     effective_entry:   p.effective_entry,
                     size_mult:         self.cur_size_mult,
+                    fp_source:         p.level.fp_source.into(),
+                    tp1:               p.level.tp1,
+                    atr:               p.level.atr,
+                    atr_median:        p.level.atr_median,
+                    take_partial:      p.level.take_partial,
+                    placed_ts:         p.placed_ts,
+                    filled1:           p.filled1,
+                    realized_r:        (p.realized * 10000.0).round() / 10000.0,
+                    fee_r:             (fee_r * 10000.0).round() / 10000.0,
+                    mfe_r:             (mfe_r * 10000.0).round() / 10000.0,
+                    mae_r:             (mae_r * 10000.0).round() / 10000.0,
+                    bar_delta_at_exit: bar_delta,
                 });
                 continue;
             }
@@ -278,6 +317,7 @@ impl PaperBook {
             let mut reason = String::new();
             let mut exit_px = 0.0_f64;
             let mut r_final = 0.0_f64;
+            let mut fee_r_out = 0.0_f64;
 
             match p.level.gestion {
                 Gestion::Trail => {
@@ -304,7 +344,7 @@ impl PaperBook {
                             Side::Short => (p.effective_entry - exit_px) / risk,
                         };
                         let fee_r = (FEE_MAKER + FEE_TAKER) * p.effective_entry / risk;
-                        r_final = r_gross - fee_r;
+                        r_final = r_gross - fee_r; fee_r_out = fee_r;
                     }
                 }
 
@@ -352,7 +392,7 @@ impl PaperBook {
                         let exit_fee = if reason == "target" { FEE_MAKER } else { FEE_TAKER };
                         let partial_fee = if p.filled1 { FEE_MAKER * 0.5 } else { 0.0 };
                         let fee_r = (FEE_MAKER + partial_fee + exit_fee * p.rem) * p.effective_entry / risk;
-                        r_final = p.realized - fee_r;
+                        r_final = p.realized - fee_r; fee_r_out = fee_r;
                     }
                 }
             }
@@ -378,6 +418,18 @@ impl PaperBook {
                     scale2_filled:     p.scale2_filled,
                     effective_entry:   p.effective_entry,
                     size_mult:         self.cur_size_mult,
+                    fp_source:         p.level.fp_source.into(),
+                    tp1:               p.level.tp1,
+                    atr:               p.level.atr,
+                    atr_median:        p.level.atr_median,
+                    take_partial:      p.level.take_partial,
+                    placed_ts:         p.placed_ts,
+                    filled1:           p.filled1,
+                    realized_r:        (p.realized * 10000.0).round() / 10000.0,
+                    fee_r:             (fee_r_out * 10000.0).round() / 10000.0,
+                    mfe_r:             (mfe_r * 10000.0).round() / 10000.0,
+                    mae_r:             (mae_r * 10000.0).round() / 10000.0,
+                    bar_delta_at_exit: bar_delta,
                 });
             } else {
                 rem_pos.push(p);
