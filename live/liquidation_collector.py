@@ -27,10 +27,13 @@ _buf = []
 _last_flush = time.time()
 
 
+MAX_BUF = int(os.environ.get("MAX_BUF", "20000"))   # tope del buffer si Supabase cae mucho rato
+
+
 def _insert(rows):
-    """POST batch a Supabase REST (bloqueante; se corre en executor)."""
+    """POST batch a Supabase REST (bloqueante; en executor). Devuelve True solo si confirmó."""
     if not (SUPA_URL and SUPA_KEY):
-        print(f"[liq] (sin Supabase) {len(rows)} eventos: {rows[-1]}"); return
+        print(f"[liq] (sin Supabase) {len(rows)} eventos: {rows[-1]}"); return True
     data = json.dumps(rows).encode()
     req = urllib.request.Request(
         f"{SUPA_URL}/rest/v1/liquidity_liquidations",
@@ -39,19 +42,31 @@ def _insert(rows):
                  "Content-Type": "application/json", "Prefer": "return=minimal"})
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
-            if r.status >= 300: print(f"[liq] insert HTTP {r.status}")
+            if r.status < 300: return True
+            print(f"[liq] insert HTTP {r.status}"); return False
     except Exception as e:
-        print(f"[liq] insert error: {e}")
+        print(f"[liq] insert error: {e}"); return False
 
 
 async def flush(force=False):
-    global _buf, _last_flush
+    """Vuelca el buffer SOLO si Supabase confirma. Si falla, NO descarta: reintenta
+    el próximo ciclo (los eventos quedan en el buffer). Último recurso: cap MAX_BUF."""
+    global _last_flush
     if not _buf: return
     if not force and len(_buf) < FLUSH_N and (time.time()-_last_flush) < FLUSH_S: return
-    rows, _buf = _buf, []
+    n = len(_buf)                                  # snapshot: solo intentamos los n actuales
+    rows = _buf[:n]                                # (eventos que lleguen durante el POST quedan)
+    ok = await asyncio.get_event_loop().run_in_executor(None, _insert, rows)
     _last_flush = time.time()
-    await asyncio.get_event_loop().run_in_executor(None, _insert, rows)
-    print(f"[liq] +{len(rows)} -> Supabase  (total visto: {_seen[0]})")
+    if ok:
+        del _buf[:n]
+        print(f"[liq] +{n} -> Supabase  (total visto: {_seen[0]}, buffer {len(_buf)})")
+    else:
+        print(f"[liq] insert FALLÓ — reintenta próximo ciclo (buffer {len(_buf)}, sin perder datos)")
+        if len(_buf) > MAX_BUF:                    # outage muy largo: descarta lo más viejo (y avisa)
+            drop = len(_buf) - MAX_BUF
+            del _buf[:drop]
+            print(f"[liq] ⚠️ buffer > {MAX_BUF}: descartados {drop} eventos más viejos")
 
 
 _seen = [0]
@@ -78,6 +93,7 @@ async def run():
             async with websockets.connect(WS_URL, ping_interval=20) as ws:
                 await ws.send(json.dumps(sub))
                 print(f"[liq] suscrito allLiquidation: {SYMBOLS}")
+                last_hb = time.time()
                 while True:
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=FLUSH_S)
@@ -87,6 +103,9 @@ async def run():
                             parse(topic.split(".")[-1], d.get("data", []))
                     except asyncio.TimeoutError:
                         pass            # sin eventos: cae al flush periódico
+                    if time.time() - last_hb >= 300:    # heartbeat cada 5min (vivo aunque calmo)
+                        print(f"[liq] vivo · total visto {_seen[0]} · buffer {len(_buf)}")
+                        last_hb = time.time()
                     await flush()
         except Exception as e:
             print(f"[liq] WS caído: {e} — reconectando en 5s")
