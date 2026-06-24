@@ -101,9 +101,9 @@ def run_system(a, gens, m1, tf_min, mode="routed", trail_atr=4.0, volfilter=True
                         jj = min(jend, len(m1ts))-1
                         if jj <= j0: continue
                         px = m1c[jj]; res = ((px-entry) if side == "long" else (entry-px))/risk - fee_r
-                    gestion = "trail"
+                    gestion = "trail"; reason = "trail"
                 trades.append(dict(ts=int(a.ts[i]), bar=i, side=side, r=res, gestion=gestion,
-                                   entry=entry, stop=stop, risk=risk,
+                                   reason=reason, entry=entry, stop=stop, risk=risk,
                                    hold_min=int(j - j0), oos=int(a.ts[i]) >= OOS_MS))
                 cool = i+cooldown; dcount[d] = dcount.get(d, 0)+1; break
     return pd.DataFrame(trades)

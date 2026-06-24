@@ -148,3 +148,62 @@ Barrido en los 3 activos:
 - `backtest/_*.py` — scripts de research (early_signal, book_heatmap_poc, sweep_test,
   flow_edge, cvd_div, side_bias, reconstruct_orphans, early_deep).
 - `backtest/_strategy_ab.py` — params de investigación aditivos (defaults = original).
+
+---
+
+## 9. Footprint ETH/SOL — CAUSA RAÍZ encontrada y arreglada (commit `4823ad3`, main)
+
+Diagnóstico cerrado **sin** depender de los logs de Railway, combinando 3 evidencias:
+1. Bybit entrega `publicTrade` a los 3 (test WS propio: ETH 1520 / SOL 318 ticks en 15s).
+2. En producción ETH/SOL tienen eventos cada 15min (kline OK) pero footprint congelado.
+3. Logs del usuario: **`ticks=11792 fp_bins=1` (SOL)**, `ticks=66243 fp_bins=4` (ETH).
+
+→ Los ticks SÍ llegaban; la causa era **`FP_BIN=5.0` fijo**: a $69 (SOL) todo el rango de la
+barra colapsa en 1 bin → POC = midpoint redondeado (inútil). **Fix:** `BIN` const → runtime
+(`set_bin`/`bin`, `OnceLock`), default proporcional al precio (1bps), override por env `FP_BIN`.
+BTC ~$6 (≈igual), ETH ~$0.16, SOL ~$0.007. Reconstrucción guarda precios reales → no corrompe el
+restore de BTC. **Deploy = warmup ~5h una vez** (BTC casi sin warmup: restaura 267 barras).
+
+## 10. ⭐ FEATURE LAB — ecosistema de pruebas estándar (`backtest/featurelab.py`)
+
+Problema resuelto: cada feature se probaba con gestión improvisada → el resultado dependía de
+decisiones arbitrarias, no del feature. Ahora TODO pasa por el mismo protocolo y veredicto.
+- **SEÑAL** (propone entradas) → `signal_verdict()`: gestión A+B FIJA, standalone, 3 activos.
+- **FILTRO** (gatea trades base) → `filter_verdict()`: parte los trades base en PASA/descarta.
+- **Regla dura** (igual para ambos): positivo en **IS y OOS en los 3 activos** con n mínimo.
+  Lo que brilla en OOS pero es negativo en IS = artefacto de régimen, se rechaza.
+- **Control de calidad** (lo que lo hace confiable): aprueba H5 ✅ (bueno conocido) y rechaza
+  sweep ❌ (malo conocido). Reproduce los números base → no es el confound.
+- `_strategy_ab.run_system` ahora emite `reason` (target/trail/be/stop/timeout) → autopsia mecánica.
+
+## 11. Features probados por el lab (TODOS cerrados salvo nota)
+
+| Feature | Tipo | Veredicto | Por qué (mecánico) |
+|---|---|---|---|
+| sweep (barrido+rechazo) | señal | ❌ −0.29/−0.31/−0.30 | reacción real pero 0% llega al target; trail no corre |
+| FVG (hueco 3 velas) | señal | ❌ −0.34/−0.17/+0.01 | el hueco se rellena y CONTINÚA (no es reversión) |
+| **sweep→FVG** (secuencia ICT real) | señal | ❌ | mejor que las piezas sueltas (WR 25→50, stop 33→17%) PERO ~0: reacción chica, payoff < stop. **Barrido de 162 configs (entry/stop/gap/W/gestión): 0 positivas IS+OOS en los 3** (`_swfvg_grid.py`) |
+| frescura del nivel | filtro | ❌ degenerado | el fill ES el toque → bars_since≈1, "aguantó"=tautología (regla de entrada) |
+| confluencia ≥2/≥3 fuentes | filtro | ❌ | niveles aislados rinden igual/mejor que los confluentes en ETH/SOL |
+| momentum aproximación (velocidad) | filtro | ❌ ruido | mejora +0.02R, cruza umbral laxo y nada más |
+| **tamaño de vela al tocar (≥1.5·ATR)** | filtro | 🔶 señal real, frágil | dirección robusta (IS sube en meseta en los 3: desplazamiento fuerte→reversión grande, encaja con markout VOL-HIGH) pero la mejora OOS la cargan 1-2 home-runs (top-1 = 40-100% netR) y corta 60-90% de trades → NO desplegable, es confirmación del filtro de vol, no edge nuevo |
+
+**Mejor setup = A+B base pelado.** Ningún feature lo bate de forma robusta.
+
+## 12. Liquidaciones — captura forward arrancada (no hay histórico)
+
+Verificado: Bybit NO publica histórico (ni en parquets ni REST/public data) → **no backtesteable**.
+El feed en vivo `allLiquidation.{symbol}` SÍ funciona (validado). Único camino: capturar desde ya.
+- `live/liquidation_collector.py` — colector standalone (WS → Supabase en lotes), **independiente del
+  paper** (cero warmup). `migrations/liquidity_liquidations.sql` (tabla + vista `liquidity_liq_1m`).
+  `railway.liquidations.env.example` (4º servicio).
+- **Hipótesis (a testear cuando haya semanas de datos):** no es filtro de entrada sino
+  **confirmación de completitud del movimiento** — cascada de liquidaciones a favor cerca del nivel
+  = combustible que lleva el precio al target lejano. Se enchufará al lab como FILTRO.
+
+## Archivos clave (sesión, parte 2 — rama de research, NO main)
+- `backtest/featurelab.py` — el laboratorio (signal_verdict, filter_verdict, regla dura, cache).
+- `backtest/_lab_demo.py` `_lab_features.py` `_lab_candle_verify.py` — demos/verificaciones.
+- `backtest/_smc_setups.py` `_swfvg_grid.py` `_confirm_freshness.py` `_fvg_test.py` — tests de features.
+- `backtest/_strategy_ab.py` — añadido campo `reason` (autopsia de salidas).
+- `live/liquidation_collector.py` + `migrations/liquidity_liquidations.sql` + `railway.liquidations.env.example`.
