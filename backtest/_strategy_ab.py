@@ -26,18 +26,20 @@ def is_chop(reg):
 
 def run_system(a, gens, m1, tf_min, mode="routed", trail_atr=4.0, volfilter=True,
                timeout_min=24*60, cooldown=6, max_day=2, margin=2.0, stop_floor_pct=0.15, min_range=0.5,
-               chop_mask=None, tp2_cap_r=0.0):
+               chop_mask=None, tp2_cap_r=0.0, atr_mult=1.0, atr_win=500, p1_frac=0.5):
     """mode: 'fade' (todo A), 'trail' (todo B), 'routed' (por régimen).
     chop_mask: array bool por barra (True=fade/rango). Si None, usa la columna 'regime' (tosca).
-    tp2_cap_r: si >0 limita tp2 a entry ± tp2_cap_r*risk (0=sin cap, usa target estructural)."""
+    tp2_cap_r: si >0 limita tp2 a entry ± tp2_cap_r*risk (0=sin cap, usa target estructural).
+    atr_mult: filtro ATR exige atr > atr_mult*mediana. atr_win: ventana de la mediana.
+    p1_frac: fracción cerrada en TP1 (parcial)."""
     m1ts, m1h, m1l, m1c = m1; bar_ms = tf_min*60_000
-    atr_med = pd.Series(a.atr).rolling(500, min_periods=50).median().shift(1).values
+    atr_med = pd.Series(a.atr).rolling(atr_win, min_periods=50).median().shift(1).values
     trades = []
     for g in gens:
         cool = 0; dcount = {}
         for i in range(60, a.n-1):
             if i < cool or a.atr[i] <= 0: continue
-            if volfilter and not (np.isfinite(atr_med[i]) and a.atr[i] > atr_med[i]): continue
+            if volfilter and not (np.isfinite(atr_med[i]) and a.atr[i] > atr_mult * atr_med[i]): continue
             d = int(a.day[i])
             if dcount.get(d, 0) >= max_day: continue
             for side, lvl, stop, tp1, tp2, kind in (g(a, i) or []):
@@ -69,7 +71,7 @@ def run_system(a, gens, m1, tf_min, mode="routed", trail_atr=4.0, volfilter=True
                 if use_fade:
                     # rango mínimo solo para fades (no fadear migajas); trends se montan igual
                     if min_range > 0 and tp1 is not None and 100*abs(tp1-entry)/entry < min_range: continue
-                    cur = stop; realized = 0.0; rem = 1.0; f1 = False; p1 = 0.5 if tp1 else 0.0; reason = "timeout"
+                    cur = stop; realized = 0.0; rem = 1.0; f1 = False; p1 = p1_frac if tp1 else 0.0; reason = "timeout"
                     for j in range(j0, min(jend, len(m1ts))):
                         if side == "long":
                             if m1l[j] <= cur: realized += rem*((cur-entry)/risk); reason = "be" if f1 else "stop"; break
@@ -101,7 +103,8 @@ def run_system(a, gens, m1, tf_min, mode="routed", trail_atr=4.0, volfilter=True
                         px = m1c[jj]; res = ((px-entry) if side == "long" else (entry-px))/risk - fee_r
                     gestion = "trail"
                 trades.append(dict(ts=int(a.ts[i]), bar=i, side=side, r=res, gestion=gestion,
-                                   oos=int(a.ts[i]) >= OOS_MS))
+                                   entry=entry, stop=stop, risk=risk,
+                                   hold_min=int(j - j0), oos=int(a.ts[i]) >= OOS_MS))
                 cool = i+cooldown; dcount[d] = dcount.get(d, 0)+1; break
     return pd.DataFrame(trades)
 

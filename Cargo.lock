@@ -3406,6 +3406,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ob-heatmap"
+version = "0.8.8"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "rayon",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
 name = "ob-parser"
 version = "0.8.8"
 dependencies = [

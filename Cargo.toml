@@ -16,7 +16,7 @@ repository = "https://github.com/flowsurface-rs/flowsurface"
 homepage = "https://flowsurface.com"
 
 [workspace]
-members = [ "data", "exchange", "crates/monitor", "crates/rbf_monitor", "crates/buyer_exhaustion", "crates/ob_parser", "crates/trades_parser", "crates/liquidity_monitor"]
+members = [ "data", "exchange", "crates/monitor", "crates/rbf_monitor", "crates/buyer_exhaustion", "crates/ob_parser", "crates/ob_heatmap", "crates/trades_parser", "crates/liquidity_monitor"]
 
 [workspace.dependencies]
 iced_core = { version = "0.14.0", features = ["serde"] }

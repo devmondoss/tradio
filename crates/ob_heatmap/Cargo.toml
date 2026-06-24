@@ -1,0 +1,15 @@
+[package]
+name = "ob-heatmap"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ob_heatmap"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+chrono.workspace = true
+zip    = "2"
+rayon  = "1"
+anyhow = "1"
