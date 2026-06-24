@@ -140,7 +140,7 @@ impl SupaClient {
         let mut bins: Vec<(u32, (f64, f64))> = bar.fp.iter().map(|(&k, &v)| (k, v)).collect();
         bins.sort_by_key(|&(k, _)| k);
         for (bin, (b, s)) in bins {
-            prices.push((bin as f64) * crate::levels::BIN);
+            prices.push((bin as f64) * crate::levels::bin());
             buy.push((b * 10000.0).round() / 10000.0);
             sell.push((s * 10000.0).round() / 10000.0);
         }
@@ -191,7 +191,7 @@ impl SupaClient {
             let mut fp: HashMap<u32, (f64, f64)> = HashMap::new();
             for ((p, b), s) in prices.iter().zip(buy.iter()).zip(sell.iter()) {
                 if let (Some(pv), Some(bv), Some(sv)) = (p.as_f64(), b.as_f64(), s.as_f64()) {
-                    let bin = (pv / crate::levels::BIN).round() as u32;
+                    let bin = (pv / crate::levels::bin()).round() as u32;
                     fp.insert(bin, (bv, sv));
                 }
             }

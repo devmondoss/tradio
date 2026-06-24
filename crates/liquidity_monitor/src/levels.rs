@@ -2,10 +2,17 @@
 //! Misma lógica, mismos parámetros, mismas salidas. Paridad con el backtest garantizada.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 // ── Parámetros (idénticos a levels.py) ─────────────────────────────────────
 
-pub const BIN: f64      = 5.0;   // bin de precio $5
+/// Ancho de bin del footprint (en precio). Se fija UNA vez al arrancar con
+/// `set_bin()` (env FP_BIN o proporcional al precio). Default 5.0 si no se fija
+/// — apropiado para BTC. CLAVE para ETH/SOL: con $5 fijo, un precio de $69 (SOL)
+/// colapsa toda la barra en 1 bin → POC inútil. Debe escalar con el precio.
+static BIN_WIDTH: OnceLock<f64> = OnceLock::new();
+pub fn bin() -> f64 { *BIN_WIDTH.get().unwrap_or(&5.0) }
+pub fn set_bin(w: f64) { let _ = BIN_WIDTH.set(w); }
 pub const VA_BARS: usize = 96;   // ventana area de valor (96 × M15 = 1 día)
 pub const SWING: usize   = 50;   // lookback swing H/L
 pub const OB_WIN: usize  = 15;   // ventana order block
@@ -118,7 +125,7 @@ impl ClosedBar {
                 let vb = b.1.0 + b.1.1;
                 va.partial_cmp(&vb).unwrap()
             });
-            best.map(|(p, _)| *p as f64 * BIN).unwrap_or((high + low) / 2.0)
+            best.map(|(p, _)| *p as f64 * bin()).unwrap_or((high + low) / 2.0)
         };
         let fp_real = !fp.is_empty();
         Self { ts_ms, open, high, low, close, volume: vol, day_id: ts_ms / 86_400_000,
@@ -163,12 +170,12 @@ fn value_area(bars: &[ClosedBar]) -> Option<VArea> {
         }
         // Para barras sin tick (bootstrap) fallback a close×volume
         for bar in recent.iter().filter(|b| !b.fp_real) {
-            let bin = (bar.close / BIN).round() as u32;
+            let bin = (bar.close / bin()).round() as u32;
             *vol.entry(bin).or_insert(0.0) += bar.volume;
         }
     } else {
         for bar in recent {
-            let bin = (bar.close / BIN).round() as u32;
+            let bin = (bar.close / bin()).round() as u32;
             *vol.entry(bin).or_insert(0.0) += bar.volume;
         }
     }
@@ -179,7 +186,7 @@ fn value_area(bars: &[ClosedBar]) -> Option<VArea> {
     bins.sort_by_key(|&(p, _)| p);
 
     let (poc_bin, _) = bins.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())?;
-    let poc = *poc_bin as f64 * BIN;
+    let poc = *poc_bin as f64 * bin();
 
     let total: f64 = bins.iter().map(|(_, v)| v).sum();
     let mut sorted = bins.clone();
@@ -191,8 +198,8 @@ fn value_area(bars: &[ClosedBar]) -> Option<VArea> {
         cum += v;
         if cum >= 0.70 * total { break; }
     }
-    let vah = *sel.iter().max()? as f64 * BIN;
-    let val = *sel.iter().min()? as f64 * BIN;
+    let vah = *sel.iter().max()? as f64 * bin();
+    let val = *sel.iter().min()? as f64 * bin();
 
     Some(VArea { poc, vah, val })
 }

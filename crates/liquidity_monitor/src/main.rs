@@ -34,7 +34,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 const WS_URL:       &str = "wss://stream.bybit.com/v5/public/linear";
 const REST_BASE:    &str = "https://api.bybit.com";
 const MAX_BARS:     usize = 700;   // 500 ATR median + 200 buffer
-const FP_BIN:       f64  = 5.0;   // $5 bin — igual que levels.py
 
 fn env(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -43,7 +42,7 @@ fn env(key: &str, default: &str) -> String {
 // ── Footprint helpers ────────────────────────────────────────────────────────
 
 fn fp_add(fp: &mut HashMap<u32, (f64, f64)>, price: f64, qty: f64, is_sell: bool) {
-    let bin = (price / FP_BIN).round() as u32;
+    let bin = (price / levels::bin()).round() as u32;
     let entry = fp.entry(bin).or_insert((0.0, 0.0));
     if is_sell { entry.1 += qty; } else { entry.0 += qty; }
 }
@@ -334,6 +333,18 @@ async fn main() {
     // Bootstrap REST: historial de barras
     println!("[bootstrap] descargando klines M{tf}...");
     let mut boot_bars: Vec<ClosedBar> = bootstrap(&symbol, &tf).await;
+
+    // Ancho de bin del footprint. CLAVE para ETH/SOL: con el $5 fijo de BTC, un
+    // precio de $69 (SOL) colapsa toda la barra en 1 bin → POC inútil. Default
+    // proporcional al precio (1 bps), override por env FP_BIN.
+    //   BTC ~$61k → ~$6  · ETH ~$1650 → ~$0.16  · SOL ~$69 → ~$0.007
+    let ref_px = boot_bars.last().map(|b| b.close).unwrap_or(0.0);
+    let fp_bin = match std::env::var("FP_BIN").ok().and_then(|s| s.parse::<f64>().ok()) {
+        Some(b) if b > 0.0 => b,
+        _ => (ref_px * 0.0001).max(1e-9),
+    };
+    levels::set_bin(fp_bin);
+    println!("[FP] bin={fp_bin} (ref_px={ref_px})");
 
     // Restaurar footprint bars desde Supabase
     let mut restored = 0usize;
