@@ -96,55 +96,75 @@ Barrido en los 3 activos:
 
 ---
 
-## 6. Estado por activo (al cierre de la sesión)
+## 6. El footprint de ETH/SOL — diagnóstico CERRADO (4 bugs encadenados)
 
-| | Footprint | Estado |
-|---|-----------|--------|
-| **BTC** | ✅ maduro (267 barras, al día) | **sano — opera con edge completo** |
-| ETH | ❌ 2 barras (congelado) | a ciegas (POC midpoint, −29%) |
-| SOL | ❌ 2 barras | a ciegas |
+Síntoma: ETH/SOL "a ciegas" (footprint no acumula → POC = midpoint → −29% del edge).
+La hipótesis inicial ("no llegan los ticks") resultó **FALSA**. Cadena de detective:
 
-- Persistencia: ✅ funciona (posiciones vivas guardadas).
-- ETH/SOL **no acumulan footprint**. Logs confirman: **NO crashean** (1 arranque, 0 errores,
-  estables 12h). Síntomas: footprint vacío + **fill ratio anómalo (ETH LOW 4%)**.
-- **Hipótesis principal**: a ETH/SOL **no les llega el stream completo de `publicTrade`**
-  (ticks). Sin ticks → `cur_fp` vacío → footprint no se guarda + fills "perdidos".
-- Problema secundario: **`FP_BIN=5.0` fijo** es absurdo para SOL ($5 en precio $70 = 7%).
-  Debería ser proporcional al precio. Pero es secundario — sin ticks no importa el bin.
+| Hipótesis | Cómo se probó | Veredicto |
+|-----------|---------------|-----------|
+| "no llegan ticks (stream incompleto)" | contador `ticks=N` (commit `eb201a7`) | ❌ **falsa** — llegan 12k-66k/barra |
+| "bin `$5` fijo colapsa el footprint" | logs `fp_bins`: SOL=1, ETH=4 | ✅ real (secundario) |
+| "`write_footprint` falla" | BTC guarda con el mismo código | ❌ falsa |
+| "la PK de la tabla es solo `ts_ms`" | 278 filas = 278 ts_ms; BTC pisa a ETH/SOL | ✅ **CAUSA RAÍZ** |
+
+**Eran DOS bugs del footprint, encadenados:**
+
+### Bug C — `FP_BIN=5.0` fijo (calidad del POC)
+- `$5` en SOL ($69) = 7% del precio → todos los ticks en 1 bin → POC inútil. ETH = 4 bins.
+- **Fix** (commit `4823ad3`): `BIN` de const → runtime (`set_bin/bin`, `OnceLock`),
+  proporcional al precio (`ref_px × 0.0001` = 1 bps) con override por env `FP_BIN`.
+  Resultado: ETH bin `$0.16`, SOL bin `$0.007`. `fp_bins` saltó: **ETH 4→133, SOL 1→83**.
+- Toca `levels.rs` (BIN), `main.rs` (calcula `fp_bin` tras bootstrap), `supa.rs` (reconstrucción).
+- Guarda **precios reales** (no índices) → cambiar el bin no corrompe el footprint restaurado.
+
+### Bug D — PK del footprint era solo `ts_ms` (persistencia)
+- Las barras M15 cierran al MISMO `ts_ms` para los 3 símbolos. Con PK `ts_ms` y upsert
+  `merge-duplicates`, los 3 colisionaban → **BTC sobrescribía a ETH/SOL** en cada barra
+  (BTC 273 barras, ETH/SOL 2-3).
+- **Fix** (SQL, sin redeploy): `ALTER ... DROP CONSTRAINT pkey; ADD PRIMARY KEY (ts_ms, symbol, tf)`.
+- Tras el ALTER, ETH/SOL empezaron a guardar su footprint propio desde el primer `bar_close`.
+
+**Resultado final**: los 3 activos SANOS — footprint de alta resolución (ETH 133, SOL 83,
+BTC ~60 bins), cada uno guarda el suyo (PK compuesta), sobreviven redeploys (persistencia).
+ETH/SOL salen del −29% de ceguera tras ~5h de warmup (juntan 1 día de footprint bueno).
 
 ---
 
-## 7. Diagnóstico en curso (commit `eb201a7`, en `main`)
+## 7. Estado por activo (CIERRE)
 
-- Agregado **contador de ticks/min** al monitor: cada `bar_close` loguea
-  `ticks=N fp_bins=M`.
-- **Próximo paso**: tras el redeploy, comparar en los logs de Railway:
-  - BTC `ticks=~40000` vs ETH/SOL `ticks=~pocos` → confirma stream incompleto.
-  - Si los 3 reciben ticks pero ETH/SOL `fp_bins=0` → el problema sería binning/guardado.
-- Según el resultado: arreglar la conexión WS (si faltan ticks) y/o el `FP_BIN` proporcional.
+| | Footprint resolución | Guarda el suyo | Sobrevive redeploys | Estado |
+|---|---------------------|----------------|---------------------|--------|
+| BTC | ✅ ~60 bins | ✅ | ✅ | sano |
+| **ETH** | ✅ **133 bins** | ✅ | ✅ | **sano** (madurando) |
+| **SOL** | ✅ **83 bins** | ✅ | ✅ | **sano** (madurando) |
 
 ---
 
 ## 8. Pendientes / decisiones abiertas
 
-1. **Leer los logs nuevos** (con `ticks=`) para confirmar la causa del footprint ETH/SOL.
-2. **Bin proporcional al precio** (`FP_BIN = precio × 0.0001`) — para que todos los pares
-   tengan footprint útil. Toca `levels.rs` (invasivo), hacer tras confirmar diagnóstico.
-3. **Cleanup del footprint** (borrar barras > 300) → mantenerlo en ~1 MB constante.
-4. **Liquidaciones**: única señal de orderflow sin explorar (no hay histórico; capturable
+1. **Cleanup del footprint** — ahora que los 3 guardan, sin cleanup la tabla crece ~110 MB/año.
+   `migrations/footprint_cleanup.sql` mantiene solo las últimas 300 barras/símbolo (~1 MB constante).
+   Correr periódicamente (o pg_cron) — `load_footprint` solo usa 200.
+2. **Liquidaciones**: única señal de orderflow sin explorar (no hay histórico; capturable
    en vivo suscribiendo `allLiquidation` y guardando a futuro).
-5. **UI vista live** (`apps/trade-lab/.../LivePaperView.tsx`): visor de trades del paper
+3. **UI vista live** (`apps/trade-lab/.../LivePaperView.tsx`): visor de trades del paper
    (chart de velas + tabla + detalle). **Sin commitear** (solo local).
-6. **Regla operativa**: cualquier push a `main` redeploya los 3 servicios → warmup. Usar
+4. **Dejar el paper corriendo sin redeploys** para juntar muestra real con los 3 sanos.
+5. **Regla operativa**: cualquier push a `main` redeploya los 3 servicios → warmup ~5h. Usar
    ramas para cambios que NO van al deploy; main solo cuando se quiere redeployar a propósito.
 
 ---
 
 ## Archivos clave de esta sesión
 
-- `crates/liquidity_monitor/src/{book,supa,main,levels}.rs` — fixes de persistencia + contador ticks.
+- `crates/liquidity_monitor/src/{book,supa,main,levels}.rs` — fixes de persistencia, contador
+  ticks, bin proporcional al precio.
 - `crates/ob_heatmap/` — reconstructor del libro completo en Rust.
 - `migrations/liquidity_paper_open_pos.sql` — tabla de posiciones persistidas.
+- `migrations/footprint_cleanup.sql` — cleanup del footprint (últimas 300 barras/símbolo).
+- Migraciones SQL aplicadas en Supabase: columna `size_mult` + PK compuesta
+  `liquidity_paper_footprint (ts_ms, symbol, tf)`.
 - `backtest/_*.py` — scripts de research (early_signal, book_heatmap_poc, sweep_test,
   flow_edge, cvd_div, side_bias, reconstruct_orphans, early_deep).
 - `backtest/_strategy_ab.py` — params de investigación aditivos (defaults = original).
