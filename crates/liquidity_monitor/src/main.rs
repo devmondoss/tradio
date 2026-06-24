@@ -49,18 +49,41 @@ fn fp_add(fp: &mut HashMap<u32, (f64, f64)>, price: f64, qty: f64, is_sell: bool
 
 // ── Bootstrap REST ───────────────────────────────────────────────────────────
 
+/// Bootstrap RESILIENTE: reintenta con backoff y NUNCA paniquea. Un hipo de la REST
+/// de Bybit (rate-limit, página de error de CloudFront, blip) ya NO mata el proceso
+/// — antes el `.expect()` lo hacía crashear → Railway reiniciaba → re-machacaba la API
+/// → rate-limit sostenido → crash-loop infinito.
 async fn bootstrap(symbol: &str, tf: &str) -> Vec<ClosedBar> {
     let client = reqwest::Client::new();
-    let resp: Value = client
-        .get(format!("{}/v5/market/kline", REST_BASE))
-        .query(&[
-            ("category", "linear"), ("symbol", symbol),
-            ("interval", tf), ("limit", "1000"),
-        ])
-        .send().await.expect("bootstrap REST failed")
-        .json().await.expect("bootstrap parse failed");
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match try_bootstrap(&client, symbol, tf).await {
+            Ok(bars) if !bars.is_empty() => return bars,
+            Ok(_)  => eprintln!("[bootstrap] intento {attempt}: lista vacía — reintento"),
+            Err(e) => eprintln!("[bootstrap] intento {attempt} falló: {e}"),
+        }
+        let wait = std::cmp::min(60, 2u64.pow(attempt.min(6)));   // 2,4,8,…,60s
+        eprintln!("[bootstrap] esperando {wait}s antes de reintentar (no crash-loop)");
+        tokio::time::sleep(Duration::from_secs(wait)).await;
+    }
+}
 
-    let list = resp["result"]["list"].as_array().expect("no list");
+async fn try_bootstrap(client: &reqwest::Client, symbol: &str, tf: &str) -> Result<Vec<ClosedBar>, String> {
+    let resp = client
+        .get(format!("{}/v5/market/kline", REST_BASE))
+        .query(&[("category", "linear"), ("symbol", symbol),
+                 ("interval", tf), ("limit", "1000")])
+        .send().await.map_err(|e| format!("REST: {e}"))?;
+    let status = resp.status();
+    let txt = resp.text().await.map_err(|e| format!("body: {e}"))?;
+    // Parsear desde texto para poder LOGUEAR el cuerpo real si no es el JSON esperado.
+    let v: Value = serde_json::from_str(&txt)
+        .map_err(|e| format!("parse ({status}): {e} | body[..160]={:?}",
+                             txt.chars().take(160).collect::<String>()))?;
+    let list = v["result"]["list"].as_array()
+        .ok_or_else(|| format!("sin result.list ({status}): {:?}",
+                               txt.chars().take(160).collect::<String>()))?;
     let mut bars: Vec<ClosedBar> = list.iter().rev().map(|k| {
         let ts_ms = k[0].as_str().unwrap_or("0").parse::<i64>().unwrap_or(0);
         let open  = k[1].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
@@ -70,12 +93,11 @@ async fn bootstrap(symbol: &str, tf: &str) -> Vec<ClosedBar> {
         let vol   = k[5].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
         ClosedBar::from_bootstrap(ts_ms, open, high, low, close, vol)
     }).collect();
-
     // La última barra puede estar incompleta (kline actual) — descartarla
     if bars.last().map(|b| b.ts_ms).unwrap_or(0) > chrono::Utc::now().timestamp_millis() - 60_000 {
         bars.pop();
     }
-    bars
+    Ok(bars)
 }
 
 // ── ATR median ───────────────────────────────────────────────────────────────
