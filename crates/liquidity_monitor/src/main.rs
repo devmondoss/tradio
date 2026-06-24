@@ -31,8 +31,11 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-const WS_URL:       &str = "wss://stream.bybit.com/v5/public/linear";
-const REST_BASE:    &str = "https://api.bybit.com";
+// Bybit geo-bloquea api.bybit.com (CloudFront) desde algunos países (p.ej. el IP de
+// Railway). bytick.com es el dominio ESPEJO oficial con otra config → fallback.
+const WS_HOSTS:   [&str; 2] = ["wss://stream.bybit.com/v5/public/linear",
+                               "wss://stream.bytick.com/v5/public/linear"];
+const REST_HOSTS: [&str; 2] = ["https://api.bybit.com", "https://api.bytick.com"];
 const MAX_BARS:     usize = 700;   // 500 ATR median + 200 buffer
 
 fn env(key: &str, default: &str) -> String {
@@ -58,10 +61,15 @@ async fn bootstrap(symbol: &str, tf: &str) -> Vec<ClosedBar> {
     let mut attempt: u32 = 0;
     loop {
         attempt += 1;
-        match try_bootstrap(&client, symbol, tf).await {
-            Ok(bars) if !bars.is_empty() => return bars,
-            Ok(_)  => eprintln!("[bootstrap] intento {attempt}: lista vacía — reintento"),
-            Err(e) => eprintln!("[bootstrap] intento {attempt} falló: {e}"),
+        for host in REST_HOSTS {                       // prueba bybit.com, luego el espejo bytick.com
+            match try_bootstrap(&client, host, symbol, tf).await {
+                Ok(bars) if !bars.is_empty() => {
+                    if host != REST_HOSTS[0] { eprintln!("[bootstrap] OK via fallback {host}"); }
+                    return bars;
+                }
+                Ok(_)  => eprintln!("[bootstrap] {host} intento {attempt}: lista vacía"),
+                Err(e) => eprintln!("[bootstrap] {host} intento {attempt} falló: {e}"),
+            }
         }
         let wait = std::cmp::min(60, 2u64.pow(attempt.min(6)));   // 2,4,8,…,60s
         eprintln!("[bootstrap] esperando {wait}s antes de reintentar (no crash-loop)");
@@ -69,9 +77,9 @@ async fn bootstrap(symbol: &str, tf: &str) -> Vec<ClosedBar> {
     }
 }
 
-async fn try_bootstrap(client: &reqwest::Client, symbol: &str, tf: &str) -> Result<Vec<ClosedBar>, String> {
+async fn try_bootstrap(client: &reqwest::Client, host: &str, symbol: &str, tf: &str) -> Result<Vec<ClosedBar>, String> {
     let resp = client
-        .get(format!("{}/v5/market/kline", REST_BASE))
+        .get(format!("{}/v5/market/kline", host))
         .query(&[("category", "linear"), ("symbol", symbol),
                  ("interval", tf), ("limit", "1000")])
         .send().await.map_err(|e| format!("REST: {e}"))?;
@@ -442,9 +450,12 @@ async fn main() {
         ]
     }).to_string();
 
+    let mut ws_try: usize = 0;
     loop {
-        println!("[WS] conectando a {WS_URL}...");
-        match connect_async(WS_URL).await {
+        let ws_url = WS_HOSTS[ws_try % WS_HOSTS.len()];   // alterna bybit/bytick si uno se bloquea
+        ws_try += 1;
+        println!("[WS] conectando a {ws_url}...");
+        match connect_async(ws_url).await {
             Err(e) => {
                 eprintln!("[WS] error: {e} — reintentando en 5s");
                 tokio::time::sleep(Duration::from_secs(5)).await;
