@@ -1,0 +1,12 @@
+# Config Railway DEDICADO del servicio colector de liquidaciones.
+# En el servicio "liquidations": Settings → Config-as-code / Railway Config File
+#   → poner la ruta:  railway.liquidations.toml
+# Esto evita que el railway.toml raíz (que fuerza Dockerfile.liquidity = monitor Rust)
+# secuestre el build. Acá construimos el colector Python.
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile.liquidations"
+
+[deploy]
+restartPolicyType = "always"
+region = "asia-southeast1"
