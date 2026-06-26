@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS liquidity_paper_snapshots (
     at              TIMESTAMPTZ,
     symbol          TEXT NOT NULL,
     tf              TEXT NOT NULL,
+    system          TEXT,                      -- maker | flow (un snapshot por book)
+    close_px        FLOAT8,                    -- precio de cierre de la barra
     resting         INT,
     open_pos        INT,
     placed_high     INT,  filled_high     INT,  fill_ratio_high FLOAT8,
@@ -40,6 +42,10 @@ CREATE TABLE IF NOT EXISTS liquidity_paper_snapshots (
     closed_low      INT,  wr_low          FLOAT8, avg_r_low      FLOAT8
 );
 CREATE INDEX IF NOT EXISTS idx_liq_snap_at ON liquidity_paper_snapshots (at DESC);
+
+-- Para bases ya creadas sin estas columnas (el insert del binario las envía):
+ALTER TABLE liquidity_paper_snapshots ADD COLUMN IF NOT EXISTS system   TEXT;
+ALTER TABLE liquidity_paper_snapshots ADD COLUMN IF NOT EXISTS close_px FLOAT8;
 
 -- Vista rápida del estado más reciente (snapshot en-memoria, 'desde el último restart')
 CREATE OR REPLACE VIEW liquidity_paper_latest AS
@@ -59,19 +65,31 @@ CREATE TABLE IF NOT EXISTS liquidity_paper_events (
     kind         TEXT,                 -- poc_orderblock | poc_defendido
     side         TEXT,                 -- long | short
     vol_regime   TEXT,                 -- high | low
-    price        FLOAT8
+    regime       TEXT,                 -- chop | trend
+    gestion      TEXT,                 -- fade | trail
+    system       TEXT,                 -- maker | flow (distingue el book emisor)
+    price        FLOAT8,
+    bar_delta    FLOAT8
 );
 CREATE INDEX IF NOT EXISTS idx_liq_events_at     ON liquidity_paper_events (at DESC);
 CREATE INDEX IF NOT EXISTS idx_liq_events_type   ON liquidity_paper_events (event_type);
 CREATE INDEX IF NOT EXISTS idx_liq_events_regime ON liquidity_paper_events (vol_regime);
 
--- Fill ratio REAL acumulado (desde eventos, sobrevive a restarts), por régimen de volatilidad
-CREATE OR REPLACE VIEW liquidity_paper_fill_ratio AS
+-- Para bases ya creadas sin estas columnas (el binario las envía en write_events):
+ALTER TABLE liquidity_paper_events ADD COLUMN IF NOT EXISTS regime    TEXT;
+ALTER TABLE liquidity_paper_events ADD COLUMN IF NOT EXISTS gestion   TEXT;
+ALTER TABLE liquidity_paper_events ADD COLUMN IF NOT EXISTS system    TEXT;
+ALTER TABLE liquidity_paper_events ADD COLUMN IF NOT EXISTS bar_delta FLOAT8;
+
+-- Fill ratio REAL acumulado (desde eventos, sobrevive a restarts), por sistema y régimen
+-- DROP + CREATE (no REPLACE): al agregar la columna `system` cambia el set de columnas.
+DROP VIEW IF EXISTS liquidity_paper_fill_ratio;
+CREATE VIEW liquidity_paper_fill_ratio AS
 SELECT
-    symbol, tf, vol_regime,
+    symbol, tf, system, vol_regime,
     count(*) FILTER (WHERE event_type='place') AS placed,
     count(*) FILTER (WHERE event_type='fill')  AS filled,
     round(count(*) FILTER (WHERE event_type='fill')::numeric
           / nullif(count(*) FILTER (WHERE event_type='place'), 0), 4) AS fill_ratio
 FROM liquidity_paper_events
-GROUP BY symbol, tf, vol_regime;
+GROUP BY symbol, tf, system, vol_regime;

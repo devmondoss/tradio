@@ -345,6 +345,8 @@ impl PaperBook {
                         };
                         let fee_r = (FEE_MAKER + FEE_TAKER) * p.effective_entry / risk;
                         r_final = r_gross - fee_r; fee_r_out = fee_r;
+                        // banca el R bruto del trail (misma semántica que fade: realized = bruto, antes de fee)
+                        p.realized = r_gross;
                     }
                 }
 

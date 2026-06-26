@@ -61,7 +61,7 @@ impl SupaClient {
 
     // ── Events (place/fill) ─────────────────────────────────────────────────
 
-    pub async fn write_events(&self, events: &[crate::book::BookEvent]) {
+    pub async fn write_events(&self, events: &[crate::book::BookEvent], system: &str) {
         if events.is_empty() { return; }
         let rows: Vec<Value> = events.iter().map(|e| json!({
             "at":         Self::iso(e.at),
@@ -73,6 +73,7 @@ impl SupaClient {
             "vol_regime": e.vol_regime,
             "regime":     e.regime,
             "gestion":    e.gestion,
+            "system":     system,
             "price":      e.price,
             "bar_delta":  (e.bar_delta * 10000.0).round() / 10000.0,
         })).collect();
@@ -123,25 +124,8 @@ impl SupaClient {
         self.insert("liquidity_paper_trades", json!(rows)).await;
     }
 
-    // ── Snapshot por barra ──────────────────────────────────────────────────
-
-    pub async fn write_snapshot(&self, book: &crate::book::PaperBook, bar_close: i64, close_px: f64) {
-        use crate::levels::VolRegime;
-        let snap = json!({
-            "symbol":          self.symbol,
-            "tf":              self.tf,
-            "system":          book.system,
-            "at":              Self::iso(bar_close),
-            "placed_high":     book.placed[0],
-            "filled_high":     book.filled[0],
-            "fill_ratio_high": book.fill_ratio(VolRegime::High),
-            "placed_low":      book.placed[1],
-            "filled_low":      book.filled[1],
-            "fill_ratio_low":  book.fill_ratio(VolRegime::Low),
-            "close_px":        close_px,
-        });
-        self.insert("liquidity_paper_snapshots", json!([snap])).await;
-    }
+    // El snapshot por barra se escribe inline en main.rs (raw_insert) con los
+    // contadores ya copiados del book, evitando mover el &book a la task async.
 
     // ── Footprint bar (persistencia para sobrevivir reinicios) ──────────────
 
@@ -338,7 +322,9 @@ impl SupaClient {
     }
 
     // ── Fill ratio view (diagnóstico) ───────────────────────────────────────
-
+    // Lee el fill ratio REAL acumulado desde la vista de eventos (inmune a
+    // restarts, a diferencia de los contadores en-memoria del status_line).
+    #[allow(dead_code)]
     pub async fn fill_ratio_snapshot(&self) -> Option<String> {
         let resp = self.client
             .get(format!("{}/rest/v1/liquidity_paper_fill_ratio", self.url))

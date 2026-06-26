@@ -262,7 +262,7 @@ impl State {
                 let filled = book.filled;
                 let sys_name = book.system.clone();
                 tokio::spawn(async move {
-                    sc.write_events(&ev).await;
+                    sc.write_events(&ev, &sys_name).await;
                     sc.write_trades(&tr).await;
                     // snapshot simple
                     let snap = serde_json::json!([{
