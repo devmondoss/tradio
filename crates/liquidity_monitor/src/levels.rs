@@ -17,7 +17,7 @@ pub const VA_BARS: usize = 96;   // ventana area de valor (96 × M15 = 1 día)
 pub const SWING: usize   = 50;   // lookback swing H/L
 pub const OB_WIN: usize  = 15;   // ventana order block
 pub const MIN_RR: f64    = 1.2;
-pub const MIN_TP1_RR: f64 = 2.3;
+pub const MIN_RANGE: f64 = 0.5;     // % mínimo entry→tp1 para fadear (no fadear migajas, paridad backtest)
 pub const STOP_FLOOR: f64 = 0.0015; // 0.15% mínimo: evita stops absurdamente ajustados (paridad con backtest)
 pub const COOLDOWN_BARS: i64 = 6;   // anti-spam: barras entre entradas (paridad con backtest)
 pub const MAX_TRADES_DAY: u32 = 2;  // anti-spam: máx entradas por día UTC
@@ -411,8 +411,14 @@ pub fn compute_levels(
             Side::Short if !(lv.price > price && lv.tp < lv.price && lv.price < lv.stop) => return None,
             _ => {}
         }
-        let tp1_rr = lv.tp1.map(|t| (t - lv.price).abs() / risk).unwrap_or(0.0);
-        lv.take_partial = tp1_rr >= MIN_TP1_RR;
+        // min_range: para fades, descartar si tp1 está demasiado cerca (<MIN_RANGE%) — no fadear migajas.
+        if gestion == Gestion::Fade {
+            if let Some(t1) = lv.tp1 {
+                if (t1 - lv.price).abs() / lv.price * 100.0 < MIN_RANGE { return None; }
+            }
+        }
+        // Parcial 50% siempre que exista un tp1 cercano válido (paridad con backtest, sin umbral de R).
+        lv.take_partial = lv.tp1.is_some();
         lv.gestion = gestion;
         Some(lv)
     }).collect();
