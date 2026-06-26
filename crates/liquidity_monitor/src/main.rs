@@ -400,12 +400,16 @@ async fn main() {
     let init_atr   = atr_series.last().copied().unwrap_or(0.0);
     let mut atr_history: VecDeque<f64> = atr_series.into_iter().collect();
 
+    let tf_min     = tf.parse::<f64>().unwrap_or(15.0);
+    let cooldown_ms = (levels::COOLDOWN_BARS as f64 * tf_min * 60_000.0) as i64;
     let mut books: Vec<PaperBook> = State::systems_for(&system)
         .into_iter()
         .map(|s| PaperBook::new(
             if s == System::Maker { "maker" } else { "flow" },
             fill_margin,
             timeout_h,
+            cooldown_ms,
+            levels::MAX_TRADES_DAY,
         ))
         .collect();
 

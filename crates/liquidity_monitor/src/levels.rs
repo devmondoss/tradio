@@ -18,6 +18,9 @@ pub const SWING: usize   = 50;   // lookback swing H/L
 pub const OB_WIN: usize  = 15;   // ventana order block
 pub const MIN_RR: f64    = 1.2;
 pub const MIN_TP1_RR: f64 = 2.3;
+pub const STOP_FLOOR: f64 = 0.0015; // 0.15% mínimo: evita stops absurdamente ajustados (paridad con backtest)
+pub const COOLDOWN_BARS: i64 = 6;   // anti-spam: barras entre entradas (paridad con backtest)
+pub const MAX_TRADES_DAY: u32 = 2;  // anti-spam: máx entradas por día UTC
 pub const TRAIL_ATR: f64  = 4.0;
 pub const ATR_N: usize    = 14;
 pub const TOUCH_TOL: f64  = 0.002; // 0.2% tolerancia para contar toques
@@ -370,6 +373,14 @@ pub fn compute_levels(
     let gestion = if trend { Gestion::Trail } else { Gestion::Fade };
 
     let filtered: Vec<Level> = out.into_iter().filter_map(|mut lv| {
+        // Stop floor: empuja el stop a >= STOP_FLOOR del precio si quedó demasiado ajustado.
+        let min_dist = lv.price * STOP_FLOOR;
+        if (lv.price - lv.stop).abs() < min_dist {
+            lv.stop = match lv.side {
+                Side::Long  => lv.price - min_dist,
+                Side::Short => lv.price + min_dist,
+            };
+        }
         let risk = (lv.price - lv.stop).abs();
         if risk <= 0.0 { return None; }
         // Cap tp2 a N×risk si tp2_cap_r > 0

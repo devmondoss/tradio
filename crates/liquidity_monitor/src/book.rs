@@ -136,6 +136,11 @@ pub struct PaperBook {
     pub fill_margin:   f64,
     pub timeout_ms:    i64,
     pub cur_size_mult: f64,   // multiplicador OI sizing vigente
+    cooldown_ms:       i64,   // anti-spam: ms entre entradas
+    max_trades_day:    u32,   // anti-spam: máx entradas por día UTC
+    last_open_ts:      i64,   // ts de la última apertura (para cooldown)
+    cur_day:           i64,   // día UTC vigente (ts / 86_400_000)
+    day_opens:         u32,   // aperturas en el día vigente
     resting:           Vec<RestingOrder>,
     open_pos:          Vec<OpenPos>,
     pub placed:        [u64; 2],
@@ -145,12 +150,18 @@ pub struct PaperBook {
 }
 
 impl PaperBook {
-    pub fn new(system: impl Into<String>, fill_margin_bps: f64, timeout_hours: f64) -> Self {
+    pub fn new(system: impl Into<String>, fill_margin_bps: f64, timeout_hours: f64,
+               cooldown_ms: i64, max_trades_day: u32) -> Self {
         Self {
             system:      system.into(),
             fill_margin: fill_margin_bps,
             timeout_ms:  (timeout_hours * 3600.0 * 1000.0) as i64,
             cur_size_mult: 1.0,
+            cooldown_ms,
+            max_trades_day,
+            last_open_ts:   i64::MIN / 2,
+            cur_day:        -1,
+            day_opens:      0,
             resting:     Vec::new(),
             open_pos:    Vec::new(),
             placed:      [0, 0],
@@ -158,6 +169,15 @@ impl PaperBook {
             trades:      Vec::new(),
             events:      Vec::new(),
         }
+    }
+
+    /// ¿Puede abrir una nueva entrada en `ts`? (cooldown + tope diario UTC).
+    /// Muta el contador diario si cambió el día.
+    fn entries_allowed(&mut self, ts: i64) -> bool {
+        let day = ts / 86_400_000;
+        if day != self.cur_day { self.cur_day = day; self.day_opens = 0; }
+        if self.day_opens >= self.max_trades_day { return false; }
+        ts - self.last_open_ts >= self.cooldown_ms
     }
 
     fn reg_idx(r: VolRegime) -> usize {
@@ -194,6 +214,8 @@ impl PaperBook {
     pub fn refresh(&mut self, levels: Vec<Level>, ts: i64, size_mult: f64) {
         self.cur_size_mult = size_mult;
         self.resting.clear();
+        // Anti-spam: en cooldown o con el tope diario alcanzado no se coloca nada.
+        if !self.entries_allowed(ts) { return; }
         for lv in levels {
             // No colocar si ya hay una posición abierta en el mismo lado y precio
             // (evita acumular múltiples entradas en el mismo nivel barra a barra)
@@ -224,10 +246,14 @@ impl PaperBook {
                 Side::Long  => px <= o.level.price * (1.0 - margin_frac),
                 Side::Short => px >= o.level.price * (1.0 + margin_frac),
             };
-            if hit {
+            // Anti-spam: solo abre si pasa cooldown + tope diario. Si no, la orden
+            // sigue en reposo (se limpia en el próximo refresh) y NO cuenta como fill.
+            if hit && self.entries_allowed(ts) {
                 self.filled[Self::reg_idx(o.level.vol_regime)] += 1;
                 let evt = self.make_event("fill", &o.level, ts, bar_delta);
                 self.events.push(evt);
+                self.last_open_ts = ts;
+                self.day_opens += 1;
                 filled.push(o);
             } else {
                 still.push(o);
