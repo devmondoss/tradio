@@ -227,3 +227,37 @@ El feed en vivo `allLiquidation.{symbol}` SÍ funciona (validado). Único camino
 - `backtest/_smc_setups.py` `_swfvg_grid.py` `_confirm_freshness.py` `_fvg_test.py` — tests de features.
 - `backtest/_strategy_ab.py` — añadido campo `reason` (autopsia de salidas).
 - `live/liquidation_collector.py` + `migrations/liquidity_liquidations.sql` + `railway.liquidations.env.example`.
+
+---
+
+## 13. NautilusTrader — validación de ejecución + barrido de features (2026-06-25)
+
+Se portó la estrategia liquidity (A+B) a **NautilusTrader** (v1.224, Bybit nativo). Enfoque:
+`emit_signals()` REUSA nuestros niveles validados (`_listas2`) y Nautilus solo hace la ejecución
+(fills maker post-only, fees, parcial). Scripts: `backtest/_nautilus_{spike,real,ticks,offset}.py`.
+
+### Edge sobrevive ejecución realista (OOS ~108d, fees+parcial+R)
+| | avgR Nautilus | ref backtest | fill ratio |
+|---|---|---|---|
+| BTC | +2.01 | +1.82 | 27% |
+| ETH | +1.91 | +1.37 | 14% |
+| SOL | +1.94 | +0.93 | 14% |
+
+Fill ratio **~14-27% converge** en bar-level, trade-tick+queue (22%) y paper live (~19-40%).
+→ La pregunta #1 (fill ratio maker) respondida offline: se llena ~1 de cada 4-7, subset rentable.
+
+### Optimización de ejecución y features — TODO descartado por la regla dura
+Nautilus + regla dura (positivo en los 3 con fills reales) cazaron varios falsos positivos:
+- **Offset/fill-margin**: 3bps mejora BTC (+37% USD) pero **rompe SOL** → no generaliza. Offset 0 correcto.
+- **fib_ote (golden pocket OTE)**: pasó el lab vectorizado (6/6 avgR) PERO bajo fills Nautilus
+  **solo ayuda BTC** (+2.52 vs +2.01) y **empeora ETH/SOL** → BTC-only, NO desplegar.
+- premium/discount (bias), muros de volumen, thin (vacíos): ❌ no generalizan.
+
+**Lección**: Nautilus refutó features que el backtest vectorizado aprobaba (asume fill al toque).
+Esa capa de ejecución es justo lo que faltaba. **El A+B base sigue siendo lo más robusto — no hay
+edge nuevo escondido.** El bias ya está balanceado por el mirror (57/43, shorts ≈ longs).
+
+### Conclusión del sprint
+Research cerrado: probados sweep/FVG/sweep→FVG/frescura/confluencia/candle/offset/fib_ote/
+premium-discount/muros/thin → ninguno generaliza con fills realistas. Nautilus = stack para live
+cuando el paper confirme (evidencia ya fuerte). Memoria: [[nautilus-validation]].

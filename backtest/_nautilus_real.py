@@ -43,16 +43,19 @@ def is_chop(reg):
 
 
 def emit_signals(a, gens, volfilter=True, cooldown=6, max_day=2, margin=2.0,
-                 stop_floor_pct=0.15, min_range=0.5, atr_mult=1.0, atr_win=500):
+                 stop_floor_pct=0.15, min_range=0.5, atr_mult=1.0, atr_win=500, ote_filter=False):
     """Mismas condiciones de entrada que run_system, pero EMITE la orden (no simula
-    el fill — eso lo decide Nautilus). Devuelve {m15_ts: [(side,entry,stop,tp1,tp2,gestion,kind,atr)]}."""
+    el fill — eso lo decide Nautilus). Devuelve {m15_ts: [(side,entry,stop,tp1,tp2,gestion,kind,atr)]}.
+    ote_filter: si True, solo emite cuando el precio está en zona OTE (fib_ote)."""
     atr_med = pd.Series(a.atr).rolling(atr_win, min_periods=50).median().shift(1).values
+    ote = np.asarray(getattr(a, "fib_ote")).astype(bool) if ote_filter else None
     out = {}
     for g in gens:
         cool = 0; dcount = {}
         for i in range(60, a.n - 1):
             if i < cool or a.atr[i] <= 0: continue
             if volfilter and not (np.isfinite(atr_med[i]) and a.atr[i] > atr_mult * atr_med[i]): continue
+            if ote is not None and not ote[i]: continue   # filtro golden pocket
             d = int(a.day[i])
             if dcount.get(d, 0) >= max_day: continue
             for side, lvl, stop, tp1, tp2, kind in (g(a, i) or []):
@@ -82,6 +85,7 @@ class RealConfig(StrategyConfig, frozen=True):
     bar_type: str
     qty: float = 0.05
     trail_atr: float = 4.0
+    offset_bps: float = 0.0   # colocar el límite N bps MÁS PROFUNDO que el nivel
 
 
 class LiquidityReal(Strategy):
@@ -109,8 +113,11 @@ class LiquidityReal(Strategy):
         p = self.params.get(event.client_order_id)
         if p is None or self.active is not None:
             return
-        side, entry, stop, tp1, tp2, gestion, kind, atr = p
+        side, _lvl, stop, tp1, tp2, gestion, kind, atr = p
+        entry = float(event.last_px)   # precio REAL de fill (refleja el offset)
         risk = abs(entry - stop)
+        if risk <= 0:
+            return
         self.active = dict(side=side, entry=entry, cur_stop=stop, tp1=tp1, tp2=tp2,
                            gestion=gestion, atr=atr, risk=risk,
                            realized=0.0, rem=1.0, filled1=False,
@@ -166,15 +173,17 @@ class LiquidityReal(Strategy):
         if ts_ms % M15_MS != 0:
             return
         self.cancel_all_orders(self.iid); self.params.clear()
+        off = self.config.offset_bps / 1e4
         for sig in self.signals.get(ts_ms, []):
             side, entry, stop, tp1, tp2, gestion, kind, atr = sig
+            px = entry * (1 - off) if side == "long" else entry * (1 + off)   # límite más profundo
             # sólo límites del lado correcto del mercado actual
-            if side == "long" and not entry < c: continue
-            if side == "short" and not entry > c: continue
+            if side == "long" and not px < c: continue
+            if side == "short" and not px > c: continue
             o = self.order_factory.limit(
                 self.iid, OrderSide.BUY if side == "long" else OrderSide.SELL,
                 self.instrument.make_qty(self.config.qty),
-                self.instrument.make_price(entry), TimeInForce.GTC, post_only=True)
+                self.instrument.make_price(px), TimeInForce.GTC, post_only=True)
             self.params[o.client_order_id] = sig
             self.submit_order(o); self.n_signals_placed += 1
 
@@ -212,11 +221,12 @@ QTY = {"BTCUSDT": 0.05, "ETHUSDT": 1.0, "SOLUSDT": 20.0}
 def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 40000
     symbol = sys.argv[2] if len(sys.argv) > 2 else "BTCUSDT"
-    print(f"[real] {symbol} — cargando M15 features + generando señales (reuso _listas2)...")
+    ote = len(sys.argv) > 3 and sys.argv[3] == "ote"
+    print(f"[real] {symbol} — features + señales (reuso _listas2)  OTE_filter={ote}...")
     L2.M1 = PARQ[symbol]
     t = L2.load2(15, start_ms=L2.TICK_MS); a = L2.A2(t)
     gens = [L2.gen_h5(), L2.gen_h21(), gen_h21_short()]
-    signals = emit_signals(a, gens)
+    signals = emit_signals(a, gens, ote_filter=ote)
     nsig = sum(len(v) for v in signals.values())
     print(f"[real] {nsig} señales emitidas en {len(signals)} barras M15")
 
