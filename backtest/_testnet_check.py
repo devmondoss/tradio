@@ -8,6 +8,17 @@ Uso (bash):
   BYBIT_API_KEY=xxx BYBIT_API_SECRET=yyy python backtest/_testnet_check.py
 """
 import os, time, hmac, hashlib, json, urllib.request
+from pathlib import Path
+
+# cargar .env (raíz del repo o cwd) si existe — mismas vars que usa el binario Rust
+for _p in (Path(".env"), Path(__file__).resolve().parent.parent / ".env"):
+    if _p.exists():
+        for _l in _p.read_text(encoding="utf-8").splitlines():
+            _l = _l.strip()
+            if _l and not _l.startswith("#") and "=" in _l:
+                _k, _v = _l.split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
+        break
 
 MODE = os.environ.get("EXEC_MODE", "demo").lower()
 BASE = {"demo": "https://api-demo.bybit.com", "testnet": "https://api-testnet.bybit.com",

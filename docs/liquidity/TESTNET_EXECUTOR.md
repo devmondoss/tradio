@@ -51,18 +51,19 @@ REAL** (precios/libro reales) con **plata virtual** → fills/timing/slippage re
    EXEC_PX_DEC=1              # decimales de precio (default por símbolo)
    ```
 
-## Cómo correr (primero BTC, local, para ver logs)
+## Cómo correr (local) — vía `.env`
+El binario carga **`.env`** de la raíz del repo automáticamente (dotenvy). Poné ahí las vars
+(las de Bybit + EXEC_MODE=demo; Supabase ya está). El `.env` está en `.gitignore` → no se sube.
 ```
-cd crates/liquidity_monitor
-EXEC_MODE=testnet BYBIT_API_KEY=xxx BYBIT_API_SECRET=yyy SYMBOL=BTCUSDT TF=15 \
-HIGH_VOL_ONLY=true SUPABASE_URL=... SUPABASE_KEY=... \
-cargo run --release
+# 1) verificar claves (lee .env)
+python backtest/_testnet_check.py
+# 2) correr el ejecutor (lee .env de la raíz aunque corras desde el crate)
+cd crates/liquidity_monitor && cargo run --release
 ```
-Logs esperados: `[exec] ejecutor LISTO`, `[exec] colocadas N entradas PostOnly`, `[exec] FILL ...
-ttf=Ns`, `[exec] CLOSED ... R=...`. Los trades caen en `liquidity_testnet_trades`.
+Logs esperados: `[exec] ejecutor LISTO ... base=https://api-demo.bybit.com`, `colocadas N entradas
+PostOnly`, `FILL ... ttf=Ns`, `CLOSED ... R=...`. Los trades caen en `liquidity_testnet_trades`.
 
-Para Railway: un servicio aparte con estas env (o agregarlas a uno existente; OFF por default
-significa que sin `EXEC_MODE=testnet` no pasa nada).
+Para Railway: las env van en el dashboard (no `.env`). OFF por default → sin `EXEC_MODE` no pasa nada.
 
 ## Qué validar
 - **Fill ratio / timing real** (`time_to_fill_s`) vs lo que asume el paper.

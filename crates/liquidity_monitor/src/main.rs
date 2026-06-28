@@ -370,6 +370,7 @@ async fn handle_message(state: &mut State, msg: &str) {
 
 #[tokio::main]
 async fn main() {
+    let _ = dotenvy::dotenv();   // carga .env (raíz del repo o padres) si existe; en Railway usa el dashboard
     let symbol      = env("SYMBOL", "BTCUSDT");
     let tf          = env("TF", "15");
     let system      = env("SYSTEM", "both");
