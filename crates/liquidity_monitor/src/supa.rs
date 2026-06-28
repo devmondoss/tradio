@@ -48,6 +48,21 @@ impl SupaClient {
             .await;
     }
 
+    /// Trade REAL de testnet/live (tabla separada de las de paper).
+    pub async fn write_testnet_trade(&self, lv: &crate::levels::Level, entry: f64, exit: f64,
+                                     pnl: f64, r: f64, ttf_s: i64, fill_ts: i64, closed_ts: i64) {
+        let row = json!({
+            "symbol": self.symbol, "tf": self.tf,
+            "kind": lv.kind, "side": lv.side.as_str(), "gestion": lv.gestion.as_str(),
+            "vol_regime": lv.vol_regime.as_str(), "regime": lv.regime.as_str(),
+            "entry": entry, "stop": lv.stop, "target": lv.tp, "exit_price": exit,
+            "pnl_usdt": (pnl*10000.0).round()/10000.0, "result_r": (r*10000.0).round()/10000.0,
+            "win": r > 0.0, "time_to_fill_s": ttf_s, "atr": lv.atr,
+            "opened_at": Self::iso(fill_ts), "closed_at": Self::iso(closed_ts),
+        });
+        self.insert("liquidity_testnet_trades", json!([row])).await;
+    }
+
     fn iso(ms: i64) -> String {
         let secs = ms / 1000;
         let millis = ms % 1000;

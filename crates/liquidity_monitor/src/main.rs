@@ -14,6 +14,10 @@
 mod book;
 mod levels;
 mod supa;
+#[allow(dead_code)]
+mod exec;
+#[allow(dead_code)]
+mod executor;
 
 use book::{PaperBook, OpenPos};
 #[allow(unused_imports)]
@@ -145,6 +149,7 @@ struct State {
     tp2_cap_r:     f64,
     supa:          Option<Arc<SupaClient>>,
     tick_count:    u64,   // ticks (publicTrade) recibidos en la barra en curso (diagnóstico)
+    executor:      Option<executor::Executor>,  // ejecución real testnet/live (None = solo paper)
 }
 
 impl State {
@@ -290,9 +295,23 @@ impl State {
             }
         }
 
+        // Ejecutor real (testnet/live): sistema ruteado FLOW, independiente del paper.
+        if self.executor.is_some() {
+            let hvo = self.high_vol_only; let dh5 = self.disable_h5; let cap = self.tp2_cap_r;
+            let flow_levels = levels::compute_levels(&bars_slice, atr, atr_med, atr_ma,
+                System::Flow, hvo, dh5, cap);
+            if let Some(ex) = self.executor.as_mut() {
+                ex.on_bar(&flow_levels, ts_ms).await;
+            }
+        }
+
         let now = chrono::Utc::now().format("%m-%d %H:%M").to_string();
         println!("[{now}] M{} bar closed @ {close:.1}  ATR={atr:.1}  atr_med={atr_med:.1}  \
                   ticks={ticks} fp_bins={fp_bins}", self.tf);
+    }
+
+    async fn poll_executor(&mut self, ts: i64) {
+        if let Some(ex) = self.executor.as_mut() { ex.poll(ts).await; }
     }
 }
 
@@ -307,6 +326,7 @@ async fn handle_message(state: &mut State, msg: &str) {
 
     if topic.starts_with("publicTrade") {
         if let Some(data) = d["data"].as_array() {
+            let mut last_ts = 0;
             for t in data {
                 let px  = t["p"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
                 let qty = t["v"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
@@ -314,8 +334,10 @@ async fn handle_message(state: &mut State, msg: &str) {
                 let is_sell = t["S"].as_str() == Some("Sell");
                 if px > 0.0 && qty > 0.0 {
                     state.on_trade(px, qty, is_sell, ts);
+                    last_ts = ts;
                 }
             }
+            if last_ts > 0 { state.poll_executor(last_ts).await; }  // reconciliar exchange (rate-limited)
         }
     } else if topic.starts_with("tickers") {
         // OI llega en data como objeto (snapshot) o delta
@@ -432,6 +454,29 @@ async fn main() {
         }
     }
 
+    // ── Ejecutor real (testnet/live), env-gated. EXEC_MODE=off (default) → solo paper.
+    let exec_mode = env("EXEC_MODE", "off").to_lowercase();
+    let executor = if exec_mode == "testnet" || exec_mode == "live" {
+        let k = env("BYBIT_API_KEY", ""); let sec = env("BYBIT_API_SECRET", "");
+        if k.is_empty() || sec.is_empty() {
+            eprintln!("[exec] EXEC_MODE={exec_mode} pero faltan BYBIT_API_KEY/SECRET → ejecutor OFF");
+            None
+        } else {
+            let testnet = exec_mode == "testnet";
+            let (def_qty, def_dec): (&str, usize) = match symbol.as_str() {
+                "BTCUSDT" => ("0.001", 1),
+                "ETHUSDT" => ("0.01", 2),
+                "SOLUSDT" => ("0.1", 3),
+                _         => ("0.01", 2),
+            };
+            let qty = env("EXEC_QTY", def_qty);
+            let px_dec: usize = env("EXEC_PX_DEC", &def_dec.to_string()).parse().unwrap_or(def_dec);
+            let lev: u32 = env("EXEC_LEVERAGE", "1").parse().unwrap_or(1);
+            let cli = exec::ExecClient::new(k, sec, testnet);
+            Some(executor::Executor::new(cli, symbol.clone(), qty, px_dec, lev, supa.clone()).await)
+        }
+    } else { None };
+
     let mut state = State {
         bars:          boot_bars.into_iter().collect(),
         cur_fp:        HashMap::new(),
@@ -447,6 +492,7 @@ async fn main() {
         oi_history:    VecDeque::new(),
         supa:          supa.clone(),
         tick_count:    0,
+        executor,
     };
 
     println!("[bootstrap] {}/700 barras cargadas  ATR={:.1}", state.bars.len(), state.cur_atr);

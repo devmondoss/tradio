@@ -2803,9 +2803,12 @@ version = "0.8.8"
 dependencies = [
  "chrono",
  "futures",
+ "hex",
+ "hmac",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-tungstenite",
 ]
