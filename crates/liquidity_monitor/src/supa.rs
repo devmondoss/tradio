@@ -63,6 +63,59 @@ impl SupaClient {
         self.insert("liquidity_exec_trades", json!([row])).await;
     }
 
+    // ── Persistencia de la posición abierta del ejecutor (sobrevive redeploys) ──
+
+    /// Guarda el estado de la posición abierta (borra el anterior del símbolo + inserta).
+    pub async fn save_exec_pos(&self, lv: &crate::levels::Level, entry: f64, fill_ts: i64,
+                               ttf_s: i64, exits_armed: bool) {
+        let _ = self.client.delete(format!("{}/rest/v1/liquidity_exec_open_pos", self.url))
+            .header("apikey", &self.key).header("Authorization", format!("Bearer {}", self.key))
+            .query(&[("symbol", format!("eq.{}", self.symbol))]).send().await;
+        let row = json!({
+            "symbol": self.symbol, "tf": self.tf,
+            "side": lv.side.as_str(), "kind": lv.kind, "gestion": lv.gestion.as_str(),
+            "vol_regime": lv.vol_regime.as_str(), "regime": lv.regime.as_str(), "fp_source": lv.fp_source,
+            "price": lv.price, "stop": lv.stop, "tp1": lv.tp1, "tp": lv.tp,
+            "atr": lv.atr, "atr_median": lv.atr_median, "take_partial": lv.take_partial,
+            "entry": entry, "fill_ts": fill_ts, "ttf_s": ttf_s, "exits_armed": exits_armed,
+        });
+        self.insert("liquidity_exec_open_pos", json!([row])).await;
+    }
+
+    pub async fn clear_exec_pos(&self) {
+        let _ = self.client.delete(format!("{}/rest/v1/liquidity_exec_open_pos", self.url))
+            .header("apikey", &self.key).header("Authorization", format!("Bearer {}", self.key))
+            .query(&[("symbol", format!("eq.{}", self.symbol))]).send().await;
+    }
+
+    /// Restaura el contexto: (Level, entry, fill_ts, ttf_s, exits_armed) o None.
+    pub async fn load_exec_pos(&self) -> Option<(crate::levels::Level, f64, i64, i64, bool)> {
+        use crate::levels::{Level, Side, VolRegime, MarketRegime, Gestion, kind_from_str, fp_source_from_str};
+        let resp = self.client.get(format!("{}/rest/v1/liquidity_exec_open_pos", self.url))
+            .header("apikey", &self.key).header("Authorization", format!("Bearer {}", self.key))
+            .query(&[("symbol", format!("eq.{}", self.symbol)), ("select", "*".into())])
+            .send().await.ok()?;
+        let rows: Vec<Value> = resp.json().await.ok()?;
+        let r = rows.into_iter().next()?;
+        let lv = Level {
+            side:         Side::from_str(r["side"].as_str()?),
+            kind:         kind_from_str(r["kind"].as_str()?),
+            price:        r["price"].as_f64()?,
+            stop:         r["stop"].as_f64()?,
+            tp1:          r["tp1"].as_f64(),
+            tp:           r["tp"].as_f64()?,
+            vol_regime:   VolRegime::from_str(r["vol_regime"].as_str()?),
+            regime:       MarketRegime::from_str(r["regime"].as_str()?),
+            gestion:      Gestion::from_str(r["gestion"].as_str()?),
+            atr:          r["atr"].as_f64()?,
+            atr_median:   r["atr_median"].as_f64().unwrap_or(0.0),
+            take_partial: r["take_partial"].as_bool().unwrap_or(false),
+            fp_source:    fp_source_from_str(r["fp_source"].as_str()?),
+        };
+        Some((lv, r["entry"].as_f64()?, r["fill_ts"].as_i64()?,
+              r["ttf_s"].as_i64().unwrap_or(0), r["exits_armed"].as_bool().unwrap_or(false)))
+    }
+
     fn iso(ms: i64) -> String {
         let secs = ms / 1000;
         let millis = ms % 1000;

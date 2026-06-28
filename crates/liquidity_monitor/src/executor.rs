@@ -43,22 +43,46 @@ impl Executor {
         if let Err(e) = cli.set_leverage(&symbol, leverage).await {
             eprintln!("[exec] set_leverage warn: {e}");
         }
-        let _ = cli.cancel_all(&symbol).await;   // arranque limpio (cancela órdenes resting)
-        // Reconciliar posición: tras un redeploy, el ejecutor arranca sin estado. Si quedó una
-        // posición abierta de antes, este proceso NO la puede gestionar (no restauramos InPos) →
-        // la cerramos a mercado para no dejarla SIN STOP. (Mientras desarrollamos con redeploys
-        // frecuentes esto es lo seguro; la persistencia/restore completa es el próximo paso.)
-        if let Ok(p) = cli.position(&symbol).await {
-            if p.size > 0.0 {
-                let close_side = if p.side == "Buy" { "Sell" } else { "Buy" };
-                match cli.place_market(&symbol, close_side, &format!("{}", p.size), true, "liq-reconcile").await {
-                    Ok(_)  => eprintln!("[exec] posición huérfana cerrada al arrancar: {} {} (reconcile)", p.side, p.size),
-                    Err(e) => eprintln!("[exec] WARN no pude cerrar huérfana ({} {}): {e}", p.side, p.size),
-                }
+        let _ = cli.cancel_all(&symbol).await;   // cancela órdenes resting viejas (NO toca la posición)
+        // ── RESTAURAR estado tras redeploy (la posición y su stop viven en el exchange) ──
+        let live = cli.position(&symbol).await.ok();
+        let open = live.as_ref().map(|p| p.size > 0.0).unwrap_or(false);
+        let ctx  = if let Some(s) = &supa { s.load_exec_pos().await } else { None };
+        let phase = match (open, ctx) {
+            // (a) hay posición + contexto guardado → RESTAURAR y seguir gestionándola
+            (true, Some((lv, entry, fill_ts, ttf, armed))) => {
+                eprintln!("[exec] RESTAURADA posición {} @ {} ttf={ttf}s gestion={:?} (sobrevive redeploy)",
+                          lv.side.as_str(), entry, lv.gestion);
+                Phase::InPos(Active { level: lv, entry_px: entry, fill_ts, ttf_s: ttf, exits_armed: armed })
             }
-        }
-        eprintln!("[exec] ejecutor LISTO {symbol} qty={qty} base={} lev={leverage}", cli.base());
-        Self { cli, symbol, qty, px_dec, supa, phase: Phase::Idle,
+            // (b) hay posición SIN contexto → huérfana real → cerrar a mercado
+            (true, None) => {
+                let p = live.as_ref().unwrap();
+                let cs = if p.side == "Buy" { "Sell" } else { "Buy" };
+                match cli.place_market(&symbol, cs, &format!("{}", p.size), true, "liq-reconcile").await {
+                    Ok(_)  => eprintln!("[exec] huérfana SIN contexto cerrada: {} {}", p.side, p.size),
+                    Err(e) => eprintln!("[exec] WARN no pude cerrar huérfana: {e}"),
+                }
+                Phase::Idle
+            }
+            // (c) había contexto pero la posición ya cerró (durante el downtime) → registrar y limpiar
+            (false, Some((lv, entry, fill_ts, ttf, _))) => {
+                if let Some(s) = &supa {
+                    let (pnl, exit) = cli.last_closed_pnl(&symbol).await.unwrap_or((0.0, 0.0));
+                    let risk = (entry - lv.stop).abs();
+                    let dir = if lv.side == Side::Long { 1.0 } else { -1.0 };
+                    let r = if risk > 0.0 && exit > 0.0 { dir * (exit - entry) / risk } else { 0.0 };
+                    eprintln!("[exec] posición cerrada durante downtime → registrando exit={exit} R={r:.2}");
+                    s.write_exec_trade(&lv, entry, exit, pnl, r, ttf, fill_ts, fill_ts).await;
+                    s.clear_exec_pos().await;
+                }
+                Phase::Idle
+            }
+            (false, None) => Phase::Idle,
+        };
+        eprintln!("[exec] ejecutor LISTO {symbol} qty={qty} base={} lev={leverage} phase={}",
+                  cli.base(), if matches!(phase, Phase::InPos(_)) { "InPos(restaurada)" } else { "Idle" });
+        Self { cli, symbol, qty, px_dec, supa, phase,
                last_poll: 0, last_open_bar: -1, day: 0, day_opens: 0, placed_ts: 0 }
     }
 
@@ -130,6 +154,7 @@ impl Executor {
         let d = ts / 86_400_000;
         if d != self.day { self.day = d; self.day_opens = 0; }
         self.day_opens += 1; self.last_open_bar = ts / BAR_MS;
+        if let Some(s) = &self.supa { s.save_exec_pos(&lv, pos.avg_price, ts, ttf, armed).await; }  // persistir (sobrevive redeploy)
         self.phase = Phase::InPos(Active { level: lv, entry_px: pos.avg_price, fill_ts: ts, ttf_s: ttf, exits_armed: armed });
     }
 
@@ -166,6 +191,7 @@ impl Executor {
                       self.symbol, pnl, exit_px, r, a.entry_px, a.level.stop);
             if let Some(s) = &self.supa {
                 s.write_exec_trade(&a.level, a.entry_px, exit_px, pnl, r, a.ttf_s, a.fill_ts, ts).await;
+                s.clear_exec_pos().await;   // posición cerrada → limpiar contexto persistido
             }
         }
         let _ = self.cli.cancel_all(&self.symbol).await;
