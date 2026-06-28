@@ -74,9 +74,14 @@ impl Executor {
 
     /// Llamado en cada cierre de barra con los niveles del sistema flow.
     pub async fn on_bar(&mut self, levels: &[Level], ts: i64) {
-        if !matches!(self.phase, Phase::Idle) { return; }
-        if !self.entries_allowed(ts) || levels.is_empty() { return; }
+        // 1) reconciliar: ¿llenó alguna resting entre polls? (evita refrescar sobre una posición)
+        if matches!(self.phase, Phase::Resting(_)) { self.poll_resting(ts).await; }
+        if matches!(self.phase, Phase::InPos(_)) { return; }   // gestionando posición → no tocar entradas
+        // 2) REFRESH cada barra: cancelar las resting viejas y recolocar en los niveles ACTUALES
+        //    (igual que la estrategia, que re-evalúa por barra; evita órdenes pegadas en niveles viejos)
         let _ = self.cli.cancel_all(&self.symbol).await;
+        self.phase = Phase::Idle;
+        if !self.entries_allowed(ts) || levels.is_empty() { return; }
         let mut resting = Vec::new();
         for lv in levels {
             let side = if lv.side == Side::Long { "Buy" } else { "Sell" };
@@ -89,7 +94,7 @@ impl Executor {
         }
         if !resting.is_empty() {
             self.placed_ts = ts;
-            eprintln!("[exec] colocadas {} entradas PostOnly @ bar {}", resting.len(), ts / BAR_MS);
+            eprintln!("[exec] {} entradas PostOnly (refresh) @ bar {}", resting.len(), ts / BAR_MS);
             self.phase = Phase::Resting(resting);
         }
     }
