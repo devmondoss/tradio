@@ -1,5 +1,32 @@
 -- Enriquecer el registro del ejecutor para análisis/backtest post-trade completo.
--- Correr en el SQL editor de Supabase.
+-- Autocontenido + idempotente. Correr en el SQL editor de Supabase.
+
+-- 0) tabla de posición abierta del ejecutor (crear si no existe, con todos los campos)
+create table if not exists public.liquidity_exec_open_pos (
+    symbol        text primary key,
+    tf            text,
+    side          text,
+    kind          text,
+    gestion       text,
+    vol_regime    text,
+    regime        text,
+    fp_source     text,
+    price         double precision,
+    stop          double precision,
+    tp1           double precision,
+    tp            double precision,
+    atr           double precision,
+    atr_median    double precision,
+    take_partial  boolean,
+    entry         double precision,
+    fill_ts       bigint,
+    ttf_s         bigint,
+    exits_armed   boolean,
+    seen_hi       double precision,
+    seen_lo       double precision,
+    bar_ts        bigint,
+    updated_at    timestamptz not null default now()
+);
 
 -- 1) liquidity_exec_trades: campos ricos (paridad con paper + ejecución real)
 alter table public.liquidity_exec_trades add column if not exists reason text;          -- stop|target|trail
