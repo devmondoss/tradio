@@ -19,7 +19,7 @@ const MAX_TRADES_DAY: u32 = 2;
 const BAR_MS: i64 = 15 * 60_000;
 
 struct Resting { order_id: String, level: Level }
-struct Active { level: Level, entry_px: f64, fill_ts: i64, ttf_s: i64 }
+struct Active { level: Level, entry_px: f64, fill_ts: i64, ttf_s: i64, exits_armed: bool }
 
 enum Phase { Idle, Resting(Vec<Resting>), InPos(Active) }
 
@@ -43,7 +43,20 @@ impl Executor {
         if let Err(e) = cli.set_leverage(&symbol, leverage).await {
             eprintln!("[exec] set_leverage warn: {e}");
         }
-        let _ = cli.cancel_all(&symbol).await;   // arranque limpio
+        let _ = cli.cancel_all(&symbol).await;   // arranque limpio (cancela órdenes resting)
+        // Reconciliar posición: tras un redeploy, el ejecutor arranca sin estado. Si quedó una
+        // posición abierta de antes, este proceso NO la puede gestionar (no restauramos InPos) →
+        // la cerramos a mercado para no dejarla SIN STOP. (Mientras desarrollamos con redeploys
+        // frecuentes esto es lo seguro; la persistencia/restore completa es el próximo paso.)
+        if let Ok(p) = cli.position(&symbol).await {
+            if p.size > 0.0 {
+                let close_side = if p.side == "Buy" { "Sell" } else { "Buy" };
+                match cli.place_market(&symbol, close_side, &format!("{}", p.size), true, "liq-reconcile").await {
+                    Ok(_)  => eprintln!("[exec] posición huérfana cerrada al arrancar: {} {} (reconcile)", p.side, p.size),
+                    Err(e) => eprintln!("[exec] WARN no pude cerrar huérfana ({} {}): {e}", p.side, p.size),
+                }
+            }
+        }
         eprintln!("[exec] ejecutor LISTO {symbol} qty={qty} base={} lev={leverage}", cli.base());
         Self { cli, symbol, qty, px_dec, supa, phase: Phase::Idle,
                last_poll: 0, last_open_bar: -1, day: 0, day_opens: 0, placed_ts: 0 }
@@ -106,37 +119,38 @@ impl Executor {
             let _ = self.cli.cancel_all(&self.symbol).await; return;
         }};
         let _ = self.cli.cancel_all(&self.symbol).await;     // matar el resto de entradas
-        self.arm_exits(&lv, pos.avg_price).await;
+        let armed = self.arm_exits(&lv).await;
         let ttf = (ts - self.placed_ts) / 1000;
-        eprintln!("[exec] FILL {} {:?} @ {} ttf={}s gestion={:?}", self.symbol, lv.side, pos.avg_price, ttf, lv.gestion);
+        eprintln!("[exec] FILL {} {:?} @ {} ttf={}s gestion={:?} exits_armed={armed}", self.symbol, lv.side, pos.avg_price, ttf, lv.gestion);
         let d = ts / 86_400_000;
         if d != self.day { self.day = d; self.day_opens = 0; }
         self.day_opens += 1; self.last_open_bar = ts / BAR_MS;
-        self.phase = Phase::InPos(Active { level: lv, entry_px: pos.avg_price, fill_ts: ts, ttf_s: ttf });
+        self.phase = Phase::InPos(Active { level: lv, entry_px: pos.avg_price, fill_ts: ts, ttf_s: ttf, exits_armed: armed });
     }
 
-    async fn arm_exits(&self, lv: &Level, entry: f64) {
-        match lv.gestion {
-            Gestion::Trail => {
-                let dist = self.fmt(TRAIL_ATR * lv.atr);
-                if let Err(e) = self.cli.set_trading_stop(&self.symbol, None, None, Some(&dist)).await {
-                    eprintln!("[exec] trailing fail: {e}");
-                }
-            }
-            Gestion::Fade => {
-                // V1: stop + tp2 (estructural) exchange-side. (parcial 50%@tp1 = V2)
-                let sl = self.fmt(lv.stop); let tp = self.fmt(lv.tp);
-                if let Err(e) = self.cli.set_trading_stop(&self.symbol, Some(&sl), Some(&tp), None).await {
-                    eprintln!("[exec] stop/tp fail: {e}");
-                }
-            }
-        }
-        let _ = entry;
+    /// Pone stop/tp (fade) o trailing (trail) exchange-side. Devuelve true si lo logró.
+    async fn arm_exits(&self, lv: &Level) -> bool {
+        let r = match lv.gestion {
+            Gestion::Trail => self.cli.set_trading_stop(&self.symbol, None, None, Some(&self.fmt(TRAIL_ATR * lv.atr))).await,
+            // V1: stop + tp2 (estructural) exchange-side. (parcial 50%@tp1 = V2)
+            Gestion::Fade  => self.cli.set_trading_stop(&self.symbol, Some(&self.fmt(lv.stop)), Some(&self.fmt(lv.tp)), None).await,
+        };
+        match r { Ok(_) => true, Err(e) => { eprintln!("[exec] arm exits fail: {e}"); false } }
     }
 
     async fn poll_inpos(&mut self, ts: i64) {
         let pos = match self.cli.position(&self.symbol).await { Ok(p) => p, Err(_) => return };
-        if pos.size > 0.0 { return; }                        // sigue abierta (exchange gestiona stop/tp/trail)
+        if pos.size > 0.0 {
+            // self-heal: si el stop no se armó (falló en el fill), reintentar hasta lograrlo.
+            let need = matches!(&self.phase, Phase::InPos(a) if !a.exits_armed);
+            if need {
+                let lv = if let Phase::InPos(a) = &self.phase { a.level.clone() } else { return };
+                let armed = self.arm_exits(&lv).await;
+                if armed { eprintln!("[exec] stop re-armado OK {}", self.symbol); }
+                if let Phase::InPos(a) = &mut self.phase { a.exits_armed = armed; }
+            }
+            return;                                          // sigue abierta (exchange gestiona stop/tp/trail)
+        }
         // cerrada → registrar
         let (pnl, exit_px) = self.cli.last_closed_pnl(&self.symbol).await.unwrap_or((0.0, 0.0));
         if let Phase::InPos(a) = std::mem::replace(&mut self.phase, Phase::Idle) {
