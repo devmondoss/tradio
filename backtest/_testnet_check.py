@@ -9,7 +9,10 @@ Uso (bash):
 """
 import os, time, hmac, hashlib, json, urllib.request
 
-BASE = "https://api-testnet.bybit.com"
+MODE = os.environ.get("EXEC_MODE", "demo").lower()
+BASE = {"demo": "https://api-demo.bybit.com", "testnet": "https://api-testnet.bybit.com",
+        "live": "https://api.bybit.com"}.get(MODE, "https://api-demo.bybit.com")
+print(f"(modo={MODE} base={BASE})")
 KEY = os.environ.get("BYBIT_API_KEY", "")
 SEC = os.environ.get("BYBIT_API_SECRET", "")
 RECV = "5000"

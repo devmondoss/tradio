@@ -23,13 +23,20 @@ servicios de paper no se ven afectados salvo que se active explícitamente).
    las demás. Ventana de riesgo = 1 ciclo de poll (~8s) si llenan ambas. Aceptable en testnet.
 3. **qty/tick por símbolo** hardcodeados (BTC 0.001/1dec, ETH 0.01/2, SOL 0.1/3); override por env.
 
-## Setup
+## ⚠️ DEMO vs TESTNET — usar DEMO
+El monitor lee **datos REALES** (stream.bybit.com mainnet) para señales/niveles. **Testnet tiene su
+propio mercado falso/ilíquido** (precios disparatados) → poner órdenes a niveles reales sobre ese
+mercado NO valida nada. **Bybit Demo Trading** (`api-demo.bybit.com`) ejecuta contra el **mercado
+REAL** (precios/libro reales) con **plata virtual** → fills/timing/slippage realistas. **Usar `EXEC_MODE=demo`.**
+
+## Setup (DEMO — recomendado)
 1. **Crear la tabla:** correr `migrations/liquidity_testnet_trades.sql` en el SQL editor de Supabase.
-2. **API keys de TESTNET:** crear cuenta en https://testnet.bybit.com → API Management → key con
-   permisos de *Orders* + *Positions* (Unified Trading / Contract). Fondear con el faucet testnet.
+2. **Activar Demo Trading:** en bybit.com (cuenta real) → menú de cuenta → **Demo Trading** → te da
+   fondos virtuales al instante. Dentro de Demo: **API → crear key** con permisos *Orders + Positions*
+   (Unified Trading). Esas son keys de DEMO (distintas de las de mainnet/testnet).
 3. **Env vars:**
    ```
-   EXEC_MODE=testnet          # off (default) | testnet | live
+   EXEC_MODE=demo             # off (default) | demo | testnet | live
    BYBIT_API_KEY=...          # key de TESTNET
    BYBIT_API_SECRET=...
    SYMBOL=BTCUSDT

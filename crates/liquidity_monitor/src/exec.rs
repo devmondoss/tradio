@@ -11,8 +11,11 @@ use sha2::Sha256;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type HmacSha256 = Hmac<Sha256>;
-const LIVE_BASE: &str = "https://api.bybit.com";
-const TESTNET_BASE: &str = "https://api-testnet.bybit.com";
+pub const LIVE_BASE: &str    = "https://api.bybit.com";
+pub const TESTNET_BASE: &str = "https://api-testnet.bybit.com";
+// Demo Trading: mercado REAL (precios/libro reales) con plata virtual. A diferencia de testnet
+// (mercado propio falso/ilíquido), Demo ejecuta contra el mercado real → fills/timing realistas.
+pub const DEMO_BASE: &str    = "https://api-demo.bybit.com";
 const RECV_WINDOW: u64 = 5000;
 
 #[derive(Debug)]
@@ -79,12 +82,10 @@ pub struct ExecClient {
 }
 
 impl ExecClient {
-    pub fn new(api_key: String, api_secret: String, testnet: bool) -> Self {
-        Self { api_key, api_secret,
-               base_url: if testnet { TESTNET_BASE } else { LIVE_BASE },
-               client: Client::new() }
+    pub fn new(api_key: String, api_secret: String, base_url: &'static str) -> Self {
+        Self { api_key, api_secret, base_url, client: Client::new() }
     }
-    pub fn is_testnet(&self) -> bool { self.base_url == TESTNET_BASE }
+    pub fn base(&self) -> &str { self.base_url }
 
     fn now_ms() -> u64 {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64

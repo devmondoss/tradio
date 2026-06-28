@@ -456,13 +456,17 @@ async fn main() {
 
     // ── Ejecutor real (testnet/live), env-gated. EXEC_MODE=off (default) → solo paper.
     let exec_mode = env("EXEC_MODE", "off").to_lowercase();
-    let executor = if exec_mode == "testnet" || exec_mode == "live" {
+    let executor = if exec_mode == "testnet" || exec_mode == "demo" || exec_mode == "live" {
         let k = env("BYBIT_API_KEY", ""); let sec = env("BYBIT_API_SECRET", "");
         if k.is_empty() || sec.is_empty() {
             eprintln!("[exec] EXEC_MODE={exec_mode} pero faltan BYBIT_API_KEY/SECRET → ejecutor OFF");
             None
         } else {
-            let testnet = exec_mode == "testnet";
+            let base = match exec_mode.as_str() {
+                "live" => exec::LIVE_BASE,
+                "demo" => exec::DEMO_BASE,
+                _      => exec::TESTNET_BASE,
+            };
             let (def_qty, def_dec): (&str, usize) = match symbol.as_str() {
                 "BTCUSDT" => ("0.001", 1),
                 "ETHUSDT" => ("0.01", 2),
@@ -472,7 +476,7 @@ async fn main() {
             let qty = env("EXEC_QTY", def_qty);
             let px_dec: usize = env("EXEC_PX_DEC", &def_dec.to_string()).parse().unwrap_or(def_dec);
             let lev: u32 = env("EXEC_LEVERAGE", "1").parse().unwrap_or(1);
-            let cli = exec::ExecClient::new(k, sec, testnet);
+            let cli = exec::ExecClient::new(k, sec, base);
             Some(executor::Executor::new(cli, symbol.clone(), qty, px_dec, lev, supa.clone()).await)
         }
     } else { None };

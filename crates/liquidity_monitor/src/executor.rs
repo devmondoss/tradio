@@ -44,7 +44,7 @@ impl Executor {
             eprintln!("[exec] set_leverage warn: {e}");
         }
         let _ = cli.cancel_all(&symbol).await;   // arranque limpio
-        eprintln!("[exec] ejecutor LISTO {symbol} qty={qty} testnet={} lev={leverage}", cli.is_testnet());
+        eprintln!("[exec] ejecutor LISTO {symbol} qty={qty} base={} lev={leverage}", cli.base());
         Self { cli, symbol, qty, px_dec, supa, phase: Phase::Idle,
                last_poll: 0, last_open_bar: -1, day: 0, day_opens: 0, placed_ts: 0 }
     }
