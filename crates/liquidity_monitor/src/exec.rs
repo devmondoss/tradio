@@ -64,7 +64,13 @@ struct ClosedPnlResult { list: Vec<ClosedPnlDetail> }
 struct ClosedPnlDetail {
     #[serde(rename = "closedPnl", default)] closed_pnl: String,
     #[serde(rename = "avgExitPrice", default)] avg_exit_price: String,
+    #[serde(rename = "avgEntryPrice", default)] avg_entry_price: String,
+    #[serde(rename = "qty", default)] qty: String,
 }
+
+/// Resultado de un trade cerrado en el exchange.
+#[derive(Debug, Clone, Default)]
+pub struct ClosedPnl { pub pnl: f64, pub avg_exit: f64, pub avg_entry: f64, pub qty: f64 }
 
 /// Estado de una orden consultada.
 #[derive(Debug, Clone)]
@@ -212,13 +218,18 @@ impl ExecClient {
         })
     }
 
-    /// P&L realizado del último trade cerrado (USDT) + precio de salida promedio.
-    pub async fn last_closed_pnl(&self, symbol: &str) -> Result<(f64, f64), ExecError> {
+    /// Último trade cerrado en el exchange: pnl neto, avg exit, avg entry, qty (para fee real).
+    pub async fn last_closed_pnl(&self, symbol: &str) -> Result<ClosedPnl, ExecError> {
         let r: ClosedPnlResult = self.get("/v5/position/closed-pnl",
             vec![("category", "linear".into()), ("symbol", symbol.into()), ("limit", "1".into())]).await?;
         match r.list.into_iter().next() {
-            Some(c) => Ok((c.closed_pnl.parse().unwrap_or(0.0), c.avg_exit_price.parse().unwrap_or(0.0))),
-            None => Ok((0.0, 0.0)),
+            Some(c) => Ok(ClosedPnl {
+                pnl:       c.closed_pnl.parse().unwrap_or(0.0),
+                avg_exit:  c.avg_exit_price.parse().unwrap_or(0.0),
+                avg_entry: c.avg_entry_price.parse().unwrap_or(0.0),
+                qty:       c.qty.parse().unwrap_or(0.0),
+            }),
+            None => Ok(ClosedPnl::default()),
         }
     }
 

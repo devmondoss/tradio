@@ -48,26 +48,40 @@ impl SupaClient {
             .await;
     }
 
-    /// Trade REAL del ejecutor (demo/live; tabla separada de las de paper).
+    /// Trade REAL del ejecutor (demo/live), registro RICO para análisis/backtest post-trade.
+    #[allow(clippy::too_many_arguments)]
     pub async fn write_exec_trade(&self, lv: &crate::levels::Level, entry: f64, exit: f64,
-                                     pnl: f64, r: f64, ttf_s: i64, fill_ts: i64, closed_ts: i64) {
+                                  pnl: f64, r: f64, reason: &str, qty: f64, mfe_r: f64, mae_r: f64,
+                                  fee_r: f64, ttf_s: i64, bar_ts: i64, fill_ts: i64, closed_ts: i64) {
+        let rd = |x: f64| (x*10000.0).round()/10000.0;
         let row = json!({
             "symbol": self.symbol, "tf": self.tf,
             "kind": lv.kind, "side": lv.side.as_str(), "gestion": lv.gestion.as_str(),
             "vol_regime": lv.vol_regime.as_str(), "regime": lv.regime.as_str(),
-            "entry": entry, "stop": lv.stop, "target": lv.tp, "exit_price": exit,
-            "pnl_usdt": (pnl*10000.0).round()/10000.0, "result_r": (r*10000.0).round()/10000.0,
-            "win": r > 0.0, "time_to_fill_s": ttf_s, "atr": lv.atr,
+            "level": lv.price, "entry": entry, "stop": lv.stop, "tp1": lv.tp1, "target": lv.tp,
+            "exit_price": exit, "reason": reason, "qty": qty,
+            "pnl_usdt": rd(pnl), "result_r": rd(r), "win": r > 0.0,
+            "mfe_r": rd(mfe_r), "mae_r": rd(mae_r), "fee_r": rd(fee_r),
+            "time_to_fill_s": ttf_s, "atr": lv.atr, "bar_ts": bar_ts,
             "opened_at": Self::iso(fill_ts), "closed_at": Self::iso(closed_ts),
         });
         self.insert("liquidity_exec_trades", json!([row])).await;
     }
 
+    /// Snapshot de fill ratio real (placed vs filled acumulados).
+    pub async fn write_exec_snapshot(&self, placed_cum: u64, filled_cum: u64, open_pos: u32) {
+        let ratio = if placed_cum > 0 { filled_cum as f64 / placed_cum as f64 } else { 0.0 };
+        let row = json!({ "symbol": self.symbol, "placed_cum": placed_cum,
+            "filled_cum": filled_cum, "fill_ratio": ratio, "open_pos": open_pos });
+        self.insert("liquidity_exec_snapshots", json!([row])).await;
+    }
+
     // ── Persistencia de la posición abierta del ejecutor (sobrevive redeploys) ──
 
     /// Guarda el estado de la posición abierta (borra el anterior del símbolo + inserta).
+    #[allow(clippy::too_many_arguments)]
     pub async fn save_exec_pos(&self, lv: &crate::levels::Level, entry: f64, fill_ts: i64,
-                               ttf_s: i64, exits_armed: bool) {
+                               ttf_s: i64, exits_armed: bool, seen_hi: f64, seen_lo: f64, bar_ts: i64) {
         let _ = self.client.delete(format!("{}/rest/v1/liquidity_exec_open_pos", self.url))
             .header("apikey", &self.key).header("Authorization", format!("Bearer {}", self.key))
             .query(&[("symbol", format!("eq.{}", self.symbol))]).send().await;
@@ -78,6 +92,7 @@ impl SupaClient {
             "price": lv.price, "stop": lv.stop, "tp1": lv.tp1, "tp": lv.tp,
             "atr": lv.atr, "atr_median": lv.atr_median, "take_partial": lv.take_partial,
             "entry": entry, "fill_ts": fill_ts, "ttf_s": ttf_s, "exits_armed": exits_armed,
+            "seen_hi": seen_hi, "seen_lo": seen_lo, "bar_ts": bar_ts,
         });
         self.insert("liquidity_exec_open_pos", json!([row])).await;
     }
@@ -88,8 +103,8 @@ impl SupaClient {
             .query(&[("symbol", format!("eq.{}", self.symbol))]).send().await;
     }
 
-    /// Restaura el contexto: (Level, entry, fill_ts, ttf_s, exits_armed) o None.
-    pub async fn load_exec_pos(&self) -> Option<(crate::levels::Level, f64, i64, i64, bool)> {
+    /// Restaura el contexto: (Level, entry, fill_ts, ttf_s, exits_armed, seen_hi, seen_lo, bar_ts) o None.
+    pub async fn load_exec_pos(&self) -> Option<(crate::levels::Level, f64, i64, i64, bool, f64, f64, i64)> {
         use crate::levels::{Level, Side, VolRegime, MarketRegime, Gestion, kind_from_str, fp_source_from_str};
         let resp = self.client.get(format!("{}/rest/v1/liquidity_exec_open_pos", self.url))
             .header("apikey", &self.key).header("Authorization", format!("Bearer {}", self.key))
@@ -112,8 +127,11 @@ impl SupaClient {
             take_partial: r["take_partial"].as_bool().unwrap_or(false),
             fp_source:    fp_source_from_str(r["fp_source"].as_str()?),
         };
-        Some((lv, r["entry"].as_f64()?, r["fill_ts"].as_i64()?,
-              r["ttf_s"].as_i64().unwrap_or(0), r["exits_armed"].as_bool().unwrap_or(false)))
+        let entry = r["entry"].as_f64()?;
+        Some((lv, entry, r["fill_ts"].as_i64()?,
+              r["ttf_s"].as_i64().unwrap_or(0), r["exits_armed"].as_bool().unwrap_or(false),
+              r["seen_hi"].as_f64().unwrap_or(entry), r["seen_lo"].as_f64().unwrap_or(entry),
+              r["bar_ts"].as_i64().unwrap_or(0)))
     }
 
     fn iso(ms: i64) -> String {

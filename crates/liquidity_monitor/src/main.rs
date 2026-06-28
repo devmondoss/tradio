@@ -313,6 +313,10 @@ impl State {
     async fn poll_executor(&mut self, ts: i64) {
         if let Some(ex) = self.executor.as_mut() { ex.poll(ts).await; }
     }
+
+    fn exec_on_tick(&mut self, px: f64) {
+        if let Some(ex) = self.executor.as_mut() { ex.on_tick(px); }
+    }
 }
 
 // ── WS message handler ────────────────────────────────────────────────────────
@@ -334,6 +338,7 @@ async fn handle_message(state: &mut State, msg: &str) {
                 let is_sell = t["S"].as_str() == Some("Sell");
                 if px > 0.0 && qty > 0.0 {
                     state.on_trade(px, qty, is_sell, ts);
+                    state.exec_on_tick(px);   // MFE/MAE de la posición del ejecutor
                     last_ts = ts;
                 }
             }
