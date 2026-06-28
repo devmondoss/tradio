@@ -21,7 +21,8 @@ pub const MIN_RANGE: f64 = 0.5;     // % mínimo entry→tp1 para fadear (no fad
 pub const STOP_FLOOR: f64 = 0.0015; // 0.15% mínimo: evita stops absurdamente ajustados (paridad con backtest)
 pub const COOLDOWN_BARS: i64 = 6;   // anti-spam: barras entre entradas (paridad con backtest)
 pub const MAX_TRADES_DAY: u32 = 2;  // anti-spam: máx entradas por día UTC
-pub const TRAIL_ATR: f64  = 4.0;
+pub const TRAIL_ATR: f64  = 6.0;    // trail trend: 6×ATR (optim validada 365d/3 activos, slippage-robusta)
+pub const STOP_SCALE: f64 = 0.8;    // stops 0.8× (optim validada: stop más chico → mayor R en target estructural)
 pub const ATR_N: usize    = 14;
 pub const TOUCH_TOL: f64  = 0.002; // 0.2% tolerancia para contar toques
 
@@ -329,8 +330,8 @@ pub fn compute_levels(
             let obpoc = ob.poc;  // real si fp_real, midpoint si bootstrap
 
             for (side, stop) in [
-                (Side::Long,  obl - 0.25 * atr),
-                (Side::Short, obh + 0.25 * atr),
+                (Side::Long,  obl - 0.25 * STOP_SCALE * atr),
+                (Side::Short, obh + 0.25 * STOP_SCALE * atr),
             ] {
                 if let Some((tp1, tp)) = struct_target(side, obpoc, &va, sh, sl, pdh, pdl, wh, wl) {
                     out.push(Level { side, kind: "poc_ob", price: obpoc, stop, tp1, tp,
@@ -350,7 +351,7 @@ pub fn compute_levels(
     if touches_low >= 2 {
         if let Some((tp1, tp)) = struct_target(Side::Long, defended, &va, sh, sl, pdh, pdl, wh, wl) {
             out.push(Level { side: Side::Long, kind: "poc_def", price: defended,
-                              stop: defended - 0.6 * atr, tp1, tp,
+                              stop: defended - 0.6 * STOP_SCALE * atr, tp1, tp,
                               vol_regime, regime, gestion: Gestion::Fade,
                               atr, atr_median, take_partial: false, fp_source });
         }
@@ -363,7 +364,7 @@ pub fn compute_levels(
     if touches_hi >= 2 {
         if let Some((tp1, tp)) = struct_target(Side::Short, defended, &va, sh, sl, pdh, pdl, wh, wl) {
             out.push(Level { side: Side::Short, kind: "poc_def_short", price: defended,
-                              stop: defended + 0.6 * atr, tp1, tp,
+                              stop: defended + 0.6 * STOP_SCALE * atr, tp1, tp,
                               vol_regime, regime, gestion: Gestion::Fade,
                               atr, atr_median, take_partial: false, fp_source });
         }

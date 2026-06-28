@@ -16,6 +16,14 @@ Toda la documentación de la estrategia de liquidez vive aquí.
 - **[CATALOG_CLOSURE_2026-06-20.md](CATALOG_CLOSURE_2026-06-20.md)** — cierre de las 21+4 hipótesis;
   3 convergen en el mismo edge: liquidity provision (H1/H5/H21).
 
+## Bitácora de sesiones
+- **[SESSION_2026-06-24_research_y_bugs.md](SESSION_2026-06-24_research_y_bugs.md)** — bugs de paper,
+  research orderflow, footprint warmup +29%.
+- **[SESSION_2026-06-26_recon_tick_y_fix_parcial.md](SESSION_2026-06-26_recon_tick_y_fix_parcial.md)** —
+  revisión BD (+163R era limpia), reconstrucción tick-a-tick (binario fiel, SL chico by-design,
+  niveles legítimos), fix del bug del parcial (se desincronizaba al restaurar), liquidaciones
+  descartadas (prelim), fill ratio confirmado.
+
 ## Código relacionado (fuera de docs)
 - `backtest/_listas2.py`, `backtest/liquidity_app_backtest.py`, `backtest/_consolidated.py`, `backtest/_filters.py`
 - `live/levels.py`, `live/paper_liquidity.py`, `live/Dockerfile`, `live/README.md`

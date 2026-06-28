@@ -26,7 +26,8 @@ def is_chop(reg):
 
 def run_system(a, gens, m1, tf_min, mode="routed", trail_atr=4.0, volfilter=True,
                timeout_min=24*60, cooldown=6, max_day=2, margin=2.0, stop_floor_pct=0.15, min_range=0.5,
-               chop_mask=None, tp2_cap_r=0.0, atr_mult=1.0, atr_win=500, p1_frac=0.5):
+               chop_mask=None, tp2_cap_r=0.0, atr_mult=1.0, atr_win=500, p1_frac=0.5, use_partial=True,
+               stop_scale=1.0, slip_bps=0.0):
     """mode: 'fade' (todo A), 'trail' (todo B), 'routed' (por régimen).
     chop_mask: array bool por barra (True=fade/rango). Si None, usa la columna 'regime' (tosca).
     tp2_cap_r: si >0 limita tp2 a entry ± tp2_cap_r*risk (0=sin cap, usa target estructural).
@@ -50,6 +51,8 @@ def run_system(a, gens, m1, tf_min, mode="routed", trail_atr=4.0, volfilter=True
                 if side == "long" and not (a.l[i] <= lvl - margin/1e4*lvl): continue
                 if side == "short" and not (a.h[i] >= lvl + margin/1e4*lvl): continue
                 entry = lvl; atr0 = a.atr[i]
+                if stop_scale != 1.0:          # ensanchar/estrechar el stop proporcionalmente (sign-aware)
+                    stop = entry - stop_scale*(entry-stop)
                 if stop_floor_pct > 0:
                     mr = stop_floor_pct/100.0*entry
                     if abs(entry-stop) < mr: stop = entry-mr if side == "long" else entry+mr
@@ -71,15 +74,15 @@ def run_system(a, gens, m1, tf_min, mode="routed", trail_atr=4.0, volfilter=True
                 if use_fade:
                     # rango mínimo solo para fades (no fadear migajas); trends se montan igual
                     if min_range > 0 and tp1 is not None and 100*abs(tp1-entry)/entry < min_range: continue
-                    cur = stop; realized = 0.0; rem = 1.0; f1 = False; p1 = p1_frac if tp1 else 0.0; reason = "timeout"
+                    cur = stop; realized = 0.0; rem = 1.0; f1 = False; p1 = p1_frac if (tp1 and use_partial) else 0.0; reason = "timeout"
                     for j in range(j0, min(jend, len(m1ts))):
                         if side == "long":
                             if m1l[j] <= cur: realized += rem*((cur-entry)/risk); reason = "be" if f1 else "stop"; break
-                            if not f1 and tp1 and m1h[j] >= tp1: realized += p1*((tp1-entry)/risk); rem -= p1; f1 = True; cur = entry
+                            if use_partial and not f1 and tp1 and m1h[j] >= tp1: realized += p1*((tp1-entry)/risk); rem -= p1; f1 = True; cur = entry
                             if m1h[j] >= tp2: realized += rem*((tp2-entry)/risk); reason = "target"; break
                         else:
                             if m1h[j] >= cur: realized += rem*((entry-cur)/risk); reason = "be" if f1 else "stop"; break
-                            if not f1 and tp1 and m1l[j] <= tp1: realized += p1*((entry-tp1)/risk); rem -= p1; f1 = True; cur = entry
+                            if use_partial and not f1 and tp1 and m1l[j] <= tp1: realized += p1*((entry-tp1)/risk); rem -= p1; f1 = True; cur = entry
                             if m1l[j] <= tp2: realized += rem*((entry-tp2)/risk); reason = "target"; break
                     else:
                         jj = min(jend, len(m1ts))-1
@@ -88,6 +91,8 @@ def run_system(a, gens, m1, tf_min, mode="routed", trail_atr=4.0, volfilter=True
                     exit_side = MK if reason == "target" else TK
                     fee_r = (MK*1.0 + (MK*p1 if f1 else 0.0) + exit_side*rem)*entry/risk
                     res = realized - fee_r; gestion = "fade"
+                    if slip_bps > 0 and reason != "target":   # slippage adverso en salida taker (rem)
+                        res -= slip_bps/1e4*entry/risk*rem
                 else:
                     fee_r = (MK + TK)*entry/risk; best = entry; trail = stop
                     for j in range(j0, min(jend, len(m1ts))):
@@ -102,6 +107,7 @@ def run_system(a, gens, m1, tf_min, mode="routed", trail_atr=4.0, volfilter=True
                         if jj <= j0: continue
                         px = m1c[jj]; res = ((px-entry) if side == "long" else (entry-px))/risk - fee_r
                     gestion = "trail"; reason = "trail"
+                    if slip_bps > 0: res -= slip_bps/1e4*entry/risk   # salida trail = taker, slippage
                 trades.append(dict(ts=int(a.ts[i]), bar=i, side=side, r=res, gestion=gestion,
                                    reason=reason, entry=entry, stop=stop, risk=risk,
                                    hold_min=int(j - j0), oos=int(a.ts[i]) >= OOS_MS))
