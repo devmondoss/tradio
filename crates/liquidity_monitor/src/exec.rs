@@ -108,9 +108,22 @@ impl ExecClient {
             .header("X-BAPI-RECV-WINDOW", RECV_WINDOW.to_string())
             .header("Content-Type", "application/json")
             .body(body_str).send().await.map_err(|e| ExecError::Http(e.to_string()))?;
-        let w: Resp<T> = resp.json().await.map_err(|e| ExecError::Http(e.to_string()))?;
-        if w.ret_code != 0 { return Err(ExecError::Api { code: w.ret_code, msg: w.ret_msg }); }
-        w.result.ok_or_else(|| ExecError::Parse("empty result".into()))
+        Self::parse(resp).await
+    }
+
+    /// Parseo en 2 etapas: lee retCode/retMsg SIEMPRE (aunque result venga vacío en errores),
+    /// y solo deserializa result si retCode==0. Así el motivo real de Bybit no se pierde.
+    async fn parse<T: for<'de> Deserialize<'de>>(resp: reqwest::Response) -> Result<T, ExecError> {
+        let txt = resp.text().await.map_err(|e| ExecError::Http(e.to_string()))?;
+        let v: Value = serde_json::from_str(&txt).map_err(|e| ExecError::Parse(
+            format!("{e} | body={}", txt.chars().take(200).collect::<String>())))?;
+        let code = v.get("retCode").and_then(|x| x.as_i64()).unwrap_or(-1);
+        if code != 0 {
+            let msg = v.get("retMsg").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            return Err(ExecError::Api { code: code as i32, msg });
+        }
+        let result = v.get("result").cloned().unwrap_or(Value::Null);
+        serde_json::from_value::<T>(result).map_err(|e| ExecError::Parse(e.to_string()))
     }
 
     async fn get<T: for<'de> Deserialize<'de>>(&self, path: &str, params: Vec<(&str, String)>) -> Result<T, ExecError> {
@@ -123,9 +136,7 @@ impl ExecClient {
             .header("X-BAPI-TIMESTAMP", ts.to_string())
             .header("X-BAPI-RECV-WINDOW", RECV_WINDOW.to_string())
             .send().await.map_err(|e| ExecError::Http(e.to_string()))?;
-        let w: Resp<T> = resp.json().await.map_err(|e| ExecError::Http(e.to_string()))?;
-        if w.ret_code != 0 { return Err(ExecError::Api { code: w.ret_code, msg: w.ret_msg }); }
-        w.result.ok_or_else(|| ExecError::Parse("empty result".into()))
+        Self::parse(resp).await
     }
 
     // ── Órdenes (category=linear) ─────────────────────────────────────────────
