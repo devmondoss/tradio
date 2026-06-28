@@ -132,26 +132,57 @@ pérdida. tradio quedó solo con `main` en `d2decdc`.
 
 ---
 
-## 6. Plan de deploy (acordado)
+## 6. Optimización anti-overfit (segunda tanda de la sesión)
 
-- **FASE 0 ✅** HIGH_VOL_ONLY=true (hecho/verificado).
-- **FASE 1 (en curso)** acumular ~50+ trades/activo limpios, ahora con el parcial arreglado,
-  para leer avgR real estabilizado.
-- **FASE 2 ∥ FASE 3** (en paralelo tras FASE 1): liquidaciones re-test forward + camino a
-  testnet/real money (migración SQL + testnet Bybit → size chico BTC).
-- **FASE 4 (diferida)** detector chop/trend SOL — solo si el paper lo confirma (riesgo overfit).
+Metodología fija: regla dura (mejora OOS en BTC+ETH+SOL), mismos params en los 3, mirar DD/Sharpe,
+optimizar en histórico (deja el paper como forward), solo palancas estructurales (no señales).
 
-**Pendiente inmediato:** que Railway redeployee `tradio/main` (`d2decdc`) en los 3 servicios.
+### 6.1 Sweep de palancas (`_bt_levers.py`)
+- ✅ **`trail_atr 4→6`** — deja correr los trends. Óptimo en 6-7 (no artefacto), slippage-tolerante.
+- ✅ **`stop_scale 0.8`** — stop más chico → más R en el target estructural (riesgo fijo/trade). WR
+  estable, sobrevive slippage (ver 6.2), acotado por STOP_FLOOR 0.15%. Conservador (no 0.4-0.7).
+- ❌ Descartadas: atr_mult (1.0 correcto), timeout (ruido), p1_frac (0.5 correcto), correr entera
+  sin parcial (rompe SOL).
+- Combo OOS: BTC +1.82→+2.27, ETH +1.37→+1.86, SOL +0.93→+1.56. Commit `ddbfc66`.
+
+### 6.2 Stress de slippage (`_bt_slip.py`)
+La sospecha: el backtest asume fill exacto en el stop. Apliqué slippage adverso a salidas taker
+(1-2bp). `stop_scale=0.8` y `trail_atr=6` **sobreviven con margen** en los 3 → no eran artefacto.
+
+### 6.3 El detector de régimen (lo que destrabó el flow-trail)
+Diagnóstico: el bucket negativo del paper era **flow-trail (−0.10R)**, porque el binario ruteaba con
+`is_trend = |precio-sma50|>0.6·atr`, un detector **inferior**. El backtest rutea con la columna
+`regime` (compute_regime), muy superior.
+- Port a M15 con EMA20 (=5h) → **NO replica** (peor, DD ×3): el regime del dataset es M1 (EMA20=20min).
+- El pushback "¿por qué M1 si M15 es estable?" llevó a la solución: el problema era el **lookback**
+  (5h), no la vela. **EMA CORTA en M15.** Sweep + walk-forward (`_bt_regime_fast.py`, `_bt_regime_wf.py`):
+- ✅ **`ema5/st2/x1.30`** (EMA5=75min + racha 2 + ATR-expansión 1.3): maximin OOS **+1.66**
+  (BTC +1.66/ETH +1.90/SOL +1.88) — **más robusto que el regime M1** (+1.56), muy por encima del
+  sma50 (+0.85). Meseta estable ema3-6/st2. Walk-forward: 0 bloques negativos en los 3. **Sin M1.**
+- Matiz: M1 le sacaría más a BTC (+2.27 vs +1.66) por su baja vol; ema5/st2 es más parejo. Commit `02c9d15`.
+
+## 7. Plan de deploy
+
+Estado `tradio/main`: `d2decdc` (parcial) → `ddbfc66` (trail/stop) → `02c9d15` (regime ema5/st2).
+**Pendiente operativo (manual en Railway):**
+1. Redeploy `tradio/main` en los 3 servicios.
+2. **`SYSTEM=both` → `SYSTEM=flow`** — ahora `flow` (ruteado único) tiene buen detector y deja de
+   duplicar posiciones (el `both` corría maker+flow sobre cada señal).
+
+Validar en paper: flow-trail deja de sangrar, parcial dispara, avgR converge al backtest optimizado.
+
+Roadmap: FASE 1 (acumular limpio) → FASE 2∥3 (liquidaciones forward + testnet/real money).
+FASE 4 diferida (M1 regime solo si BTC en paper pide el +0.6R extra).
 
 ---
 
 ## Scripts nuevos (en `backtest/`)
-- `_recon_trades.py` — replay tick-a-tick de cada trade vs BD (valida binario, parcial).
-- `_recon_liquidations.py` — test de si las liquidaciones ayudan.
-- `_recon_footprint.py` — legitimidad del nivel de entrada (POC/value area reconstruido).
-- `_bt_partial.py` — backtest 365d parcial vs entera (regla dura).
-- `_recon_out.csv` — detalle por trade de la reconstrucción.
+- `_recon_trades.py` / `_recon_liquidations.py` / `_recon_footprint.py` / `_recon_out.csv` — reconstrucción tick-a-tick.
+- `_bt_partial.py` — parcial vs entera. `_bt_levers.py` — sweep de palancas. `_bt_slip.py` — stress slippage.
+- `_bt_regime.py` / `_bt_regime_m15.py` / `_bt_regime_fast.py` / `_bt_regime_wf.py` — detector de régimen.
+- Motor `_strategy_ab.run_system`: params nuevos `use_partial`, `stop_scale`, `slip_bps`.
 
 ## Cerrado esta sesión
 tp1 paridad · SL entendido · niveles validados (98% en VA) · parcial (bug arreglado, se queda) ·
-liquidaciones descartadas (prelim) · binario validado fiel · fill ratio confirmado.
+liquidaciones descartadas (prelim) · binario validado fiel · fill ratio confirmado ·
+**optims trail_atr=6 + stop_scale=0.8 + detector régimen ema5/st2 (validadas, commiteadas).**

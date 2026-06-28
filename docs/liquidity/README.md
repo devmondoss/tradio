@@ -21,8 +21,9 @@ Toda la documentación de la estrategia de liquidez vive aquí.
   research orderflow, footprint warmup +29%.
 - **[SESSION_2026-06-26_recon_tick_y_fix_parcial.md](SESSION_2026-06-26_recon_tick_y_fix_parcial.md)** —
   revisión BD (+163R era limpia), reconstrucción tick-a-tick (binario fiel, SL chico by-design,
-  niveles legítimos), fix del bug del parcial (se desincronizaba al restaurar), liquidaciones
-  descartadas (prelim), fill ratio confirmado.
+  niveles legítimos), fix del bug del parcial, liquidaciones descartadas (prelim), fill ratio
+  confirmado, y **optimización anti-overfit** (trail_atr=6 + stop_scale=0.8 + detector régimen
+  ema5/st2 en M15) → combo OOS BTC +2.27/ETH +1.90/SOL +1.88. Commits d2decdc/ddbfc66/02c9d15.
 
 ## Código relacionado (fuera de docs)
 - `backtest/_listas2.py`, `backtest/liquidity_app_backtest.py`, `backtest/_consolidated.py`, `backtest/_filters.py`
