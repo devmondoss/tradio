@@ -30,7 +30,7 @@ mercado NO valida nada. **Bybit Demo Trading** (`api-demo.bybit.com`) ejecuta co
 REAL** (precios/libro reales) con **plata virtual** → fills/timing/slippage realistas. **Usar `EXEC_MODE=demo`.**
 
 ## Setup (DEMO — recomendado)
-1. **Crear la tabla:** correr `migrations/liquidity_testnet_trades.sql` en el SQL editor de Supabase.
+1. **Crear la tabla:** correr `migrations/liquidity_exec_trades.sql` en el SQL editor de Supabase.
 2. **Activar Demo Trading:** en bybit.com (cuenta real) → menú de cuenta → **Demo Trading** → te da
    fondos virtuales al instante. Dentro de Demo: **API → crear key** con permisos *Orders + Positions*
    (Unified Trading). Esas son keys de DEMO (distintas de las de mainnet/testnet).
@@ -61,7 +61,7 @@ python backtest/_testnet_check.py
 cd crates/liquidity_monitor && cargo run --release
 ```
 Logs esperados: `[exec] ejecutor LISTO ... base=https://api-demo.bybit.com`, `colocadas N entradas
-PostOnly`, `FILL ... ttf=Ns`, `CLOSED ... R=...`. Los trades caen en `liquidity_testnet_trades`.
+PostOnly`, `FILL ... ttf=Ns`, `CLOSED ... R=...`. Los trades caen en `liquidity_exec_trades`.
 
 Para Railway: las env van en el dashboard (no `.env`). OFF por default → sin `EXEC_MODE` no pasa nada.
 

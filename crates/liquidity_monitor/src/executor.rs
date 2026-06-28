@@ -146,7 +146,7 @@ impl Executor {
             eprintln!("[exec] CLOSED {} pnl={:.4} exit={} R={:.2} (entry {} stop {})",
                       self.symbol, pnl, exit_px, r, a.entry_px, a.level.stop);
             if let Some(s) = &self.supa {
-                s.write_testnet_trade(&a.level, a.entry_px, exit_px, pnl, r, a.ttf_s, a.fill_ts, ts).await;
+                s.write_exec_trade(&a.level, a.entry_px, exit_px, pnl, r, a.ttf_s, a.fill_ts, ts).await;
             }
         }
         let _ = self.cli.cancel_all(&self.symbol).await;

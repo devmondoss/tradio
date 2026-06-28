@@ -1,6 +1,10 @@
--- Trades REALES de testnet/live del ejecutor de liquidity (separado de las tablas de paper).
--- Correr en el SQL editor de Supabase antes de arrancar el ejecutor con EXEC_MODE=testnet.
-create table if not exists public.liquidity_testnet_trades (
+-- Trades REALES del ejecutor de liquidity (demo/live). Tabla separada de las de paper.
+-- Idempotente: renombra la vieja (liquidity_testnet_trades) si existe, o crea la nueva.
+-- Correr en el SQL editor de Supabase.
+
+alter table if exists public.liquidity_testnet_trades rename to liquidity_exec_trades;
+
+create table if not exists public.liquidity_exec_trades (
     id              bigint generated always as identity primary key,
     created_at      timestamptz not null default now(),
     symbol          text not null,
@@ -23,5 +27,5 @@ create table if not exists public.liquidity_testnet_trades (
     closed_at       timestamptz
 );
 
-create index if not exists idx_liq_testnet_symbol_created
-    on public.liquidity_testnet_trades (symbol, created_at desc);
+create index if not exists idx_liq_exec_symbol_created
+    on public.liquidity_exec_trades (symbol, created_at desc);
