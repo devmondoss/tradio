@@ -243,6 +243,7 @@ impl SupaClient {
                 "regime":            lv.regime.as_str(),
                 "gestion":           lv.gestion.as_str(),
                 "atr":               lv.atr,
+                "atr_median":        lv.atr_median,
                 "take_partial":      lv.take_partial,
                 "fp_source":         lv.fp_source,
                 "entry":             p.entry,
@@ -296,7 +297,10 @@ impl SupaClient {
                 gestion:      Gestion::from_str(r["gestion"].as_str()?),
                 atr:          r["atr"].as_f64()?,
                 atr_median:   r["atr_median"].as_f64().unwrap_or(0.0),
-                take_partial: r["take_partial"].as_bool().unwrap_or(false),
+                // Derivar de tp1 en vez de leer el flag persistido: take_partial ≡ tp1.is_some()
+                // por diseño (levels.rs), y así una posición restaurada tras un restart no pierde
+                // el parcial aunque el flag guardado quedara desincronizado.
+                take_partial: r["tp1"].as_f64().is_some(),
                 fp_source:    fp_source_from_str(r["fp_source"].as_str()?),
             };
             let entry_px = r["entry"].as_f64()?;

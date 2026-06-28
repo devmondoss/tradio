@@ -384,7 +384,7 @@ impl PaperBook {
                                 p.realized += p.rem * ((p.cur_stop - ee) / risk);
                                 reason  = if p.filled1 { "breakeven" } else { "stop" }.into();
                                 exit_px = p.cur_stop; done = true;
-                            } else if !p.filled1 && p.level.take_partial {
+                            } else if !p.filled1 && p.level.tp1.is_some() {
                                 if let Some(tp1) = p.level.tp1 {
                                     if px >= tp1 {
                                         p.realized += 0.5 * ((tp1 - ee) / risk);
@@ -402,7 +402,7 @@ impl PaperBook {
                                 p.realized += p.rem * ((ee - p.cur_stop) / risk);
                                 reason  = if p.filled1 { "breakeven" } else { "stop" }.into();
                                 exit_px = p.cur_stop; done = true;
-                            } else if !p.filled1 && p.level.take_partial {
+                            } else if !p.filled1 && p.level.tp1.is_some() {
                                 if let Some(tp1) = p.level.tp1 {
                                     if px <= tp1 {
                                         p.realized += 0.5 * ((ee - tp1) / risk);
