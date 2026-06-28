@@ -25,6 +25,12 @@ pub const TRAIL_ATR: f64  = 6.0;    // trail trend: 6×ATR (optim validada 365d/
 pub const STOP_SCALE: f64 = 0.8;    // stops 0.8× (optim validada: stop más chico → mayor R en target estructural)
 pub const ATR_N: usize    = 14;
 pub const TOUCH_TOL: f64  = 0.002; // 0.2% tolerancia para contar toques
+// Detector de régimen (port de compute_regime, validado en M15 con EMA corta — ver
+// _bt_regime_fast.py/_bt_regime_wf.py). EMA5 (75min) + racha 2 = sensor rápido pero estable.
+// Más robusto (maximin OOS +1.66) que el viejo |precio-sma50|>0.6·atr y que el regime M1.
+pub const REGIME_EMA: usize   = 5;
+pub const REGIME_STREAK: i32  = 2;
+pub const REGIME_EXP: f64     = 1.30;   // ATR actual > 1.3× su MA20 → expansión (tendencia)
 
 // ── Tipos ───────────────────────────────────────────────────────────────────
 
@@ -271,12 +277,27 @@ fn struct_target(side: Side, entry: f64, va: &VArea,
 
 // ── Regime de mercado (chop vs tendencia) ───────────────────────────────────
 
-fn is_trend(bars: &[ClosedBar], atr: f64) -> bool {
-    let n = 50;
-    if bars.len() < n { return false; }
-    let sma: f64 = bars.iter().rev().take(n).map(|b| b.close).sum::<f64>() / n as f64;
-    let price = bars.last().unwrap().close;
-    (price - sma).abs() > 0.6 * atr
+/// Régimen de mercado — port de compute_regime validado en M15 (EMA corta + racha 2).
+/// trend (→ TRAIL) si: ATR expande >1.3× su MA20, o el precio lleva 2+ barras consecutivas
+/// del mismo lado de la EMA5. Si no, chop (→ FADE). Reemplaza el viejo |precio-sma50|>0.6·atr.
+fn is_trend(bars: &[ClosedBar], cur_atr: f64, atr_ma: f64) -> bool {
+    let n = bars.len();
+    if n < 25 { return false; }
+    if atr_ma > 0.0 && cur_atr / atr_ma > REGIME_EXP { return true; }   // expansión (prioridad)
+    let start = n.saturating_sub(60);                                    // warmup EMA
+    let k = 2.0 / (REGIME_EMA as f64 + 1.0);
+    let mut ema = bars[start].close;
+    let mut ema_at = vec![0.0_f64; n - start];
+    for i in start..n {
+        ema = bars[i].close * k + ema * (1.0 - k);
+        ema_at[i - start] = ema;
+    }
+    let bull = |i: usize| bars[i].close > ema_at[i - start] * 1.002;
+    let bear = |i: usize| bars[i].close < ema_at[i - start] * 0.998;
+    let mut bs = 0i32; let mut rs = 0i32;
+    for i in (start..n).rev() { if bull(i) { bs += 1; } else { break; } }
+    for i in (start..n).rev() { if bear(i) { rs += 1; } else { break; } }
+    bs >= REGIME_STREAK || rs >= REGIME_STREAK
 }
 
 // ── compute_levels ──────────────────────────────────────────────────────────
@@ -285,6 +306,7 @@ pub fn compute_levels(
     bars: &[ClosedBar],
     current_atr: f64,
     atr_median: f64,
+    atr_ma: f64,
     system: System,
     high_vol_only: bool,
     disable_h5: bool,
@@ -305,7 +327,7 @@ pub fn compute_levels(
     if high_vol_only && vol_regime != VolRegime::High { return vec![]; }
 
     // Régimen de mercado (para FLOW)
-    let trend = system == System::Flow && is_trend(bars, atr);
+    let trend = system == System::Flow && is_trend(bars, atr, atr_ma);
     let regime = if trend { MarketRegime::Trend } else { MarketRegime::Chop };
     let fp_source = if bars.iter().rev().take(VA_BARS).any(|b| b.fp_real) { "tick" } else { "ohlcv" };
 

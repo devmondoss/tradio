@@ -162,6 +162,12 @@ impl State {
         median_of(&window)
     }
 
+    /// MA20 del ATR (para el detector de régimen: expansión = atr_actual / atr_ma20 > 1.30).
+    fn atr_ma20(&self) -> f64 {
+        let w: Vec<f64> = self.atr_history.iter().rev().take(20).copied().collect();
+        if w.is_empty() { 0.0 } else { w.iter().sum::<f64>() / w.len() as f64 }
+    }
+
     /// Multiplicador de sizing basado en OI direction (1h lookback).
     /// up >+0.1% → 2.0x | down <-0.1% → 0.5x | estable → 1.0x
     fn oi_size_mult(&self) -> f64 {
@@ -220,6 +226,7 @@ impl State {
         // 5. Calcular niveles
         let bars_slice: Vec<ClosedBar> = self.bars.iter().cloned().collect();
         let atr_med = self.atr_median();
+        let atr_ma  = self.atr_ma20();
         let atr     = self.cur_atr;
 
         // Determinar sistema de cada book y calcular sus niveles
@@ -228,7 +235,7 @@ impl State {
         }).collect();
 
         let mut book_levels: Vec<Vec<levels::Level>> = system_per_book.iter().map(|&sys| {
-            levels::compute_levels(&bars_slice, atr, atr_med, sys, self.high_vol_only, self.disable_h5, self.tp2_cap_r)
+            levels::compute_levels(&bars_slice, atr, atr_med, atr_ma, sys, self.high_vol_only, self.disable_h5, self.tp2_cap_r)
         }).collect();
 
         // 6. Refresh orders + flush a Supabase
