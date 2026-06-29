@@ -149,6 +149,7 @@ struct State {
     tp2_cap_r:     f64,
     supa:          Option<Arc<SupaClient>>,
     tick_count:    u64,   // ticks (publicTrade) recibidos en la barra en curso (diagnóstico)
+    last_bar_ts:   i64,   // ts_ms de la última barra procesada — dedup contra reenvíos WS reconexión
     executor:      Option<executor::Executor>,  // ejecución real testnet/live (None = solo paper)
 }
 
@@ -204,6 +205,10 @@ impl State {
     }
 
     async fn on_bar_close(&mut self, ts_ms: i64, open: f64, high: f64, low: f64, close: f64, vol: f64) {
+        // Dedup: Bybit reenvía la última barra confirmada al reconectar el WS → ignorar duplicado
+        if ts_ms == self.last_bar_ts { return; }
+        self.last_bar_ts = ts_ms;
+
         // 1. Crear barra cerrada con footprint acumulado
         let ticks = self.tick_count; self.tick_count = 0;   // diagnóstico: ticks recibidos esta barra
         let fp = std::mem::take(&mut self.cur_fp);
@@ -502,6 +507,7 @@ async fn main() {
         oi_history:    VecDeque::new(),
         supa:          supa.clone(),
         tick_count:    0,
+        last_bar_ts:   0,
         executor,
     };
 
