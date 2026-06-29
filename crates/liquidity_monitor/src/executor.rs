@@ -52,7 +52,9 @@ enum Phase { Idle, Resting(Vec<Resting>), InPos(Active) }
 pub struct Executor {
     cli: ExecClient,
     symbol: String,
-    qty: String,
+    risk_usdt: f64,    // riesgo fijo por trade en USDT (qty = risk_usdt / stop_distance)
+    qty_step: f64,     // mínimo y step de qty del símbolo (0.001 BTC, 0.01 ETH, 0.1 SOL)
+    qty_prec: usize,   // decimales de qty para formatear
     px_dec: usize,
     supa: Option<Arc<SupaClient>>,
     phase: Phase,
@@ -61,12 +63,13 @@ pub struct Executor {
     day: i64,
     day_opens: u32,
     placed_ts: i64,
-    placed_cum: u64,   // órdenes colocadas acumuladas (fill ratio real)
-    filled_cum: u64,   // órdenes llenadas acumuladas
+    placed_cum: u64,
+    filled_cum: u64,
 }
 
 impl Executor {
-    pub async fn new(cli: ExecClient, symbol: String, qty: String, px_dec: usize,
+    pub async fn new(cli: ExecClient, symbol: String, risk_usdt: f64, qty_step: f64,
+                     qty_prec: usize, px_dec: usize,
                      leverage: u32, supa: Option<Arc<SupaClient>>) -> Self {
         if let Err(e) = cli.set_leverage(&symbol, leverage).await {
             eprintln!("[exec] set_leverage warn: {e}");
@@ -107,11 +110,19 @@ impl Executor {
             }
             (false, None) => Phase::Idle,
         };
-        eprintln!("[exec] ejecutor LISTO {symbol} qty={qty} base={} lev={leverage} phase={}",
+        eprintln!("[exec] ejecutor LISTO {symbol} risk=${risk_usdt} qty_step={qty_step} base={} lev={leverage} phase={}",
                   cli.base(), if matches!(phase, Phase::InPos(_)) { "InPos(restaurada)" } else { "Idle" });
-        Self { cli, symbol, qty, px_dec, supa, phase,
+        Self { cli, symbol, risk_usdt, qty_step, qty_prec, px_dec, supa, phase,
                last_poll: 0, last_open_bar: -1, day: 0, day_opens: 0, placed_ts: 0,
                placed_cum: 0, filled_cum: 0 }
+    }
+
+    /// qty dinámica: arriesgar exactamente risk_usdt por trade.
+    fn calc_qty(&self, entry: f64, stop: f64) -> String {
+        let risk = (entry - stop).abs();
+        let raw  = if risk > 0.0 { self.risk_usdt / risk } else { self.qty_step };
+        let qty  = ((raw / self.qty_step).floor() * self.qty_step).max(self.qty_step);
+        format!("{:.prec$}", qty, prec = self.qty_prec)
     }
 
     /// Actualiza extremos MFE/MAE en cada tick (barato, sin I/O). Llamado por cada publicTrade.
@@ -157,8 +168,9 @@ impl Executor {
         for lv in levels {
             let side = if lv.side == Side::Long { "Buy" } else { "Sell" };
             let price = self.fmt(lv.price);
+            let qty   = self.calc_qty(lv.price, lv.stop);
             let link = format!("liq-{}-{}", lv.kind, ts);
-            match self.cli.place_limit(&self.symbol, side, &self.qty, &price, false, &link).await {
+            match self.cli.place_limit(&self.symbol, side, &qty, &price, false, &link).await {
                 Ok(oid) => {
                     if let Some(s) = &self.supa {
                         let sc = s.clone(); let lv2 = lv.clone();
@@ -213,7 +225,7 @@ impl Executor {
         let _ = self.cli.cancel_all(&self.symbol).await;     // matar el resto de entradas
         let armed = self.arm_exits(&lv).await;
         let ttf = (ts - self.placed_ts) / 1000;
-        eprintln!("[exec] FILL {} {:?} @ {} ttf={}s gestion={:?} exits_armed={armed}", self.symbol, lv.side, pos.avg_price, ttf, lv.gestion);
+        eprintln!("[exec] FILL {} {:?} @ {} ttf={}s gestion={:?} exits_armed={armed} risk=${:.2}", self.symbol, lv.side, pos.avg_price, ttf, lv.gestion, self.risk_usdt);
         let d = ts / 86_400_000;
         if d != self.day { self.day = d; self.day_opens = 0; }
         self.day_opens += 1; self.last_open_bar = ts / BAR_MS; self.filled_cum += 1;

@@ -473,17 +473,17 @@ async fn main() {
                 "demo" => exec::DEMO_BASE,
                 _      => exec::TESTNET_BASE,
             };
-            let (def_qty, def_dec): (&str, usize) = match symbol.as_str() {
-                "BTCUSDT" => ("0.001", 1),
-                "ETHUSDT" => ("0.01", 2),
-                "SOLUSDT" => ("0.1", 3),
-                _         => ("0.01", 2),
+            let (qty_step, qty_prec, def_dec): (f64, usize, usize) = match symbol.as_str() {
+                "BTCUSDT" => (0.001, 3, 1),
+                "ETHUSDT" => (0.01,  2, 2),
+                "SOLUSDT" => (0.1,   1, 3),
+                _         => (0.01,  2, 2),
             };
-            let qty = env("EXEC_QTY", def_qty);
+            let risk_usdt: f64 = env("RISK_USDT", "5").parse().unwrap_or(5.0);
             let px_dec: usize = env("EXEC_PX_DEC", &def_dec.to_string()).parse().unwrap_or(def_dec);
             let lev: u32 = env("EXEC_LEVERAGE", "1").parse().unwrap_or(1);
             let cli = exec::ExecClient::new(k, sec, base);
-            Some(executor::Executor::new(cli, symbol.clone(), qty, px_dec, lev, supa.clone()).await)
+            Some(executor::Executor::new(cli, symbol.clone(), risk_usdt, qty_step, qty_prec, px_dec, lev, supa.clone()).await)
         }
     } else { None };
 

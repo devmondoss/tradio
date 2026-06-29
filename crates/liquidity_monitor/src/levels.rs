@@ -25,9 +25,10 @@ pub const TRAIL_ATR: f64  = 6.0;    // trail trend: 6×ATR (optim validada 365d/
 pub const STOP_SCALE: f64 = 0.8;    // stops 0.8× (optim validada: stop más chico → mayor R en target estructural)
 pub const ATR_N: usize    = 14;
 pub const TOUCH_TOL: f64  = 0.002; // 0.2% tolerancia para contar toques
-// Detector de régimen (port de compute_regime, validado en M15 con EMA corta — ver
-// _bt_regime_fast.py/_bt_regime_wf.py). EMA5 (75min) + racha 2 = sensor rápido pero estable.
-// Más robusto (maximin OOS +1.66) que el viejo |precio-sma50|>0.6·atr y que el regime M1.
+// Detector de régimen: EMA5 (75min) + racha 2 sobre M15.
+// El parquet usa EMA20 de datos M1 (que el Rust no tiene). Con EMA20 sobre M15 se sobre-detecta
+// trend (39% vs 7.5% parquet). EMA5+2 da 81% acuerdo con el parquet. Fix real para tendencias
+// graduales = filtro H1 slope (ya deployado): bloquea longs/shorts cuando H1 no está alineado.
 pub const REGIME_EMA: usize   = 5;
 pub const REGIME_STREAK: i32  = 2;
 pub const REGIME_EXP: f64     = 1.30;   // ATR actual > 1.3× su MA20 → expansión (tendencia)
@@ -389,7 +390,7 @@ pub fn compute_levels(
     current_atr: f64,
     atr_median: f64,
     atr_ma: f64,
-    system: System,
+    _system: System,
     high_vol_only: bool,
     disable_h5: bool,
     tp2_cap_r: f64,
@@ -408,8 +409,8 @@ pub fn compute_levels(
     };
     if high_vol_only && vol_regime != VolRegime::High { return vec![]; }
 
-    // Régimen de mercado (para FLOW)
-    let trend = system == System::Flow && is_trend(bars, atr, atr_ma);
+    // Régimen de mercado — aplica a AMBOS sistemas (paridad backtest mode='routed')
+    let trend = is_trend(bars, atr, atr_ma);
     let regime = if trend { MarketRegime::Trend } else { MarketRegime::Chop };
     let fp_source = if bars.iter().rev().take(VA_BARS).any(|b| b.fp_real) { "tick" } else { "ohlcv" };
 
