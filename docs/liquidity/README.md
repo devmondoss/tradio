@@ -24,6 +24,11 @@ Toda la documentación de la estrategia de liquidez vive aquí.
   niveles legítimos), fix del bug del parcial, liquidaciones descartadas (prelim), fill ratio
   confirmado, y **optimización anti-overfit** (trail_atr=6 + stop_scale=0.8 + detector régimen
   ema5/st2 en M15) → combo OOS BTC +2.27/ETH +1.90/SOL +1.88. Commits d2decdc/ddbfc66/02c9d15.
+- **[SESSION_2026-06-29_ejecutor_demo.md](SESSION_2026-06-29_ejecutor_demo.md)** — ejecutor REAL en
+  Bybit Demo Trading (mercado real, plata virtual). exec.rs+executor.rs, env-gated. Bring-up: error
+  surfacing, persist/restore (sobrevive redeploys), refresh por barra, registro rico (reason/MFE/MAE/
+  fee/fill-ratio). **Fill ratio real ~16% = valida el rango ~14-27%.** P&L aún sin muestra. Tablas
+  liquidity_exec_*. Commits 594fa29→263a047. Doc operativo: TESTNET_EXECUTOR.md.
 
 ## Código relacionado (fuera de docs)
 - `backtest/_listas2.py`, `backtest/liquidity_app_backtest.py`, `backtest/_consolidated.py`, `backtest/_filters.py`
