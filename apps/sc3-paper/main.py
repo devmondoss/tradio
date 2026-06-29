@@ -241,14 +241,23 @@ class State:
         atr = bar.atr
         if atr <= 0: return []
         atr_med = self.atr_median()
-        if atr_med <= 0 or atr <= atr_med: return []
-        if self.bar_idx < self.cool_bar: return []
+        diag = self.bar_idx % 12 == 0  # log diagnóstico cada hora
+        if atr_med <= 0 or atr <= atr_med:
+            if diag: log.info(f"[diag] ATR_BLOCK  atr={atr:.4f} med={atr_med:.4f} ({100*atr/atr_med:.0f}% del umbral)")
+            return []
+        if self.bar_idx < self.cool_bar:
+            if diag: log.info(f"[diag] COOLDOWN   bar={self.bar_idx} cool_until={self.cool_bar}")
+            return []
         day_key = int(bar.ts_ms // 86_400_000)
-        if self.day_count.get(day_key, 0) >= MAX_DAY: return []
+        if self.day_count.get(day_key, 0) >= MAX_DAY:
+            if diag: log.info(f"[diag] MAX_DAY    trades_hoy={self.day_count.get(day_key,0)}/{MAX_DAY}")
+            return []
 
         vol_mean = self.vol_mean()
         vr = bar.vol / vol_mean if vol_mean > 0 else 0.0
-        if vr < PARAMS["vr_thr"] and vr <= 3.0: return []
+        if vr < PARAMS["vr_thr"] and vr <= 3.0:
+            if diag: log.info(f"[diag] VR_BLOCK   vr={vr:.2f} < thr={PARAMS['vr_thr']}")
+            return []
 
         poc, vah, val = self._vp_levels()
         pdh, pdl = self._pdh_pdl()
@@ -309,6 +318,12 @@ class State:
         if sigs:
             self.cool_bar = self.bar_idx + COOLDOWN
             self.day_count[day_key] = self.day_count.get(day_key, 0) + 1
+        elif diag:
+            h1_dir = "bull" if h1_bull else ("bear" if h1_bear else "flat")
+            h4_dir = "bull" if h4_bull else ("bear" if h4_bear else "flat")
+            log.info(f"[diag] NO_LEVEL   close={bar.c:.2f} vr={vr:.2f} delta={bar.delta:.0f} "
+                     f"h1={h1_dir} h4={h4_dir} tol={tol:.2f} "
+                     f"val={val:.2f if val else 'N/A'} vah={vah:.2f if vah else 'N/A'} poc={poc:.2f if poc else 'N/A'}")
         return sigs
 
 # ── Executor ──────────────────────────────────────────────────────────────────
