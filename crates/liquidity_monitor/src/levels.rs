@@ -31,6 +31,13 @@ pub const TOUCH_TOL: f64  = 0.002; // 0.2% tolerancia para contar toques
 pub const REGIME_EMA: usize   = 5;
 pub const REGIME_STREAK: i32  = 2;
 pub const REGIME_EXP: f64     = 1.30;   // ATR actual > 1.3× su MA20 → expansión (tendencia)
+// Filtros validados 2026-06-29 (OOS +1.97/+1.91/+1.87 vs base +1.0, regla dura 3 activos)
+pub const H1_BARS: usize   = 4;     // 4×M15 = 1H — contexto horario
+pub const DIST_MIN: f64    = 0.5;   // dist(close, level) >= 0.5×ATR — llegada limpia
+// IFVG (Inverse Fair Value Gap) — validado OOS +0.30/+0.33/+0.50 standalone, regla dura 3 activos
+pub const IFVG_K: usize    = 60;    // barras M15 de lookback para buscar IFVGs activos
+pub const IFVG_TOL: f64    = 0.0015; // 0.15% tolerancia de toque al nivel
+pub const IFVG_MIN_GAP: f64 = 0.15; // mínimo tamaño del gap en fracción de ATR
 
 // ── Tipos ───────────────────────────────────────────────────────────────────
 
@@ -73,6 +80,8 @@ pub fn kind_from_str(s: &str) -> &'static str {
     match s {
         "poc_def"       => "poc_def",
         "poc_def_short" => "poc_def_short",
+        "ifvg_bull"     => "ifvg_bull",
+        "ifvg_bear"     => "ifvg_bear",
         _               => "poc_ob",
     }
 }
@@ -280,6 +289,79 @@ fn struct_target(side: Side, entry: f64, va: &VArea,
 /// Régimen de mercado — port de compute_regime validado en M15 (EMA corta + racha 2).
 /// trend (→ TRAIL) si: ATR expande >1.3× su MA20, o el precio lleva 2+ barras consecutivas
 /// del mismo lado de la EMA5. Si no, chop (→ FADE). Reemplaza el viejo |precio-sma50|>0.6·atr.
+// ── Señales IFVG ────────────────────────────────────────────────────────────
+// Detecta FVGs llenados en el buffer y genera niveles de retest.
+// Bull FVG en barra j: bars[j].low > bars[j-2].high  → gap alcista
+//   Fill: algún bar k>j con close < bars[j-2].high
+//   IFVG_bear: retest desde abajo → SHORT en bars[j-2].high
+// Bear FVG en barra j: bars[j].high < bars[j-2].low  → gap bajista
+//   Fill: algún bar k>j con close > bars[j-2].low
+//   IFVG_bull: retest desde arriba → LONG en bars[j-2].low
+fn ifvg_levels(
+    bars: &[ClosedBar], atr: f64, price: f64,
+    va: &VArea, sh: f64, sl: f64, pdh: f64, pdl: f64, wh: f64, wl: f64,
+    vol_regime: VolRegime, regime: MarketRegime, atr_median: f64,
+) -> Vec<Level> {
+    let n = bars.len();
+    if n < IFVG_K + 4 { return vec![]; }
+    let cur = &bars[n - 1];
+    let mut out = Vec::new();
+    let start = n.saturating_sub(IFVG_K + 2);
+
+    // ── Buscar bearish IFVG (ex-bull FVG llenado → resistencia) ─────────────
+    'bull_loop: for j in (start + 2)..(n - 2) {
+        let fvg_bot = bars[j - 2].high;
+        let fvg_top = bars[j].low;
+        let gap = fvg_top - fvg_bot;
+        if gap < IFVG_MIN_GAP * atr { continue; }
+        // ¿Se llenó después de j y antes del bar actual?
+        let filled = bars[(j + 1)..(n - 1)].iter().any(|b| b.close < fvg_bot);
+        if !filled { continue; }
+        // Retest: high[cur] toca el nivel y close queda debajo
+        if cur.high >= fvg_bot * (1.0 - IFVG_TOL) && cur.close < fvg_bot {
+            let stop = fvg_top + 0.25 * atr;
+            if let Some((tp1, tp)) = struct_target(Side::Short, fvg_bot, va, sh, sl, pdh, pdl, wh, wl) {
+                out.push(Level { side: Side::Short, kind: "ifvg_bear", price: fvg_bot,
+                                  stop, tp1, tp, vol_regime, regime,
+                                  gestion: Gestion::Fade, atr, atr_median,
+                                  take_partial: false, fp_source: "ohlcv" });
+                break 'bull_loop; // solo el IFVG más reciente
+            }
+        }
+    }
+
+    // ── Buscar bullish IFVG (ex-bear FVG llenado → soporte) ─────────────────
+    'bear_loop: for j in (start + 2)..(n - 2) {
+        let fvg_top = bars[j - 2].low;
+        let fvg_bot = bars[j].high;
+        let gap = fvg_top - fvg_bot;
+        if gap < IFVG_MIN_GAP * atr { continue; }
+        let filled = bars[(j + 1)..(n - 1)].iter().any(|b| b.close > fvg_top);
+        if !filled { continue; }
+        if cur.low <= fvg_top * (1.0 + IFVG_TOL) && cur.close > fvg_top {
+            let stop = fvg_bot - 0.25 * atr;
+            if let Some((tp1, tp)) = struct_target(Side::Long, fvg_top, va, sh, sl, pdh, pdl, wh, wl) {
+                out.push(Level { side: Side::Long, kind: "ifvg_bull", price: fvg_top,
+                                  stop, tp1, tp, vol_regime, regime,
+                                  gestion: Gestion::Fade, atr, atr_median,
+                                  take_partial: false, fp_source: "ohlcv" });
+                break 'bear_loop;
+            }
+        }
+    }
+
+    // Aplicar H1 slope + dist al igual que las señales base
+    let h1_close = if n > H1_BARS { bars[n - 1 - H1_BARS].close } else { price };
+    out.into_iter().filter(|lv| {
+        let slope_ok = match lv.side {
+            Side::Long  => price > h1_close,
+            Side::Short => price < h1_close,
+        };
+        let dist_ok = (price - lv.price).abs() >= DIST_MIN * atr;
+        slope_ok && dist_ok
+    }).collect()
+}
+
 fn is_trend(bars: &[ClosedBar], cur_atr: f64, atr_ma: f64) -> bool {
     let n = bars.len();
     if n < 25 { return false; }
@@ -339,6 +421,15 @@ pub fn compute_levels(
 
     let mut out: Vec<Level> = Vec::new();
 
+    // ── Filtros contextuales (validados 2026-06-29, regla dura 3 activos) ──
+    let n = bars.len();
+    // H1 slope: close actual vs close de hace 4 barras M15 (= 1H real)
+    let h1_close = if n > H1_BARS { bars[n - 1 - H1_BARS].close } else { price };
+    let h1_up    = price > h1_close;   // tendencia H1 alcista
+    let h1_dn    = price < h1_close;   // tendencia H1 bajista
+    // dist: precio debe estar a >= DIST_MIN×ATR del nivel (llegada limpia)
+    let dist_ok  = |lvl: f64| (price - lvl).abs() >= DIST_MIN * atr;
+
     // ── POC del Order Block (vela de mayor rango en OB_WIN) ──────────────
     if !disable_h5 {
         let ob_slice = &bars[bars.len().saturating_sub(OB_WIN)..];
@@ -351,10 +442,11 @@ pub fn compute_levels(
             let (obh, obl) = (ob.high, ob.low);
             let obpoc = ob.poc;  // real si fp_real, midpoint si bootstrap
 
-            for (side, stop) in [
-                (Side::Long,  obl - 0.25 * STOP_SCALE * atr),
-                (Side::Short, obh + 0.25 * STOP_SCALE * atr),
+            for (side, stop, slope_ok) in [
+                (Side::Long,  obl - 0.25 * STOP_SCALE * atr, h1_up),
+                (Side::Short, obh + 0.25 * STOP_SCALE * atr, h1_dn),
             ] {
+                if !slope_ok || !dist_ok(obpoc) { continue; }
                 if let Some((tp1, tp)) = struct_target(side, obpoc, &va, sh, sl, pdh, pdl, wh, wl) {
                     out.push(Level { side, kind: "poc_ob", price: obpoc, stop, tp1, tp,
                                       vol_regime, regime, gestion: Gestion::Fade,
@@ -370,7 +462,7 @@ pub fn compute_levels(
     let touches_low = recent_ob.iter()
         .filter(|b| (b.low - defended).abs() / defended <= TOUCH_TOL)
         .count();
-    if touches_low >= 2 {
+    if touches_low >= 2 && h1_up && dist_ok(defended) {
         if let Some((tp1, tp)) = struct_target(Side::Long, defended, &va, sh, sl, pdh, pdl, wh, wl) {
             out.push(Level { side: Side::Long, kind: "poc_def", price: defended,
                               stop: defended - 0.6 * STOP_SCALE * atr, tp1, tp,
@@ -383,7 +475,7 @@ pub fn compute_levels(
     let touches_hi = recent_ob.iter()
         .filter(|b| (b.high - defended).abs() / defended <= TOUCH_TOL)
         .count();
-    if touches_hi >= 2 {
+    if touches_hi >= 2 && h1_dn && dist_ok(defended) {
         if let Some((tp1, tp)) = struct_target(Side::Short, defended, &va, sh, sl, pdh, pdl, wh, wl) {
             out.push(Level { side: Side::Short, kind: "poc_def_short", price: defended,
                               stop: defended + 0.6 * STOP_SCALE * atr, tp1, tp,
@@ -391,6 +483,10 @@ pub fn compute_levels(
                               atr, atr_median, take_partial: false, fp_source });
         }
     }
+
+    // ── IFVG (Inverse Fair Value Gap) ────────────────────────────────────
+    out.extend(ifvg_levels(bars, atr, price, &va, sh, sl, pdh, pdl, wh, wl,
+                            vol_regime, regime, atr_median));
 
     // ── Filtros finales ──────────────────────────────────────────────────
     let gestion = if trend { Gestion::Trail } else { Gestion::Fade };
