@@ -208,7 +208,16 @@ impl SupaClient {
             "bar_delta_at_exit":   (t.bar_delta_at_exit * 10000.0).round() / 10000.0,
             "filter_version":      "v2_h1_ifvg",
         })).collect();
-        self.insert("liquidity_paper_trades", json!(rows)).await;
+        // Prefer: resolution=ignore-duplicates evita doble-write si el kline WS llega 2 veces
+        let _ = self.client
+            .post(format!("{}/rest/v1/liquidity_paper_trades", self.url))
+            .header("apikey", &self.key)
+            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "resolution=ignore-duplicates,return=minimal")
+            .json(&json!(rows))
+            .send()
+            .await;
     }
 
     // El snapshot por barra se escribe inline en main.rs (raw_insert) con los
