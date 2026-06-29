@@ -149,6 +149,7 @@ struct State {
     tp2_cap_r:     f64,
     supa:          Option<Arc<SupaClient>>,
     tick_count:    u64,   // ticks (publicTrade) recibidos en la barra en curso (diagnóstico)
+    bar_count:     u64,   // barras procesadas desde inicio — para logs periódicos
     last_bar_ts:   i64,   // ts_ms de la última barra procesada — dedup contra reenvíos WS reconexión
     executor:      Option<executor::Executor>,  // ejecución real testnet/live (None = solo paper)
 }
@@ -208,6 +209,7 @@ impl State {
         // Dedup: Bybit reenvía la última barra confirmada al reconectar el WS → ignorar duplicado
         if ts_ms == self.last_bar_ts { return; }
         self.last_bar_ts = ts_ms;
+        self.bar_count += 1;
 
         // 1. Crear barra cerrada con footprint acumulado
         let ticks = self.tick_count; self.tick_count = 0;   // diagnóstico: ticks recibidos esta barra
@@ -247,6 +249,15 @@ impl State {
         let mut book_levels: Vec<Vec<levels::Level>> = system_per_book.iter().map(|&sys| {
             levels::compute_levels(&bars_slice, atr, atr_med, atr_ma, sys, self.high_vol_only, self.disable_h5, self.tp2_cap_r)
         }).collect();
+
+        // 6. Diagnóstico cada hora (12 barras M15) cuando todos los libros quedan sin niveles
+        if self.bar_count % 12 == 0 && book_levels.iter().all(|lv| lv.is_empty()) {
+            let reason = levels::diag_block(&bars_slice, atr, atr_med, self.high_vol_only);
+            eprintln!("[diag] NO_LEVELS  {reason}  atr={atr:.1} med={atr_med:.1} ({:.0}%)  \
+                       h1_up={}  price={close:.1}",
+                      if atr_med > 0.0 { 100.0 * atr / atr_med } else { 0.0 },
+                      if bars_slice.len() > levels::H1_BARS { close > bars_slice[bars_slice.len()-1-levels::H1_BARS].close } else { false });
+        }
 
         // 6. Refresh orders + flush a Supabase
         let supa = self.supa.clone();
@@ -507,6 +518,7 @@ async fn main() {
         oi_history:    VecDeque::new(),
         supa:          supa.clone(),
         tick_count:    0,
+        bar_count:     0,
         last_bar_ts:   0,
         executor,
     };

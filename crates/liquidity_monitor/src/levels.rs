@@ -550,3 +550,14 @@ pub fn compute_levels(
         if seen.contains(&key) { false } else { seen.push(key); true }
     }).collect()
 }
+
+/// Diagnóstico: razón por la que compute_levels devolvería vacío.
+/// Llamar SOLO para logging (no en el path caliente).
+pub fn diag_block(bars: &[ClosedBar], atr: f64, atr_median: f64, high_vol_only: bool) -> &'static str {
+    if bars.len() < 300        { return "WARMUP"; }
+    if atr <= 0.0              { return "ATR_ZERO"; }
+    let vol_ok = atr_median > 0.0 && atr > atr_median;
+    if high_vol_only && !vol_ok { return "ATR_BLOCK"; }
+    if value_area(bars).is_none() { return "NO_VA"; }
+    "NO_LEVEL"
+}
