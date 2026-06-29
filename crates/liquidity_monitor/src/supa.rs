@@ -206,6 +206,7 @@ impl SupaClient {
             "mfe_r":               t.mfe_r,
             "mae_r":               t.mae_r,
             "bar_delta_at_exit":   (t.bar_delta_at_exit * 10000.0).round() / 10000.0,
+            "filter_version":      "v2_h1_ifvg",
         })).collect();
         self.insert("liquidity_paper_trades", json!(rows)).await;
     }
