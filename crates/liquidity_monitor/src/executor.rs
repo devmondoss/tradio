@@ -159,7 +159,16 @@ impl Executor {
             let price = self.fmt(lv.price);
             let link = format!("liq-{}-{}", lv.kind, ts);
             match self.cli.place_limit(&self.symbol, side, &self.qty, &price, false, &link).await {
-                Ok(oid) => resting.push(Resting { order_id: oid, level: lv.clone() }),
+                Ok(oid) => {
+                    if let Some(s) = &self.supa {
+                        let sc = s.clone(); let lv2 = lv.clone();
+                        let oid2 = oid.clone(); let ts2 = ts;
+                        tokio::spawn(async move {
+                            sc.write_exec_order_event("place", Some(&oid2), Some(&lv2), ts2, None, None, None).await;
+                        });
+                    }
+                    resting.push(Resting { order_id: oid, level: lv.clone() });
+                }
                 Err(e)  => eprintln!("[exec] place {} {} fail: {e}", lv.kind, side),
             }
         }
@@ -187,15 +196,20 @@ impl Executor {
         let pos = match self.cli.position(&self.symbol).await { Ok(p) => p, Err(_) => return };
         if pos.size <= 0.0 { return; }                       // nada filleado aún
         let want = if pos.side == "Buy" { Side::Long } else { Side::Short };
-        // sacar el nivel filleado del estado resting
-        let lv = match std::mem::replace(&mut self.phase, Phase::Idle) {
-            Phase::Resting(r) => r.into_iter().find(|x| x.level.side == want).map(|x| x.level),
+        // extraer resting antes de hacer replace (necesitamos el conteo para n_cancelled)
+        let (lv, n_total) = match std::mem::replace(&mut self.phase, Phase::Idle) {
+            Phase::Resting(r) => {
+                let n = r.len();
+                let found = r.into_iter().find(|x| x.level.side == want).map(|x| x.level);
+                (found, n)
+            }
             other => { self.phase = other; return; }
         };
         let lv = match lv { Some(l) => l, None => {
             eprintln!("[exec] posición {} inesperada, cancelo y reseteo", pos.side);
             let _ = self.cli.cancel_all(&self.symbol).await; return;
         }};
+        let n_cancelled = n_total.saturating_sub(1) as u32;
         let _ = self.cli.cancel_all(&self.symbol).await;     // matar el resto de entradas
         let armed = self.arm_exits(&lv).await;
         let ttf = (ts - self.placed_ts) / 1000;
@@ -205,7 +219,15 @@ impl Executor {
         self.day_opens += 1; self.last_open_bar = ts / BAR_MS; self.filled_cum += 1;
         let entry = pos.avg_price; let bar_ts = self.placed_ts;
         if let Some(s) = &self.supa {
-            s.save_exec_pos(&lv, entry, ts, ttf, armed, entry, entry, bar_ts).await;   // persistir (sobrevive redeploy)
+            // fill event: qué orden llenó, a qué precio real
+            let sc = s.clone(); let lv2 = lv.clone(); let bt = bar_ts;
+            tokio::spawn(async move {
+                sc.write_exec_order_event("fill", None, Some(&lv2), bt, None, None, Some(entry)).await;
+                if n_cancelled > 0 {
+                    sc.write_exec_order_event("cancel_fill", None, None, bt, Some("fill"), Some(n_cancelled), None).await;
+                }
+            });
+            s.save_exec_pos(&lv, entry, ts, ttf, armed, entry, entry, bar_ts).await;
         }
         self.phase = Phase::InPos(Active { level: lv, entry_px: entry, fill_ts: ts, ttf_s: ttf,
                                            exits_armed: armed, seen_hi: entry, seen_lo: entry, bar_ts });
@@ -235,7 +257,21 @@ impl Executor {
             return;                                          // sigue abierta (exchange gestiona stop/tp/trail)
         }
         // cerrada → registrar (rico: reason, MFE/MAE, fee real, qty, link al paper)
-        let cp = self.cli.last_closed_pnl(&self.symbol).await.unwrap_or_default();
+        // Bybit a veces no tiene el closed-pnl listo inmediatamente (avgExitPrice="0").
+        // Reintentar hasta 3 veces con 2s de espera antes de rendirse.
+        let cp = {
+            let mut result = self.cli.last_closed_pnl(&self.symbol).await.unwrap_or_default();
+            let mut tries = 0u8;
+            while result.avg_exit == 0.0 && tries < 3 {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                result = self.cli.last_closed_pnl(&self.symbol).await.unwrap_or_default();
+                tries += 1;
+            }
+            if result.avg_exit == 0.0 {
+                eprintln!("[exec] WARN closed-pnl sin avg_exit tras {} reintentos — R registrado = 0", tries);
+            }
+            result
+        };
         if let Phase::InPos(a) = std::mem::replace(&mut self.phase, Phase::Idle) {
             let (exit, r, reason, q, mfe, mae, fee) = close_metrics(&a.level, a.entry_px, &cp, a.seen_hi, a.seen_lo);
             eprintln!("[exec] CLOSED {} {reason} exit={exit} R={r:.2} mfe={mfe:.2} mae={mae:.2} fee={fee:.2}", self.symbol);

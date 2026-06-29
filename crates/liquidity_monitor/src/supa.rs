@@ -425,6 +425,41 @@ impl SupaClient {
         Some(serde_json::to_string_pretty(&rows).unwrap_or_default())
     }
 
+    // ── Exec order events (place / fill / cancel) ──────────────────────────
+
+    /// Ciclo de vida de órdenes reales: place → fill → cancel.
+    /// event_type: "place" | "fill" | "cancel_fill" | "cancel_redeploy"
+    pub async fn write_exec_order_event(
+        &self,
+        event_type: &str,
+        order_id: Option<&str>,
+        lv: Option<&crate::levels::Level>,
+        bar_ts: i64,
+        reason: Option<&str>,
+        n_cancelled: Option<u32>,
+        fill_price: Option<f64>,
+    ) {
+        let row = json!({
+            "symbol":      self.symbol,
+            "tf":          self.tf,
+            "event_type":  event_type,
+            "order_id":    order_id,
+            "side":        lv.map(|l| l.side.as_str()),
+            "kind":        lv.map(|l| l.kind),
+            "price":       lv.map(|l| l.price),
+            "stop":        lv.map(|l| l.stop),
+            "tp":          lv.map(|l| l.tp),
+            "gestion":     lv.map(|l| l.gestion.as_str()),
+            "regime":      lv.map(|l| l.regime.as_str()),
+            "vol_regime":  lv.map(|l| l.vol_regime.as_str()),
+            "bar_ts":      bar_ts,
+            "reason":      reason,
+            "n_cancelled": n_cancelled,
+            "fill_price":  fill_price,
+        });
+        self.insert("liquidity_exec_order_events", json!([row])).await;
+    }
+
     // ── Helpers públicos ────────────────────────────────────────────────────
 
     pub fn symbol_ref(&self) -> &str { &self.symbol }
