@@ -147,6 +147,7 @@ struct State {
     high_vol_only: bool,
     disable_h5:    bool,
     tp2_cap_r:     f64,
+    round_mults:   Vec<f64>,
     supa:          Option<Arc<SupaClient>>,
     tick_count:    u64,   // ticks (publicTrade) recibidos en la barra en curso (diagnóstico)
     bar_count:     u64,   // barras procesadas desde inicio — para logs periódicos
@@ -247,7 +248,7 @@ impl State {
         }).collect();
 
         let mut book_levels: Vec<Vec<levels::Level>> = system_per_book.iter().map(|&sys| {
-            levels::compute_levels(&bars_slice, atr, atr_med, atr_ma, sys, self.high_vol_only, self.disable_h5, self.tp2_cap_r)
+            levels::compute_levels(&bars_slice, atr, atr_med, atr_ma, sys, self.high_vol_only, self.disable_h5, self.tp2_cap_r, &self.round_mults)
         }).collect();
 
         // 6. Diagnóstico cada hora (12 barras M15) cuando todos los libros quedan sin niveles
@@ -315,7 +316,7 @@ impl State {
         if self.executor.is_some() {
             let hvo = self.high_vol_only; let dh5 = self.disable_h5; let cap = self.tp2_cap_r;
             let flow_levels = levels::compute_levels(&bars_slice, atr, atr_med, atr_ma,
-                System::Flow, hvo, dh5, cap);
+                System::Flow, hvo, dh5, cap, &self.round_mults);
             if let Some(ex) = self.executor.as_mut() {
                 ex.on_bar(&flow_levels, ts_ms).await;
             }
@@ -503,6 +504,13 @@ async fn main() {
         }
     } else { None };
 
+    let round_mults: Vec<f64> = match symbol.as_str() {
+        "BTCUSDT" => vec![1000.0, 5000.0],
+        "ETHUSDT" => vec![100.0, 500.0],
+        "SOLUSDT" => vec![10.0, 50.0],
+        _         => vec![],
+    };
+
     let mut state = State {
         bars:          boot_bars.into_iter().collect(),
         cur_fp:        HashMap::new(),
@@ -515,6 +523,7 @@ async fn main() {
         high_vol_only: hvo,
         disable_h5,
         tp2_cap_r,
+        round_mults,
         oi_history:    VecDeque::new(),
         supa:          supa.clone(),
         tick_count:    0,

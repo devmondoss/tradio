@@ -39,6 +39,11 @@ pub const DIST_MIN: f64    = 0.5;   // dist(close, level) >= 0.5×ATR — llegad
 pub const IFVG_K: usize    = 60;    // barras M15 de lookback para buscar IFVGs activos
 pub const IFVG_TOL: f64    = 0.0015; // 0.15% tolerancia de toque al nivel
 pub const IFVG_MIN_GAP: f64 = 0.15; // mínimo tamaño del gap en fracción de ATR
+// S/R estructurales como entradas (weekly H/L + round numbers) — validados OOS 3 activos
+pub const SR_STOP_FRAC: f64   = 0.5;    // stop = nivel ± 0.5×ATR
+pub const SR_ENTRY_TOL: f64   = 0.001;  // entrada 0.1% por encima/debajo del nivel
+pub const SR_TOUCH_TOL: f64   = 0.002;  // tolerancia de toque para contar virgin
+pub const SR_LOOKBACK: usize  = 20;     // barras M15 (5h) para virgin check
 
 // ── Tipos ───────────────────────────────────────────────────────────────────
 
@@ -83,6 +88,10 @@ pub fn kind_from_str(s: &str) -> &'static str {
         "poc_def_short" => "poc_def_short",
         "ifvg_bull"     => "ifvg_bull",
         "ifvg_bear"     => "ifvg_bear",
+        "weekly_l"      => "weekly_l",
+        "weekly_h"      => "weekly_h",
+        "round_l"       => "round_l",
+        "round_h"       => "round_h",
         _               => "poc_ob",
     }
 }
@@ -245,6 +254,19 @@ fn prev_day_hl(bars: &[ClosedBar]) -> (f64, f64) {
     (h, l)
 }
 
+fn nearest_round(price: f64, mult: f64) -> f64 {
+    (price / mult).round() * mult
+}
+
+fn sr_touches(bars: &[ClosedBar], lvl: f64, lookback: usize) -> usize {
+    let n = bars.len();
+    let start = n.saturating_sub(lookback + 1);
+    bars[start..n.saturating_sub(1)].iter().filter(|b| {
+        (b.low  - lvl).abs() / lvl <= SR_TOUCH_TOL ||
+        (b.high - lvl).abs() / lvl <= SR_TOUCH_TOL
+    }).count()
+}
+
 fn weekly_hl(bars: &[ClosedBar]) -> (f64, f64) {
     if bars.is_empty() { return (f64::NAN, f64::NAN); }
     let today = bars.last().unwrap().day_id;
@@ -394,6 +416,7 @@ pub fn compute_levels(
     high_vol_only: bool,
     disable_h5: bool,
     tp2_cap_r: f64,
+    round_mults: &[f64],
 ) -> Vec<Level> {
     if bars.len() < 300 { return vec![]; }
 
@@ -488,6 +511,86 @@ pub fn compute_levels(
     // ── IFVG (Inverse Fair Value Gap) ────────────────────────────────────
     out.extend(ifvg_levels(bars, atr, price, &va, sh, sl, pdh, pdl, wh, wl,
                             vol_regime, regime, atr_median));
+
+    // ── Weekly H/L como entrada directa (validado OOS +1.95R, 3 activos) ─
+    let cur = bars.last().unwrap();
+    // Long en weekly_low: precio toca desde arriba, cierra por encima
+    if wl.is_finite() && wl > 0.0 {
+        let entry = wl * (1.0 + SR_ENTRY_TOL);
+        if cur.low <= entry && cur.close > wl {
+            let stop = entry - SR_STOP_FRAC * atr;
+            let risk = entry - stop;
+            if risk > 0.0 {
+                if let Some((tp1, tp)) = struct_target(Side::Long, entry, &va, sh, sl, pdh, pdl, wh, wl) {
+                    if (tp - entry) / risk >= MIN_RR {
+                        out.push(Level { side: Side::Long, kind: "weekly_l", price: entry,
+                                          stop, tp1, tp, vol_regime, regime,
+                                          gestion: Gestion::Fade, atr, atr_median,
+                                          take_partial: false, fp_source });
+                    }
+                }
+            }
+        }
+    }
+    // Short en weekly_high: precio toca desde abajo, cierra por debajo
+    if wh.is_finite() && wh > 0.0 {
+        let entry = wh * (1.0 - SR_ENTRY_TOL);
+        if cur.high >= entry && cur.close < wh {
+            let stop = entry + SR_STOP_FRAC * atr;
+            let risk = stop - entry;
+            if risk > 0.0 {
+                if let Some((tp1, tp)) = struct_target(Side::Short, entry, &va, sh, sl, pdh, pdl, wh, wl) {
+                    if (entry - tp) / risk >= MIN_RR {
+                        out.push(Level { side: Side::Short, kind: "weekly_h", price: entry,
+                                          stop, tp1, tp, vol_regime, regime,
+                                          gestion: Gestion::Fade, atr, atr_median,
+                                          take_partial: false, fp_source });
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Round numbers virgin (validado OOS +2.45R, 3 activos) ────────────
+    for &mult in round_mults {
+        let nr = nearest_round(price, mult);
+        if nr <= 0.0 { continue; }
+        // Virgin: 0 toques en las últimas SR_LOOKBACK barras
+        if sr_touches(bars, nr, SR_LOOKBACK) > 0 { continue; }
+        if price > nr {
+            // Long: precio sobre el round, low toca el nivel
+            if cur.low <= nr * (1.0 + SR_TOUCH_TOL) && cur.close > nr {
+                let stop = nr - SR_STOP_FRAC * atr;
+                let risk = nr - stop;
+                if risk > 0.0 {
+                    if let Some((tp1, tp)) = struct_target(Side::Long, nr, &va, sh, sl, pdh, pdl, wh, wl) {
+                        if (tp - nr) / risk >= MIN_RR {
+                            out.push(Level { side: Side::Long, kind: "round_l", price: nr,
+                                              stop, tp1, tp, vol_regime, regime,
+                                              gestion: Gestion::Fade, atr, atr_median,
+                                              take_partial: false, fp_source });
+                        }
+                    }
+                }
+            }
+        } else {
+            // Short: precio bajo el round, high toca el nivel
+            if cur.high >= nr * (1.0 - SR_TOUCH_TOL) && cur.close < nr {
+                let stop = nr + SR_STOP_FRAC * atr;
+                let risk = stop - nr;
+                if risk > 0.0 {
+                    if let Some((tp1, tp)) = struct_target(Side::Short, nr, &va, sh, sl, pdh, pdl, wh, wl) {
+                        if (nr - tp) / risk >= MIN_RR {
+                            out.push(Level { side: Side::Short, kind: "round_h", price: nr,
+                                              stop, tp1, tp, vol_regime, regime,
+                                              gestion: Gestion::Fade, atr, atr_median,
+                                              take_partial: false, fp_source });
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // ── Filtros finales ──────────────────────────────────────────────────
     let gestion = if trend { Gestion::Trail } else { Gestion::Fade };
