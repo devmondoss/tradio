@@ -175,6 +175,7 @@ class State:
         self.cool_bar = 0
         self.bar_idx  = 0
         self.day_count: dict[int, int] = {}
+        self._atr_was_ok = False  # para log de transición
 
     def atr_median(self) -> float:
         if len(self.atr_history) < 50: return 0.0
@@ -241,9 +242,17 @@ class State:
         atr = bar.atr
         if atr <= 0: return []
         atr_med = self.atr_median()
-        diag = self.bar_idx % 12 == 0  # log diagnóstico cada hora
-        if atr_med <= 0 or atr <= atr_med:
-            if diag: log.info(f"[diag] ATR_BLOCK  atr={atr:.4f} med={atr_med:.4f} ({100*atr/atr_med:.0f}% del umbral)")
+        diag = self.bar_idx % 6 == 0  # log diagnóstico cada 30 min
+        atr_ok = atr_med > 0 and atr > atr_med
+        if atr_ok != self._atr_was_ok:
+            ratio = 100*atr/atr_med if atr_med > 0 else 0
+            status = "DESBLOQUEADO" if atr_ok else "BLOQUEADO"
+            log.info(f"[atr] {status}  atr={atr:.2f} med={atr_med:.2f} ({ratio:.0f}%)")
+            self._atr_was_ok = atr_ok
+        if not atr_ok:
+            if diag:
+                ratio = 100*atr/atr_med if atr_med > 0 else 0
+                log.info(f"[diag] ATR_BLOCK  atr={atr:.2f} med={atr_med:.2f} ({ratio:.0f}%)")
             return []
         if self.bar_idx < self.cool_bar:
             if diag: log.info(f"[diag] COOLDOWN   bar={self.bar_idx} cool_until={self.cool_bar}")
@@ -523,8 +532,18 @@ async def run():
         h1 = await bootstrap_klines("60",  300)
         h4 = await bootstrap_klines("240", 100)
         _build_state(state, m5, h1, h4)
-        log.info(f"[boot] M5={len(state.bars)} H1={len(state.h1bars)} H4={len(state.h4bars)} "
-                 f"atr={state.cur_atr:.4f} med={state.atr_median():.4f}")
+        atr_now = state.cur_atr
+        atr_med = state.atr_median()
+        ratio   = 100*atr_now/atr_med if atr_med > 0 else 0
+        atr_st  = "OK" if atr_now > atr_med else f"BLOCK ({ratio:.0f}%)"
+        h1r = state._htf_ema("h1"); h4r = state._htf_ema("h4")
+        h1_dir = ("bull" if h1r[0]>h1r[1] else "bear") if h1r else "?"
+        h4_dir = ("bull" if h4r[0]>h4r[1] else "bear") if h4r else "?"
+        poc, vah, val = state._vp_levels()
+        log.info(f"[boot] M5={len(state.bars)} H1={len(state.h1bars)} H4={len(state.h4bars)}")
+        log.info(f"[boot] ATR={atr_now:.2f}  med={atr_med:.2f}  ratio={ratio:.0f}%  → {atr_st}")
+        log.info(f"[boot] HTF  h1={h1_dir}  h4={h4_dir}")
+        log.info(f"[boot] VP   poc={poc}  vah={vah}  val={val}")
 
         # ── Restaurar posición tras redeploy ─────────────────────────────────
         ctx = await supa_load_pos(supa_client)
