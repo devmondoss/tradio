@@ -470,24 +470,37 @@ class Executor:
         await supa_insert(self.supa, row)
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
-async def bootstrap_klines(interval: str, limit: int = 1000) -> list[Bar]:
+async def bootstrap_klines(interval: str, limit: int = 1000, retries: int = 3) -> list[Bar]:
+    # Reintenta sobre ambos hosts: Bybit puede devolver 200 con retCode!=0 (rate-limit
+    # en ráfaga) y result.list ausente -> antes eso dejaba H4=0 sin recuperación.
     async with httpx.AsyncClient(timeout=30) as c:
-        for host in REST_PUBLIC:
-            try:
-                r = await c.get(f"{host}/v5/market/kline",
-                    params={"category":"linear","symbol":SYMBOL,
-                            "interval":interval,"limit":limit})
-                data = r.json()["result"]["list"]
-                bars = []
-                for k in reversed(data):
-                    ts = int(k[0]); o,h,l,cl,vol = [float(k[i]) for i in range(1,6)]
-                    bars.append(Bar(ts,o,h,l,cl,vol))
-                if bars and bars[-1].ts_ms > int(time.time()*1000) - 30_000:
-                    bars.pop()
-                log.info(f"[boot] {interval}: {len(bars)} barras")
-                return bars
-            except Exception as e:
-                log.warning(f"[boot] {host} {e}")
+        for attempt in range(retries):
+            for host in REST_PUBLIC:
+                try:
+                    r = await c.get(f"{host}/v5/market/kline",
+                        params={"category":"linear","symbol":SYMBOL,
+                                "interval":interval,"limit":limit})
+                    j = r.json()
+                    if j.get("retCode") != 0:
+                        log.warning(f"[boot] {host} {interval} retCode={j.get('retCode')} {j.get('retMsg')}")
+                        continue
+                    data = (j.get("result") or {}).get("list") or []
+                    if not data:
+                        log.warning(f"[boot] {host} {interval} lista vacía")
+                        continue
+                    bars = []
+                    for k in reversed(data):
+                        ts = int(k[0]); o,h,l,cl,vol = [float(k[i]) for i in range(1,6)]
+                        bars.append(Bar(ts,o,h,l,cl,vol))
+                    if bars and bars[-1].ts_ms > int(time.time()*1000) - 30_000:
+                        bars.pop()
+                    log.info(f"[boot] {interval}: {len(bars)} barras")
+                    return bars
+                except Exception as e:
+                    log.warning(f"[boot] {host} {interval} {e!r}")
+            if attempt < retries - 1:
+                await asyncio.sleep(1.5 * (attempt + 1))
+    log.error(f"[boot] {interval}: SIN DATOS tras {retries} intentos")
     return []
 
 def _build_state(state: State, m5: list[Bar], h1: list[Bar], h4: list[Bar]):
@@ -537,8 +550,8 @@ async def run():
         executor = Executor(exec_client, supa_client)
         await executor.setup_leverage()
 
-        m5 = await bootstrap_klines("5",   1000)
-        h1 = await bootstrap_klines("60",  300)
+        m5 = await bootstrap_klines("5",   1000); await asyncio.sleep(0.4)
+        h1 = await bootstrap_klines("60",  300);  await asyncio.sleep(0.4)
         h4 = await bootstrap_klines("240", 100)
         _build_state(state, m5, h1, h4)
         atr_now = state.cur_atr
