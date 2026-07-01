@@ -75,6 +75,7 @@ MAX_DAY            = 3
 STOP_FLOOR         = 0.0015
 MIN_RR             = 1.2
 ORDER_TIMEOUT_BARS = 10    # cancela límite no llenada tras 10 barras (50min)
+FILL_MARGIN        = 2e-4  # igual que backtest fill_margin_bps=2.0: el nivel debe perforarse
 
 # ── Bybit Auth ────────────────────────────────────────────────────────────────
 def _sign(params_str: str) -> dict:
@@ -288,6 +289,8 @@ class State:
         for lvl, tag in [(val,"val"),(poc,"poc"),(pdl,"pdl"),(wl,"wl"),(swl,"swl")]:
             if lvl is None or not math.isfinite(lvl): continue
             if not (lvl < close and abs(close - lvl) <= tol): continue
+            # backtest solo llena si la barra perforó el nivel (s.l[i] <= lvl); replicarlo
+            if not (bar.l <= lvl * (1 - FILL_MARGIN)): continue
             if delta >= 0: continue
             if not (h1_bull or h4_bull or vr > 3): continue
             stop = lvl - PARAMS["stop_atr"] * atr
@@ -309,6 +312,8 @@ class State:
             for lvl, tag in [(vah,"vah"),(poc,"poc"),(pdh,"pdh"),(wh,"wh"),(swh,"swh")]:
                 if lvl is None or not math.isfinite(lvl): continue
                 if not (lvl > close and abs(lvl - close) <= tol): continue
+                # backtest solo llena si la barra perforó el nivel (s.h[i] >= lvl); replicarlo
+                if not (bar.h >= lvl * (1 + FILL_MARGIN)): continue
                 if delta <= 0: continue
                 if not (h1_bear or h4_bear or vr > 3): continue
                 stop = lvl + PARAMS["stop_atr"] * atr
@@ -326,7 +331,8 @@ class State:
 
         if sigs:
             self.cool_bar = self.bar_idx + COOLDOWN
-            self.day_count[day_key] = self.day_count.get(day_key, 0) + 1
+            # NOTA: el cupo diario (day_count) se incrementa al CONFIRMAR fill en poll(),
+            # no aquí: una límite que expira sin llenar no debe quemar un trade del día.
         elif diag:
             h1_dir = "bull" if h1_bull else ("bear" if h1_bear else "flat")
             h4_dir = "bull" if h4_bull else ("bear" if h4_bear else "flat")
@@ -405,7 +411,10 @@ class Executor:
                 self.position_open = True
                 self.fill_ts       = int(time.time() * 1000)
                 self.open_order_id = None
-                log.info(f"[filled] posición {self.open_sig['side']} @ {self.open_sig['entry']}")
+                day_key = self.fill_ts // 86_400_000
+                self.day_count[day_key] = self.day_count.get(day_key, 0) + 1
+                log.info(f"[filled] posición {self.open_sig['side']} @ {self.open_sig['entry']} "
+                         f"trades_hoy={self.day_count[day_key]}/{MAX_DAY}")
                 # persistir posición para sobrevivir redeploys
                 await supa_save_pos(self.supa, self.open_sig, self.fill_ts)
 
