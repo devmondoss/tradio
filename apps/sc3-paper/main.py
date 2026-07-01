@@ -336,9 +336,10 @@ class State:
         elif diag:
             h1_dir = "bull" if h1_bull else ("bear" if h1_bear else "flat")
             h4_dir = "bull" if h4_bull else ("bear" if h4_bear else "flat")
+            fmt = lambda x: f"{x:.2f}" if x else "N/A"
             log.info(f"[diag] NO_LEVEL   close={bar.c:.2f} vr={vr:.2f} delta={bar.delta:.0f} "
                      f"h1={h1_dir} h4={h4_dir} tol={tol:.2f} "
-                     f"val={val:.2f if val else 'N/A'} vah={vah:.2f if vah else 'N/A'} poc={poc:.2f if poc else 'N/A'}")
+                     f"val={fmt(val)} vah={fmt(vah)} poc={fmt(poc)}")
         return sigs
 
 # ── Executor ──────────────────────────────────────────────────────────────────
