@@ -583,29 +583,45 @@ async def run():
         log.info(f"[boot] HTF  h1={h1_dir}  h4={h4_dir}")
         log.info(f"[boot] VP   poc={poc}  vah={vah}  val={val}")
 
-        # ── Restaurar posición tras redeploy ─────────────────────────────────
+        # ── Reconciliación con el exchange (fuente de verdad) ────────────────
+        # Bybit manda. Compara la posición REAL con lo que el código cree y cubre los
+        # 4 casos, incluido adoptar posiciones HUÉRFANAS (fill que nunca se trackeó por
+        # crash/redeploy o fallo de detección) para no perder trades ni apilar órdenes.
         ctx = await supa_load_pos(supa_client)
-        if ctx:
-            # Verificar si hay posición abierta en el exchange
-            pos_r = await bybit_get(exec_client, "/v5/position/list",
-                                    {"category": "linear", "symbol": SYMBOL})
-            has_pos = any(float(p.get("size","0")) > 0
-                          for p in pos_r.get("result",{}).get("list",[]))
-            if has_pos:
-                # (a) posición + contexto → restaurar
-                executor.open_sig      = ctx
-                executor.fill_ts       = ctx.get("fill_ts_ms", 0)
-                executor.position_open = True
-                log.info(f"[RESTAURADA] {ctx.get('side')} entry={ctx.get('entry')} "
-                         f"fill_ts={ctx.get('fill_ts_ms')}")
-            else:
-                # (b) contexto sin posición → cerró durante downtime → registrar y limpiar
-                log.info("[downtime] posición cerró durante downtime — registrando...")
-                executor.open_sig = ctx
-                executor.fill_ts  = ctx.get("fill_ts_ms", 0)
-                await executor._record_closed()
-                await supa_clear_pos(supa_client)
-                log.info("[downtime] trade registrado y contexto limpiado")
+        pos_r = await bybit_get(exec_client, "/v5/position/list",
+                                {"category": "linear", "symbol": SYMBOL})
+        live = next((p for p in pos_r.get("result",{}).get("list",[])
+                     if float(p.get("size","0")) > 0), None)
+        if live and ctx:
+            # (a) posición + contexto → restaurar tracking
+            executor.open_sig      = ctx
+            executor.fill_ts       = ctx.get("fill_ts_ms", 0)
+            executor.position_open = True
+            log.info(f"[reconcile] RESTAURADA {ctx.get('side')} entry={ctx.get('entry')} "
+                     f"fill_ts={ctx.get('fill_ts_ms')}")
+        elif live and not ctx:
+            # (c) HUÉRFANA: posición en el exchange sin registro → adoptar desde sus datos
+            side = "long" if live.get("side") == "Buy" else "short"
+            adopted = {"side": side, "entry": float(live.get("avgPrice", 0) or 0),
+                       "stop": float(live.get("stopLoss") or 0),
+                       "tp": float(live.get("takeProfit") or 0),
+                       "tag": "reconciled", "htf_filter": "", "vr": 0, "atr": 0,
+                       "placed_ts": 0, "ts_open": 0}
+            executor.open_sig      = adopted
+            executor.fill_ts       = int(time.time() * 1000)
+            executor.position_open = True
+            await supa_save_pos(supa_client, adopted, executor.fill_ts)
+            log.warning(f"[reconcile] HUÉRFANA adoptada: {side} entry={adopted['entry']} "
+                        f"sl={adopted['stop']} tp={adopted['tp']}")
+        elif ctx and not live:
+            # (b) contexto sin posición → cerró durante downtime → registrar y limpiar
+            log.info("[reconcile] posición cerró durante downtime — registrando...")
+            executor.open_sig = ctx
+            executor.fill_ts  = ctx.get("fill_ts_ms", 0)
+            await executor._record_closed()
+            await supa_clear_pos(supa_client)
+        else:
+            log.info("[reconcile] sin posición abierta — arranque limpio")
 
         topics = [f"kline.5.{SYMBOL}", f"kline.60.{SYMBOL}", f"kline.240.{SYMBOL}"]
         ws_idx = 0
