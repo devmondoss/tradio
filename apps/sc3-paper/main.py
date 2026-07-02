@@ -98,9 +98,14 @@ async def bybit_post(client: httpx.AsyncClient, path: str, body: dict) -> dict:
     return r.json()
 
 async def bybit_get(client: httpx.AsyncClient, path: str, params: dict = {}) -> dict:
+    # CRÍTICO: firmar y ENVIAR el mismo query string ordenado. Si se pasa params= a httpx,
+    # los manda en orden de inserción ≠ orden firmado (sorted) → firma inválida (retCode
+    # 10004) en toda consulta con orderId/limit (order/realtime, closed-pnl). Romper esto
+    # dejaba la detección de fill y el registro de cierres completamente ciegos.
     qs = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
     hdrs = _sign(qs)
-    r = await client.get(f"{BYBIT_URL}{path}", params=params, headers=hdrs, timeout=10)
+    url = f"{BYBIT_URL}{path}" + (f"?{qs}" if qs else "")
+    r = await client.get(url, headers=hdrs, timeout=10)
     return r.json()
 
 # ── Supabase ──────────────────────────────────────────────────────────────────
@@ -407,11 +412,10 @@ class Executor:
         self.bar_idx += 1
 
         if self.open_order_id and not self.position_open:
-            # Detección de fill vía order/HISTORY (retiene la orden tras llenarse). NO usar
-            # order/realtime: deja de listar la orden al llenarse → los fills (y peor, los
-            # fill→stop entre dos polls) quedaban invisibles y se "cancelaban" fantasma.
-            # Chequear el fill ANTES del timeout para no cancelar una orden ya llena.
-            r = await bybit_get(self.client, "/v5/order/history",
+            # Detección de fill vía order/realtime (devuelve el fill al instante; history
+            # tiene lag de indexado). Chequear el fill ANTES del timeout para no cancelar
+            # una orden ya llena. Requiere el fix de firma en bybit_get (si no, 10004 ciego).
+            r = await bybit_get(self.client, "/v5/order/realtime",
                                 {"category":"linear","symbol":SYMBOL,"orderId":self.open_order_id})
             items = r.get("result",{}).get("list",[])
             status = items[0].get("orderStatus","") if items else ""
