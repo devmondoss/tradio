@@ -75,7 +75,8 @@ MAX_DAY            = 3
 STOP_FLOOR         = 0.0015
 MIN_RR             = 1.2
 ORDER_TIMEOUT_BARS = 10    # cancela límite no llenada tras 10 barras (50min)
-FILL_MARGIN        = 2e-4  # igual que backtest fill_margin_bps=2.0: el nivel debe perforarse
+ENTRY_OFFSET_ATR   = 0.10  # coloca la límite 0.10 ATR hacia el precio → sube fill ~12%→30-68%
+                           # manteniendo OOS positivo en los 3 (sweep validado 2026-07-01)
 
 # ── Bybit Auth ────────────────────────────────────────────────────────────────
 def _sign(params_str: str) -> dict:
@@ -289,20 +290,24 @@ class State:
         for lvl, tag in [(val,"val"),(poc,"poc"),(pdl,"pdl"),(wl,"wl"),(swl,"swl")]:
             if lvl is None or not math.isfinite(lvl): continue
             if not (lvl < close and abs(close - lvl) <= tol): continue
-            # backtest solo llena si la barra perforó el nivel (s.l[i] <= lvl); replicarlo
-            if not (bar.l <= lvl * (1 - FILL_MARGIN)): continue
             if delta >= 0: continue
             if not (h1_bull or h4_bull or vr > 3): continue
+            # stop/tp anclados al NIVEL (paridad con backtest); entry desplazado hacia el
+            # precio ENTRY_OFFSET_ATR para mejorar fill. Si el offset cruzaría el precio
+            # (nivel muy cerca), descansar en el nivel exacto para seguir siendo maker.
             stop = lvl - PARAMS["stop_atr"] * atr
-            mr = STOP_FLOOR * lvl
-            if abs(lvl - stop) < mr: stop = lvl - mr
-            risk = lvl - stop
-            if risk <= 0: continue
+            lvl_risk = lvl - stop
             cands = [c for c in [vah, pdh, wh, swh] if c and math.isfinite(c) and c > lvl*1.001]
             if not cands: continue
-            tp = min(lvl + PARAMS["rr_cap"]*risk, max(cands))
-            if (tp - lvl)/risk < MIN_RR: continue
-            sigs.append(dict(side="long", entry=round(lvl,2), stop=round(stop,2),
+            tp = min(lvl + PARAMS["rr_cap"]*lvl_risk, max(cands))
+            entry = lvl + ENTRY_OFFSET_ATR * atr
+            if entry >= close: entry = lvl
+            mr = STOP_FLOOR * entry
+            if abs(entry - stop) < mr: stop = entry - mr
+            risk = entry - stop
+            if risk <= 0 or not (stop < entry < tp): continue
+            if (tp - entry)/risk < MIN_RR: continue
+            sigs.append(dict(side="long", entry=round(entry,2), stop=round(stop,2),
                              tp=round(tp,2), atr=atr, vr=vr, tag=tag, htf_filter=htf_long))
             break
 
@@ -312,20 +317,21 @@ class State:
             for lvl, tag in [(vah,"vah"),(poc,"poc"),(pdh,"pdh"),(wh,"wh"),(swh,"swh")]:
                 if lvl is None or not math.isfinite(lvl): continue
                 if not (lvl > close and abs(lvl - close) <= tol): continue
-                # backtest solo llena si la barra perforó el nivel (s.h[i] >= lvl); replicarlo
-                if not (bar.h >= lvl * (1 + FILL_MARGIN)): continue
                 if delta <= 0: continue
                 if not (h1_bear or h4_bear or vr > 3): continue
                 stop = lvl + PARAMS["stop_atr"] * atr
-                mr = STOP_FLOOR * lvl
-                if abs(stop - lvl) < mr: stop = lvl + mr
-                risk = stop - lvl
-                if risk <= 0: continue
+                lvl_risk = stop - lvl
                 cands = [c for c in [val, pdl, wl, swl] if c and math.isfinite(c) and c < lvl*0.999]
                 if not cands: continue
-                tp = max(lvl - PARAMS["rr_cap"]*risk, min(cands))
-                if (lvl - tp)/risk < MIN_RR: continue
-                sigs.append(dict(side="short", entry=round(lvl,2), stop=round(stop,2),
+                tp = max(lvl - PARAMS["rr_cap"]*lvl_risk, min(cands))
+                entry = lvl - ENTRY_OFFSET_ATR * atr
+                if entry <= close: entry = lvl
+                mr = STOP_FLOOR * entry
+                if abs(stop - entry) < mr: stop = entry + mr
+                risk = stop - entry
+                if risk <= 0 or not (tp < entry < stop): continue
+                if (entry - tp)/risk < MIN_RR: continue
+                sigs.append(dict(side="short", entry=round(entry,2), stop=round(stop,2),
                                  tp=round(tp,2), atr=atr, vr=vr, tag=tag, htf_filter=htf_short))
                 break
 
