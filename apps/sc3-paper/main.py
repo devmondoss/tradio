@@ -407,14 +407,16 @@ class Executor:
         self.bar_idx += 1
 
         if self.open_order_id and not self.position_open:
-            if self.bar_idx - self.order_placed_bar >= ORDER_TIMEOUT_BARS:
-                log.info(f"[timeout] orden {self.open_order_id} sin llenar — cancelo")
-                await self.cancel(); return
-
-            r = await bybit_get(self.client, "/v5/order/realtime",
+            # Detección de fill vía order/HISTORY (retiene la orden tras llenarse). NO usar
+            # order/realtime: deja de listar la orden al llenarse → los fills (y peor, los
+            # fill→stop entre dos polls) quedaban invisibles y se "cancelaban" fantasma.
+            # Chequear el fill ANTES del timeout para no cancelar una orden ya llena.
+            r = await bybit_get(self.client, "/v5/order/history",
                                 {"category":"linear","symbol":SYMBOL,"orderId":self.open_order_id})
             items = r.get("result",{}).get("list",[])
-            if items and items[0]["orderStatus"] in ("Filled","PartiallyFilled"):
+            status = items[0].get("orderStatus","") if items else ""
+            exec_qty = float(items[0].get("cumExecQty","0") or 0) if items else 0.0
+            if status in ("Filled","PartiallyFilled") or exec_qty > 0:
                 self.position_open = True
                 self.fill_ts       = int(time.time() * 1000)
                 self.open_order_id = None
@@ -424,6 +426,9 @@ class Executor:
                          f"trades_hoy={self.day_count[day_key]}/{MAX_DAY}")
                 # persistir posición para sobrevivir redeploys
                 await supa_save_pos(self.supa, self.open_sig, self.fill_ts)
+            elif self.bar_idx - self.order_placed_bar >= ORDER_TIMEOUT_BARS:
+                log.info(f"[timeout] orden {self.open_order_id} sin llenar — cancelo")
+                await self.cancel(); return
 
         if self.position_open:
             r = await bybit_get(self.client, "/v5/position/list",
