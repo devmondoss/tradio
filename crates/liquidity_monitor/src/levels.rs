@@ -13,6 +13,14 @@ use std::sync::OnceLock;
 static BIN_WIDTH: OnceLock<f64> = OnceLock::new();
 pub fn bin() -> f64 { *BIN_WIDTH.get().unwrap_or(&5.0) }
 pub fn set_bin(w: f64) { let _ = BIN_WIDTH.set(w); }
+
+/// Fade-only (env FORCE_FADE, default true): toda gestión = Fade, ignorando el detector
+/// de régimen. Motivo: el detector vivo rutea ~52% a trail (validado: 7-13%) y fade-only
+/// pasa la regla dura OOS en los 3 activos (BTC +1.24 / ETH +1.46 / SOL +0.76) con menos DD.
+/// El campo `regime` se sigue persistiendo con lo que dice el detector, para poder auditarlo.
+static FORCE_FADE: OnceLock<bool> = OnceLock::new();
+pub fn force_fade() -> bool { *FORCE_FADE.get().unwrap_or(&true) }
+pub fn set_force_fade(v: bool) { let _ = FORCE_FADE.set(v); }
 pub const VA_BARS: usize = 96;   // ventana area de valor (96 × M15 = 1 día)
 pub const SWING: usize   = 50;   // lookback swing H/L
 pub const OB_WIN: usize  = 15;   // ventana order block
@@ -593,7 +601,7 @@ pub fn compute_levels(
     }
 
     // ── Filtros finales ──────────────────────────────────────────────────
-    let gestion = if trend { Gestion::Trail } else { Gestion::Fade };
+    let gestion = if trend && !force_fade() { Gestion::Trail } else { Gestion::Fade };
 
     let filtered: Vec<Level> = out.into_iter().filter_map(|mut lv| {
         // Stop floor: empuja el stop a >= STOP_FLOOR del precio si quedó demasiado ajustado.

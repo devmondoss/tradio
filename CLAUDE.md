@@ -40,21 +40,23 @@ Construcción de parquets: `backtest/build_futures_dataset.py --symbol ETHUSDT -
 
 # ESTRATEGIAS ACTIVAS
 
-## 1. Liquidity A+B — provisión de liquidez maker en niveles VP (M15)
+## 1. Liquidity A (fade-only) — provisión de liquidez maker en niveles VP (M15)
 
-Entrada con **orden límite** en niveles de VP (POC, VAH, VAL, swing, PDH/PDL, weekly H/L). Gestión enrutada por régimen:
-- **Chop (87-93%)** → fade: parcial TP1 → breakeven → target estructural
-- **Tendencia (7-13%)** → trailing stop ATR×6
+Entrada con **orden límite** en niveles de VP (POC, VAH, VAL, swing, PDH/PDL, weekly H/L). Gestión: **fade-only** — parcial TP1 → breakeven → target estructural. `FORCE_FADE=true` (default) desde 2026-07-01.
+
+> **A+B (enrutado por régimen) retirado del paper 2026-07-01:** el detector M15 del binario ruteaba 52% de trades a trail (validado: 7-13%) y drenaba -0.57 avgR vivo. Fade-only pasa regla dura OOS (BTC +1.24 / ETH +1.46 / SOL +0.76, DD 2.6-4.2%) y gana a routed en ETH. El campo `regime` se sigue persistiendo para auditar el detector; reactivar trail exige validarlo antes con `backtest/_bt_regime_m15.py`.
 
 **Filtro crítico:** ATR > mediana móvil(500). Sin este filtro el edge desaparece.
 
-### Métricas OOS validadas (M15, fee honesto, salida M1)
+### Métricas OOS validadas (M15, fee honesto, salida M1, fade-only)
 
 | Símbolo | OOS avgR | WR | DD% | Sharpe | n |
 |---------|----------|----|-----|--------|---|
-| BTCUSDT | **+1.82** | 49% | 4.2% | 8.2 | 777 |
-| ETHUSDT | **+1.37** | 52% | 6.8% | 5.0 | 350 |
-| SOLUSDT | **+0.93** | 61% | 5.2% | 6.6 | 366 |
+| BTCUSDT | **+1.24** | 62% | 4.2% | 11.1 | 885 |
+| ETHUSDT | **+1.46** | 67% | 3.0% | 6.9 | 330 |
+| SOLUSDT | **+0.76** | 75% | 2.6% | 8.5 | 360 |
+
+(Referencia A+B enrutado con régimen del parquet: +1.54/+1.37/+0.82 — no alcanzable en vivo con el detector actual.)
 
 Motor backtest: `backtest/_strategy_ab.py`. OOS desde `OOS_MS` en `backtest/_listas.py`.
 
