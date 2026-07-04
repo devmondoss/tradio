@@ -206,7 +206,11 @@ impl SupaClient {
             "mfe_r":               t.mfe_r,
             "mae_r":               t.mae_r,
             "bar_delta_at_exit":   (t.bar_delta_at_exit * 10000.0).round() / 10000.0,
-            "filter_version":      if crate::levels::force_fade() { "v3_fade_only" } else { "v2_h1_ifvg" },
+            "filter_version":      match (crate::levels::force_fade(), crate::levels::h1_disabled()) {
+                                       (true, true)  => "v4_no_h1",
+                                       (true, false) => "v3_fade_only",
+                                       (false, _)    => "v2_h1_ifvg",
+                                   },
         })).collect();
         // Prefer: resolution=ignore-duplicates evita doble-write si el kline WS llega 2 veces
         let _ = self.client

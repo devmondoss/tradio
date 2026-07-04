@@ -398,6 +398,7 @@ async fn main() {
     let system      = env("SYSTEM", "both");
     let hvo         = env("HIGH_VOL_ONLY", "false").to_lowercase() == "true";
     let force_fade  = env("FORCE_FADE", "true").to_lowercase() == "true";
+    let disable_h1  = env("DISABLE_H1_FILTER", "false").to_lowercase() == "true";
     let disable_h5  = env("DISABLE_H5", "false").to_lowercase() == "true";
     let tp2_cap_r   = env("TP2_CAP_R", "0").parse::<f64>().unwrap_or(0.0);
     let fill_margin = env("FILL_MARGIN_BPS", "2").parse::<f64>().unwrap_or(2.0);
@@ -406,10 +407,12 @@ async fn main() {
     let supa_key    = env("SUPABASE_KEY", "");
 
     levels::set_force_fade(force_fade);
+    levels::set_disable_h1(disable_h1);
 
     println!(
         ">>> liquidity_monitor  SYMBOL={symbol}  TF={tf}  SYSTEM={system}  \
-         HIGH_VOL_ONLY={hvo}  FORCE_FADE={force_fade}  DISABLE_H5={disable_h5}  TP2_CAP_R={tp2_cap_r}  \
+         HIGH_VOL_ONLY={hvo}  FORCE_FADE={force_fade}  DISABLE_H1_FILTER={disable_h1}  \
+         DISABLE_H5={disable_h5}  TP2_CAP_R={tp2_cap_r}  \
          FILL_MARGIN={fill_margin}bps  TIMEOUT={timeout_h}h"
     );
 

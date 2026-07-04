@@ -21,6 +21,17 @@ pub fn set_bin(w: f64) { let _ = BIN_WIDTH.set(w); }
 static FORCE_FADE: OnceLock<bool> = OnceLock::new();
 pub fn force_fade() -> bool { *FORCE_FADE.get().unwrap_or(&true) }
 pub fn set_force_fade(v: bool) { let _ = FORCE_FADE.set(v); }
+
+/// A/B pendiente (env DISABLE_H1_FILTER, default false = filtro activo, sin cambios).
+/// Motivo: backtest _v3_parity.py mostró que quitar H1 slope da el mismo avgR con +34%
+/// de netR OOS (recorta trades rentables). Diagnóstico 2026-07-02/03: el filtro compara
+/// close M15 actual vs close M15 de hace 4 barras (~1h) — a esa granularidad confunde
+/// ruido de una vela con la tendencia real; en vivo dejó pasar 3 shorts de ETH contra
+/// un rally de 3 días porque la hora puntual de la señal tuvo un micro-pullback.
+static DISABLE_H1: OnceLock<bool> = OnceLock::new();
+pub fn h1_disabled() -> bool { *DISABLE_H1.get().unwrap_or(&false) }
+pub fn set_disable_h1(v: bool) { let _ = DISABLE_H1.set(v); }
+
 pub const VA_BARS: usize = 96;   // ventana area de valor (96 × M15 = 1 día)
 pub const SWING: usize   = 50;   // lookback swing H/L
 pub const OB_WIN: usize  = 15;   // ventana order block
@@ -384,7 +395,7 @@ fn ifvg_levels(
     // Aplicar H1 slope + dist al igual que las señales base
     let h1_close = if n > H1_BARS { bars[n - 1 - H1_BARS].close } else { price };
     out.into_iter().filter(|lv| {
-        let slope_ok = match lv.side {
+        let slope_ok = h1_disabled() || match lv.side {
             Side::Long  => price > h1_close,
             Side::Short => price < h1_close,
         };
@@ -457,8 +468,8 @@ pub fn compute_levels(
     let n = bars.len();
     // H1 slope: close actual vs close de hace 4 barras M15 (= 1H real)
     let h1_close = if n > H1_BARS { bars[n - 1 - H1_BARS].close } else { price };
-    let h1_up    = price > h1_close;   // tendencia H1 alcista
-    let h1_dn    = price < h1_close;   // tendencia H1 bajista
+    let h1_up    = h1_disabled() || price > h1_close;   // tendencia H1 alcista
+    let h1_dn    = h1_disabled() || price < h1_close;   // tendencia H1 bajista
     // dist: precio debe estar a >= DIST_MIN×ATR del nivel (llegada limpia)
     let dist_ok  = |lvl: f64| (price - lvl).abs() >= DIST_MIN * atr;
 
