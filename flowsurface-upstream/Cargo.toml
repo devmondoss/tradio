@@ -1,0 +1,72 @@
+[package]
+name = "flowsurface"
+version.workspace = true
+readme = "README.md"
+license = "GPL-3.0-or-later"
+description = "A native desktop charting platform for crypto markets"
+categories = ["finance", "visualization", "gui"]
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[workspace.package]
+version = "0.8.9"
+edition = "2024"
+repository = "https://github.com/flowsurface-rs/flowsurface"
+homepage = "https://flowsurface.com"
+
+[workspace]
+members = [ "data", "exchange"]
+
+[workspace.dependencies]
+iced_core = { version = "0.14.0", features = ["serde"] }
+chrono = { version = "0.4.44", default-features = false, features = ["serde", "now", "clock"] }
+serde = { version = "1.0.228", default-features = false, features = ["derive"] }
+serde_json = "1.0.149"
+log = "0.4.29"
+thiserror = "2.0.18"
+regex = "1.12.3"
+palette = "0.7.6"
+num-traits = "0.2.19"
+rustc-hash = "2.1.2"
+enum-map = "2.7.3"
+url = "2.5.8"
+rand = "0.10.1"
+uuid = { version = "1.23.1", features = ["v4"] }
+data = { version = "0.8.9", path = "data", package = "flowsurface-data" }
+exchange = { version = "0.8.9", path = "exchange", package = "flowsurface-exchange" }
+
+[dependencies]
+iced = { version = "0.14.0", default-features = false, features = [
+    "wgpu",
+    "tokio",
+    "canvas",
+    "sipper",
+    "advanced",
+    "unconditional-rendering",
+    "crisp",
+    "x11",
+    "wayland",
+] }
+iced_core.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+log.workspace = true
+uuid.workspace = true
+palette.workspace = true
+num-traits.workspace = true
+rustc-hash.workspace = true
+enum-map.workspace = true
+url.workspace = true
+fern = "0.7.1"
+rodio = { version = "0.22.2", default-features = false, features = [ "playback", "wav" ]}
+
+bytemuck = "1.25.0"
+iced_wgpu = "0.14.0"
+exchange.workspace = true
+data.workspace = true
+
+[features]
+debug = ["iced/hot"]

@@ -31,14 +31,53 @@ function pythonBacktest(): Plugin {
 
         // ── Liquidity (provisión de liquidez en niveles de volumen, POC) ─────
         const isLiquidityInfo = url.startsWith('/api/backtest/liquidity_info')
-        const isLiquidity     = url.startsWith('/api/backtest/liquidity')
-        if (isLiquidityInfo || isLiquidity) {
+        const isLiquidityEthInfo = url.startsWith('/api/backtest/liquidity_eth_info')
+        const isLiquiditySolInfo = url.startsWith('/api/backtest/liquidity_sol_info')
+        const isLiquidityEth = !isLiquidityEthInfo && url.startsWith('/api/backtest/liquidity_eth')
+        const isLiquiditySol = !isLiquiditySolInfo && url.startsWith('/api/backtest/liquidity_sol')
+        const isLiquidity    = !isLiquidityEth && !isLiquiditySol && url.startsWith('/api/backtest/liquidity')
+        if (isLiquidityInfo || isLiquidityEthInfo || isLiquiditySolInfo || isLiquidity || isLiquidityEth || isLiquiditySol) {
           const wsRoot = path.join(server.config.root, '..', '..')
           const script = path.join(wsRoot, 'backtest', 'liquidity_app_backtest.py')
           const sysParam = params.get('system')
           const system = (sysParam === 'AB' || sysParam === 'C') ? 'C' : 'A'
-          const a = isLiquidityInfo ? ['--info'] : ['--days', days, '--json', '--system', system, '--min-tp1-rr', '2.3']
-          console.log(`[backtest/liquidity] ${a.join(' ')}`)
+          const sym = isLiquidityEth || isLiquidityEthInfo ? 'ETHUSDT'
+                    : isLiquiditySol || isLiquiditySolInfo ? 'SOLUSDT'
+                    : 'BTCUSDT'
+          const isInfo = isLiquidityInfo || isLiquidityEthInfo || isLiquiditySolInfo
+          const a = isInfo
+            ? ['--info', '--symbol', sym]
+            : ['--days', days, '--json', '--system', system, '--min-tp1-rr', '2.3', '--symbol', sym]
+          console.log(`[backtest/liquidity/${sym}] ${a.join(' ')}`)
+          const py = spawn(pyCmd, [script, ...a])
+          let out = ''; let err = ''
+          py.stdout.on('data', (d: Buffer) => { out += d.toString() })
+          py.stderr.on('data', (d: Buffer) => { err += d.toString() })
+          py.on('error', (e: Error) => {
+            res.writeHead(500, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: e.message }))
+          })
+          py.on('close', (code: number) => {
+            if (code !== 0 || !out.trim()) {
+              res.writeHead(500, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: err.trim() || `exit ${code}` }))
+              return
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+            res.end(out.trim())
+          })
+          return
+        }
+
+        // ── Scalp sc3 (absorción VP · M5 · maker fade) ──────────────────────
+        const isScalpInfo = url.startsWith('/api/backtest/scalp_info')
+        const isScalp     = !isScalpInfo && url.startsWith('/api/backtest/scalp')
+        if (isScalpInfo || isScalp) {
+          const wsRoot = path.join(server.config.root, '..', '..')
+          const script = path.join(wsRoot, 'backtest', 'scalp_app_backtest.py')
+          const sym = params.get('symbol') ?? 'BTCUSDT'
+          const a = isScalpInfo ? ['--info', '--symbol', sym] : ['--days', days, '--json', '--symbol', sym]
+          console.log(`[backtest/scalp/${sym}] ${a.join(' ')}`)
           const py = spawn(pyCmd, [script, ...a])
           let out = ''; let err = ''
           py.stdout.on('data', (d: Buffer) => { out += d.toString() })

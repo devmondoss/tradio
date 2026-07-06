@@ -1,0 +1,31 @@
+[package]
+name = "flowsurface-data"
+description = "Data aggregation, indexing, and configuration utilities for Flowsurface"
+version.workspace = true
+license = "GPL-3.0-or-later"
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+serde.workspace = true
+iced_core.workspace = true
+chrono.workspace = true
+regex.workspace = true
+palette.workspace = true
+enum-map.workspace = true
+rustc-hash.workspace = true
+url.workspace = true
+exchange.workspace = true
+
+dirs-next = "2.0.0"
+open = "5.3.5"
+log = { version = "0.4.29", default-features = false, features = ["std"] }
+thiserror = { version = "2.0.18", default-features = false, features = ["std"] }
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["linux-native"] }

@@ -21,7 +21,8 @@ FEE_TAKER = L2.FEE_TAKER
 OOS_MS = L2.OOS_MS
 
 def run_audit(a, gens, m1, tf_min, timeout_min=24*60, volfilter=True,
-              margin=2.0, stop_floor_pct=0.0, honest_fee=False, entry_offset_bps=0.0):
+              margin=2.0, stop_floor_pct=0.0, honest_fee=False, entry_offset_bps=0.0, partial=True,
+              min_tp1_pct=0.0):
     """Clon de liquidity_app_backtest.run() con stop_floor_pct y fill margin parametrizables.
     honest_fee: cobra TAKER (5.5bps/lado) en salidas a mercado (stop/breakeven/timeout),
     MAKER (2bps/lado) en entrada y salidas por límite (tp1/target). El motor base cobra maker a todo."""
@@ -55,8 +56,11 @@ def run_audit(a, gens, m1, tf_min, timeout_min=24*60, volfilter=True,
                 if side == "long" and not (stop < entry < tp2): continue
                 if side == "short" and not (tp2 < entry < stop): continue
                 if abs(tp2-entry)/risk < 1.2: continue
+                # RANGO MÍNIMO: el movimiento al primer objetivo debe valer la pena (fees no dominan)
+                if min_tp1_pct > 0 and tp1 is not None and 100*abs(tp1-entry)/entry < min_tp1_pct: continue
                 fee_r = FEE_MAKER*entry/risk; exit_px = None; reason = "timeout"
-                cur_stop = stop; realized = 0.0; rem = 1.0; filled1 = False; p1 = 0.5 if tp1 else 0.0
+                cur_stop = stop; realized = 0.0; rem = 1.0; filled1 = False
+                p1 = 0.5 if (tp1 and partial) else 0.0
                 j0 = np.searchsorted(m1ts, a.ts[i]+bar_ms)
                 jend = np.searchsorted(m1ts, a.ts[i]+bar_ms+timeout_min*60_000)
                 exit_ts = None
@@ -64,14 +68,14 @@ def run_audit(a, gens, m1, tf_min, timeout_min=24*60, volfilter=True,
                     if side == "long":
                         if m1l[j] <= cur_stop:
                             realized += rem*((cur_stop-entry)/risk); reason = ("breakeven" if filled1 else "stop"); exit_ts = m1ts[j]; break
-                        if not filled1 and tp1 and m1h[j] >= tp1:
+                        if partial and not filled1 and tp1 and m1h[j] >= tp1:
                             realized += p1*((tp1-entry)/risk); rem -= p1; filled1 = True; cur_stop = entry
                         if m1h[j] >= tp2:
                             realized += rem*((tp2-entry)/risk); reason = "target"; exit_px = tp2; exit_ts = m1ts[j]; break
                     else:
                         if m1h[j] >= cur_stop:
                             realized += rem*((entry-cur_stop)/risk); reason = ("breakeven" if filled1 else "stop"); exit_ts = m1ts[j]; break
-                        if not filled1 and tp1 and m1l[j] <= tp1:
+                        if partial and not filled1 and tp1 and m1l[j] <= tp1:
                             realized += p1*((entry-tp1)/risk); rem -= p1; filled1 = True; cur_stop = entry
                         if m1l[j] <= tp2:
                             realized += rem*((entry-tp2)/risk); reason = "target"; exit_px = tp2; exit_ts = m1ts[j]; break

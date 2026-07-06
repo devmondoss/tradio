@@ -21,9 +21,59 @@ const STRATEGY_META: Record<string, StrategyMeta> = {
   liquidity: {
     apiPath:    '/api/backtest/liquidity',
     infoPath:   '/api/backtest/liquidity_info',
-    label:      'A · Liquidity (fader de rangos) · BTCUSDT Perp · M15 · maker · rango mín 0.5% · fee honesto',
-    detail:     'QUÉ ES: estrategia A del sistema — FADER de niveles (gana en RANGOS). No predice dirección:\nPROVEE liquidez con límites maker en niveles de volumen (POC). Cuando el precio vuelve, te llenan\nbarato y rebota. Edge = mejor entrada + rebate maker.\n\nNIVELES (4 componentes, mismo principio):\n  • POC del Order Block previo (largo y corto)\n  • POC defendido ≥2 veces (soporte de volumen probado, largo)\n  • MIRROR: resistencia defendida ≥2 veces (corto) → cartera balanceada 57/43\n  • NAKED POC: POC de sesion previa no revisitado → iman estructural (orderflow real)\n\nGESTIÓN: parcial 50% en TP1 (si TP1 ≥2.3R) → stop a BE → target estructural.\nSalida en M1 (honesto). Riesgo mínimo neto ≥1R antes de fees.',
-    detail2:    'CONFIG (live-honesta):\n  Timeframe: M15 · Entrada: LÍMITE maker en el nivel · selección adversa 2 bps\n  Filtro VOLATILIDAD: solo opera con ATR > su mediana móvil(500)\n  RANGO MÍNIMO 0.5% al nivel intermedio · PISO DE STOP 0.15% · Timeout 24h\n  FEE HONESTO: maker 2bps/lado en entrada+target; TAKER 5.5bps/lado en stop/timeout\n  Riesgo: FIJO $5/trade (1% de $500, SIN compounding) · cap 2 trades/día por nivel\n\nDATOS: era tick VERIFICADA Bybit perp 2025-06-19 → 2026-06 (~365d). IS<2026-03 / OOS≥2026-03.\nRESULTADOS 365d A:  ~508 trades · WR ~47% · avgR +1.27 · avg_win +4.13R · wins<1R: 12\nRESULTADOS 365d C:  ~583 trades · WR ~42% · avgR +1.41 · avg_win +5.13R · netR: 824R\n\nNaked POC contribuye ~113-145R/año extra (68-77 trades, WR ~50%).',
+    label:      'A+B · Provisión de Liquidez · BTCUSDT Perp · M15 · maker · fee honesto',
+    detail:     'SISTEMA A+B enrutado por régimen:\n  • CHOP (87-93%): FADE → parcial 50% en TP1 (≥2.3R) → BE → target estructural\n  • TENDENCIA (7-13%): TRAILING → stop ATR×4 → monta la continuación\n\nNIVELES (3 generadores, mismo principio maker):\n  • POC del Order Block previo (longs + shorts espejo)\n  • POC defendido ≥2 veces (soporte/resistencia de volumen probado)\n  • NAKED POC: POC de sesión previa no revisitado (imán estructural)\n\nFiltro CRÍTICO: ATR > mediana móvil(500) — sin este filtro el edge desaparece.',
+    detail2:    'CONFIG live-honesta: TF M15 · maker 2bps/lado · TAKER 5.5bps stop/timeout · selección adversa 2bps\nPiso stop 0.15% · Rango mínimo 0.5% · Timeout 24h · cap 2 trades/día\nRiesgo FIJO $5/trade (1% de $500, sin compounding)\n\nOOS VALIDADO (≥2026-03, ~107d):\n  A+B enrutado: avgR +1.54 · WR 50.5% · DD 3.9% · Sharpe +7.7 · n=264\n  A sola (fade): avgR +1.24 · WR 54% · Sharpe +6.8 · n=207\n  B sola (trail): avgR +3.74 · WR 34% · Sharpe +4.2 · n=53\n\nPnL OOS $500@1%: +$2,500/año est. · OI sizing: 2x cuando OI↑ / 0.5x cuando OI↓',
+    presets:    [30, 90, 180],
+    maxDays:    null,
+    defaultDays: null,
+  },
+  liquidity_eth: {
+    apiPath:    '/api/backtest/liquidity_eth',
+    infoPath:   '/api/backtest/liquidity_eth_info',
+    label:      'A+B · Provisión de Liquidez · ETHUSDT Perp · M15 · maker · fee honesto',
+    detail:     'MISMO SISTEMA que BTC, sin reoptimizar (mismos params):\n  • CHOP: FADE → parcial 50% en TP1 (≥2.3R) → BE → target estructural VP\n  • TENDENCIA: TRAILING → stop ATR×4\n\nNIVELES: POC Order Block + POC defendido\nFiltro CRÍTICO: ATR > mediana móvil(500)',
+    detail2:    'CONFIG: TF M15 · maker 2bps · TAKER 5.5bps · piso stop 0.15% · rango mín 0.5%\nRiesgo FIJO $5/trade (1% de $500, sin compounding)\n\nOOS VALIDADO (≥2026-03, ~107d):\n  A+B enrutado: avgR +1.37 · WR 51.9% · DD 6.1% · Sharpe +3.9 · n=175\n\nEdge confirma generalización cross-asset (mismos params que BTC).\nPnL OOS $500@1%: +$1,455/año est.',
+    presets:    [30, 90, 180],
+    maxDays:    null,
+    defaultDays: null,
+  },
+  liquidity_sol: {
+    apiPath:    '/api/backtest/liquidity_sol',
+    infoPath:   '/api/backtest/liquidity_sol_info',
+    label:      'A+B · Provisión de Liquidez · SOLUSDT Perp · M15 · maker · tp2_cap=2.25R',
+    detail:     'MISMO SISTEMA que BTC/ETH + ajuste de target específico para SOL:\n  • CHOP: FADE → parcial 50% en TP1 (≥2.3R) → BE → target capeado a 2.25R\n  • TENDENCIA: TRAILING → stop ATR×4\n  • TP2_CAP=2.25R: targets estructurales de SOL son demasiado ambiciosos;\n    2.25R captura el rebote real sin esperar rotaciones completas\n\nNIVELES: POC Order Block + POC defendido\nFiltro CRÍTICO: ATR > mediana móvil(500)',
+    detail2:    'CONFIG: TF M15 · maker 2bps · TAKER 5.5bps · piso stop 0.15% · rango mín 0.5%\nRiesgo FIJO $5/trade (1% de $500, sin compounding)\n\nOOS VALIDADO (≥2026-03, ~107d):\n  A+B + tp2_cap=2.25R: avgR +1.27 · WR 66.7% · DD 4.1% · Sharpe +8.2 · n=183\n  Sin cap (tp2 libre):   avgR +0.93 · WR 61% — gap IS/OOS reducido con el cap\n\nPnL OOS $500@1%: +$1,644/año est.',
+    presets:    [30, 90, 180],
+    maxDays:    null,
+    defaultDays: null,
+  },
+  scalp_btc: {
+    apiPath:    '/api/backtest/scalp?symbol=BTCUSDT',
+    infoPath:   '/api/backtest/scalp_info?symbol=BTCUSDT',
+    label:      'sc3 · Absorción VP · BTCUSDT Perp · M5 · maker FADE · fee honesto',
+    detail:     'SCALP por absorción en niveles de valor:\n  • Precio llega a nivel VP (POC/VAH/VAL/PDH/PDL/weekly/swing)\n  • Alto volumen agresor (vr) + delta footprint EN CONTRA + el precio aguanta el nivel\n  • → la contraparte absorbe → FADE con límite maker en el nivel\n\nGestión FADE: parcial 50% en TP1 → breakeven → target estructural capeado a 2.5R\nFiltro CRÍTICO: ATR > mediana móvil(500) · niveles AMPLIADOS (más MAYORES = +avgR y +frecuencia)',
+    detail2:    'CONFIG: M5 · maker 2bps/lado · TAKER 5.5bps stop/timeout · piso stop 0.15% · cap 3/día\nRiesgo FIJO $5/trade (1% de $500)\n\nOOS VALIDADO (≥2026-03): avgR +0.46 · WR 65% · DD 4% · n=538\nADITIVO al liquidity (97% trades únicos). Sizing 2× cuando confluencia≥4.',
+    presets:    [30, 90, 180],
+    maxDays:    null,
+    defaultDays: null,
+  },
+  scalp_eth: {
+    apiPath:    '/api/backtest/scalp?symbol=ETHUSDT',
+    infoPath:   '/api/backtest/scalp_info?symbol=ETHUSDT',
+    label:      'sc3 · Absorción VP · ETHUSDT Perp · M5 · maker FADE · fee honesto',
+    detail:     'MISMO sistema que BTC (mismos params, vr_thr=1.5):\n  • Absorción en nivel VP + delta footprint en contra → FADE maker\n  • Gestión: parcial 50% en TP1 → BE → target capeado 2.5R\nFiltro: ATR > mediana móvil(500) · niveles ampliados',
+    detail2:    'CONFIG: M5 · maker 2bps · TAKER 5.5bps · piso stop 0.15% · cap 3/día · $5/trade\n\nOOS VALIDADO (≥2026-03): avgR +0.52 · WR 58% · DD 9% · n=697\nEdge generaliza cross-asset (descarta overfit a BTC).',
+    presets:    [30, 90, 180],
+    maxDays:    null,
+    defaultDays: null,
+  },
+  scalp_sol: {
+    apiPath:    '/api/backtest/scalp?symbol=SOLUSDT',
+    infoPath:   '/api/backtest/scalp_info?symbol=SOLUSDT',
+    label:      'sc3 · Absorción VP · SOLUSDT Perp · M5 · maker FADE · fee honesto',
+    detail:     'MISMO sistema que BTC/ETH (vr_thr=2.5):\n  • Absorción en nivel VP + delta footprint en contra → FADE maker\n  • Gestión: parcial 50% en TP1 → BE → target capeado 2.5R\nFiltro: ATR > mediana móvil(500) · niveles ampliados',
+    detail2:    'CONFIG: M5 · maker 2bps · TAKER 5.5bps · piso stop 0.15% · cap 3/día · $5/trade\n\nOOS VALIDADO (≥2026-03): avgR +0.55 · WR 58% · DD 6% · n=392\nEl más limpio de los 3 (menos selección adversa en el libro).',
     presets:    [30, 90, 180],
     maxDays:    null,
     defaultDays: null,
@@ -303,7 +353,7 @@ export default function LocalResultsView({
   onStats,
   onTrades,
 }: {
-  strategy?: 'liquidity' | 'rbf' | 'sweep' | 'be' | 'combined' | 'absorption' | 'longs' | 'shorts' | 'mtf_shorts' | 'mtf_longs' | 'mtf_combined' | 'mtf_local_btc' | 'mtf_spot_longs_btc' | 'mtf_local_eth'
+  strategy?: 'liquidity' | 'liquidity_eth' | 'liquidity_sol' | 'scalp_btc' | 'scalp_eth' | 'scalp_sol' | 'rbf' | 'sweep' | 'be' | 'combined' | 'absorption' | 'longs' | 'shorts' | 'mtf_shorts' | 'mtf_longs' | 'mtf_combined' | 'mtf_local_btc' | 'mtf_spot_longs_btc' | 'mtf_local_eth'
   onStats?: (s: BtStats | null) => void
   onTrades?: (trades: Trade[]) => void
 }) {
@@ -489,7 +539,7 @@ export default function LocalResultsView({
         borderBottom: '1px solid var(--border)', background: 'var(--bg2)',
         fontSize: 10, color: 'var(--text3)',
       }}>
-        {((strategy === 'liquidity' ? ['trades', 'stats'] : ['trades', 'stats', 'diagnostics']) as Panel[]).map(p => (
+        {((['liquidity', 'liquidity_eth', 'liquidity_sol', 'scalp_btc', 'scalp_eth', 'scalp_sol'].includes(strategy) ? ['trades', 'stats'] : ['trades', 'stats', 'diagnostics']) as Panel[]).map(p => (
           <button key={p} onClick={() => setPanel(p)} style={{
             padding: '2px 10px', borderRadius: 3, fontSize: 10, cursor: 'pointer', fontFamily: 'inherit',
             background: panel === p ? 'var(--bg3)' : 'none',
@@ -498,7 +548,7 @@ export default function LocalResultsView({
           }}>{p.charAt(0).toUpperCase() + p.slice(1)}</button>
         ))}
 
-        {strategy === 'liquidity' && (
+        {(strategy === 'liquidity' || strategy === 'liquidity_eth' || strategy === 'liquidity_sol') && (
           <span style={{ display: 'flex', gap: 3, marginLeft: 6, borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
             {([['A', 'A'], ['C', 'C']] as const).map(([s, lbl]) => (
               <button key={s} title={s === 'A' ? 'A · Fader (fade en rangos, parcial+BE)' : 'C · Sistema completo: fade en rango, trailing en tendencia (A+B enrutado)'}

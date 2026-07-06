@@ -20,7 +20,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 import _listas2 as L2
 import _session_vp as SVP
 
-FEE_MAKER=L2.FEE_MAKER; FEE_TAKER=L2.FEE_TAKER; CAP0, RISK = 500.0, 0.01; SYM="BTCUSDT"
+FEE_MAKER=L2.FEE_MAKER; FEE_TAKER=L2.FEE_TAKER; CAP0, RISK = 500.0, 0.01
+
+PARQUETS = {
+    "BTCUSDT": Path(__file__).parent.parent / "data/bybit-perp/processed/btcusdt_perp_m1.parquet",
+    "ETHUSDT": Path("E:/bybit-data/bybit-perp-eth/processed/ethusdt_perp_m1.parquet"),
+    "SOLUSDT": Path("E:/bybit-data/bybit-perp-sol/processed/solusdt_perp_m1.parquet"),
+}
 
 def day_vp_prev(m5_df):
     """VP por día (close-ponderado, bins $5) congelado: dict date->(poc,vah,val) del día PREVIO."""
@@ -113,7 +119,7 @@ def _micro_score(a, i, side):
 def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=0.0, min_tp1_pct=0.0,
         system="A", trail_atr=4.0, min_tp1_rr=2.5,
         svp_dayvp=None, svp_naked=None, m1_cvd=None, cvd_reversal_pct=0.35,
-        lvn_filter=False, micro_min=0, cvd_after_partial=False):
+        lvn_filter=False, micro_min=0, cvd_after_partial=False, tp2_cap_r=0.0):
     """Entrada decidida en el TF de 'a'; SALIDA simulada en M1 (honesto, sin ambigüedad intrabar).
     system='A' → FADE: parcial 50% en TP1 (solo si TP1 ≥ min_tp1_rr×riesgo) → BE → target estructural.
     system='AB'/'C' → ENRUTA por régimen: Chop→fade · Tendencia→trailing stop (monta la continuación).
@@ -145,6 +151,12 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=
                 if risk<=0: continue
                 if side=="long" and not (stop<entry<tp2): continue
                 if side=="short" and not (tp2<entry<stop): continue
+                if tp2_cap_r > 0:
+                    cap = entry + tp2_cap_r*risk if side=="long" else entry - tp2_cap_r*risk
+                    if (side=="long" and tp2 > cap) or (side=="short" and tp2 < cap):
+                        tp2 = cap
+                        if tp1 is not None and not (min(entry,tp2) < tp1 < max(entry,tp2)):
+                            tp1 = None
                 if abs(tp2-entry)/risk < 1.2: continue
                 # FILTRO LVN: solo operar si hay zona de bajo volumen entre entry y target
                 if lvn_filter and svp_dayvp:
@@ -243,10 +255,10 @@ def run(a, gens, timeout_min, volfilter, m1, tf_min, margin=2.0, stop_floor_pct=
                 cool=i+6; dcount[d]=dcount.get(d,0)+1; break
     return sorted(trades, key=lambda t:t["tsMs"])
 
-def to_trade_json(raw, i):
+def to_trade_json(raw, i, sym="BTCUSDT"):
     risk_usd=CAP0*RISK
     return {
-        "idx":i+1, "id":f"liq-{i+1}", "sym":SYM, "dir":raw["dir"], "session":"",
+        "idx":i+1, "id":f"liq-{i+1}", "sym":sym, "dir":raw["dir"], "session":"",
         "score":None, "entry":raw["entry"], "stop":raw["stop"], "target":raw["target"],
         "tp1":raw.get("tp1"), "targetName":raw.get("targetName"),
         "exit":raw["exit"], "resultR":round(raw["resultR"],4), "pnlUsd":round(raw["resultR"]*risk_usd,2),
@@ -286,9 +298,23 @@ def main():
                     help="Score minimo de microestructura para tomar un trade (0=sin filtro, 2=recomendado).")
     ap.add_argument("--cvd-partial", action="store_true",
                     help="Salida CVD post-parcial: cuando el parcial esta tomado (BE+), salir si CVD revierte 50%%.")
+    ap.add_argument("--tp2-cap", type=float, default=0.0,
+                    help="Cap target a N×riesgo (0=sin cap). Default 2.25 para SOLUSDT auto.")
     args=ap.parse_args()
 
-    full0=L2.TICK_MS   # era tick VERIFICADA (2025-06-19+, 365d). Pre-tick era OHLCV no verificado.
+    # Monkeypatch datos según símbolo
+    sym = args.symbol.upper()
+    if sym not in PARQUETS:
+        print(json.dumps({"error": f"símbolo no soportado: {sym}"})); sys.exit(1)
+    if sym != "BTCUSDT":
+        p = PARQUETS[sym]
+        if not p.exists():
+            print(json.dumps({"error": f"parquet no encontrado: {p}"})); sys.exit(1)
+        L2.M1 = p
+    full0 = L2.TICK_MS if sym == "BTCUSDT" else 0
+
+    tp2_cap_r = args.tp2_cap if args.tp2_cap > 0 else (2.25 if sym == "SOLUSDT" else 0.0)
+
     t=L2.load2(args.tf, start_ms=full0)
     if args.days and args.days>0:
         cutoff=t.ts_ms.max()-args.days*86_400_000
@@ -299,19 +325,14 @@ def main():
         print(json.dumps({"available_days":avail,"start_label":lbl})); return
 
     a=L2.A2(t)
-    m1=L2.load_m1_exit(start_ms=full0)   # OHLC M1 para salidas honestas (sin ambigüedad intrabar)
-    # Footprint: session VP (LVN/HVN/Naked POC) + CVD para targets y exit signals
-    svp_dayvp = SVP.load_dayvp()
-    svp_naked = SVP.load_naked_poc()
+    m1=L2.load_m1_exit(start_ms=full0)
+
+    # SVP cache solo disponible para BTC
+    svp_dayvp = SVP.load_dayvp() if sym == "BTCUSDT" else None
+    svp_naked = SVP.load_naked_poc() if sym == "BTCUSDT" else None
     m1_cvd    = SVP.load_m1_cvd(start_ms=full0) if svp_dayvp else None
-    if not svp_dayvp:
-        import sys as _sys; print("[footprint] sin cache → ejecuta: python backtest/_session_vp.py --build", file=_sys.stderr)
-    # Componentes POC (provisión de liquidez en niveles de volumen): replican el edge validado
-    # exacto. El fade de área-valor (H1) requiere su motor completo (clasificación de día +
-    # VP congelado) y se valida aparte en backtest/_consolidated.py; no se incluye en el visual.
+
     gens=[L2.gen_h5(), L2.gen_h21(), L2.gen_h21_short()]
-    # Naked POC: fade en POC de sesion previa no revisitado (iman estructural)
-    # Default ON cuando hay cache. Desactivar con --no-naked-poc si se quiere baseline puro.
     if not args.no_naked_poc and svp_naked:
         gens.append(gen_naked_poc(svp_naked))
     sys_arg = "AB" if args.system == "C" else args.system
@@ -320,8 +341,9 @@ def main():
              min_tp1_rr=args.min_tp1_rr,
              svp_dayvp=svp_dayvp, svp_naked=svp_naked, m1_cvd=m1_cvd,
              lvn_filter=args.lvn_filter,
-             micro_min=args.micro_min, cvd_after_partial=args.cvd_partial)
-    trades=[to_trade_json(r,i) for i,r in enumerate(raws)]
+             micro_min=args.micro_min, cvd_after_partial=args.cvd_partial,
+             tp2_cap_r=tp2_cap_r)
+    trades=[to_trade_json(r,i,sym=sym) for i,r in enumerate(raws)]
     eq=CAP0
     for tr in trades: eq+=tr["pnlUsd"]; tr["equity"]=round(eq,2)
     closed=[tr for tr in trades if not tr["isOpen"]]

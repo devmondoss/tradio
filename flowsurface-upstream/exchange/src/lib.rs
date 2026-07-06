@@ -1,0 +1,765 @@
+pub mod adapter;
+pub mod depth;
+mod error;
+mod serde_util;
+pub mod unit;
+
+pub use adapter::{Event, proxy};
+use adapter::{Exchange, MarketKind};
+
+use unit::price::de_price_from_number;
+use unit::price::{Price, PriceStep};
+pub use unit::qty::SizeUnit;
+use unit::qty::de_qty_from_number;
+pub use unit::time::{UnixMs, UnixMsRangeError};
+use unit::{ContractSize, MinQtySize, MinTicksize, Qty};
+
+use serde::{Deserialize, Serialize};
+use std::{fmt, hash::Hash};
+
+/// Desired frequency for orderbook depth updates.
+///
+/// Maps user-selected update intervals to exchange-specific depth levels.
+/// Used for some exchanges that determine push frequency based on subscribed depth level
+/// (e.g., Bybit pushes every 300ms for 1000-level depth, 100ms for 200-level).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum PushFrequency {
+    #[default]
+    ServerDefault,
+    Custom(Timeframe),
+}
+
+impl std::fmt::Display for PushFrequency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PushFrequency::ServerDefault => write!(f, "Server Default"),
+            PushFrequency::Custom(tf) => write!(f, "{}", tf),
+        }
+    }
+}
+
+impl std::fmt::Display for Timeframe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Timeframe::MS100 => "100ms",
+                Timeframe::MS200 => "200ms",
+                Timeframe::MS300 => "300ms",
+                Timeframe::MS500 => "500ms",
+                Timeframe::MS1000 => "1s",
+                Timeframe::M1 => "1m",
+                Timeframe::M3 => "3m",
+                Timeframe::M5 => "5m",
+                Timeframe::M15 => "15m",
+                Timeframe::M30 => "30m",
+                Timeframe::H1 => "1h",
+                Timeframe::H2 => "2h",
+                Timeframe::H4 => "4h",
+                Timeframe::H12 => "12h",
+                Timeframe::D1 => "1d",
+            }
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, PartialOrd, Ord)]
+pub enum Timeframe {
+    MS100,
+    MS200,
+    MS300,
+    MS500,
+    MS1000,
+    M1,
+    M3,
+    M5,
+    M15,
+    M30,
+    H1,
+    H2,
+    H4,
+    H12,
+    D1,
+}
+
+impl Timeframe {
+    pub const KLINE: [Timeframe; 10] = [
+        Timeframe::M1,
+        Timeframe::M3,
+        Timeframe::M5,
+        Timeframe::M15,
+        Timeframe::M30,
+        Timeframe::H1,
+        Timeframe::H2,
+        Timeframe::H4,
+        Timeframe::H12,
+        Timeframe::D1,
+    ];
+
+    pub const HEATMAP: [Timeframe; 5] = [
+        Timeframe::MS100,
+        Timeframe::MS200,
+        Timeframe::MS300,
+        Timeframe::MS500,
+        Timeframe::MS1000,
+    ];
+
+    /// # Panics
+    ///
+    /// Will panic if the `Timeframe` is not one of the defined variants
+    pub fn to_minutes(self) -> u16 {
+        match self {
+            Timeframe::M1 => 1,
+            Timeframe::M3 => 3,
+            Timeframe::M5 => 5,
+            Timeframe::M15 => 15,
+            Timeframe::M30 => 30,
+            Timeframe::H1 => 60,
+            Timeframe::H2 => 120,
+            Timeframe::H4 => 240,
+            Timeframe::H12 => 720,
+            Timeframe::D1 => 1440,
+            _ => panic!("Invalid timeframe: {:?}", self),
+        }
+    }
+
+    pub fn to_milliseconds(self) -> u64 {
+        match self {
+            Timeframe::MS100 => 100,
+            Timeframe::MS200 => 200,
+            Timeframe::MS300 => 300,
+            Timeframe::MS500 => 500,
+            Timeframe::MS1000 => 1_000,
+            _ => {
+                let minutes = self.to_minutes();
+                u64::from(minutes) * 60_000
+            }
+        }
+    }
+}
+
+impl From<Timeframe> for f32 {
+    fn from(timeframe: Timeframe) -> f32 {
+        timeframe.to_milliseconds() as f32
+    }
+}
+
+impl From<Timeframe> for u64 {
+    fn from(timeframe: Timeframe) -> u64 {
+        timeframe.to_milliseconds()
+    }
+}
+
+impl TryFrom<u64> for Timeframe {
+    type Error = InvalidTimeframe;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            100 => Ok(Timeframe::MS100),
+            200 => Ok(Timeframe::MS200),
+            300 => Ok(Timeframe::MS300),
+            500 => Ok(Timeframe::MS500),
+            1_000 => Ok(Timeframe::MS1000),
+            60_000 => Ok(Timeframe::M1),
+            180_000 => Ok(Timeframe::M3),
+            300_000 => Ok(Timeframe::M5),
+            900_000 => Ok(Timeframe::M15),
+            1_800_000 => Ok(Timeframe::M30),
+            3_600_000 => Ok(Timeframe::H1),
+            7_200_000 => Ok(Timeframe::H2),
+            14_400_000 => Ok(Timeframe::H4),
+            43_200_000 => Ok(Timeframe::H12),
+            86_400_000 => Ok(Timeframe::D1),
+            _ => Err(InvalidTimeframe(value)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidTimeframe(pub u64);
+
+impl fmt::Display for InvalidTimeframe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Invalid milliseconds value for Timeframe: {}", self.0)
+    }
+}
+
+impl std::error::Error for InvalidTimeframe {}
+
+/// Serializable version of `(Exchange, Ticker)` tuples that is used for keys in maps
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SerTicker {
+    pub exchange: Exchange,
+    pub ticker: Ticker,
+}
+
+impl SerTicker {
+    pub fn new(exchange: Exchange, ticker_str: &str) -> Self {
+        let ticker = Ticker::new(ticker_str, exchange);
+        Self { exchange, ticker }
+    }
+
+    pub fn from_parts(ticker: Ticker) -> Self {
+        Self {
+            exchange: ticker.exchange,
+            ticker,
+        }
+    }
+
+    fn exchange_to_string(exchange: Exchange) -> String {
+        exchange.to_string().replace(' ', "")
+    }
+
+    fn string_to_exchange(s: &str) -> Result<Exchange, String> {
+        if let Ok(exchange) = s.parse::<Exchange>() {
+            return Ok(exchange);
+        }
+
+        let normalized = ["Linear", "Inverse", "Spot"]
+            .into_iter()
+            .find_map(|suffix| {
+                s.strip_suffix(suffix)
+                    .map(|prefix| format!("{} {}", prefix, suffix))
+            })
+            .unwrap_or_else(|| s.to_owned());
+
+        normalized
+            .parse::<Exchange>()
+            .map_err(|_| format!("Unknown exchange: {}", s))
+    }
+}
+
+impl Serialize for SerTicker {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let (ticker_str, _) = self.ticker.to_full_symbol_and_type();
+        let exchange_str = Self::exchange_to_string(self.exchange);
+        let combined = format!("{}:{}", exchange_str, ticker_str);
+        serializer.serialize_str(&combined)
+    }
+}
+
+impl<'de> Deserialize<'de> for SerTicker {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let parts: Vec<&str> = s.split(':').collect();
+
+        if parts.len() != 2 {
+            return Err(serde::de::Error::custom(format!(
+                "Invalid ExchangeTicker format: expected 'Exchange:Ticker', got '{}'",
+                s
+            )));
+        }
+
+        let exchange_str = parts[0];
+        let exchange = Self::string_to_exchange(exchange_str).map_err(serde::de::Error::custom)?;
+
+        let ticker_str = parts[1];
+        let ticker = Ticker::new(ticker_str, exchange);
+
+        Ok(SerTicker { exchange, ticker })
+    }
+}
+
+impl fmt::Display for SerTicker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (ticker_str, _) = self.ticker.to_full_symbol_and_type();
+        let exchange_str = Self::exchange_to_string(self.exchange);
+        write!(f, "{}:{}", exchange_str, ticker_str)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Ticker {
+    bytes: [u8; Ticker::MAX_LEN as usize],
+    pub exchange: Exchange,
+    // Optional display symbol for UI, mainly used for Hyperliquid spot markets
+    // to show "HYPEUSDC" instead of "@107"
+    display_bytes: [u8; Ticker::MAX_LEN as usize],
+    has_display_symbol: bool,
+}
+
+impl Ticker {
+    const MAX_LEN: u8 = 28;
+
+    pub fn new(ticker: &str, exchange: Exchange) -> Self {
+        Self::new_with_display(ticker, exchange, None)
+    }
+
+    pub fn new_with_display(
+        ticker: &str,
+        exchange: Exchange,
+        display_symbol: Option<&str>,
+    ) -> Self {
+        assert!(ticker.len() <= Self::MAX_LEN as usize, "Ticker too long");
+        assert!(!ticker.contains('|'), "Ticker cannot contain '|'");
+
+        let mut bytes = [0u8; Self::MAX_LEN as usize];
+        bytes[..ticker.len()].copy_from_slice(ticker.as_bytes());
+
+        let mut display_bytes = [0u8; Self::MAX_LEN as usize];
+        let has_display_symbol = if let Some(display) = display_symbol {
+            assert!(
+                display.len() <= Self::MAX_LEN as usize,
+                "Display symbol too long"
+            );
+            assert!(display.is_ascii(), "Display symbol must be ASCII");
+            // Display symbol cannot contain '|' as it's used as delimiter
+            assert!(!display.contains('|'), "Display symbol cannot contain '|'");
+            display_bytes[..display.len()].copy_from_slice(display.as_bytes());
+            true
+        } else {
+            false
+        };
+
+        Ticker {
+            bytes,
+            exchange,
+            display_bytes,
+            has_display_symbol,
+        }
+    }
+
+    #[inline]
+    fn as_str(&self) -> &str {
+        let end = self
+            .bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(Self::MAX_LEN as usize);
+        std::str::from_utf8(&self.bytes[..end]).unwrap()
+    }
+
+    #[inline]
+    fn display_as_str(&self) -> &str {
+        if self.has_display_symbol {
+            let end = self
+                .display_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(Self::MAX_LEN as usize);
+            std::str::from_utf8(&self.display_bytes[..end]).unwrap()
+        } else {
+            self.as_str()
+        }
+    }
+
+    /// Get the display symbol if it exists, otherwise None
+    pub fn display_symbol(&self) -> Option<&str> {
+        if self.has_display_symbol {
+            Some(self.display_as_str())
+        } else {
+            None
+        }
+    }
+
+    pub fn to_full_symbol_and_type(&self) -> (String, MarketKind) {
+        (self.as_str().to_owned(), self.market_type())
+    }
+
+    pub fn display_symbol_and_type(&self) -> (String, MarketKind) {
+        let market_kind = self.market_type();
+
+        let result = if self.has_display_symbol {
+            // Use the custom display symbol (e.g., "HYPEUSDC" for Hyperliquid spot)
+            self.display_as_str().to_owned()
+        } else {
+            self.as_str().to_owned()
+        };
+
+        (result, market_kind)
+    }
+
+    pub fn market_type(&self) -> MarketKind {
+        self.exchange.market_type()
+    }
+
+    pub fn symbol_and_exchange_string(&self) -> String {
+        format!(
+            "{}:{}",
+            SerTicker::exchange_to_string(self.exchange),
+            self.as_str()
+        )
+    }
+}
+
+impl fmt::Display for Ticker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl fmt::Debug for Ticker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (sym, kind) = self.display_symbol_and_type();
+        let internal_sym = self.as_str();
+        if self.has_display_symbol && internal_sym != sym {
+            write!(
+                f,
+                "Ticker({}:{}[{}], {:?})",
+                SerTicker::exchange_to_string(self.exchange),
+                sym,
+                internal_sym,
+                kind
+            )
+        } else {
+            write!(
+                f,
+                "Ticker({}:{}, {:?})",
+                SerTicker::exchange_to_string(self.exchange),
+                sym,
+                kind
+            )
+        }
+    }
+}
+
+impl Serialize for Ticker {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let internal = self.as_str();
+        let exchange = SerTicker::exchange_to_string(self.exchange);
+        let s = if self.has_display_symbol {
+            let display = self.display_as_str();
+            format!("{exchange}:{internal}|{display}")
+        } else {
+            format!("{exchange}:{internal}")
+        };
+        serializer.serialize_str(&s)
+    }
+}
+
+/// Backwards compatible deserializer for Ticker so it won't break old persistent states
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TickerDe {
+    Str(String),
+    // Old packed format
+    Old {
+        data: [u64; 2],
+        len: u8,
+        exchange: String,
+    },
+}
+
+impl<'de> Deserialize<'de> for Ticker {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match TickerDe::deserialize(deserializer)? {
+            TickerDe::Str(s) => {
+                let (exchange_str, rest) = s
+                    .split_once(':')
+                    .ok_or_else(|| serde::de::Error::custom("expected \"Exchange:Symbol\""))?;
+                let exchange = SerTicker::string_to_exchange(exchange_str)
+                    .map_err(serde::de::Error::custom)?;
+
+                let (symbol, display) = if let Some((sym, disp)) = rest.split_once('|') {
+                    (sym, Some(disp))
+                } else {
+                    (rest, None)
+                };
+                Ok(Ticker::new_with_display(symbol, exchange, display))
+            }
+            TickerDe::Old {
+                data,
+                len,
+                exchange,
+            } => {
+                // Decode old 6-bit packed symbol
+                if len as usize > 20 {
+                    return Err(serde::de::Error::custom("old Ticker.len > 20"));
+                }
+
+                let mut symbol = String::with_capacity(len as usize);
+                for i in 0..(len as usize) {
+                    let shift = (i % 10) * 6;
+                    let v = ((data[i / 10] >> shift) & 0x3F) as u8;
+                    let ch = match v {
+                        0..=9 => (b'0' + v) as char,
+                        10..=35 => (b'A' + (v - 10)) as char,
+                        36 => '_',
+                        _ => {
+                            return Err(serde::de::Error::custom(format!(
+                                "invalid old char code {}",
+                                v
+                            )));
+                        }
+                    };
+                    symbol.push(ch);
+                }
+
+                let exchange_enum =
+                    SerTicker::string_to_exchange(&exchange).map_err(serde::de::Error::custom)?;
+
+                Ok(Ticker::new(&symbol, exchange_enum))
+            }
+        }
+    }
+}
+
+pub enum StreamPairKind {
+    SingleSource(TickerInfo),
+    MultiSource(Vec<TickerInfo>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Hash, Eq)]
+pub struct TickerInfo {
+    pub ticker: Ticker,
+    pub min_ticksize: MinTicksize,
+    pub min_qty: MinQtySize,
+    pub contract_size: Option<ContractSize>,
+}
+
+impl TickerInfo {
+    pub fn new(
+        ticker: Ticker,
+        min_ticksize: f32,
+        min_qty: f32,
+        contract_size: Option<f32>,
+    ) -> Self {
+        Self {
+            ticker,
+            min_ticksize: MinTicksize::from(min_ticksize),
+            min_qty: MinQtySize::from(min_qty),
+            contract_size: contract_size.map(ContractSize::from),
+        }
+    }
+
+    pub fn market_type(&self) -> MarketKind {
+        self.ticker.market_type()
+    }
+
+    pub fn is_perps(&self) -> bool {
+        let market_type = self.ticker.market_type();
+        market_type == MarketKind::LinearPerps || market_type == MarketKind::InversePerps
+    }
+
+    pub fn exchange(&self) -> Exchange {
+        self.ticker.exchange
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct Trade {
+    pub time: UnixMs,
+    pub is_sell: bool,
+    pub price: Price,
+    pub qty: Qty,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Kline {
+    pub time: UnixMs,
+    pub open: Price,
+    pub high: Price,
+    pub low: Price,
+    pub close: Price,
+    pub volume: Volume,
+}
+
+impl Kline {
+    pub fn new(
+        time: impl Into<UnixMs>,
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
+        volume: Volume,
+        min_ticksize: MinTicksize,
+    ) -> Self {
+        let time = time.into();
+
+        Self {
+            time,
+            open: Price::from_f64(open).round_to_min_tick(min_ticksize),
+            high: Price::from_f64(high).round_to_min_tick(min_ticksize),
+            low: Price::from_f64(low).round_to_min_tick(min_ticksize),
+            close: Price::from_f64(close).round_to_min_tick(min_ticksize),
+            volume,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Volume {
+    TotalOnly(Qty),
+    BuySell(Qty, Qty),
+}
+
+impl Volume {
+    pub fn total(&self) -> Qty {
+        match self {
+            Volume::TotalOnly(qty) => *qty,
+            Volume::BuySell(buy, sell) => *buy + *sell,
+        }
+    }
+
+    pub fn buy_qty(&self) -> Option<Qty> {
+        match self {
+            Volume::BuySell(buy, _) => Some(*buy),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn sell_qty(&self) -> Option<Qty> {
+        match self {
+            Volume::BuySell(_, sell) => Some(*sell),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn buy_sell(&self) -> Option<(Qty, Qty)> {
+        match self {
+            Volume::BuySell(buy, sell) => Some((*buy, *sell)),
+            Volume::TotalOnly(_) => None,
+        }
+    }
+
+    pub fn buy_qty_or_zero(&self) -> Qty {
+        self.buy_qty().unwrap_or(Qty::ZERO)
+    }
+
+    pub fn sell_qty_or_zero(&self) -> Qty {
+        self.sell_qty().unwrap_or(Qty::ZERO)
+    }
+
+    pub const fn empty_total() -> Self {
+        Volume::TotalOnly(Qty::ZERO)
+    }
+
+    pub const fn empty_buy_sell() -> Self {
+        Volume::BuySell(Qty::ZERO, Qty::ZERO)
+    }
+
+    pub fn add_trade_qty(self, is_sell: bool, qty: Qty) -> Self {
+        match self {
+            Volume::BuySell(buy, sell) => {
+                if is_sell {
+                    Volume::BuySell(buy, sell + qty)
+                } else {
+                    Volume::BuySell(buy + qty, sell)
+                }
+            }
+            Volume::TotalOnly(total) => Volume::TotalOnly(total + qty),
+        }
+    }
+
+    /// Net buy minus sell volume. Returns zero when directional data is unavailable.
+    pub fn delta(&self) -> Qty {
+        self.buy_sell()
+            .map(|(buy, sell)| buy - sell)
+            .unwrap_or(Qty::ZERO)
+    }
+
+    /// Whether this volume breaks down into buy vs sell (directional).
+    pub fn is_directional(&self) -> bool {
+        self.buy_sell().is_some()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct TickerStats {
+    #[serde(deserialize_with = "de_price_from_number")]
+    pub mark_price: Price,
+    /// 24h price change in percentage (e.g., 0.05 for +5%, -0.02 for -2%)
+    pub daily_price_chg: f32,
+    /// 24h volume in USD
+    #[serde(deserialize_with = "de_qty_from_number")]
+    pub daily_volume: Qty,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenInterest {
+    pub time: UnixMs,
+    pub value: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Hash)]
+pub struct TickMultiplier(pub u16);
+
+impl std::fmt::Display for TickMultiplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}x", self.0)
+    }
+}
+
+impl TickMultiplier {
+    pub const ALL: [TickMultiplier; 9] = [
+        TickMultiplier(1),
+        TickMultiplier(2),
+        TickMultiplier(5),
+        TickMultiplier(10),
+        TickMultiplier(25),
+        TickMultiplier(50),
+        TickMultiplier(100),
+        TickMultiplier(200),
+        TickMultiplier(500),
+    ];
+
+    pub fn is_custom(&self) -> bool {
+        !Self::ALL.contains(self)
+    }
+
+    /// Applies this multiplier to a base step using integer atomic units.
+    pub fn multiply_step(&self, base_step: PriceStep) -> PriceStep {
+        let units = base_step
+            .units
+            .checked_mul(i64::from(self.0.max(1)))
+            .expect("tick multiplier overflowed PriceStep");
+        PriceStep { units }
+    }
+
+    /// Derives unscaled step from a grouped/scaled step. If the value is not exactly divisible,
+    /// rounds to nearest atomic unit.
+    pub fn unscale_step(&self, scaled_step: PriceStep) -> PriceStep {
+        let m = i64::from(self.0.max(1));
+        if m == 1 {
+            return scaled_step;
+        }
+
+        let q = scaled_step.units.div_euclid(m);
+        let r = scaled_step.units.rem_euclid(m);
+        let rounded = if r.saturating_mul(2) >= m { q + 1 } else { q };
+
+        PriceStep {
+            units: rounded.max(1),
+        }
+    }
+
+    /// Derives unscaled step from a grouped/scaled step; if it is not exactly divisible,
+    /// falls back to the ticker's declared minimum tick.
+    pub fn unscale_step_or_min_tick(
+        &self,
+        scaled_step: PriceStep,
+        min_tick: MinTicksize,
+    ) -> PriceStep {
+        let m = i64::from(self.0.max(1));
+        if m == 1 {
+            return scaled_step;
+        }
+
+        if scaled_step.units > 0 && scaled_step.units.rem_euclid(m) == 0 {
+            PriceStep {
+                units: scaled_step.units / m,
+            }
+        } else {
+            min_tick.into()
+        }
+    }
+
+    /// Returns the final tick step after applying the user selected multiplier.
+    pub fn multiply_with_min_tick_step(&self, ticker_info: TickerInfo) -> PriceStep {
+        let min_step: PriceStep = ticker_info.min_ticksize.into();
+        self.multiply_step(min_step)
+    }
+}

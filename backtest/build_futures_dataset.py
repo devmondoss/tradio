@@ -34,18 +34,38 @@ import pandas as pd
 import compute_spot_features as FEAT   # reusa enrich()
 
 ROOT     = Path(__file__).parent.parent
+RUST_BIN = ROOT / "target/release/ob_parser.exe"
+OB500_LAST = "2025-08-20"   # ob500 hasta aquí; ob200 después
+
+# Estas variables se inicializan en main() después de parsear --symbol
+SYMBOL   = "BTCUSDT"
 PERP_DIR = ROOT / "data/bybit-perp"
 RAW      = PERP_DIR / "raw"
-OB_RAW   = PERP_DIR / "orderbook"            # zips para el parser Rust
-CACHE    = PERP_DIR / "cache"                # caches de trades (Python)
-OB_CACHE = PERP_DIR / "ob_cache_rust"        # caches de OBI (Rust)
+OB_RAW   = PERP_DIR / "orderbook"
+CACHE    = PERP_DIR / "cache"
+OB_CACHE = PERP_DIR / "ob_cache_rust"
 PROC     = PERP_DIR / "processed"
 OUT      = PROC / "btcusdt_perp_m1.parquet"
-RUST_BIN = ROOT / "target/release/ob_parser.exe"
-
 TRADES_URL = "https://public.bybit.com/trading/BTCUSDT/BTCUSDT{date}.csv.gz"
 OB_URL     = "https://quote-saver.bycsi.com/orderbook/linear/BTCUSDT/{date}_BTCUSDT_{depth}.data.zip"
-OB500_LAST = "2025-08-20"   # ob500 hasta aquí; ob200 después
+
+
+def init_paths(symbol: str, data_dir: str | None = None):
+    """Inicializa rutas y URLs globales según el símbolo."""
+    global SYMBOL, PERP_DIR, RAW, OB_RAW, CACHE, OB_CACHE, PROC, OUT, TRADES_URL, OB_URL
+    SYMBOL   = symbol.upper()
+    slug     = symbol.lower().replace("usdt", "")
+    dirname  = "bybit-perp" if slug == "btc" else f"bybit-perp-{slug}"
+    base     = Path(data_dir) if data_dir else ROOT / "data"
+    PERP_DIR = base / dirname
+    RAW      = PERP_DIR / "raw"
+    OB_RAW   = PERP_DIR / "orderbook"
+    CACHE    = PERP_DIR / "cache"
+    OB_CACHE = PERP_DIR / "ob_cache_rust"
+    PROC     = PERP_DIR / "processed"
+    OUT      = PROC / f"{SYMBOL.lower()}_perp_m1.parquet"
+    TRADES_URL = f"https://public.bybit.com/trading/{SYMBOL}/{SYMBOL}{{date}}.csv.gz"
+    OB_URL     = f"https://quote-saver.bycsi.com/orderbook/linear/{SYMBOL}/{{date}}_{SYMBOL}_{{depth}}.data.zip"
 
 
 def download(url: str, dest: Path, timeout: int = 300) -> bool:
@@ -85,6 +105,8 @@ def ob_depth_for(date_str: str) -> str:
     return "ob500" if date_str <= OB500_LAST else "ob200"
 
 
+NO_OB = False   # se sobreescribe desde main() con --no-ob
+
 def download_day(date_str: str) -> bool:
     """Descarga trades (parse Python) + zip OB (lo deja para el parser Rust)."""
     cache_t = CACHE / f"{date_str}_trades.parquet"
@@ -97,12 +119,13 @@ def download_day(date_str: str) -> bool:
                 if gz.exists():
                     gz.unlink()
 
-    # OB: descargar zip (lo parsea Rust después). Saltar si ya hay cache Rust.
-    ob_cache = OB_CACHE / f"{date_str}.parquet"
-    depth    = ob_depth_for(date_str)
-    ob_zip   = OB_RAW / f"{date_str}_BTCUSDT_{depth}.data.zip"
-    if not ob_cache.exists() and not ob_zip.exists():
-        download(OB_URL.format(date=date_str, depth=depth), ob_zip)
+    if not NO_OB:
+        # OB: descargar zip (lo parsea Rust después). Saltar si ya hay cache Rust.
+        ob_cache = OB_CACHE / f"{date_str}.parquet"
+        depth    = ob_depth_for(date_str)
+        ob_zip   = OB_RAW / f"{date_str}_{SYMBOL}_{depth}.data.zip"
+        if not ob_cache.exists() and not ob_zip.exists():
+            download(OB_URL.format(date=date_str, depth=depth), ob_zip)
 
     return cache_t.exists()
 
@@ -110,10 +133,11 @@ def download_day(date_str: str) -> bool:
 def run_rust_ob(start: str, end: str):
     """Parsea todos los zips en OB_RAW con el binario Rust paralelo → caches en OB_CACHE."""
     if not RUST_BIN.exists():
-        print(f"  WARN: falta {RUST_BIN}. Compila: cargo +stable-x86_64-pc-windows-gnu build --release -p ob-parser")
+        print(f"  WARN: falta {RUST_BIN}. Compila: cargo build --release -p ob-parser")
         return
     cmd = [str(RUST_BIN), "--ob-dir", str(OB_RAW), "--cache-dir", str(OB_CACHE),
-           "--out", str(PERP_DIR / "m1_obi.parquet"), "--start", start, "--end", end]
+           "--out", str(PERP_DIR / "m1_obi.parquet"), "--start", start, "--end", end,
+           "--symbol", SYMBOL]
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     subprocess.run(cmd, cwd=str(ROOT), env=env)
 
@@ -166,11 +190,20 @@ def build_parquet():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--start", required=True, help="YYYY-MM-DD")
-    ap.add_argument("--end",   required=True, help="YYYY-MM-DD")
-    ap.add_argument("--delete-zips", action="store_true", help="borrar zips OB al final (default: acumular)")
+    ap.add_argument("--symbol",   default="BTCUSDT", help="Ticker Bybit linear (ej: ETHUSDT, SOLUSDT)")
+    ap.add_argument("--start",   required=True, help="YYYY-MM-DD")
+    ap.add_argument("--end",     required=True, help="YYYY-MM-DD")
+    ap.add_argument("--data-dir", default=None, help="Directorio base de datos (default: data/ del repo)")
+    ap.add_argument("--no-ob",   action="store_true", help="Saltar descarga de order book (solo trades)")
+    ap.add_argument("--delete-zips", action="store_true", help="borrar zips OB al final")
     ap.add_argument("--no-build", action="store_true", help="solo descargar/parsear, no construir parquet")
     args = ap.parse_args()
+
+    global NO_OB
+    NO_OB = args.no_ob
+
+    init_paths(args.symbol, args.data_dir)
+    print(f"Simbolo: {SYMBOL}  dir={PERP_DIR}  OB={'off' if NO_OB else 'on'}")
 
     for d in (RAW, OB_RAW, CACHE, OB_CACHE, PROC):
         d.mkdir(parents=True, exist_ok=True)

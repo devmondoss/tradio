@@ -1,0 +1,55 @@
+/* Flowsurface fonts (copied verbatim) + base terminal theme. */
+@font-face {
+  font-family: 'flowicons';
+  src: url('/fonts/icons.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'Azeret Mono';
+  src: url('/fonts/AzeretMono-Regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+
+:root {
+  /* Flowsurface palette (warm dark + teal green + brick red) */
+  --bg: #181616;
+  --panel: #1b1919;
+  --tabbar: #211e1e;
+  --border: #2a2626;
+  --border2: #3a3535;
+  --text: #c5c9c5;
+  --muted: #8f918f;
+  --dim: #6a6c6a;
+  --faint: #454343;
+  --green: #51cda0;
+  --red: #c0504d;
+  --accent: #51cda0;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Azeret Mono', ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.icon {
+  font-family: 'flowicons';
+  font-style: normal;
+  font-weight: normal;
+  line-height: 1;
+  display: inline-block;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* native selects styled to blend in */
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  outline: none;
+}
+select:focus { border-color: var(--border2); }

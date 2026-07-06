@@ -25,3 +25,18 @@ apps/trade-lab/api/cache/
 # Generated reports (Plotly/Chart.js HTML — reproducibles, inflan el repo)
 dataset/*.html
 scripts/*.html
+
+# Node deps — nunca al repo
+node_modules/
+**/node_modules/
+
+# Archivo (código viejo + data pesada reubicada del reorg)
+/archive/dataset/
+/archive/exports/
+/archive/share_dataset/
+/archive/strategies/
+# data reubicada (crudos/derivados)
+/data/futures/
+/data/mgc/
+/data/nq/
+/markets/
