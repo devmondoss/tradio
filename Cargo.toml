@@ -17,6 +17,7 @@ homepage = "https://flowsurface.com"
 
 [workspace]
 members = [ "data", "exchange", "crates/monitor", "crates/rbf_monitor", "crates/buyer_exhaustion", "crates/ob_parser", "crates/ob_heatmap", "crates/trades_parser", "crates/liquidity_monitor"]
+exclude = ["flowsurface-upstream", "archive"]
 
 [workspace.dependencies]
 iced_core = { version = "0.14.0", features = ["serde"] }
