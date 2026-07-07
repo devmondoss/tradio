@@ -29,6 +29,8 @@ pub enum KlineIndicator {
     CvdLarge,
     /// Market pressure — exponential-decay smoothed taker imbalance [-100, +100].
     MarketPressure,
+    /// VPIN — order-flow toxicity over a rolling volume window [0, 100].
+    Vpin,
 }
 
 impl Indicator for KlineIndicator {
@@ -44,7 +46,7 @@ impl KlineIndicator {
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 9] = [
+    const FOR_SPOT: [KlineIndicator; 10] = [
         KlineIndicator::Volume,
         KlineIndicator::RelativeVolume,
         KlineIndicator::CumulativeDelta,
@@ -54,9 +56,10 @@ impl KlineIndicator {
         KlineIndicator::SpeedOfTape,
         KlineIndicator::CvdLarge,
         KlineIndicator::MarketPressure,
+        KlineIndicator::Vpin,
     ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 13] = [
+    const FOR_PERPS: [KlineIndicator; 14] = [
         KlineIndicator::Volume,
         KlineIndicator::RelativeVolume,
         KlineIndicator::CumulativeDelta,
@@ -70,6 +73,7 @@ impl KlineIndicator {
         KlineIndicator::SpeedOfTape,
         KlineIndicator::CvdLarge,
         KlineIndicator::MarketPressure,
+        KlineIndicator::Vpin,
     ];
 }
 
@@ -89,6 +93,7 @@ impl Display for KlineIndicator {
             KlineIndicator::SpeedOfTape => write!(f, "Speed of Tape"),
             KlineIndicator::CvdLarge => write!(f, "CVD Large"),
             KlineIndicator::MarketPressure => write!(f, "Market Pressure"),
+            KlineIndicator::Vpin => write!(f, "VPIN"),
         }
     }
 }

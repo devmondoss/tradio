@@ -14,6 +14,7 @@ pub mod cumulative_delta;
 pub mod cvd_large;
 pub mod funding_rate;
 pub mod market_pressure;
+pub mod vpin;
 pub mod oi_delta;
 pub mod oi_zscore;
 pub mod open_interest;
@@ -289,5 +290,6 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
         KlineIndicator::MarketPressure => {
             Box::new(super::kline::market_pressure::MarketPressureIndicator::new())
         }
+        KlineIndicator::Vpin => Box::new(super::kline::vpin::VpinIndicator::new()),
     }
 }
