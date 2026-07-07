@@ -536,6 +536,122 @@ pub fn connect_trade_stream(
     })
 }
 
+/// Subscribes to Bybit `allLiquidation.{symbol}` for a single ticker and emits
+/// [`Event::LiquidationsReceived`]. Perps only (no liquidations on spot).
+///
+/// Mirrors Binance's `connect_liquidation_stream` so the GUI consumer chain
+/// (`main.rs` subscription + kline liquidation strip) works unchanged.
+pub fn connect_liquidation_stream(
+    ticker_info: TickerInfo,
+    market_type: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
+) -> impl Stream<Item = Event> {
+    channel(50, move |mut output| async move {
+        if market_type == MarketKind::Spot {
+            return; // liquidation feed only exists on perps
+        }
+
+        let exchange = exchange_from_market_type(market_type);
+        let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
+        let subscribe_message = serde_json::json!({
+            "op": "subscribe",
+            "args": [format!("allLiquidation.{symbol_str}")],
+        });
+
+        let mut state: State = State::Disconnected;
+        loop {
+            match &mut state {
+                State::Disconnected => {
+                    state = try_connect(
+                        &subscribe_message,
+                        market_type,
+                        &mut output,
+                        proxy_cfg.as_ref(),
+                    )
+                    .await;
+                }
+                State::Connected(websocket) => match websocket.read_frame().await {
+                    Ok(msg) => match msg.opcode {
+                        OpCode::Text => {
+                            let liqs = parse_all_liquidation(&msg.payload[..], ticker_info);
+                            if !liqs.is_empty() {
+                                let _ = output
+                                    .send(Event::LiquidationsReceived(
+                                        ticker_info,
+                                        liqs.into_boxed_slice(),
+                                    ))
+                                    .await;
+                            }
+                        }
+                        OpCode::Close => {
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Connection closed".to_string(),
+                                ))
+                                .await;
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                format!("Error reading frame: {e}"),
+                            ))
+                            .await;
+                    }
+                },
+            }
+        }
+    })
+}
+
+/// Parses a Bybit `allLiquidation` push into [`crate::Liquidation`]s. Returns an
+/// empty vec for control frames (subscribe ack / pong / other topics).
+fn parse_all_liquidation(payload: &[u8], ticker_info: TickerInfo) -> Vec<crate::Liquidation> {
+    let Ok(text) = std::str::from_utf8(payload) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let topic = v.get("topic").and_then(|t| t.as_str()).unwrap_or_default();
+    if !topic.starts_with("allLiquidation") {
+        return Vec::new();
+    }
+    let Some(arr) = v.get("data").and_then(|d| d.as_array()) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::with_capacity(arr.len());
+    for o in arr {
+        let (Some(side), Some(price_s), Some(qty_s), Some(ts)) = (
+            o.get("S").and_then(|x| x.as_str()),
+            o.get("p").and_then(|x| x.as_str()),
+            o.get("v").and_then(|x| x.as_str()),
+            o.get("T").and_then(|x| x.as_u64()),
+        ) else {
+            continue;
+        };
+        let (Ok(price_f), Ok(qty_f)) = (price_s.parse::<f32>(), qty_s.parse::<f32>()) else {
+            continue;
+        };
+        // Bybit `S` = side of the liquidation order: "Sell" force-closes a long,
+        // "Buy" force-closes a short (same convention as Binance @forceOrder).
+        let is_long_liq = side.eq_ignore_ascii_case("sell");
+        out.push(crate::Liquidation {
+            time: crate::UnixMs::new(ts),
+            price: Price::from_f32(price_f).round_to_min_tick(ticker_info.min_ticksize),
+            qty: crate::Qty::from_f32_lossy(qty_f),
+            is_long_liq,
+        });
+    }
+    out
+}
+
 pub fn connect_kline_stream(
     streams: Vec<(TickerInfo, Timeframe)>,
     market_type: MarketKind,

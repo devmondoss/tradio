@@ -460,8 +460,8 @@ impl AdapterHandles {
         }
     }
 
-    /// `@forceOrder` liquidation stream — only available on Binance LinearPerps.
-    /// Other venues return an empty stream.
+    /// Liquidation stream — Binance `@forceOrder` and Bybit `allLiquidation`,
+    /// perps only. Other venues return an empty stream.
     pub fn liquidation_stream(
         &self,
         config: &StreamConfig<crate::TickerInfo>,
@@ -470,6 +470,14 @@ impl AdapterHandles {
         let market_kind = config.exchange.market_type();
         match config.exchange.venue() {
             Venue::Binance => self.binance.clone().map_or_else(
+                || futures::stream::empty().boxed(),
+                |handle| {
+                    handle
+                        .connect_liquidation_stream(ticker, market_kind)
+                        .boxed()
+                },
+            ),
+            Venue::Bybit => self.bybit.clone().map_or_else(
                 || futures::stream::empty().boxed(),
                 |handle| {
                     handle

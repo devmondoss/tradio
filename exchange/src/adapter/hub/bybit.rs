@@ -161,6 +161,14 @@ impl BybitHandle {
     ) -> impl futures::Stream<Item = Event> {
         stream::connect_kline_stream(streams, market_type, self.proxy_cfg)
     }
+
+    pub fn connect_liquidation_stream(
+        self,
+        ticker_info: TickerInfo,
+        market_type: MarketKind,
+    ) -> impl futures::Stream<Item = Event> {
+        stream::connect_liquidation_stream(ticker_info, market_type, self.proxy_cfg)
+    }
 }
 
 struct Worker {
