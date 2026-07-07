@@ -5047,6 +5047,19 @@ impl canvas::Program<Message> for KlineChart {
                         }
                     });
 
+                    let stacked_imbalance = studies.iter().find_map(|study| {
+                        if let FootprintStudy::StackedImbalance {
+                            threshold,
+                            min_run,
+                            ignore_zeros,
+                        } = study
+                        {
+                            Some((*threshold, *min_run, *ignore_zeros))
+                        } else {
+                            None
+                        }
+                    });
+
                     let show_text = should_show_text(
                         cell_height_unscaled,
                         cell_width_unscaled,
@@ -5098,6 +5111,25 @@ impl canvas::Program<Message> for KlineChart {
                                 *clusters,
                                 content_spacing,
                             );
+
+                            if let Some((threshold, min_run, ignore_zeros)) = stacked_imbalance {
+                                let runs = crate::chart::footprint_studies::stacked_imbalance_runs(
+                                    trades,
+                                    self.tick_size(),
+                                    threshold,
+                                    min_run,
+                                    ignore_zeros,
+                                );
+                                crate::chart::footprint_studies::draw_stacked_imbalance(
+                                    frame,
+                                    price_to_y,
+                                    x_position,
+                                    chart.cell_width,
+                                    chart.cell_height,
+                                    &runs,
+                                    palette,
+                                );
+                            }
                         },
                     );
                 }

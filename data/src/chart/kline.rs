@@ -411,6 +411,12 @@ pub enum FootprintStudy {
         color_scale: Option<usize>,
         ignore_zeros: bool,
     },
+    /// Tramos de imbalance diagonal consecutivo del mismo lado (estilo ATAS).
+    StackedImbalance {
+        threshold: usize,
+        min_run: usize,
+        ignore_zeros: bool,
+    },
 }
 
 impl FootprintStudy {
@@ -422,16 +428,25 @@ impl FootprintStudy {
                     FootprintStudy::Imbalance { .. },
                     FootprintStudy::Imbalance { .. }
                 )
+                | (
+                    FootprintStudy::StackedImbalance { .. },
+                    FootprintStudy::StackedImbalance { .. }
+                )
         )
     }
 }
 
 impl FootprintStudy {
-    pub const ALL: [FootprintStudy; 2] = [
+    pub const ALL: [FootprintStudy; 3] = [
         FootprintStudy::NPoC { lookback: 80 },
         FootprintStudy::Imbalance {
             threshold: 200,
             color_scale: Some(400),
+            ignore_zeros: true,
+        },
+        FootprintStudy::StackedImbalance {
+            threshold: 200,
+            min_run: 3,
             ignore_zeros: true,
         },
     ];
@@ -442,6 +457,7 @@ impl std::fmt::Display for FootprintStudy {
         match self {
             FootprintStudy::NPoC { .. } => write!(f, "Naked Point of Control"),
             FootprintStudy::Imbalance { .. } => write!(f, "Imbalance"),
+            FootprintStudy::StackedImbalance { .. } => write!(f, "Stacked Imbalance"),
         }
     }
 }

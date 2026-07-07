@@ -1,4 +1,5 @@
 pub mod comparison;
+pub mod footprint_studies;
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;

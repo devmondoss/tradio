@@ -917,6 +917,55 @@ pub mod study {
                         .padding(4)
                         .into()
                 }
+                FootprintStudy::StackedImbalance {
+                    threshold,
+                    min_run,
+                    ignore_zeros,
+                } => {
+                    let qty_threshold = {
+                        let info_text = text(format!("Ask:Bid threshold: {threshold}%"));
+                        let threshold_slider =
+                            slider(100.0..=800.0, threshold as f32, move |new_value| {
+                                on_change(FootprintStudy::StackedImbalance {
+                                    threshold: new_value as usize,
+                                    min_run,
+                                    ignore_zeros,
+                                })
+                            })
+                            .step(25.0);
+                        column![info_text, threshold_slider].padding(8).spacing(4)
+                    };
+
+                    let run_length = {
+                        let info_text = text(format!("Min consecutive levels: {min_run}"));
+                        let run_slider = slider(2.0..=10.0, min_run as f32, move |new_value| {
+                            on_change(FootprintStudy::StackedImbalance {
+                                threshold,
+                                min_run: new_value as usize,
+                                ignore_zeros,
+                            })
+                        })
+                        .step(1.0);
+                        column![info_text, run_slider].padding(8).spacing(4)
+                    };
+
+                    let ignore_zeros_checkbox = {
+                        let cbox = checkbox(ignore_zeros).label("Ignore zeros").on_toggle(
+                            move |is_checked| {
+                                on_change(FootprintStudy::StackedImbalance {
+                                    threshold,
+                                    min_run,
+                                    ignore_zeros: is_checked,
+                                })
+                            },
+                        );
+                        column![cbox].padding(8).spacing(4)
+                    };
+
+                    split_column![qty_threshold, run_length, ignore_zeros_checkbox]
+                        .padding(4)
+                        .into()
+                }
             }
         }
     }
