@@ -456,7 +456,9 @@ class Executor:
         closed_pnl = float(last.get("closedPnl", 0))
         qty        = float(last.get("qty", 0))
         sig = self.open_sig or {}
-        risk = abs(sig.get("entry", entry_px) - sig.get("stop", entry_px))
+        # risk sobre el FILL real (entry_px), no el nivel teórico de la señal — con stops
+        # tan ajustados (~0.5 ATR) el slippage entry teórico vs real distorsiona el R.
+        risk = abs(entry_px - sig.get("stop", entry_px)) if entry_px > 0 else abs(sig.get("entry", 0) - sig.get("stop", 0))
         risk_usdt = risk * qty if risk > 0 else 1
         r_val = closed_pnl / risk_usdt if risk_usdt > 0 else 0.0
         log.info(f"[CLOSED] pnl={closed_pnl:.4f} R={r_val:+.3f} entry={entry_px} exit={exit_px}")
