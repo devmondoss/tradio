@@ -3,6 +3,6 @@
 FROM python:3.12-slim
 WORKDIR /app
 RUN pip install --no-cache-dir websockets
-COPY live/liquidation_collector.py /app/live/liquidation_collector.py
+COPY archive/live/liquidation_collector.py /app/live/liquidation_collector.py
 # -u = logs sin buffer (Railway los muestra al instante)
 CMD ["python", "-u", "live/liquidation_collector.py"]
