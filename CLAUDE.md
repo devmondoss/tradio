@@ -43,17 +43,37 @@ Construcción de parquets: `backtest/build_futures_dataset.py --symbol ETHUSDT -
 Los 6 servicios corrieron ~1 mes desatendidos (14-jul → 3-ago sin un commit). Números reales,
 no los del backtest:
 
-## Liquidity — el core vive, los generadores nuevos lo tapaban
+## Liquidity — ninguna configuración demostró ser rentable en vivo
 
-| Bloque | Junio (25-30) | Julio+ |
-|---|---|---|
-| Todo | n=88 · +0.240 · +21.1R | n=109 · **-0.172** · **-18.7R** |
-| Core (`poc_ob`/`poc_def`/`poc_def_short`) | n=87 · **+0.256** · +22.3R | n=57 · **+0.334** · **+19.0R** |
-| Nuevos (`ifvg_*`/`weekly_*`/`round_*`) | n=1 | n=52 · **-0.726** · **-37.8R** |
+Eras de configuración (campo `filter_version`):
 
-Los 5 generadores que entraron entre el 30-jun y el 2-jul explican solos el mes negativo.
-Apagados con `CORE_LEVELS_ONLY=true` (default) desde el 3-ago. `CORE_LEVELS_ONLY=false` los
-reactiva para A/B.
+| era | fechas | core | nuevos |
+|---|---|---|---|
+| `v1_base` | 25-29 jun | +0.365 (n=82) | — |
+| `v2_h1_ifvg` | 30-jun → 2-jul | -1.509 (n=7) | -1.391 (n=6) |
+| `v3_fade_only` | 2-jul → 3-ago | **+0.399 (n=55)** | -0.671 (n=48) |
+
+Core = `poc_ob`/`poc_def`/`poc_def_short`. Nuevos = `ifvg_*`/`weekly_*`/`round_*`, que entraron
+entre el 30-jun y el 2-jul y explican solos el julio negativo. Apagados con `CORE_LEVELS_ONLY=true`
+(default) desde el 3-ago; `CORE_LEVELS_ONLY=false` los reactiva para A/B.
+
+**La configuración actual (`v3_fade_only` + core-only) es el mejor combo registrado — y aun así
+no pasa la regla dura:**
+
+| | n | avgR | totalR | sin su mejor trade |
+|---|---|---|---|---|
+| BTC | 20 | +1.326 | +26.5 | **-2.6R** |
+| ETH | 16 | -0.289 | -4.6 | **-10.8R** |
+| SOL | 19 | +0.005 | +0.1 | **-9.8R** |
+
+Solo BTC es positivo, y sacándole a cada símbolo su único mejor trade los tres quedan negativos.
+El edge vive de colas: el core hizo 13 trades de +5R o más en 144 (9%) que suman +155.7R; los
+generadores nuevos, 0 en 53. **No hay configuración a la cual "volver": en paper nunca se
+demostró rentabilidad.** Todo avgR mensual de este sistema está dominado por 1-3 operaciones.
+
+**No reportar avgR de cohortes con posiciones todavía abiertas.** Los ganadores cierran en 0.8h
+mediana y los perdedores en 1.4h, así que medir en vuelo sobre-muestrea ganadores. Así se generó
+el "+1.94 de junio" que hoy no se reproduce (el mismo período da +0.240).
 
 ## SC3 — dataset inválido, no hay conclusiones
 
@@ -78,9 +98,17 @@ reentra mientras se cree con posición: el short de BTC quedó abierto 20 días)
 
 El edge en vivo vive de colas (MFE p90 = 8.2R), no de win rate. Hasta cerrar esta brecha, un OOS
 alto en backtest no predice el paper: IFVG es el caso testigo (+1.9 OOS, -0.05/-0.31 en paper).
-Para cerrarla: correr el backtest sobre la ventana de julio y comparar RR y motivo de salida
-trade a trade. Si el backtest no reproduce RR mediana 18.5, el binario y el motor no están
-operando la misma estrategia.
+
+**Hipótesis principal — selección adversa en el fill.** Una límite en un nivel solo se llena si el
+precio lo *atraviesa*; si el nivel aguanta (el caso bueno) la orden nunca entra. Con 5-7% de fill
+estaríamos entrando sistemáticamente en las señales donde el nivel falló, lo que explicaría el WR
+de ~20% constante en todos los buckets de stop (achicar o agrandar el stop no lo mueve).
+
+**Test pendiente, prioridad 1:** tomar las señales colocadas en julio (`liquidity_paper_events`,
+`event_type='place'`), separar llenadas de no llenadas, y correr el backtest sobre las **no
+llenadas**. Si esas son las ganadoras, el problema no es la estrategia ni los parámetros.
+
+Detalle completo: `docs/SESSION_2026-08-03_autopsia_paper.md`.
 
 ---
 
@@ -93,6 +121,24 @@ Entrada con **orden límite** en niveles de VP (POC, VAH, VAL, swing, PDH/PDL, w
 > **A+B (enrutado por régimen) retirado del paper 2026-07-01:** el detector M15 del binario ruteaba 52% de trades a trail (validado: 7-13%) y drenaba -0.57 avgR vivo. Fade-only pasa regla dura OOS (BTC +1.24 / ETH +1.46 / SOL +0.76, DD 2.6-4.2%) y gana a routed en ETH. El campo `regime` se sigue persistiendo para auditar el detector; reactivar trail exige validarlo antes con `backtest/_bt_regime_m15.py`.
 
 **Filtro crítico:** ATR > mediana móvil(500). Sin este filtro el edge desaparece.
+
+### Horizonte y mecánica (no es intradía ni swing: es 1-24h)
+
+`TIMEOUT_HOURS=24`. Los trades duran de 0.6h a 24h; varios cierran por timeout.
+
+| | |
+|---|---|
+| Entrada | POC del order block (vela de mayor rango de las últimas 15 barras M15) |
+| Stop | pegado al mínimo/máximo de esa vela: `obl - 0.25 × STOP_SCALE × ATR`. Mediana 0.273% del precio, con piso duro de 0.15% (`STOP_FLOOR`) |
+| Target | `struct_target` toma VAH/swing/PDH/weekly y se queda con **el más lejano**, sin tope. `tp1` es el más cercano |
+
+**No predice nada.** El RR de 18-30 es aritmético: nivel quirúrgico + target sin cap. Con RR 30
+alcanza con acertar 3.3% para no perder; el sistema acierta ~20%. Por eso pierde -1.7R el 70-80%
+de las veces y vive de colas ocasionales de +10 a +29R.
+
+Poner un target "realista" **destruye el edge**: simulado sobre el MFE real (core n=144), el cap a
+1R da WR 55% y avgR -0.051; los caps de 2R a 8R son todos peores que el target estructural
+(+0.287). Optimizar por win rate es la trampa de este sistema.
 
 **Generadores activos:** solo `poc_ob`, `poc_def`, `poc_def_short` (`CORE_LEVELS_ONLY=true`).
 IFVG, weekly H/L y round numbers están apagados desde el 3-ago por resultado de paper.
