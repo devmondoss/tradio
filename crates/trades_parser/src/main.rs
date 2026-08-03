@@ -175,25 +175,27 @@ fn main() -> anyhow::Result<()> {
     let start = arg(&args, "--start").expect("--start requerido");
     let end = arg(&args, "--end").expect("--end requerido");
     let bucket: f64 = arg(&args, "--bucket").and_then(|s| s.parse().ok()).unwrap_or(10.0);
+    let symbol = arg(&args, "--symbol").unwrap_or_else(|| "BTCUSDT".into());
+    let slen = symbol.len();
     let start_d = NaiveDate::parse_from_str(&start, "%Y-%m-%d")?;
     let end_d = NaiveDate::parse_from_str(&end, "%Y-%m-%d")?;
     fs::create_dir_all(&cache)?;
 
-    // archivos BTCUSDT{date}.csv.gz en rango, no cacheados
+    // archivos {symbol}{date}.csv.gz en rango, no cacheados
     let mut zips: Vec<PathBuf> = fs::read_dir(&dir)?
         .filter_map(|e| e.ok()).map(|e| e.path())
         .filter(|p| {
             let n = p.file_name().unwrap_or_default().to_string_lossy();
-            if !n.starts_with("BTCUSDT") || !n.ends_with(".csv.gz") { return false; }
-            if n.len() < 17 { return false; }
-            match NaiveDate::parse_from_str(&n[7..17], "%Y-%m-%d") {
+            if !n.starts_with(symbol.as_str()) || !n.ends_with(".csv.gz") { return false; }
+            if n.len() < slen + 10 { return false; }
+            match NaiveDate::parse_from_str(&n[slen..slen + 10], "%Y-%m-%d") {
                 Ok(d) => d >= start_d && d <= end_d, Err(_) => false,
             }
         }).collect();
     zips.sort();
     let pending: Vec<PathBuf> = zips.into_iter()
         .filter(|p| {
-            let d = &p.file_name().unwrap().to_string_lossy()[7..17].to_string();
+            let d = &p.file_name().unwrap().to_string_lossy()[slen..slen + 10].to_string();
             !cache.join(format!("{}.parquet", d)).exists()
         }).collect();
 
@@ -202,7 +204,7 @@ fn main() -> anyhow::Result<()> {
     let done = Arc::new(AtomicUsize::new(0));
     let total = pending.len();
     pending.par_iter().for_each(|zip| {
-        let d = zip.file_name().unwrap().to_string_lossy()[7..17].to_string();
+        let d = zip.file_name().unwrap().to_string_lossy()[slen..slen + 10].to_string();
         match parse_day(zip, bucket) {
             Ok(rows) => {
                 let _ = write_parquet(&cache.join(format!("{}.parquet", d)), &rows);
