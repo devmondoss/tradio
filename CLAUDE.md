@@ -38,6 +38,52 @@ Construcción de parquets: `backtest/build_futures_dataset.py --symbol ETHUSDT -
 
 ---
 
+# ESTADO DEL PAPER (auditoría 2026-08-03)
+
+Los 6 servicios corrieron ~1 mes desatendidos (14-jul → 3-ago sin un commit). Números reales,
+no los del backtest:
+
+## Liquidity — el core vive, los generadores nuevos lo tapaban
+
+| Bloque | Junio (25-30) | Julio+ |
+|---|---|---|
+| Todo | n=88 · +0.240 · +21.1R | n=109 · **-0.172** · **-18.7R** |
+| Core (`poc_ob`/`poc_def`/`poc_def_short`) | n=87 · **+0.256** · +22.3R | n=57 · **+0.334** · **+19.0R** |
+| Nuevos (`ifvg_*`/`weekly_*`/`round_*`) | n=1 | n=52 · **-0.726** · **-37.8R** |
+
+Los 5 generadores que entraron entre el 30-jun y el 2-jul explican solos el mes negativo.
+Apagados con `CORE_LEVELS_ONLY=true` (default) desde el 3-ago. `CORE_LEVELS_ONLY=false` los
+reactiva para A/B.
+
+## SC3 — dataset inválido, no hay conclusiones
+
+Las 3 posiciones de la cuenta demo tenían `stopLoss=''` y `takeProfit=''`: **el SL/TP mandado en
+`/v5/order/create` nunca quedaba pegado a la posición**. De ahí salía todo: 47/69 filas con el
+exit fuera de `[stop, tp]`, R de hasta ±33 con `rr_cap=3.0`, SOL acumulando 41.6 unidades, y
+sc3-btc/sc3-sol sin operar desde el 13/14-jul (arrastraban una posición desprotegida y el bot no
+reentra mientras se cree con posición: el short de BTC quedó abierto 20 días).
+
+**Ningún avgR de SC3 paper anterior al 2026-08-03 significa nada.** La serie útil arranca ahí.
+
+## La brecha backtest ↔ paper (sin cerrar — bloquea todo lo demás)
+
+| | Backtest | Paper |
+|---|---|---|
+| WR liquidity | 62-75% | 18-28% |
+| RR entry→target | — | mediana **18.5** (p90 40.7) |
+| Target alcanzado | — | 4 de 109 |
+| tp1 del parcial | — | 23 de 109 |
+| fee | "honesto" | **0.42R por trade** (mediana) |
+| fill ratio | asume fill exacto | **5-7%** (snapshots) |
+
+El edge en vivo vive de colas (MFE p90 = 8.2R), no de win rate. Hasta cerrar esta brecha, un OOS
+alto en backtest no predice el paper: IFVG es el caso testigo (+1.9 OOS, -0.05/-0.31 en paper).
+Para cerrarla: correr el backtest sobre la ventana de julio y comparar RR y motivo de salida
+trade a trade. Si el backtest no reproduce RR mediana 18.5, el binario y el motor no están
+operando la misma estrategia.
+
+---
+
 # ESTRATEGIAS ACTIVAS
 
 ## 1. Liquidity A (fade-only) — provisión de liquidez maker en niveles VP (M15)
@@ -48,7 +94,12 @@ Entrada con **orden límite** en niveles de VP (POC, VAH, VAL, swing, PDH/PDL, w
 
 **Filtro crítico:** ATR > mediana móvil(500). Sin este filtro el edge desaparece.
 
+**Generadores activos:** solo `poc_ob`, `poc_def`, `poc_def_short` (`CORE_LEVELS_ONLY=true`).
+IFVG, weekly H/L y round numbers están apagados desde el 3-ago por resultado de paper.
+
 ### Métricas OOS validadas (M15, fee honesto, salida M1, fade-only)
+
+> Estas son de backtest. El paper no las reproduce — ver "brecha backtest ↔ paper" arriba.
 
 | Símbolo | OOS avgR | WR | DD% | Sharpe | n |
 |---------|----------|----|-----|--------|---|
@@ -110,6 +161,9 @@ Función canónica: `SC.run_sc3_htf(symbol)`. HTF loader: `SC._load_htf()`, `SC.
 2. avgR real vs backtest (backtest asume fill exacto en el nivel VP)
 3. Slippage en el stop (backtest asume fill exacto en stop price)
 
+Las 3 siguen abiertas: los 69 trades de julio no sirven ni para medir fill ratio (ver
+"Estado del paper"). La serie válida arranca el 2026-08-03.
+
 ---
 
 # INFRAESTRUCTURA
@@ -126,28 +180,43 @@ Función canónica: `SC.run_sc3_htf(symbol)`. HTF loader: `SC._load_htf()`, `SC.
 ### Liquidity A+B (Rust — 3 servicios)
 Binario Rust: `crates/liquidity_monitor/` — WS Bybit publicTrade + kline.15, footprint incremental, Supabase REST.
 
-| Servicio | SYMBOL | Estado |
+| Servicio Railway | SYMBOL | Estado |
 |----------|--------|--------|
-| liquidity-btc | BTCUSDT | Online |
-| liquidity-eth | ETHUSDT | Online (desde 2026-06-22) |
-| liquidity-sol | SOLUSDT | Online (desde 2026-06-22) |
+| tradio-btc | BTCUSDT | Online |
+| tradio-eth | ETHUSDT | Online (desde 2026-06-22) |
+| tradio-solana | SOLUSDT | Online (desde 2026-06-22) |
 
-Todos: `TF=15`, `SYSTEM=both`, `HIGH_VOL_ONLY=false`
+Config en prod (verificada en el boot log 2026-08-03): `TF=15`, `SYSTEM=flow`,
+`HIGH_VOL_ONLY=true`, `FORCE_FADE=true`, `CORE_LEVELS_ONLY=true`, `DISABLE_H1_FILTER=false`.
 Env examples: `railway.liquidity-{paper,eth,sol}.env.example`
 
 ### SC3 Intradiario (Python — 3 servicios)
 Servicio Python: `apps/sc3-paper/` — WS Bybit kline.5 + kline.60 + kline.240, señales sc3+HTF, paper book, Supabase REST.
 
-| Servicio | SYMBOL | Estado |
+| Servicio Railway | SYMBOL | Estado |
 |----------|--------|--------|
-| sc3-btc | BTCUSDT | Online (desde 2026-06-29) |
-| sc3-eth | ETHUSDT | Online (desde 2026-06-29) |
-| sc3-sol | SOLUSDT | Online (desde 2026-06-29) |
+| sc3 - bitcoin | BTCUSDT | Online. Trabado sin operar 14-jul → 3-ago |
+| sc3 - etherium | ETHUSDT | Online |
+| sc3 - solana | SOLUSDT | Online. Trabado sin operar 13-jul → 3-ago |
 
+Ejecuta contra `api-demo.bybit.com` (`EXEC_MODE=demo`), órdenes reales en cuenta demo.
 Env example: `railway.sc3.env.example`. Tabla Supabase: `sc3_paper_trades`.
 
+Otros servicios en el mismo proyecto Railway (`adequate-kindness`): `liquidations`
+(collector de liquidaciones), y `lattice.app` / `lattice-agents`, que **no son de tradio**.
+
 Supabase: `https://jubpovmsfvaqfnidozfh.supabase.co`
-Tablas: `liquidity_paper_trades`, `liquidity_paper_events`, `liquidity_paper_snapshots`, `sc3_paper_trades`
+Tablas: `liquidity_paper_trades`, `liquidity_paper_events`, `liquidity_paper_snapshots`,
+`sc3_paper_trades`, `sc3_open_pos` (posición abierta, para sobrevivir redeploys)
+
+### Cómo auditar el paper sin adivinar
+
+- `railway link --project adequate-kindness` y después `railway logs --service "sc3 - bitcoin"`.
+- Correr el binario Rust en local **carga el `.env` de la raíz vía dotenvy**, que apunta a la
+  Supabase de producción — puede escribir filas reales. Para probarlo en seco hay que exportar
+  `SUPABASE_URL=` vacío (dotenvy no pisa variables ya seteadas).
+- El `.env` de la raíz tiene las keys de la cuenta demo de sc3-eth, sirve para consultar
+  posiciones y closed-PnL directo contra Bybit.
 
 ## Stack
 | Capa | Tech |
@@ -155,7 +224,18 @@ Tablas: `liquidity_paper_trades`, `liquidity_paper_events`, `liquidity_paper_sna
 | Liquidity paper/live | Rust (tokio, reqwest, tungstenite) |
 | SC3 paper | Python (asyncio, websockets, httpx) |
 | Backtest / análisis | Python (pandas, numpy, pyarrow) |
-| UI | React + TypeScript (`apps/rbf-review`) |
+| UI | React + TypeScript (`apps/trade-lab`, `apps/orderflow`) |
 | DB | Supabase (PostgreSQL) |
 | Deploy | Railway (Docker multi-stage) |
 | Datos | Bybit public data + quote-saver.bycsi.com (OB) |
+
+## Apps
+
+| App | Qué es | Estado |
+|-----|--------|--------|
+| `apps/sc3-paper/` | Servicio Python del paper SC3 | En prod (3 servicios) |
+| `apps/orderflow/` | Terminal orderflow standalone, clon de la UX de Flowsurface con datos Bybit en vivo. Para trading semi-discrecional: la ejecución 100% automática se abandonó por fill ratio malo | Ver `apps/orderflow/STATUS.md`. 3 features (muros, snake, histograma) compilan pero nunca se verificaron visualmente |
+| `apps/trade-lab/` | UI de review | README es el template de Vite sin tocar |
+
+GUI Rust ICED en la raíz (`src/`, `exchange/`) — footprint studies, VPIN, stream de
+liquidaciones. `flowsurface-upstream/` y `archive/` están fuera del workspace de Cargo.
