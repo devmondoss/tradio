@@ -400,6 +400,7 @@ async fn main() {
     let force_fade  = env("FORCE_FADE", "true").to_lowercase() == "true";
     let disable_h1  = env("DISABLE_H1_FILTER", "false").to_lowercase() == "true";
     let disable_h5  = env("DISABLE_H5", "false").to_lowercase() == "true";
+    let core_only   = env("CORE_LEVELS_ONLY", "true").to_lowercase() == "true";
     let tp2_cap_r   = env("TP2_CAP_R", "0").parse::<f64>().unwrap_or(0.0);
     let fill_margin = env("FILL_MARGIN_BPS", "2").parse::<f64>().unwrap_or(2.0);
     let timeout_h   = env("TIMEOUT_HOURS", "24").parse::<f64>().unwrap_or(24.0);
@@ -408,11 +409,12 @@ async fn main() {
 
     levels::set_force_fade(force_fade);
     levels::set_disable_h1(disable_h1);
+    levels::set_core_levels_only(core_only);
 
     println!(
         ">>> liquidity_monitor  SYMBOL={symbol}  TF={tf}  SYSTEM={system}  \
          HIGH_VOL_ONLY={hvo}  FORCE_FADE={force_fade}  DISABLE_H1_FILTER={disable_h1}  \
-         DISABLE_H5={disable_h5}  TP2_CAP_R={tp2_cap_r}  \
+         DISABLE_H5={disable_h5}  CORE_LEVELS_ONLY={core_only}  TP2_CAP_R={tp2_cap_r}  \
          FILL_MARGIN={fill_margin}bps  TIMEOUT={timeout_h}h"
     );
 

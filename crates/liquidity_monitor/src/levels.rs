@@ -32,6 +32,20 @@ static DISABLE_H1: OnceLock<bool> = OnceLock::new();
 pub fn h1_disabled() -> bool { *DISABLE_H1.get().unwrap_or(&false) }
 pub fn set_disable_h1(v: bool) { let _ = DISABLE_H1.set(v); }
 
+/// Solo generadores core (env CORE_LEVELS_ONLY, default true): emite únicamente
+/// `poc_ob`, `poc_def` y `poc_def_short`, apagando IFVG, weekly H/L y round numbers.
+/// Motivo (autopsia paper 2026-08-02, n=197 desde el 25-jun, excl. reconstructed):
+///   core   → junio +0.256 avgR (n=87, +22.3R) / julio +0.334 avgR (n=57, +19.0R)
+///   nuevos → julio -0.726 avgR (n=52, -37.8R): weekly_h -13.9R, round_l -12.7R,
+///            round_h -7.2R, ifvg_bear -4.3R, ifvg_bull -0.5R, weekly_l +0.8R
+/// Los tres generadores nuevos entraron entre el 30-jun y el 2-jul y explican por sí
+/// solos el mes negativo (-18.7R totales). IFVG venía de backtest OOS +1.97/+1.91/+1.87
+/// y en paper dio -0.05/-0.31 → la brecha backtest↔paper sigue abierta, no se reactivan
+/// hasta cerrarla. Poner CORE_LEVELS_ONLY=false para volver a habilitarlos (A/B).
+static CORE_LEVELS_ONLY: OnceLock<bool> = OnceLock::new();
+pub fn core_levels_only() -> bool { *CORE_LEVELS_ONLY.get().unwrap_or(&true) }
+pub fn set_core_levels_only(v: bool) { let _ = CORE_LEVELS_ONLY.set(v); }
+
 pub const VA_BARS: usize = 96;   // ventana area de valor (96 × M15 = 1 día)
 pub const SWING: usize   = 50;   // lookback swing H/L
 pub const OB_WIN: usize  = 15;   // ventana order block
@@ -527,14 +541,22 @@ pub fn compute_levels(
         }
     }
 
+    // ── Generadores experimentales: IFVG, weekly H/L, round numbers ──────
+    // Apagados por default desde 2026-08-02 (ver CORE_LEVELS_ONLY): en paper suman
+    // -37.8R en julio (n=52) contra +19.0R del core en el mismo mes.
+    let experimental = !core_levels_only();
+    let round_mults: &[f64] = if experimental { round_mults } else { &[] };
+
     // ── IFVG (Inverse Fair Value Gap) ────────────────────────────────────
-    out.extend(ifvg_levels(bars, atr, price, &va, sh, sl, pdh, pdl, wh, wl,
-                            vol_regime, regime, atr_median));
+    if experimental {
+        out.extend(ifvg_levels(bars, atr, price, &va, sh, sl, pdh, pdl, wh, wl,
+                                vol_regime, regime, atr_median));
+    }
 
     // ── Weekly H/L como entrada directa (validado OOS +1.95R, 3 activos) ─
     let cur = bars.last().unwrap();
     // Long en weekly_low: precio toca desde arriba, cierra por encima
-    if wl.is_finite() && wl > 0.0 {
+    if experimental && wl.is_finite() && wl > 0.0 {
         let entry = wl * (1.0 + SR_ENTRY_TOL);
         if cur.low <= entry && cur.close > wl {
             let stop = entry - SR_STOP_FRAC * atr;
@@ -552,7 +574,7 @@ pub fn compute_levels(
         }
     }
     // Short en weekly_high: precio toca desde abajo, cierra por debajo
-    if wh.is_finite() && wh > 0.0 {
+    if experimental && wh.is_finite() && wh > 0.0 {
         let entry = wh * (1.0 - SR_ENTRY_TOL);
         if cur.high >= entry && cur.close < wh {
             let stop = entry + SR_STOP_FRAC * atr;
