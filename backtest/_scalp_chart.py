@@ -3,7 +3,7 @@ _scalp_chart.py — gráfico visual de los trades sc3 (config canónica) sobre e
 ================================================================================
 Por cada trade dibuja: entrada (▲long/▼short), línea de STOP (roja) y TARGET (verde)
 extendidas hacia adelante, y el marcador coloreado por resultado (verde ganó / rojo perdió).
-Genera PNGs en docs/scalp/charts/ + curva de equity.
+Genera PNGs en docs/sc3/charts/ + curva de equity.
 Uso: python backtest/_scalp_chart.py [SYMBOL] [dias_ventana]
 """
 import sys
@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, "backtest")
 from _scalp import load, run_sc3, SC3, OOS_MS
 
-OUT = Path("docs/scalp/charts"); OUT.mkdir(parents=True, exist_ok=True)
+OUT = Path("docs/sc3/charts"); OUT.mkdir(parents=True, exist_ok=True)
 BAR_MS = 5*60_000
 
 

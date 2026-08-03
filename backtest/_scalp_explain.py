@@ -12,7 +12,7 @@ sys.path.insert(0, "backtest")
 import _scalp as SC
 from _scalp_more import gen_sc3x, ALLK_L, ALLK_S, LONG_LV, SHORT_LV
 
-OUT = Path("docs/scalp/charts"); OUT.mkdir(parents=True, exist_ok=True)
+OUT = Path("docs/sc3/charts"); OUT.mkdir(parents=True, exist_ok=True)
 
 
 def main():
