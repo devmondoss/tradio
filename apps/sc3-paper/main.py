@@ -424,6 +424,11 @@ class Executor:
                 self.position_open = True
                 self.fill_ts       = int(time.time() * 1000)
                 self.open_order_id = None
+                # precio de fill real: lo usa _record_closed para identificar CUÁL registro
+                # de closed-PnL es el de esta posición (la ventana temporal sola no alcanza:
+                # el cierre de la posición anterior puede caer después de nuestro placed_ts).
+                fill_px = float(items[0].get("avgPrice", 0) or 0) if items else 0.0
+                self.open_sig["fill_px"] = fill_px or self.open_sig.get("entry", 0)
                 day_key = self.fill_ts // 86_400_000
                 self.day_count[day_key] = self.day_count.get(day_key, 0) + 1
                 log.info(f"[filled] posición {self.open_sig['side']} @ {self.open_sig['entry']} "
@@ -446,22 +451,84 @@ class Executor:
 
     async def _record_closed(self):
         await asyncio.sleep(2)
+        sig = self.open_sig or {}
+        # Matcheo por VENTANA TEMPORAL, no items[0]. Antes se tomaba el último closed-PnL
+        # de la cuenta y se le pegaba el stop/tp del sig en memoria: si el servicio
+        # redeployaba o se perdía un poll, cruzaba el PnL de un trade con la señal de otro.
+        # Auditoría 2026-08-02: 47/69 filas tenían el exit fuera de [stop, tp] y 4 filas
+        # compartían literalmente el mismo registro de closed-PnL, con R de hasta ±33
+        # bajo un rr_cap de 3.0. Ahora: solo registros posteriores al placed_ts de ESTA
+        # orden, agregando los cierres parciales de la misma posición; si no matchea nada,
+        # no se escribe fila (mejor un hueco que un dato falso).
         r = await bybit_get(self.client, "/v5/position/closed-pnl",
-                            {"category":"linear","symbol":SYMBOL,"limit":"5"})
+                            {"category":"linear","symbol":SYMBOL,"limit":"50"})
         items = r.get("result",{}).get("list",[])
         if not items: log.warning("[pnl] no closed PnL encontrado"); return
-        last = items[0]
-        entry_px   = float(last.get("avgEntryPrice", 0))
-        exit_px    = float(last.get("avgExitPrice",  0))
-        closed_pnl = float(last.get("closedPnl", 0))
-        qty        = float(last.get("qty", 0))
-        sig = self.open_sig or {}
+
+        floor_ts = int(sig.get("placed_ts", 0) or 0) - 60_000
+        cands = sorted((it for it in items
+                        if int(it.get("updatedTime", 0) or 0) >= floor_ts),
+                       key=lambda it: int(it.get("updatedTime", 0) or 0))
+        if not cands:
+            log.warning(f"[pnl] sin closed-PnL posterior a placed_ts={sig.get('placed_ts')} "
+                        f"— NO se registra la fila (revisar manualmente)")
+            return
+
+        # La ventana temporal sola no alcanza: el cierre de la posición ANTERIOR puede caer
+        # después de nuestro placed_ts (verificado en la cuenta demo: 1 de 8 casos elegía el
+        # trade previo). Segundo filtro: el avgEntryPrice del registro tiene que parecerse al
+        # precio de fill real de esta orden. Tolerancia = 2× el risk teórico, con piso de
+        # 0.1% del precio para absorber el slippage del maker.
+        target = float(sig.get("fill_px", 0) or 0) or float(sig.get("entry", 0) or 0)
+        risk_th = abs(float(sig.get("entry", 0) or 0) - float(sig.get("stop", 0) or 0))
+        tol = max(2.0 * risk_th, 0.001 * target) if target > 0 else 0.0
+        near = [it for it in cands
+                if abs(float(it.get("avgEntryPrice", 0) or 0) - target) <= tol]
+        if not near:
+            log.warning(f"[pnl] ningún closed-PnL con avgEntryPrice ≈ {target} (tol={tol:.4f}) "
+                        f"— NO se registra la fila (revisar manualmente)")
+            return
+        cands = near
+
+        # La posición puede haber cerrado en varios pedazos (SL/TP parciales): agrego los
+        # registros consecutivos que comparten el mismo avgEntryPrice.
+        ref_entry = float(cands[0].get("avgEntryPrice", 0) or 0)
+        group = [it for it in cands
+                 if ref_entry > 0
+                 and abs(float(it.get("avgEntryPrice", 0) or 0) - ref_entry) / ref_entry < 1e-6]
+        closed_pnl = sum(float(it.get("closedPnl", 0) or 0) for it in group)
+        qty        = sum(float(it.get("qty", 0) or 0) for it in group)
+        entry_px   = ref_entry
+        exit_px    = (sum(float(it.get("avgExitPrice", 0) or 0) * float(it.get("qty", 0) or 0)
+                          for it in group) / qty) if qty > 0 else 0.0
+
+        stop_px = float(sig.get("stop", 0) or 0)
+        if entry_px <= 0 or stop_px <= 0:
+            log.warning(f"[pnl] entry/stop inválidos (entry={entry_px} stop={stop_px}) "
+                        f"— NO se registra la fila")
+            return
         # risk sobre el FILL real (entry_px), no el nivel teórico de la señal — con stops
         # tan ajustados (~0.5 ATR) el slippage entry teórico vs real distorsiona el R.
-        risk = abs(entry_px - sig.get("stop", entry_px)) if entry_px > 0 else abs(sig.get("entry", 0) - sig.get("stop", 0))
-        risk_usdt = risk * qty if risk > 0 else 1
-        r_val = closed_pnl / risk_usdt if risk_usdt > 0 else 0.0
-        log.info(f"[CLOSED] pnl={closed_pnl:.4f} R={r_val:+.3f} entry={entry_px} exit={exit_px}")
+        risk = abs(entry_px - stop_px)
+        risk_usdt = risk * qty
+        if risk_usdt <= 0:
+            log.warning(f"[pnl] risk_usdt={risk_usdt} (risk={risk} qty={qty}) — NO se registra")
+            return
+        r_val = closed_pnl / risk_usdt
+
+        # reason real: dónde cayó el exit, no el signo del R (antes: 'target' si R>0).
+        tp_px = float(sig.get("tp", 0) or 0)
+        lo, hi = min(stop_px, tp_px), max(stop_px, tp_px)
+        if tp_px <= 0:                 reason = "unknown"
+        elif exit_px < lo:             reason = "below_range"
+        elif exit_px > hi:             reason = "above_range"
+        elif abs(exit_px - tp_px) < abs(exit_px - stop_px): reason = "target"
+        else:                          reason = "stop"
+        if reason in ("below_range", "above_range", "unknown"):
+            log.warning(f"[pnl] exit={exit_px} FUERA de [stop={stop_px}, tp={tp_px}] "
+                        f"→ reason={reason} R={r_val:+.2f} (SL/TP no gobernó la salida)")
+        log.info(f"[CLOSED] pnl={closed_pnl:.4f} R={r_val:+.3f} entry={entry_px} "
+                 f"exit={exit_px} reason={reason} parciales={len(group)}")
         ts_close = int(time.time() * 1000)
         fill_ts  = self.fill_ts or sig.get("placed_ts", 0)
         ttf_s    = round((fill_ts - sig.get("placed_ts", fill_ts)) / 1000) if fill_ts else 0
@@ -477,7 +544,7 @@ class Executor:
             "r":             round(r_val, 4),
             "result_r":      round(r_val, 4),
             "win":           r_val > 0,
-            "reason":        "target" if r_val > 0 else "stop",
+            "reason":        reason,
             "vr":            round(sig.get("vr", 0), 2),
             "atr":           round(sig.get("atr", 0), 4),
             "ts_open":       sig.get("ts_open", 0),
