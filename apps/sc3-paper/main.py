@@ -400,6 +400,41 @@ class Executor:
         else:
             log.warning(f"[order_err] {r.get('retMsg')} | {r}")
 
+    async def ensure_tpsl(self):
+        """Fija SL/TP SOBRE LA POSICIÓN y verifica que hayan quedado.
+
+        El stopLoss/takeProfit que se manda en /v5/order/create no queda pegado a la
+        posición: auditoría 2026-08-03 encontró las 3 posiciones vivas de la cuenta demo
+        (BTC/ETH/SOL) con stopLoss='' y takeProfit='' — una de ellas abierta hacía 20 días.
+        Consecuencias: la posición no cierra nunca en su nivel, el exit cae fuera de
+        [stop, tp] (47/69 filas en julio), y el servicio queda trabado creyendo que tiene
+        posición abierta (sc3-btc y sc3-sol dejaron de operar el 13/14-jul por esto).
+        """
+        sig = self.open_sig or {}
+        sl, tp = sig.get("stop", 0), sig.get("tp", 0)
+        if not (sl and tp):
+            log.warning("[tpsl] sig sin stop/tp — no se puede proteger la posición"); return
+        r = await bybit_post(self.client, "/v5/position/trading-stop", {
+            "category": "linear", "symbol": SYMBOL,
+            "stopLoss": str(sl), "takeProfit": str(tp),
+            "slTriggerBy": "LastPrice", "tpTriggerBy": "LastPrice",
+            "tpslMode": "Full", "positionIdx": 0,
+        })
+        # retCode 34040 = "not modified" (ya estaban puestos) → no es error
+        if r.get("retCode") not in (0, 34040):
+            log.error(f"[tpsl] FALLÓ trading-stop: {r.get('retCode')} {r.get('retMsg')}")
+        # verificación: leer la posición y confirmar que el SL quedó
+        chk = await bybit_get(self.client, "/v5/position/list",
+                              {"category": "linear", "symbol": SYMBOL})
+        for p in chk.get("result", {}).get("list", []):
+            if float(p.get("size", "0") or 0) <= 0: continue
+            got_sl, got_tp = p.get("stopLoss", ""), p.get("takeProfit", "")
+            if got_sl and got_tp:
+                log.info(f"[tpsl] posición protegida: SL={got_sl} TP={got_tp}")
+            else:
+                log.error(f"[tpsl] POSICIÓN DESPROTEGIDA tras trading-stop "
+                          f"(SL='{got_sl}' TP='{got_tp}') — riesgo sin cortar")
+
     async def cancel(self):
         if not self.open_order_id: return
         r = await bybit_post(self.client, "/v5/order/cancel", {
@@ -429,6 +464,7 @@ class Executor:
                 # el cierre de la posición anterior puede caer después de nuestro placed_ts).
                 fill_px = float(items[0].get("avgPrice", 0) or 0) if items else 0.0
                 self.open_sig["fill_px"] = fill_px or self.open_sig.get("entry", 0)
+                await self.ensure_tpsl()
                 day_key = self.fill_ts // 86_400_000
                 self.day_count[day_key] = self.day_count.get(day_key, 0) + 1
                 log.info(f"[filled] posición {self.open_sig['side']} @ {self.open_sig['entry']} "
@@ -668,6 +704,9 @@ async def run():
             executor.position_open = True
             log.info(f"[reconcile] RESTAURADA {ctx.get('side')} entry={ctx.get('entry')} "
                      f"fill_ts={ctx.get('fill_ts_ms')}")
+            # una posición restaurada puede venir sin SL/TP en el exchange (caso real:
+            # sc3-btc arrastró un short desprotegido 20 días) → re-armar y verificar
+            await executor.ensure_tpsl()
         elif live and not ctx:
             # (c) HUÉRFANA: posición en el exchange sin registro → adoptar desde sus datos
             side = "long" if live.get("side") == "Buy" else "short"
